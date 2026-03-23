@@ -1,0 +1,57 @@
+"""
+config.py — Central configuration for the mashup engine.
+Edit this file to change paths, models, and thresholds.
+"""
+import os
+from pathlib import Path
+
+# ── Paths ────────────────────────────────────────────────────────────────────
+BASE_DIR   = Path(__file__).parent
+AUDIO_DIR        = BASE_DIR / "audio"
+RAW_DIR          = AUDIO_DIR / "full_song"
+VOCALS_DIR       = AUDIO_DIR / "vocals"
+INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
+DB_PATH          = BASE_DIR / "mashup.db"
+
+# Create dirs if missing
+for d in [RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
+
+# ── Download ─────────────────────────────────────────────────────────────────
+# yt-dlp format string — prefers 320k mp3, falls back to best audio
+YTDLP_FORMAT   = "bestaudio/best"
+YTDLP_POSTARGS = [
+    "--extract-audio",
+    "--audio-format", "mp3",
+    "--audio-quality", "0",   # 0 = best VBR
+]
+
+# ── Stem separation ───────────────────────────────────────────────────────────
+# "htdemucs" = Hybrid Transformer Demucs (best quality, slower)
+# "mdx_extra" = MDX-Net extra (faster, slightly lower quality)
+DEMUCS_MODEL = "htdemucs"
+STEMS_TO_KEEP = ["vocals", "no_vocals"]   # no_vocals = instrumental
+
+# ── Analysis ──────────────────────────────────────────────────────────────────
+SAMPLE_RATE      = 22050
+HOP_LENGTH       = 512
+N_MFCC           = 13      # MFCC coefficients stored per track
+BEAT_TRIM_SECS   = 30      # analyse first N seconds for speed during testing
+                           # set to None for full track
+
+# ── Matching ──────────────────────────────────────────────────────────────────
+# Weights used in the composite similarity score (must sum to 1.0)
+MATCH_WEIGHTS = {
+    "bpm_score":      0.25,  # tempo compatibility
+    "key_score":      0.30,  # harmonic compatibility (Camelot wheel)
+    "energy_score":   0.20,  # similar loudness / energy
+    "timbre_score":   0.25,  # MFCC cosine similarity
+}
+TOP_K_RESULTS = 10
+
+# ── SoundCloud scrape ─────────────────────────────────────────────────────────
+# Used when you pass a playlist URL rather than a local file list
+SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "")   # optional, for higher rate limits
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+LOG_LEVEL = "INFO"
