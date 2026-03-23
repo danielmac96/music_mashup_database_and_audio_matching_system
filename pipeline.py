@@ -138,17 +138,35 @@ def run_analysis() -> dict:
 
 def run_match(seed_song_id: int = 1,
               seed_stem: str = "vocals",
-              candidate_stem: str = "instrumental") -> list:
+              candidate_stem: str = "instrumental") -> dict:
     log.info("── Stage 5: Match ───────────────────────────────────────")
+    from matcher.match import score_all_pairs, find_matches, format_results
     from database.models import get_conn
+
+    all_pairs = score_all_pairs()
+    vi_count  = len(all_pairs["vocal_over_instrumental"])
+    ii_count  = len(all_pairs["instrumental_over_instrumental"])
+    log.info(f"  vocal→instrumental pairs scored: {vi_count}")
+    log.info(f"  instrumental→instrumental pairs scored: {ii_count}")
+
     conn = get_conn()
     row = conn.execute("SELECT title, artist FROM songs WHERE id=?",
                        (seed_song_id,)).fetchone()
     conn.close()
     seed_title = f"{row['title']} — {row['artist']}" if row else f"Song #{seed_song_id}"
-    log.info(f"  Seed: {seed_title} ({seed_stem})")
-    log.info(f"  Comparing against: {candidate_stem} stems")
-    results = find_matches(seed_song_id, top_k=TOP_K_RESULTS,
-                           seed_stem=seed_stem, candidate_stem=candidate_stem)
-    print(format_results(results, seed_title=seed_title))
-    return results
+
+    # Show vocal-over-instrumental matches
+    vi_results = find_matches(seed_song_id, top_k=TOP_K_RESULTS,
+                              seed_role="vocal",
+                              combo_type="vocal_over_instrumental")
+    print(format_results(vi_results, seed_title=seed_title,
+                         combo_type="vocal_over_instrumental"))
+
+    # Show instrumental-over-instrumental matches
+    ii_results = find_matches(seed_song_id, top_k=TOP_K_RESULTS,
+                              seed_role="vocal",
+                              combo_type="instrumental_over_instrumental")
+    print(format_results(ii_results, seed_title=seed_title,
+                         combo_type="instrumental_over_instrumental"))
+
+    return all_pairs

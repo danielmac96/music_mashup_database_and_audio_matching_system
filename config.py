@@ -42,12 +42,18 @@ BEAT_TRIM_SECS   = 30      # analyse first N seconds for speed during testing
 # ── Matching ──────────────────────────────────────────────────────────────────
 # Weights used in the composite similarity score (must sum to 1.0)
 MATCH_WEIGHTS = {
-    "bpm_score":      0.25,  # tempo compatibility
-    "key_score":      0.30,  # harmonic compatibility (Camelot wheel)
-    "energy_score":   0.20,  # similar loudness / energy
-    "timbre_score":   0.25,  # MFCC cosine similarity
+    "bpm_score":      0.25,
+    "key_score":      0.30,
+    "energy_score":   0.20,
+    "timbre_score":   0.25,
 }
 TOP_K_RESULTS = 10
+
+# Minimum thresholds — pairs that don't meet BOTH are skipped entirely
+# BPM: maximum difference allowed (accounts for halftime/doubletime)
+BPM_MAX_DIFF   = 10.0   # e.g. 120 BPM pairs with anything 110–130 (or half/double)
+# Key: minimum Camelot score to qualify (0.0–1.0)
+KEY_MIN_SCORE  = 0.55   # allows perfect + adjacent + relative major/minor matches
 
 # ── SoundCloud scrape ─────────────────────────────────────────────────────────
 # Used when you pass a playlist URL rather than a local file list

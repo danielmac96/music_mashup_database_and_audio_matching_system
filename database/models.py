@@ -54,6 +54,47 @@ CREATE TABLE IF NOT EXISTS features (
 CREATE INDEX IF NOT EXISTS idx_features_bpm ON features(bpm);
 CREATE INDEX IF NOT EXISTS idx_features_key ON features(key, mode);
 CREATE INDEX IF NOT EXISTS idx_songs_status ON songs(status);
+
+CREATE TABLE IF NOT EXISTS mashup_candidates (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    combo_type          TEXT NOT NULL,    -- 'vocal_over_instrumental' | 'instrumental_over_instrumental'
+
+    vocal_song_id       INTEGER NOT NULL,
+    vocal_title         TEXT,
+    vocal_artist        TEXT,
+    vocal_bpm           REAL,
+    vocal_key           TEXT,
+    vocal_mode          TEXT,
+    vocal_camelot       TEXT,
+    vocal_loudness_rms  REAL,
+    vocal_energy        REAL,
+
+    inst_song_id        INTEGER NOT NULL,
+    inst_title          TEXT,
+    inst_artist         TEXT,
+    inst_bpm            REAL,
+    inst_key            TEXT,
+    inst_mode           TEXT,
+    inst_camelot        TEXT,
+    inst_loudness_rms   REAL,
+    inst_energy         REAL,
+
+    score_total         REAL,
+    score_bpm           REAL,
+    score_key           REAL,
+    score_energy        REAL,
+    score_timbre        REAL,
+
+    scored_at           TEXT DEFAULT (datetime('now')),
+
+    UNIQUE(combo_type, vocal_song_id, inst_song_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidates_score  ON mashup_candidates(score_total DESC);
+CREATE INDEX IF NOT EXISTS idx_candidates_type   ON mashup_candidates(combo_type);
+CREATE INDEX IF NOT EXISTS idx_candidates_vocal  ON mashup_candidates(vocal_song_id);
+CREATE INDEX IF NOT EXISTS idx_candidates_inst   ON mashup_candidates(inst_song_id);
 """
 
 
@@ -201,3 +242,98 @@ def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[D
             d["mfcc"] = json.loads(d.pop("mfcc_json"))
         result.append(d)
     return result
+
+def upsert_candidate(vocal: dict, inst: dict, scores: dict,
+                     combo_type: str = "vocal_over_instrumental",
+                     db_path: Path = DB_PATH):
+    """
+    Insert or update a mashup_candidates row for a vocal+instrumental pair.
+    combo_type: 'vocal_over_instrumental' | 'instrumental_over_instrumental'
+    """
+    conn = get_conn(db_path)
+    conn.execute(
+        """INSERT INTO mashup_candidates (
+               combo_type,
+               vocal_song_id, vocal_title, vocal_artist,
+               vocal_bpm, vocal_key, vocal_mode, vocal_camelot,
+               vocal_loudness_rms, vocal_energy,
+               inst_song_id, inst_title, inst_artist,
+               inst_bpm, inst_key, inst_mode, inst_camelot,
+               inst_loudness_rms, inst_energy,
+               score_total, score_bpm, score_key, score_energy, score_timbre,
+               scored_at
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+           ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
+               score_total=excluded.score_total,
+               score_bpm=excluded.score_bpm,
+               score_key=excluded.score_key,
+               score_energy=excluded.score_energy,
+               score_timbre=excluded.score_timbre,
+               vocal_bpm=excluded.vocal_bpm,
+               vocal_key=excluded.vocal_key,
+               vocal_mode=excluded.vocal_mode,
+               vocal_camelot=excluded.vocal_camelot,
+               vocal_loudness_rms=excluded.vocal_loudness_rms,
+               vocal_energy=excluded.vocal_energy,
+               inst_bpm=excluded.inst_bpm,
+               inst_key=excluded.inst_key,
+               inst_mode=excluded.inst_mode,
+               inst_camelot=excluded.inst_camelot,
+               inst_loudness_rms=excluded.inst_loudness_rms,
+               inst_energy=excluded.inst_energy,
+               scored_at=datetime('now')""",
+        (
+            combo_type,
+            vocal["song_id"], vocal.get("title"), vocal.get("artist"),
+            vocal.get("bpm"), vocal.get("key"), vocal.get("mode"), vocal.get("camelot"),
+            vocal.get("loudness_rms"), vocal.get("energy"),
+            inst["song_id"],  inst.get("title"),  inst.get("artist"),
+            inst.get("bpm"),  inst.get("key"),  inst.get("mode"),  inst.get("camelot"),
+            inst.get("loudness_rms"),  inst.get("energy"),
+            scores["total"], scores["bpm_score"], scores["key_score"],
+            scores["energy_score"], scores["timbre_score"],
+        )
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_candidates(min_score: float = 0.0, limit: int = 100,
+                   db_path: Path = DB_PATH) -> List[Dict]:
+    """Return all scored mashup candidates ordered by total score descending."""
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        """SELECT * FROM mashup_candidates
+           WHERE score_total >= ?
+           ORDER BY score_total DESC
+           LIMIT ?""",
+        (min_score, limit)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_candidates_for_song(song_id: int, role: str = "vocal",
+                             combo_type: str = "",
+                             db_path: Path = DB_PATH) -> List[Dict]:
+    """
+    Get all candidates where this song appears as either the vocal or instrumental.
+    role:       'vocal' | 'instrumental'
+    combo_type: optional filter — 'vocal_over_instrumental' | 'instrumental_over_instrumental'
+    """
+    col = "vocal_song_id" if role == "vocal" else "inst_song_id"
+    conn = get_conn(db_path)
+    if combo_type:
+        rows = conn.execute(
+            f"""SELECT * FROM mashup_candidates
+                WHERE {col}=? AND combo_type=?
+                ORDER BY score_total DESC""",
+            (song_id, combo_type)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT * FROM mashup_candidates WHERE {col}=? ORDER BY score_total DESC",
+            (song_id,)
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]

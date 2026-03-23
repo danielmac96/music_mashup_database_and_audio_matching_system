@@ -70,14 +70,49 @@ def print_db_report():
     print(f"{'='*60}")
     for s in songs:
         feat_rows = conn.execute(
-            "SELECT stem_type, bpm, key, mode, camelot FROM features WHERE song_id=?",
+            """SELECT stem_type, bpm, bpm_confidence, key, mode, camelot,
+                      loudness_rms, energy, spectral_centroid,
+                      spectral_rolloff, zero_crossing_rate, mfcc_json
+               FROM features WHERE song_id=? ORDER BY stem_type""",
             (s["id"],)
         ).fetchall()
         print(f"\n  [{s['id']:>2}] {s['title']} — {s['artist']}")
         print(f"       Status: {s['status']}  |  Genre: {s['genre'] or '—'}")
+        print(f"       URL:    {s['source_url']}")
         for f in feat_rows:
-            print(f"       [{f['stem_type']:>12}] BPM={f['bpm']}  "
-                  f"Key={f['key']} {f['mode']}  Camelot={f['camelot']}")
+            import json
+            mfcc = json.loads(f['mfcc_json']) if f['mfcc_json'] else []
+            print(f"\n       [{f['stem_type']:>12}]")
+            print(f"         Tempo:    BPM={f['bpm']}  confidence={f['bpm_confidence']:.3f}")
+            print(f"         Harmony:  Key={f['key']} {f['mode']}  Camelot={f['camelot']}")
+            print(f"         Dynamics: RMS={f['loudness_rms']}  energy={f['energy']}")
+            print(f"         Spectral: centroid={f['spectral_centroid']}  "
+                  f"rolloff={f['spectral_rolloff']}  ZCR={f['zero_crossing_rate']}")
+            if mfcc:
+                print(f"         MFCC:     {[round(v,1) for v in mfcc]}")
+    conn.close()
+
+    # Mashup candidates summary
+    conn = get_conn()
+    for combo in ("vocal_over_instrumental", "instrumental_over_instrumental"):
+        label = "Vocals → Instrumental" if combo == "vocal_over_instrumental" \
+                else "Instrumental → Instrumental"
+        candidates = conn.execute(
+            "SELECT * FROM mashup_candidates WHERE combo_type=? ORDER BY score_total DESC LIMIT 20",
+            (combo,)
+        ).fetchall()
+        if candidates:
+            print(f"\n{'='*60}")
+            print(f"  {label}  ({len(candidates)} qualifying pairs)")
+            print(f"{'='*60}")
+            for c in candidates:
+                print(f"\n  Score: {c['score_total']:.3f}  "
+                      f"BPM={c['score_bpm']:.2f}  Key={c['score_key']:.2f}  "
+                      f"Energy={c['score_energy']:.2f}  Timbre={c['score_timbre']:.2f}")
+                print(f"    TOP: {c['vocal_title']} — {c['vocal_artist']}"
+                      f"  [{c['vocal_bpm']} BPM  {c['vocal_camelot']}]")
+                print(f"    BED: {c['inst_title']} — {c['inst_artist']}"
+                      f"  [{c['inst_bpm']} BPM  {c['inst_camelot']}]")
     conn.close()
     print()
 
