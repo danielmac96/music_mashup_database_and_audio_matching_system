@@ -1,49 +1,24 @@
 """
-ingest/soundcloud.py — Pull track metadata from a SoundCloud playlist.
-
-Strategy (in order of preference):
-  1. scdl --no-download (fast, gets metadata without downloading)
-  2. yt-dlp --dump-json (universal fallback, works for SC + YT + most sites)
-  3. Mock data (for testing without network access)
-
-Returns a list of dicts:
-  { title, artist, source_url, duration_secs, genre }
+ingest/soundcloud.py — Pull track metadata from a SoundCloud playlist via yt-dlp.
 """
-from typing import Optional
+import json
 import subprocess
 import logging
-import json
-from pathlib import Path
+from typing import Optional
 
 log = logging.getLogger(__name__)
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def fetch_playlist(url: str, use_mock: bool = False) -> list[dict]:
+def fetch_playlist(url: str) -> list:
     """
     Fetch track metadata from a SoundCloud playlist URL.
-
-    Args:
-        url:        SoundCloud playlist URL
-        use_mock:   If True, return mock data (useful for offline testing)
-
-    Returns:
-        List of track metadata dicts
+    Returns a list of dicts: { title, artist, source_url, duration_secs, genre }
     """
-    if use_mock:
-        log.info("Using mock playlist data")
-        return _mock_tracks()
-
     log.info(f"Fetching playlist metadata: {url}")
-
-    # Try yt-dlp first (no extra install needed if yt-dlp is present)
     tracks = _fetch_via_ytdlp(url)
-    if tracks:
-        return tracks
-
-    log.warning("yt-dlp fetch failed, falling back to mock data")
-    return _mock_tracks()
+    if not tracks:
+        log.error("No tracks found. Check the playlist URL.")
+    return tracks
 
 
 def fetch_single(url: str) -> Optional[dict]:
@@ -53,13 +28,7 @@ def fetch_single(url: str) -> Optional[dict]:
     return tracks[0] if tracks else None
 
 
-# ── Implementations ───────────────────────────────────────────────────────────
-
-def _fetch_via_ytdlp(url: str) -> list[dict]:
-    """
-    Use yt-dlp --dump-json to extract playlist/track metadata without downloading.
-    Works for SoundCloud, YouTube, and most other sources.
-    """
+def _fetch_via_ytdlp(url: str) -> list:
     try:
         result = subprocess.run(
             ["yt-dlp", "--dump-json", "--no-warnings", url],
@@ -75,7 +44,7 @@ def _fetch_via_ytdlp(url: str) -> list[dict]:
                 continue
             try:
                 info = json.loads(line)
-                tracks.append(_normalise_ytdlp(info))
+                tracks.append(_normalise(info))
             except json.JSONDecodeError:
                 continue
 
@@ -83,76 +52,24 @@ def _fetch_via_ytdlp(url: str) -> list[dict]:
         return tracks
 
     except FileNotFoundError:
-        log.warning("yt-dlp not found in PATH")
+        log.error("yt-dlp not found. Install with: pip install yt-dlp")
         return []
     except subprocess.TimeoutExpired:
-        log.warning("yt-dlp timed out")
+        log.error("yt-dlp timed out")
         return []
 
 
-def _normalise_ytdlp(info: dict) -> dict:
-    """Normalise a yt-dlp JSON blob to our standard track dict."""
-    # Duration may be missing for flat-playlist entries
-    duration = info.get("duration") or 0
-
-    # Uploader / artist
+def _normalise(info: dict) -> dict:
     artist = (
         info.get("uploader")
         or info.get("channel")
         or info.get("artist")
         or "Unknown"
     )
-
     return {
-        "title":        info.get("title", "Unknown"),
-        "artist":       artist,
-        "source_url":   info.get("url") or info.get("webpage_url", ""),
-        "duration_secs": float(duration),
-        "genre":        info.get("genre", ""),
+        "title":         info.get("title", "Unknown"),
+        "artist":        artist,
+        "source_url":    info.get("url") or info.get("webpage_url", ""),
+        "duration_secs": float(info.get("duration") or 0),
+        "genre":         info.get("genre", ""),
     }
-
-
-# ── Mock data (offline / CI testing) ─────────────────────────────────────────
-
-def _mock_tracks() -> list[dict]:
-    """
-    Realistic mock tracks for testing the full pipeline without network access.
-    URLs are placeholders — the downloader will skip them gracefully in mock mode.
-    """
-    return [
-        {
-            "title": "Blinding Lights",
-            "artist": "The Weeknd",
-            "source_url": "https://soundcloud.com/theweeknd/blinding-lights",
-            "duration_secs": 200,
-            "genre": "Synth-pop",
-        },
-        {
-            "title": "Levitating",
-            "artist": "Dua Lipa",
-            "source_url": "https://soundcloud.com/dualipa/levitating",
-            "duration_secs": 203,
-            "genre": "Dance-pop",
-        },
-        {
-            "title": "Stay",
-            "artist": "The Kid LAROI ft. Justin Bieber",
-            "source_url": "https://soundcloud.com/kidlaroi/stay",
-            "duration_secs": 141,
-            "genre": "Pop",
-        },
-        {
-            "title": "good 4 u",
-            "artist": "Olivia Rodrigo",
-            "source_url": "https://soundcloud.com/oliviarodrigo/good4u",
-            "duration_secs": 178,
-            "genre": "Pop-punk",
-        },
-        {
-            "title": "Heat Waves",
-            "artist": "Glass Animals",
-            "source_url": "https://soundcloud.com/glassanimals/heatwaves",
-            "duration_secs": 238,
-            "genre": "Indie",
-        },
-    ]
