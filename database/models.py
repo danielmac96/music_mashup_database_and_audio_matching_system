@@ -16,11 +16,20 @@ CREATE TABLE IF NOT EXISTS songs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     title           TEXT NOT NULL,
     artist          TEXT,
-    source_url      TEXT UNIQUE,          -- SoundCloud / YouTube URL
+    source_url      TEXT UNIQUE,          -- SoundCloud track webpage_url
     duration_secs   REAL,
     genre           TEXT,
     raw_path        TEXT,
     status          TEXT DEFAULT 'queued',
+    artist_id       TEXT,                 -- SoundCloud uploader_id
+    track_id        TEXT,                 -- SoundCloud track id
+    duration_str    TEXT,                 -- Human-readable length (e.g. 3:45)
+    upload_date     TEXT,                 -- YYYYMMDD from yt-dlp
+    likes           INTEGER DEFAULT 0,
+    reposts         INTEGER DEFAULT 0,
+    comments        INTEGER DEFAULT 0,
+    plays           INTEGER DEFAULT 0,   -- view_count
+    thumbnail       TEXT,
     created_at      TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))
 );
@@ -108,10 +117,32 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+_SONGS_OPTIONAL_COLUMNS = (
+    ("artist_id", "TEXT"),
+    ("track_id", "TEXT"),
+    ("duration_str", "TEXT"),
+    ("upload_date", "TEXT"),
+    ("likes", "INTEGER DEFAULT 0"),
+    ("reposts", "INTEGER DEFAULT 0"),
+    ("comments", "INTEGER DEFAULT 0"),
+    ("plays", "INTEGER DEFAULT 0"),
+    ("thumbnail", "TEXT"),
+)
+
+
+def _migrate_songs_columns(conn: sqlite3.Connection) -> None:
+    """Add SoundCloud metadata columns to existing DBs created before this schema."""
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(songs)").fetchall()}
+    for col, decl in _SONGS_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE songs ADD COLUMN {col} {decl}")
+
+
 def init_db(db_path: Path = DB_PATH):
     """Create tables if they don't exist."""
     conn = get_conn(db_path)
     conn.executescript(SCHEMA)
+    _migrate_songs_columns(conn)
     conn.commit()
     conn.close()
     return db_path
@@ -119,22 +150,70 @@ def init_db(db_path: Path = DB_PATH):
 
 # ── CRUD helpers ──────────────────────────────────────────────────────────────
 
-def upsert_song(title: str, artist: str = "", source_url: str = "",
-                duration_secs: float = 0, genre: str = "",
-                raw_path: str = "", status: str = "queued",
-                db_path: Path = DB_PATH) -> int:
+def upsert_song(
+    title: str,
+    artist: str = "",
+    source_url: str = "",
+    duration_secs: float = 0,
+    genre: str = "",
+    raw_path: str = "",
+    status: str = "queued",
+    *,
+    artist_id: str = "",
+    track_id: str = "",
+    duration_str: str = "",
+    upload_date: str = "",
+    likes: int = 0,
+    reposts: int = 0,
+    comments: int = 0,
+    plays: int = 0,
+    thumbnail: str = "",
+    db_path: Path = DB_PATH,
+) -> int:
     """Insert or update a song row. Returns the song id."""
     conn = get_conn(db_path)
     cur = conn.execute(
-        """INSERT INTO songs (title, artist, source_url, duration_secs, genre, raw_path, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+        """INSERT INTO songs (
+               title, artist, source_url, duration_secs, genre, raw_path, status,
+               artist_id, track_id, duration_str, upload_date,
+               likes, reposts, comments, plays, thumbnail
+           )
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(source_url) DO UPDATE SET
-               title=excluded.title, artist=excluded.artist,
-               duration_secs=excluded.duration_secs, genre=excluded.genre,
+               title=excluded.title,
+               artist=excluded.artist,
+               duration_secs=excluded.duration_secs,
+               genre=excluded.genre,
                raw_path=CASE WHEN excluded.raw_path != '' THEN excluded.raw_path ELSE raw_path END,
                status=excluded.status,
+               artist_id=excluded.artist_id,
+               track_id=excluded.track_id,
+               duration_str=excluded.duration_str,
+               upload_date=excluded.upload_date,
+               likes=excluded.likes,
+               reposts=excluded.reposts,
+               comments=excluded.comments,
+               plays=excluded.plays,
+               thumbnail=excluded.thumbnail,
                updated_at=datetime('now')""",
-        (title, artist, source_url, duration_secs, genre, raw_path, status)
+        (
+            title,
+            artist,
+            source_url,
+            duration_secs,
+            genre,
+            raw_path,
+            status,
+            artist_id,
+            track_id,
+            duration_str,
+            upload_date,
+            likes,
+            reposts,
+            comments,
+            plays,
+            thumbnail,
+        ),
     )
     conn.commit()
     row = conn.execute("SELECT id FROM songs WHERE source_url=?", (source_url,)).fetchone()
@@ -156,6 +235,29 @@ def update_song_status(song_id: int, status: str, raw_path: str = "",
             "UPDATE songs SET status=?, updated_at=datetime('now') WHERE id=?",
             (status, song_id)
         )
+    conn.commit()
+    conn.close()
+
+
+def _format_duration_str_from_secs(secs: float) -> str:
+    if not secs or secs <= 0:
+        return ""
+    s = int(round(secs))
+    m, sec = divmod(s, 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}:{m:02d}:{sec:02d}"
+    return f"{m}:{sec:02d}"
+
+
+def update_song_duration(song_id: int, duration_secs: float,
+                         db_path: Path = DB_PATH):
+    conn = get_conn(db_path)
+    conn.execute(
+        """UPDATE songs SET duration_secs=?, duration_str=?,
+               updated_at=datetime('now') WHERE id=?""",
+        (duration_secs, _format_duration_str_from_secs(duration_secs), song_id),
+    )
     conn.commit()
     conn.close()
 

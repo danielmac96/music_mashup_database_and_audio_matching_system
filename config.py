@@ -11,15 +11,17 @@ AUDIO_DIR        = BASE_DIR / "audio"
 RAW_DIR          = AUDIO_DIR / "full_song"
 VOCALS_DIR       = AUDIO_DIR / "vocals"
 INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
-DB_PATH          = BASE_DIR / "mashup.db"
+DB_PATH          = BASE_DIR / "database"
 
 # Create dirs if missing
 for d in [RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 # ── Download ─────────────────────────────────────────────────────────────────
-# yt-dlp format string — prefers 320k mp3, falls back to best audio
-YTDLP_FORMAT   = "bestaudio/best"
+# yt-dlp format string — prefers best dedicated audio, else combined (then ffmpeg extracts mp3)
+YTDLP_FORMAT = "bestaudio/best"
+# Last-resort when bestaudio yields no matching stream for a given YouTube player client
+YTDLP_FORMAT_FALLBACK = "ba/b"
 YTDLP_POSTARGS = [
     "--extract-audio",
     "--audio-format", "mp3",

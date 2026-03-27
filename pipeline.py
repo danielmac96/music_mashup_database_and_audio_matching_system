@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 
 from config import BEAT_TRIM_SECS, TOP_K_RESULTS
 from database.models import (
-    init_db, upsert_song, update_song_status,
+    init_db, upsert_song, update_song_status, update_song_duration,
     upsert_stem, upsert_features, get_all_songs,
     get_features_for_song,
 )
@@ -36,11 +36,21 @@ def run_ingest(playlist_url: str) -> list:
     song_ids = []
     for t in tracks:
         sid = upsert_song(
-            title=t["title"], artist=t["artist"],
+            title=t["title"],
+            artist=t["artist"],
             source_url=t["source_url"],
-            duration_secs=t.get("duration_secs", 0),
+            duration_secs=t.get("duration_secs") or 0,
             genre=t.get("genre", ""),
             status="queued",
+            artist_id=t.get("artist_id", ""),
+            track_id=t.get("track_id", ""),
+            duration_str=t.get("duration_str", ""),
+            upload_date=t.get("upload_date", ""),
+            likes=t.get("likes", 0),
+            reposts=t.get("reposts", 0),
+            comments=t.get("comments", 0),
+            plays=t.get("plays", 0),
+            thumbnail=t.get("thumbnail", ""),
         )
         song_ids.append(sid)
         log.info(f"  Ingested [{sid}] {t['title']} — {t['artist']}")
@@ -57,11 +67,14 @@ def run_download() -> dict:
         title = song["title"]
         url   = song["source_url"]
         log.info(f"  Downloading [{sid}] {title}")
-        path = download_track(sid, title, url, artist=song["artist"])
-        if path and path.exists():
-            update_song_status(sid, "downloaded", raw_path=str(path))
-            downloaded[sid] = path
-            log.info(f"    ✓ {path.name}")
+        outcome = download_track(sid, title, url, artist=song["artist"])
+        if outcome and outcome.path.exists():
+            update_song_status(sid, "downloaded", raw_path=str(outcome.path))
+            if outcome.duration_secs is not None:
+                update_song_duration(sid, outcome.duration_secs)
+                log.info(f"    Updated duration to {outcome.duration_secs:.1f}s (YouTube source)")
+            downloaded[sid] = outcome.path
+            log.info(f"    ✓ {outcome.path.name}")
         else:
             update_song_status(sid, "error")
             log.warning(f"    ✗ Failed: {title}")

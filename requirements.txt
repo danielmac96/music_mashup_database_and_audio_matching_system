@@ -1,0 +1,25 @@
+# ── Environment ───────────────────────────────────────────────────────────────
+# Python 3.10+ required: yt-dlp has deprecated Python 3.9 and drops support over time.
+
+# ── Core (required for mock mode) ────────────────────────────────────────────
+# No external deps needed for full mock pipeline
+
+# ── Audio download ─────────────────────────────────────────────────────────────
+yt-dlp>=2024.12.13         # YouTube formats change often; keep upgraded (pip install -U yt-dlp)
+
+# ── Stem separation ───────────────────────────────────────────────────────────
+demucs>=4.0.0              # Meta's state-of-the-art source separation
+                           # automatically downloads model weights (~400MB) on first run
+
+# ── Audio analysis ────────────────────────────────────────────────────────────
+librosa>=0.10.0            # BPM, key, MFCC, spectral features
+numpy>=1.24.0              # required by librosa
+soundfile>=0.12.0          # WAV/FLAC I/O backend for librosa
+audioread>=3.0.0           # MP3 decode fallback for librosa
+
+# ── Optional: faster beat tracking ───────────────────────────────────────────
+# madmom>=0.16.1           # better beat tracker (replaces librosa's default)
+                           # requires: Cython, numpy, scipy
+
+# ── Optional: SoundCloud metadata (alternative to yt-dlp --dump-json) ────────
+# scdl>=2.9.0              # pip install scdl
