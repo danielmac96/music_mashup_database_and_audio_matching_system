@@ -79,6 +79,14 @@ def print_db_report():
         print(f"\n  [{s['id']:>2}] {s['title']} — {s['artist']}")
         print(f"       Status: {s['status']}  |  Genre: {s['genre'] or '—'}")
         print(f"       URL:    {s['source_url']}")
+        dur_s = s["duration_secs"] if s["duration_secs"] is not None else None
+        d_str = s["duration_str"] or (f"{dur_s:.0f}s" if dur_s else "—")
+        print(
+            f"       Meta:   track_id={s['track_id'] or '—'}  "
+            f"length={d_str}  "
+            f"plays={s['plays']!s}  likes={s['likes']!s}  "
+            f"upload={s['upload_date'] or '—'}"
+        )
         for f in feat_rows:
             import json
             mfcc = json.loads(f['mfcc_json']) if f['mfcc_json'] else []
