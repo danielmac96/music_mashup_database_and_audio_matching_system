@@ -11,7 +11,8 @@ AUDIO_DIR        = BASE_DIR / "audio"
 RAW_DIR          = AUDIO_DIR / "full_song"
 VOCALS_DIR       = AUDIO_DIR / "vocals"
 INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
-DB_PATH          = BASE_DIR / "database"
+# SQLite file path — must not be BASE_DIR / "database" (that is the Python package directory).
+DB_PATH          = BASE_DIR / "mashup.db"
 
 # Create dirs if missing
 for d in [RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR]:

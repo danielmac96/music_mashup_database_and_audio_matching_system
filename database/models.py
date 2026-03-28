@@ -110,8 +110,13 @@ CREATE INDEX IF NOT EXISTS idx_candidates_inst   ON mashup_candidates(inst_song_
 # ── Connection helper ─────────────────────────────────────────────────────────
 
 def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
+    """Open the DB, creating the file and tables if they do not exist yet."""
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    conn.executescript(SCHEMA)
+    _migrate_songs_columns(conn)
+    conn.commit()
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -138,12 +143,9 @@ def _migrate_songs_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE songs ADD COLUMN {col} {decl}")
 
 
-def init_db(db_path: Path = DB_PATH):
-    """Create tables if they don't exist."""
+def init_db(db_path: Path = DB_PATH) -> Path:
+    """Ensure the database file exists and the schema is up to date."""
     conn = get_conn(db_path)
-    conn.executescript(SCHEMA)
-    _migrate_songs_columns(conn)
-    conn.commit()
     conn.close()
     return db_path
 
