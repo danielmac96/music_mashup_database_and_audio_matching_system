@@ -1,0 +1,27 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Database (generated at runtime)
+mashup.db
+mashup.db-wal
+mashup.db-shm
+
+# Downloaded audio (large binary files)
+audio/
+
+# FL Studio exports (generated at runtime)
+mashup_report.csv
+mashup_report.txt
+fl_session/
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo

@@ -12,11 +12,60 @@ Combo types scored:
 """
 import math
 import logging
+import re
 import numpy as np
 from pathlib import Path
 from typing import Optional, List, Dict
 
 log = logging.getLogger(__name__)
+
+
+# ── Semitone / key helpers ────────────────────────────────────────────────────
+
+_KEY_SEMITONE: Dict[str, int] = {
+    "C": 0,  "C#": 1, "Db": 1,
+    "D": 2,  "D#": 3, "Eb": 3,
+    "E": 4,
+    "F": 5,  "F#": 6, "Gb": 6,
+    "G": 7,  "G#": 8, "Ab": 8,
+    "A": 9,  "A#": 10, "Bb": 10,
+    "B": 11,
+}
+
+
+def compute_semitone_shift(vocal_key: str, inst_key: str) -> Optional[int]:
+    """
+    Minimum semitones to shift the INSTRUMENTAL to match the vocal's root note.
+    Positive = shift up, negative = shift down. Range: -6 to +6.
+    Returns None if either key is unknown.
+
+    Formula: (vocal_semitone - inst_semitone) % 12 gives the "shift up" value.
+    If > 6, shifting down by (value - 12) is cheaper.
+    Relative major/minor is covered naturally: C(0) over A(9) → (0-9)%12=3 → +3.
+    """
+    v = _KEY_SEMITONE.get(vocal_key or "")
+    i = _KEY_SEMITONE.get(inst_key or "")
+    if v is None or i is None:
+        return None
+    diff = (v - i) % 12
+    return diff if diff <= 6 else diff - 12
+
+
+def _sanitize_folder_name(s: str, max_len: int = 40) -> str:
+    s = re.sub(r"[^\w]", "_", s or "")
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s[:max_len] or "unknown"
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """Symlink src → dst; fall back to copy if symlinks are unsupported."""
+    import os, shutil
+    if dst.exists() or dst.is_symlink():
+        dst.unlink()
+    try:
+        os.symlink(src.resolve(), dst)
+    except (OSError, NotImplementedError):
+        shutil.copy2(str(src), str(dst))
 
 
 # ── Camelot wheel ─────────────────────────────────────────────────────────────
@@ -288,3 +337,270 @@ def format_results(results: List[dict], seed_title: str = "",
         )
 
     return "\n".join(lines)
+
+
+# ── FL Studio export helpers ──────────────────────────────────────────────────
+
+def export_mashup_report(db_path=None, output_path: str = "mashup_report",
+                         top_n: int = 20) -> None:
+    """
+    Write a ranked mashup report as {output_path}.csv and {output_path}.txt.
+
+    Includes FL Studio workflow data: BPM stretch ratio and semitone shift
+    for each vocal+instrumental pair.
+    """
+    import sys, csv
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from database.models import get_conn, DB_PATH
+
+    db = db_path or DB_PATH
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = get_conn(db)
+    rows = conn.execute(
+        """SELECT mc.*,
+                  sv.file_path AS vocal_wav_path,
+                  si.file_path AS inst_wav_path
+           FROM mashup_candidates mc
+           LEFT JOIN stems sv ON sv.song_id = mc.vocal_song_id
+                              AND sv.stem_type = 'vocals'
+           LEFT JOIN stems si ON si.song_id  = mc.inst_song_id
+                              AND si.stem_type = 'instrumental'
+           ORDER BY mc.score_total DESC
+           LIMIT ?""",
+        (top_n,)
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        log.warning("export_mashup_report: no candidates in DB — run the match stage first.")
+        return
+
+    def _path_str(p: Optional[str]) -> str:
+        if not p:
+            return "FILE_MISSING"
+        return str(p) if Path(p).exists() else f"FILE_MISSING:{p}"
+
+    CSV_FIELDS = [
+        "rank", "combo_type",
+        "vocal_title", "vocal_artist", "inst_title", "inst_artist",
+        "vocal_bpm", "inst_bpm", "bpm_stretch_ratio",
+        "vocal_key", "vocal_mode", "inst_key", "inst_mode",
+        "vocal_camelot", "inst_camelot", "semitone_shift",
+        "score_total", "score_bpm", "score_key", "score_energy", "score_timbre",
+        "vocal_wav_path", "inst_wav_path",
+    ]
+
+    csv_path = out.with_suffix(".csv")
+    txt_path = out.with_suffix(".txt")
+    SEP = "=" * 80
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as cf, \
+         open(txt_path, "w", encoding="utf-8") as tf:
+
+        writer = csv.DictWriter(cf, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+
+        tf.write(f"Mashup Report — Top {len(rows)} Pairs\n")
+        tf.write(f"Generated for FL Studio session setup\n\n")
+
+        for rank, row in enumerate(rows, 1):
+            r = dict(row)
+            v_bpm = r.get("vocal_bpm") or 0.0
+            i_bpm = r.get("inst_bpm") or 0.0
+            stretch = round(i_bpm / v_bpm, 4) if v_bpm else None
+            shift   = compute_semitone_shift(
+                r.get("vocal_key") or "", r.get("inst_key") or ""
+            )
+            v_path = _path_str(r.get("vocal_wav_path"))
+            i_path = _path_str(r.get("inst_wav_path"))
+
+            writer.writerow({
+                "rank":             rank,
+                "combo_type":       r.get("combo_type", ""),
+                "vocal_title":      r.get("vocal_title", ""),
+                "vocal_artist":     r.get("vocal_artist", ""),
+                "inst_title":       r.get("inst_title", ""),
+                "inst_artist":      r.get("inst_artist", ""),
+                "vocal_bpm":        v_bpm,
+                "inst_bpm":         i_bpm,
+                "bpm_stretch_ratio": stretch,
+                "vocal_key":        r.get("vocal_key", ""),
+                "vocal_mode":       r.get("vocal_mode", ""),
+                "inst_key":         r.get("inst_key", ""),
+                "inst_mode":        r.get("inst_mode", ""),
+                "vocal_camelot":    r.get("vocal_camelot", ""),
+                "inst_camelot":     r.get("inst_camelot", ""),
+                "semitone_shift":   shift if shift is not None else "",
+                "score_total":      r.get("score_total", ""),
+                "score_bpm":        r.get("score_bpm", ""),
+                "score_key":        r.get("score_key", ""),
+                "score_energy":     r.get("score_energy", ""),
+                "score_timbre":     r.get("score_timbre", ""),
+                "vocal_wav_path":   v_path,
+                "inst_wav_path":    i_path,
+            })
+
+            stretch_str = f"{stretch:.4f}x" if stretch else "?"
+            shift_str   = (f"{shift:+d}" if shift is not None else "?") + " semitones"
+            tf.write(f"{SEP}\n")
+            tf.write(
+                f"#{rank:02d}  [{r.get('combo_type', '')}]"
+                f"  Score: {r.get('score_total', 0):.3f}\n"
+            )
+            tf.write(
+                f"  VOCAL:  {r.get('vocal_title', '?')} — {r.get('vocal_artist', '?')}\n"
+                f"          {v_bpm:.2f} BPM  |  Key: {r.get('vocal_key','?')}"
+                f" {r.get('vocal_mode','?')}  |  Camelot: {r.get('vocal_camelot','?')}\n"
+            )
+            tf.write(
+                f"  INST:   {r.get('inst_title', '?')} — {r.get('inst_artist', '?')}\n"
+                f"          {i_bpm:.2f} BPM  |  Key: {r.get('inst_key','?')}"
+                f" {r.get('inst_mode','?')}  |  Camelot: {r.get('inst_camelot','?')}\n"
+            )
+            tf.write(
+                f"  BPM:    Stretch instrumental by {stretch_str}"
+                f"  (set inst tempo to {v_bpm:.2f} BPM)\n"
+                f"  KEY:    Pitch instrumental {shift_str}"
+                f"  (in channel rack / Newtone / Pitcher)\n"
+            )
+            tf.write(
+                f"  SCORE:  {r.get('score_total',0):.3f}"
+                f"  (BPM:{r.get('score_bpm',0):.2f}"
+                f"  Key:{r.get('score_key',0):.2f}"
+                f"  Energy:{r.get('score_energy',0):.2f}"
+                f"  Timbre:{r.get('score_timbre',0):.2f})\n"
+            )
+            tf.write(f"  FILES:\n")
+            tf.write(f"    Vocals: {v_path}\n")
+            tf.write(f"    Inst:   {i_path}\n")
+
+        tf.write(f"{SEP}\n")
+
+    log.info(f"  Mashup report written: {csv_path}  |  {txt_path}")
+
+
+def prep_fl_session(db_path=None, output_dir: str = "fl_session",
+                    top_n: int = 10) -> None:
+    """
+    Create an FL Studio session folder with one sub-folder per top mashup pair.
+
+    Each sub-folder contains:
+      vocals.wav         — symlink (or copy) to the vocal stem WAV
+      instrumental.wav   — symlink (or copy) to the instrumental stem WAV
+      session_info.txt   — BPM stretch ratio, semitone shift, scores, source paths
+    """
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from database.models import get_conn, DB_PATH
+
+    db  = db_path or DB_PATH
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    conn = get_conn(db)
+    rows = conn.execute(
+        """SELECT mc.*,
+                  sv.file_path AS vocal_wav_path,
+                  si.file_path AS inst_wav_path
+           FROM mashup_candidates mc
+           LEFT JOIN stems sv ON sv.song_id = mc.vocal_song_id
+                              AND sv.stem_type = 'vocals'
+           LEFT JOIN stems si ON si.song_id  = mc.inst_song_id
+                              AND si.stem_type = 'instrumental'
+           WHERE mc.combo_type = 'vocal_over_instrumental'
+           ORDER BY mc.score_total DESC
+           LIMIT ?""",
+        (top_n,)
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        log.warning("prep_fl_session: no vocal_over_instrumental candidates found.")
+        (out / "README.txt").write_text(
+            "No mashup candidates found.\n"
+            "Run the match stage first: python test_flow.py --stages match\n"
+        )
+        return
+
+    seen_names: set = set()
+    created = 0
+
+    for rank, row in enumerate(rows, 1):
+        r = dict(row)
+        safe_v = _sanitize_folder_name(r.get("vocal_title") or "vocal")
+        safe_i = _sanitize_folder_name(r.get("inst_title") or "inst")
+        folder_name = f"{rank:02d}_{safe_v}_over_{safe_i}"
+
+        # Resolve name collision from truncation
+        suffix, attempt = "", 1
+        while (folder_name + suffix) in seen_names:
+            attempt += 1
+            suffix = f"_{chr(96 + attempt)}"   # _b, _c, …
+        folder_name += suffix
+        seen_names.add(folder_name)
+
+        folder = out / folder_name
+        folder.mkdir(exist_ok=True)
+
+        v_bpm   = r.get("vocal_bpm") or 0.0
+        i_bpm   = r.get("inst_bpm") or 0.0
+        stretch = round(i_bpm / v_bpm, 4) if v_bpm else None
+        shift   = compute_semitone_shift(
+            r.get("vocal_key") or "", r.get("inst_key") or ""
+        )
+        stretch_str = f"{stretch:.4f}x" if stretch else "?"
+        shift_str   = (f"{shift:+d}" if shift is not None else "?")
+
+        v_src = Path(r["vocal_wav_path"]) if r.get("vocal_wav_path") else None
+        i_src = Path(r["inst_wav_path"])  if r.get("inst_wav_path")  else None
+
+        missing_warnings = []
+        if v_src and v_src.exists():
+            _link_or_copy(v_src, folder / "vocals.wav")
+        else:
+            missing_warnings.append(f"vocals.wav source missing: {v_src}")
+
+        if i_src and i_src.exists():
+            _link_or_copy(i_src, folder / "instrumental.wav")
+        else:
+            missing_warnings.append(f"instrumental.wav source missing: {i_src}")
+
+        info_lines = [
+            "FL Studio Session Info",
+            "======================",
+            f"Rank:   #{rank:02d} / {r.get('combo_type', '')}",
+            f"Score:  {r.get('score_total', 0):.3f}"
+            f"  (BPM:{r.get('score_bpm',0):.2f}"
+            f"  Key:{r.get('score_key',0):.2f}"
+            f"  Energy:{r.get('score_energy',0):.2f}"
+            f"  Timbre:{r.get('score_timbre',0):.2f})",
+            "",
+            f"TOP (vocals)   {r.get('vocal_title','?')} — {r.get('vocal_artist','?')}",
+            f"  BPM: {v_bpm:.2f}  |  Key: {r.get('vocal_key','?')}"
+            f" {r.get('vocal_mode','?')}  |  Camelot: {r.get('vocal_camelot','?')}",
+            "",
+            f"BED (instrumental)  {r.get('inst_title','?')} — {r.get('inst_artist','?')}",
+            f"  BPM: {i_bpm:.2f}  |  Key: {r.get('inst_key','?')}"
+            f" {r.get('inst_mode','?')}  |  Camelot: {r.get('inst_camelot','?')}",
+            "",
+            "FL Studio Parameters",
+            f"  BPM Stretch Ratio:  {stretch_str}",
+            f"    → Stretch instrumental to {v_bpm:.2f} BPM to match vocals",
+            f"  Semitone Shift:     {shift_str} semitones",
+            f"    → Pitch instrumental {shift_str} semitones"
+            f" ({'up' if (shift or 0) >= 0 else 'down'}) in channel settings",
+            "",
+            "Files (absolute paths)",
+            f"  vocals.wav        → {v_src or 'MISSING'}",
+            f"  instrumental.wav  → {i_src or 'MISSING'}",
+        ]
+        if missing_warnings:
+            info_lines += ["", "WARNINGS:"] + [f"  {w}" for w in missing_warnings]
+
+        (folder / "session_info.txt").write_text("\n".join(info_lines) + "\n",
+                                                  encoding="utf-8")
+        created += 1
+
+    log.info(f"  FL session folders created: {created}  →  {out.resolve()}")
