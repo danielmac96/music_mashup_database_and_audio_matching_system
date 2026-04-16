@@ -57,6 +57,16 @@ def parse_args():
                    help="Delete the database before running")
     p.add_argument("--db-report", action="store_true",
                    help="Print a summary of the current database and exit")
+    p.add_argument("--export-mashups", metavar="FILE", nargs="?", const="mashup_report",
+                   default=None,
+                   help="Export ranked mashup report as FILE.csv + FILE.txt "
+                        "(default stem: 'mashup_report')")
+    p.add_argument("--prep-session", metavar="DIR", nargs="?", const="fl_session",
+                   default=None,
+                   help="Create FL Studio session folders in DIR "
+                        "(default: 'fl_session/')")
+    p.add_argument("--top-n", type=int, default=20,
+                   help="Number of top pairs to include in export/prep (default: 20)")
     return p.parse_args()
 
 
@@ -145,6 +155,17 @@ def main():
         print_db_report()
         return
 
+    # ── Export-only mode (no pipeline stages, no URL) ─────────────────────────
+    if (args.export_mashups is not None or args.prep_session is not None) \
+            and not args.url and not args.stages:
+        from config import DB_PATH
+        from matcher.match import export_mashup_report, prep_fl_session
+        if args.export_mashups is not None:
+            export_mashup_report(DB_PATH, args.export_mashups, top_n=args.top_n)
+        if args.prep_session is not None:
+            prep_fl_session(DB_PATH, args.prep_session, top_n=args.top_n)
+        return
+
     from database.models import init_db
     init_db()
     log.info("Database initialised")
@@ -187,6 +208,20 @@ def main():
         log.info("Skipping match stage")
 
     print_db_report()
+
+    # ── Optional exports (run after pipeline or standalone) ───────────────────
+    if args.export_mashups is not None:
+        from config import DB_PATH
+        from matcher.match import export_mashup_report
+        log.info(f"Exporting mashup report → {args.export_mashups}.csv / .txt")
+        export_mashup_report(DB_PATH, args.export_mashups, top_n=args.top_n)
+
+    if args.prep_session is not None:
+        from config import DB_PATH
+        from matcher.match import prep_fl_session
+        log.info(f"Preparing FL Studio session → {args.prep_session}/")
+        prep_fl_session(DB_PATH, args.prep_session, top_n=args.top_n)
+
     print("✓ Done.\n")
 
 
