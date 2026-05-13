@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python.exe -c \"import api.server; print\\('server import OK'\\); print\\([r.path for r in api.server.app.routes]\\)\")",
+      "Bash(.venv/Scripts/python.exe -m pip install \"fastapi>=0.110.0\" \"uvicorn[standard]>=0.27.0\")",
+      "Bash(.venv/Scripts/python.exe -c \"import api.server; print\\('server import OK'\\); [print\\(f'{r.methods} {r.path}'\\) for r in api.server.app.routes if hasattr\\(r, 'methods'\\)]\")",
+      "Bash(.venv/Scripts/python.exe -m pip install httpx)"
+    ]
+  }
+}
