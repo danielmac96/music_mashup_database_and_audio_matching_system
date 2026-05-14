@@ -4,7 +4,20 @@
       "Bash(.venv/Scripts/python.exe -c \"import api.server; print\\('server import OK'\\); print\\([r.path for r in api.server.app.routes]\\)\")",
       "Bash(.venv/Scripts/python.exe -m pip install \"fastapi>=0.110.0\" \"uvicorn[standard]>=0.27.0\")",
       "Bash(.venv/Scripts/python.exe -c \"import api.server; print\\('server import OK'\\); [print\\(f'{r.methods} {r.path}'\\) for r in api.server.app.routes if hasattr\\(r, 'methods'\\)]\")",
-      "Bash(.venv/Scripts/python.exe -m pip install httpx)"
+      "Bash(.venv/Scripts/python.exe -m pip install httpx)",
+      "Bash(python *)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(py *)",
+      "Bash(py test_flow.py --db-report)",
+      "Bash(py -3 -c \"import pytest; print\\('pytest', pytest.__version__\\)\")",
+      "Bash(py -3 -m pytest tests/test_mvp_smoke.py -v)",
+      "Bash(py -3 -m pip install pytest --quiet)",
+      "Bash(py test_flow.py --url \"https://soundcloud.com/doan-macloan/sets/my-playlist-13\" --stages ingest --audio-root \"C:/Users/danie/AppData/Local/Temp/mashup_audit/audio\" --db-path \"C:/Users/danie/AppData/Local/Temp/mashup_audit/mashup.db\")",
+      "Bash(py -3 -m yt_dlp --simulate --no-warnings \"https://soundcloud.com/doan-macloan/sets/my-playlist-13\")",
+      "Bash(py -3 -m yt_dlp --simulate --no-warnings \"https://soundcloud.com/doan-macloan\")",
+      "Bash(py -3 -m yt_dlp --dump-json --no-warnings \"https://soundcloud.com/doan-macloan/sets/my-playlist-13\")",
+      "Bash(py *)",
+      "Bash(echo \"exit=$?\")"
     ]
   }
 }

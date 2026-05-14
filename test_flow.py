@@ -3,14 +3,14 @@
 test_flow.py — Mashup engine entry point.
 
 Usage:
-    # Full pipeline from a SoundCloud playlist:
+    # Full pipeline from a SoundCloud playlist (one-command MVP):
     python test_flow.py --url https://soundcloud.com/user/sets/playlist-name
 
     # Run only specific stages:
     python test_flow.py --url URL --stages ingest download
 
     # Resume from a specific stage (songs already downloaded):
-    python test_flow.py --stages stems analysis match
+    python test_flow.py --stages stems analysis
 
     # Match against a different seed song:
     python test_flow.py --stages match --seed 2
@@ -20,14 +20,27 @@ Usage:
 
     # Reset database and start fresh:
     python test_flow.py --url URL --reset
+
+    # Point the audio library / database at a different location:
+    python test_flow.py --url URL --audio-root D:/music_lib --db-path D:/library.db
 """
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
+
+# Force UTF-8 stdout/stderr so the box-drawing chars below render on Windows
+# without requiring users to set PYTHONIOENCODING by hand.
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,7 +59,7 @@ def parse_args():
     p.add_argument("--stages", nargs="*",
                    choices=["ingest", "download", "stems", "analysis", "match"],
                    default=None,
-                   help="Run only these stages (default: all)")
+                   help="Run only these stages (default: all of ingest/download/stems/analysis)")
     p.add_argument("--seed-stem", default="vocals",
                    choices=["full", "vocals", "instrumental"],
                    help="Which stem to use for the seed song (default: vocals)")
@@ -57,6 +70,12 @@ def parse_args():
                    help="Delete the database before running")
     p.add_argument("--db-report", action="store_true",
                    help="Print a summary of the current database and exit")
+    p.add_argument("--audio-root", metavar="DIR", default=None,
+                   help="Override the audio library root (default: <repo>/audio). "
+                        "Sets MASHUP_AUDIO_ROOT env var for downstream modules.")
+    p.add_argument("--db-path", metavar="PATH", default=None,
+                   help="Override the SQLite database file location "
+                        "(default: <repo>/mashup.db). Sets MASHUP_DB_PATH env var.")
     p.add_argument("--export-mashups", metavar="FILE", nargs="?", const="mashup_report",
                    default=None,
                    help="Export ranked mashup report as FILE.csv + FILE.txt "
@@ -70,13 +89,29 @@ def parse_args():
     return p.parse_args()
 
 
+def _apply_path_overrides(args) -> None:
+    """Translate --audio-root / --db-path into env vars BEFORE any module
+    imports config (config.py reads these at import time)."""
+    if args.audio_root:
+        os.environ["MASHUP_AUDIO_ROOT"] = str(Path(args.audio_root).expanduser().resolve())
+    if args.db_path:
+        os.environ["MASHUP_DB_PATH"] = str(Path(args.db_path).expanduser().resolve())
+
+
 def print_db_report():
-    from database.models import get_conn, init_db
+    from database.models import get_conn, init_db, count_songs_by_status
     init_db()
+
+    status_counts = count_songs_by_status()
+    total = sum(status_counts.values())
+
     conn = get_conn()
     songs = conn.execute("SELECT * FROM songs ORDER BY id").fetchall()
     print(f"\n{'='*60}")
-    print(f"  Database Report — {len(songs)} songs")
+    print(f"  Database Report — {total} songs")
+    if status_counts:
+        breakdown = ", ".join(f"{n} {s}" for s, n in sorted(status_counts.items()))
+        print(f"  Status: {breakdown}")
     print(f"{'='*60}")
     for s in songs:
         feat_rows = conn.execute(
@@ -110,7 +145,7 @@ def print_db_report():
                 print(f"         MFCC:     {[round(v,1) for v in mfcc]}")
     conn.close()
 
-    # Mashup candidates summary
+    # Mashup candidates summary (only print when populated; out of MVP scope)
     conn = get_conn()
     for combo in ("vocal_over_instrumental", "instrumental_over_instrumental"):
         label = "Vocals → Instrumental" if combo == "vocal_over_instrumental" \
@@ -135,17 +170,31 @@ def print_db_report():
     print()
 
 
+def _exit_code_from_db() -> int:
+    """0 if at least one song reached 'analysed', else 1."""
+    from database.models import count_songs_by_status
+    counts = count_songs_by_status()
+    return 0 if counts.get("analysed", 0) > 0 else 1
+
+
 def main():
-    args   = parse_args()
+    args = parse_args()
+    _apply_path_overrides(args)
+
     stages = set(args.stages) if args.stages else None
 
     print("\n" + "═" * 60)
     print("  Mashup Engine")
     if args.url:
         print(f"  Playlist: {args.url}")
+    if args.audio_root:
+        print(f"  Audio root: {os.environ['MASHUP_AUDIO_ROOT']}")
+    if args.db_path:
+        print(f"  DB path:    {os.environ['MASHUP_DB_PATH']}")
     print("═" * 60 + "\n")
 
     if args.reset:
+        # Late import so any --db-path env var is already in place.
         from config import DB_PATH
         if DB_PATH.exists():
             DB_PATH.unlink()
@@ -177,7 +226,7 @@ def main():
             log.error("--url is required for the ingest stage.")
             sys.exit(1)
         song_ids = run_ingest(playlist_url=args.url)
-        if not song_ids:
+        if not song_ids and stages is None:
             log.error("No songs ingested. Check the playlist URL.")
             sys.exit(1)
     else:
@@ -198,14 +247,13 @@ def main():
     else:
         log.info("Skipping analysis stage")
 
-    if stages is None or "match" in stages:
+    if stages is not None and "match" in stages:
+        # match is opt-in: only runs when explicitly requested via --stages.
         run_match(
             seed_song_id=args.seed,
             seed_stem=args.seed_stem,
             candidate_stem=args.cand_stem,
         )
-    else:
-        log.info("Skipping match stage")
 
     print_db_report()
 
@@ -222,7 +270,12 @@ def main():
         log.info(f"Preparing FL Studio session → {args.prep_session}/")
         prep_fl_session(DB_PATH, args.prep_session, top_n=args.top_n)
 
-    print("✓ Done.\n")
+    code = _exit_code_from_db()
+    if code == 0:
+        print("✓ Done.\n")
+    else:
+        print("✗ No tracks reached 'analysed'. See logs above.\n")
+    sys.exit(code)
 
 
 if __name__ == "__main__":

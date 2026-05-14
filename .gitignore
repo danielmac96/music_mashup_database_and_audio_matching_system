@@ -21,6 +21,10 @@ mashup_report.csv
 mashup_report.txt
 fl_session/
 
+# Frontend (Vite + React)
+frontend/node_modules/
+frontend/dist/
+
 # OS / editor
 .DS_Store
 *.swp

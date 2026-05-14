@@ -314,6 +314,32 @@ def get_all_songs(db_path: Path = DB_PATH) -> List[Dict]:
     return [dict(r) for r in rows]
 
 
+def get_songs_by_status(*statuses: str, db_path: Path = DB_PATH) -> List[Dict]:
+    """Return songs whose status is in the given set, in id order.
+    Pass no statuses to get every song."""
+    conn = get_conn(db_path)
+    if not statuses:
+        rows = conn.execute("SELECT * FROM songs ORDER BY id").fetchall()
+    else:
+        placeholders = ",".join("?" * len(statuses))
+        rows = conn.execute(
+            f"SELECT * FROM songs WHERE status IN ({placeholders}) ORDER BY id",
+            statuses,
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def count_songs_by_status(db_path: Path = DB_PATH) -> Dict[str, int]:
+    """Return a mapping of status → count for the songs table."""
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        "SELECT status, COUNT(*) AS n FROM songs GROUP BY status"
+    ).fetchall()
+    conn.close()
+    return {r["status"]: r["n"] for r in rows}
+
+
 def get_features_for_song(song_id: int, stem_type: str = "full",
                            db_path: Path = DB_PATH) -> Optional[Dict]:
     conn = get_conn(db_path)

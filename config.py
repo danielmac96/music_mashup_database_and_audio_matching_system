@@ -1,22 +1,32 @@
 """
 config.py — Central configuration for the mashup engine.
 Edit this file to change paths, models, and thresholds.
+
+Path overrides at runtime:
+    MASHUP_AUDIO_ROOT  — relocate the audio library root (default: <repo>/audio)
+    MASHUP_DB_PATH     — relocate the SQLite database file (default: <repo>/mashup.db)
+
+CLI flags `--audio-root` / `--db-path` translate to these env vars before any
+project import runs, so config.py is the single source of truth for paths.
 """
 import os
 from pathlib import Path
 
 # ── Paths ────────────────────────────────────────────────────────────────────
-BASE_DIR   = Path(__file__).parent
-AUDIO_DIR        = BASE_DIR / "audio"
+BASE_DIR = Path(__file__).parent
+
+AUDIO_DIR        = Path(os.environ.get("MASHUP_AUDIO_ROOT", BASE_DIR / "audio"))
 RAW_DIR          = AUDIO_DIR / "full_song"
 VOCALS_DIR       = AUDIO_DIR / "vocals"
 INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
+
 # SQLite file path — must not be BASE_DIR / "database" (that is the Python package directory).
-DB_PATH          = BASE_DIR / "mashup.db"
+DB_PATH = Path(os.environ.get("MASHUP_DB_PATH", BASE_DIR / "mashup.db"))
 
 # Create dirs if missing
 for d in [RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # ── Download ─────────────────────────────────────────────────────────────────
 # yt-dlp format string — prefers best dedicated audio, else combined (then ffmpeg extracts mp3)

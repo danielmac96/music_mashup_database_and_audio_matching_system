@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import NamedTuple, Optional, Tuple
 import subprocess
+import sys
 import logging
 import re
 from pathlib import Path
@@ -135,7 +136,7 @@ def _run_ytdlp(
     """
     tmp_template = str(out_path.with_suffix("")) + ".%(ext)s"
     cmd: list[str] = [
-        "yt-dlp",
+        sys.executable, "-m", "yt_dlp",
         "-f", format_str,
         "--output", tmp_template,
         "--no-warnings",
@@ -155,7 +156,7 @@ def _run_ytdlp(
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
     except FileNotFoundError:
-        log.error("yt-dlp not found. Install with: pip install yt-dlp")
+        log.error("Python or yt-dlp not found. Install with: pip install yt-dlp")
         return False
     except subprocess.TimeoutExpired:
         log.error(f"Download timed out: {url}")

@@ -3,10 +3,17 @@ ingest/soundcloud.py — Pull track metadata from a SoundCloud playlist via yt-d
 """
 import json
 import subprocess
+import sys
 import logging
 from typing import Any, Optional
 
 log = logging.getLogger(__name__)
+
+
+def _ytdlp_cmd(*args: str) -> list:
+    """Invoke yt-dlp via the active Python interpreter so it works even when
+    the console script isn't on PATH."""
+    return [sys.executable, "-m", "yt_dlp", *args]
 
 
 def fetch_playlist(url: str) -> list:
@@ -32,15 +39,14 @@ def fetch_single(url: str) -> Optional[dict]:
 
 def _fetch_via_ytdlp(url: str) -> list:
     try:
+        # --ignore-errors keeps yt-dlp going past per-track 404s so one flaky
+        # SoundCloud entry doesn't sink the whole playlist.
         result = subprocess.run(
-            ["yt-dlp", "--dump-json", "--no-warnings", url],
+            _ytdlp_cmd("--dump-json", "--ignore-errors", "--no-warnings", url),
             capture_output=True,
             text=True,
             timeout=120,
         )
-        if result.returncode != 0:
-            log.warning(f"yt-dlp exited {result.returncode}: {result.stderr[:200]}")
-            return []
 
         tracks = []
         for line in result.stdout.strip().splitlines():
@@ -48,21 +54,40 @@ def _fetch_via_ytdlp(url: str) -> list:
                 continue
             try:
                 info = json.loads(line)
-                if info.get("_type") == "playlist" and info.get("entries"):
-                    for entry in info["entries"]:
-                        if entry is None or not isinstance(entry, dict):
-                            continue
-                        tracks.append(_normalise(entry))
-                else:
-                    tracks.append(_normalise(info))
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                log.warning(f"Skipping malformed yt-dlp JSON line ({exc}): {line[:120]}")
                 continue
+            if info.get("_type") == "playlist" and info.get("entries"):
+                for entry in info["entries"]:
+                    if entry is None or not isinstance(entry, dict):
+                        log.warning("Skipping null/non-dict entry in playlist")
+                        continue
+                    tracks.append(_normalise(entry))
+            else:
+                tracks.append(_normalise(info))
+
+        if result.returncode != 0:
+            # Some tracks may have failed individually; surface the error
+            # but keep whatever JSON did come back.
+            err = (result.stderr or "").strip().splitlines()
+            err_summary = "; ".join(err[:3]) if err else "no stderr"
+            if tracks:
+                log.warning(
+                    f"yt-dlp exited {result.returncode} but returned {len(tracks)} "
+                    f"tracks. First errors: {err_summary[:300]}"
+                )
+            else:
+                log.error(
+                    f"yt-dlp exited {result.returncode} with no usable JSON. "
+                    f"First errors: {err_summary[:300]}"
+                )
+                return []
 
         log.info(f"Fetched {len(tracks)} tracks via yt-dlp")
         return tracks
 
     except FileNotFoundError:
-        log.error("yt-dlp not found. Install with: pip install yt-dlp")
+        log.error("Python or yt-dlp not found. Install with: pip install yt-dlp")
         return []
     except subprocess.TimeoutExpired:
         log.error("yt-dlp timed out")
