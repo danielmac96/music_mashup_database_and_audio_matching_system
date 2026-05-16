@@ -17,7 +17,13 @@
       "Bash(py -3 -m yt_dlp --simulate --no-warnings \"https://soundcloud.com/doan-macloan\")",
       "Bash(py -3 -m yt_dlp --dump-json --no-warnings \"https://soundcloud.com/doan-macloan/sets/my-playlist-13\")",
       "Bash(py *)",
-      "Bash(echo \"exit=$?\")"
+      "Bash(echo \"exit=$?\")",
+      "Bash(.\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/test_mvp_smoke.py -v)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/test_mvp_smoke.py -v)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -c \"from api.workers import analysis_worker; from api.routes import tracks; print\\('imports ok'\\); print\\('analyze route present:', any\\(getattr\\(r, 'path', ''\\) == '/{song_id}/analyze' for r in tracks.router.routes\\)\\)\")",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -m uvicorn api.server:app --reload --port 8000)",
+      "PowerShell(npm *)",
+      "PowerShell(\\(Invoke-WebRequest -Uri http://127.0.0.1:8000/api/health -UseBasicParsing\\).Content)"
     ]
   }
 }

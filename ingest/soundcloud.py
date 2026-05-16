@@ -10,6 +10,15 @@ from typing import Any, Optional
 log = logging.getLogger(__name__)
 
 
+class IngestError(RuntimeError):
+    """Raised when yt-dlp cannot return any usable metadata.
+
+    The message is intended to be shown to the end user, so it includes a
+    short hint about the likely cause (missing yt-dlp, timeout, network/auth
+    failure) plus the first lines of yt-dlp's stderr when available.
+    """
+
+
 def _ytdlp_cmd(*args: str) -> list:
     """Invoke yt-dlp via the active Python interpreter so it works even when
     the console script isn't on PATH."""

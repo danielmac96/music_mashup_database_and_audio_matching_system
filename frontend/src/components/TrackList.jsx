@@ -44,6 +44,15 @@ export function TrackList({ refreshKey }) {
     }
   };
 
+  const startAnalyze = async (id) => {
+    try {
+      const { job_id } = await api.startAnalyze(id);
+      setJobs((prev) => ({ ...prev, [id]: { kind: "analyze", jobId: job_id } }));
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const onJobDone = (id) => {
     setJobs((prev) => {
       const copy = { ...prev };
@@ -74,6 +83,7 @@ export function TrackList({ refreshKey }) {
               <th>Title / Artist</th>
               <th>Status</th>
               <th>Length</th>
+              <th>Features</th>
               <th>Actions</th>
               <th>Audio</th>
             </tr>
@@ -82,9 +92,12 @@ export function TrackList({ refreshKey }) {
             {tracks.map((t) => {
               const job = jobs[t.id];
               const canDownload =
-                !job && (t.status === "queued" || t.status === "error");
+                !job && (t.status === "queued" || t.status === "error" || t.status === "error_download");
               const canSeparate =
                 !job && t.stems.full && (!t.stems.vocals || !t.stems.instrumental);
+              const canAnalyze =
+                !job && t.stems.full;
+              const feats = t.features?.full;
 
               return (
                 <tr key={t.id}>
@@ -101,6 +114,17 @@ export function TrackList({ refreshKey }) {
                     )}
                   </td>
                   <td>{t.duration_str || "—"}</td>
+                  <td style={{ fontSize: "0.75rem" }}>
+                    {feats ? (
+                      <>
+                        <div><span className="muted">BPM:</span> {feats.bpm != null ? feats.bpm.toFixed(1) : "—"}</div>
+                        <div><span className="muted">Key:</span> {feats.key || "—"} {feats.mode || ""} {feats.camelot ? `(${feats.camelot})` : ""}</div>
+                        <div><span className="muted">Energy:</span> {feats.energy != null ? feats.energy.toFixed(2) : "—"}</div>
+                      </>
+                    ) : (
+                      <span className="muted">—</span>
+                    )}
+                  </td>
                   <td>
                     <div className="actions">
                       <button
@@ -116,6 +140,13 @@ export function TrackList({ refreshKey }) {
                         title={canSeparate ? "" : "Needs a downloaded file with no stems yet"}
                       >
                         Separate
+                      </button>
+                      <button
+                        onClick={() => startAnalyze(t.id)}
+                        disabled={!canAnalyze}
+                        title={canAnalyze ? "" : "Needs a downloaded file"}
+                      >
+                        Analyze
                       </button>
                     </div>
                   </td>

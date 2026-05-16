@@ -120,13 +120,17 @@ th {
   font-weight: 600;
 }
 
-.badge.queued      { background: #3a3f4d; color: #cfd3df; }
-.badge.downloaded  { background: #1f4a8a; color: #cfe1ff; }
-.badge.stemmed     { background: #1f6a3a; color: #cfeed8; }
-.badge.error       { background: #7a2222; color: #ffd0d0; }
-.badge.running     { background: #b87b15; color: #fff0cf; }
-.badge.completed   { background: #1f6a3a; color: #cfeed8; }
-.badge.failed      { background: #7a2222; color: #ffd0d0; }
+.badge.queued          { background: #3a3f4d; color: #cfd3df; }
+.badge.downloaded      { background: #1f4a8a; color: #cfe1ff; }
+.badge.stemmed         { background: #1f6a3a; color: #cfeed8; }
+.badge.analysed        { background: #2c5fdc; color: #e6efff; }
+.badge.error           { background: #7a2222; color: #ffd0d0; }
+.badge.error_download  { background: #7a2222; color: #ffd0d0; }
+.badge.error_stems     { background: #7a2222; color: #ffd0d0; }
+.badge.error_analysis  { background: #7a2222; color: #ffd0d0; }
+.badge.running         { background: #b87b15; color: #fff0cf; }
+.badge.completed       { background: #1f6a3a; color: #cfeed8; }
+.badge.failed          { background: #7a2222; color: #ffd0d0; }
 
 .muted { color: #9fa6b6; }
 

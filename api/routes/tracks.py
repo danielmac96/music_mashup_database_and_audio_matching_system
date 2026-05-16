@@ -7,10 +7,10 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 
-from database.models import get_all_songs, get_conn
+from database.models import get_all_features, get_all_songs, get_conn
 
 from api import jobs
-from api.workers import download_worker, stems_worker
+from api.workers import analysis_worker, download_worker, stems_worker
 
 router = APIRouter()
 
@@ -20,6 +20,9 @@ _AUDIO_MEDIA = {
     "vocals": "audio/wav",
     "instrumental": "audio/wav",
 }
+
+
+_FEATURE_FIELDS = ("bpm", "key", "mode", "camelot", "energy", "loudness_rms")
 
 
 def _stems_by_song() -> dict[int, dict[str, str]]:
@@ -32,10 +35,21 @@ def _stems_by_song() -> dict[int, dict[str, str]]:
     return out
 
 
+def _features_by_song() -> dict[int, dict]:
+    out: dict[int, dict] = {}
+    for f in get_all_features(stem_type="full"):
+        sid = f.get("song_id")
+        if sid is None:
+            continue
+        out[sid] = {k: f.get(k) for k in _FEATURE_FIELDS}
+    return out
+
+
 @router.get("")
 def list_tracks() -> dict:
     songs = get_all_songs()
     stems = _stems_by_song()
+    features = _features_by_song()
 
     rows = []
     for s in songs:
@@ -50,6 +64,7 @@ def list_tracks() -> dict:
                 "vocals": "vocals" in stem_paths,
                 "instrumental": "instrumental" in stem_paths,
             },
+            "features": {"full": features.get(sid)} if sid in features else None,
         })
     return {"count": len(rows), "tracks": rows}
 
@@ -81,6 +96,23 @@ def queue_separate(song_id: int, background: BackgroundTasks) -> dict:
 
     job_id = jobs.new_job(kind="separate", message="Queued for stem separation")
     background.add_task(stems_worker.run, job_id, song_id)
+    return {"job_id": job_id}
+
+
+@router.post("/{song_id}/analyze")
+def queue_analyze(song_id: int, background: BackgroundTasks) -> dict:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, raw_path FROM songs WHERE id=?", (song_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="song not found")
+    if not row["raw_path"]:
+        raise HTTPException(status_code=400, detail="track is not downloaded yet")
+
+    job_id = jobs.new_job(kind="analyze", message="Queued for analysis")
+    background.add_task(analysis_worker.run, job_id, song_id)
     return {"job_id": job_id}
 
 

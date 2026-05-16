@@ -37,6 +37,9 @@ export const api = {
   startSeparate: (id) =>
     jsonFetch(`/api/tracks/${id}/separate`, { method: "POST" }),
 
+  startAnalyze: (id) =>
+    jsonFetch(`/api/tracks/${id}/analyze`, { method: "POST" }),
+
   getJob: (jobId) => jsonFetch(`/api/jobs/${jobId}`),
 
   audioUrl: (id, stemType) => `/api/tracks/${id}/audio/${stemType}`,
