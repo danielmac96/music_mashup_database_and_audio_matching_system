@@ -23,7 +23,14 @@
       "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -c \"from api.workers import analysis_worker; from api.routes import tracks; print\\('imports ok'\\); print\\('analyze route present:', any\\(getattr\\(r, 'path', ''\\) == '/{song_id}/analyze' for r in tracks.router.routes\\)\\)\")",
       "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -m uvicorn api.server:app --reload --port 8000)",
       "PowerShell(npm *)",
-      "PowerShell(\\(Invoke-WebRequest -Uri http://127.0.0.1:8000/api/health -UseBasicParsing\\).Content)"
+      "PowerShell(\\(Invoke-WebRequest -Uri http://127.0.0.1:8000/api/health -UseBasicParsing\\).Content)",
+      "PowerShell(ffmpeg *)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -m pip install \"yt-dlp>=2024.12.13\" 2>&1 | Select-Object -Last 5)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -m pip install \"librosa==0.10.1\" \"soundfile>=0.12.0\" \"audioread>=3.0.0\" \"numpy<2\" 2>&1 | Select-Object -Last 15)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -c \"import yt_dlp, librosa, soundfile, demucs; print\\('all imports OK'\\); print\\('numpy:', __import__\\('numpy'\\).__version__\\)\")",
+      "Bash(Get-ChildItem *)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\danie\\\\Documents\\\\PythonProject\\\\music_mashup_database_and_audio_matching_system\\\\frontend\\\\src\" -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName | Sort-Object)",
+      "Bash(.venv/Scripts/python.exe *)"
     ]
   }
 }

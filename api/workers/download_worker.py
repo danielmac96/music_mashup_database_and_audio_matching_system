@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 
 from database.models import (
     get_conn,
@@ -29,17 +30,25 @@ def run(job_id: str, song_id: int) -> None:
         jobs.fail(job_id, f"Song {song_id} not found")
         return
 
+    def _on_progress(pct, msg: str) -> None:
+        fields: dict = {"message": msg}
+        if pct is not None:
+            fields["progress"] = pct
+        jobs.update(job_id, **fields)
+
     try:
         result = download_track(
             song_id=row["id"],
             title=row["title"],
             source_url=row["source_url"],
             artist=row["artist"] or "",
+            on_progress=_on_progress,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("download_track raised")
-        update_song_status(song_id, "error")
-        jobs.fail(job_id, f"Download error: {exc}")
+        update_song_status(song_id, "error_download")
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        jobs.fail(job_id, f"Download error: {type(exc).__name__}: {exc}", traceback_text=tb)
         return
 
     if result and result.path.exists():
@@ -48,5 +57,5 @@ def run(job_id: str, song_id: int) -> None:
             update_song_duration(song_id, result.duration_secs)
         jobs.done(job_id, {"path": str(result.path)})
     else:
-        update_song_status(song_id, "error")
+        update_song_status(song_id, "error_download")
         jobs.fail(job_id, "Download failed")

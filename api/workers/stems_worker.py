@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import traceback
 from pathlib import Path
 
 from database.models import get_conn, update_song_status, upsert_stem
@@ -31,21 +32,29 @@ def run(job_id: str, song_id: int) -> None:
         jobs.fail(job_id, "No downloaded audio for this track. Download it first.")
         return
 
+    def _on_progress(pct, msg: str) -> None:
+        fields: dict = {"message": msg}
+        if pct is not None:
+            fields["progress"] = pct
+        jobs.update(job_id, **fields)
+
     try:
         stems = separate(
             song_id=row["id"],
             title=row["title"],
             audio_path=raw_path,
             artist=row["artist"] or "",
+            on_progress=_on_progress,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("separate raised")
-        update_song_status(song_id, "error")
-        jobs.fail(job_id, f"Separation error: {exc}")
+        update_song_status(song_id, "error_stems")
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        jobs.fail(job_id, f"Separation error: {type(exc).__name__}: {exc}", traceback_text=tb)
         return
 
     if not stems:
-        update_song_status(song_id, "error")
+        update_song_status(song_id, "error_stems")
         jobs.fail(job_id, "Separation failed")
         return
 

@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS songs (
     comments        INTEGER DEFAULT 0,
     plays           INTEGER DEFAULT 0,   -- view_count
     thumbnail       TEXT,
+    metadata_partial INTEGER DEFAULT 0,  -- 1 = full per-track enrichment failed; row was seeded from flat playlist data only
     created_at      TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))
 );
@@ -132,6 +133,7 @@ _SONGS_OPTIONAL_COLUMNS = (
     ("comments", "INTEGER DEFAULT 0"),
     ("plays", "INTEGER DEFAULT 0"),
     ("thumbnail", "TEXT"),
+    ("metadata_partial", "INTEGER DEFAULT 0"),
 )
 
 
@@ -170,17 +172,23 @@ def upsert_song(
     comments: int = 0,
     plays: int = 0,
     thumbnail: str = "",
+    metadata_partial: int = 0,
     db_path: Path = DB_PATH,
 ) -> int:
-    """Insert or update a song row. Returns the song id."""
+    """Insert or update a song row. Returns the song id.
+
+    `metadata_partial=1` marks rows seeded from a flat playlist enumerate where
+    full per-track enrichment failed. On re-upsert, the flag can only be cleared
+    (partial → full), never re-raised, so an already-enriched row is not downgraded
+    by a later flat-only save."""
     conn = get_conn(db_path)
     cur = conn.execute(
         """INSERT INTO songs (
                title, artist, source_url, duration_secs, genre, raw_path, status,
                artist_id, track_id, duration_str, upload_date,
-               likes, reposts, comments, plays, thumbnail
+               likes, reposts, comments, plays, thumbnail, metadata_partial
            )
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(source_url) DO UPDATE SET
                title=excluded.title,
                artist=excluded.artist,
@@ -197,6 +205,7 @@ def upsert_song(
                comments=excluded.comments,
                plays=excluded.plays,
                thumbnail=excluded.thumbnail,
+               metadata_partial=MIN(metadata_partial, excluded.metadata_partial),
                updated_at=datetime('now')""",
         (
             title,
@@ -215,6 +224,7 @@ def upsert_song(
             comments,
             plays,
             thumbnail,
+            int(bool(metadata_partial)),
         ),
     )
     conn.commit()

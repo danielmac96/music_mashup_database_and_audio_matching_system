@@ -103,8 +103,19 @@ export function TrackList({ refreshKey }) {
                 <tr key={t.id}>
                   <td>{t.id}</td>
                   <td>
-                    <div>{t.title}</div>
-                    <div className="muted" style={{ fontSize: "0.75rem" }}>{t.artist}</div>
+                    <div>
+                      {t.title}
+                      {t.metadata_partial ? (
+                        <span
+                          className="badge metadata-partial"
+                          title="Full track metadata couldn't be fetched. Some fields may be blank until you re-import."
+                          style={{ marginLeft: 6 }}
+                        >
+                          metadata incomplete
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="muted" style={{ fontSize: "0.75rem" }}>{t.artist || "—"}</div>
                   </td>
                   <td>
                     {job ? (

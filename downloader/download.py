@@ -9,7 +9,7 @@ Output: MP3 in config.RAW_DIR / "{title}_{artist}.mp3"
 """
 from __future__ import annotations
 
-from typing import NamedTuple, Optional, Tuple
+from typing import Callable, NamedTuple, Optional, Tuple
 import subprocess
 import sys
 import logging
@@ -25,6 +25,9 @@ PREVIEW_MAX_SECS = 35
 
 # How many YouTube search results to try per query (1 = top hit, …, N = Nth hit)
 YOUTUBE_SEARCH_MAX_RESULTS = 5
+
+# Optional progress callback. percent is None for status-only updates.
+ProgressCb = Optional[Callable[[Optional[int], str], None]]
 
 
 class DownloadResult(NamedTuple):
@@ -65,20 +68,28 @@ def _youtube_attempts() -> tuple[_YtAttempt, ...]:
 
 
 def download_track(song_id: int, title: str, source_url: str,
-                   artist: str = "") -> Optional[DownloadResult]:
+                   artist: str = "",
+                   on_progress: ProgressCb = None) -> Optional[DownloadResult]:
     out_path = RAW_DIR / f"{_safe(title)}_{_safe(artist)}.mp3"
 
     if out_path.exists():
         duration = _get_duration(out_path)
         if duration and duration > PREVIEW_MAX_SECS:
             log.info(f"Already downloaded (full): {out_path.name}")
-            return DownloadResult(out_path)
+            if on_progress:
+                on_progress(100, "Already downloaded")
+            # Pass duration so the worker refreshes the DB row — fixes stale 30s
+            # rows seeded from SoundCloud Go+ previews during ingest.
+            return DownloadResult(out_path, duration)
         else:
             log.warning(f"Existing file is a preview ({duration:.0f}s) — re-downloading")
             out_path.unlink()
 
+    if on_progress:
+        on_progress(0, "Downloading from SoundCloud…")
+
     # Try SoundCloud URL first
-    path = _download_ytdlp(source_url, out_path)
+    path = _download_ytdlp(source_url, out_path, on_progress=on_progress)
 
     if path and path.exists():
         duration = _get_duration(path)
@@ -87,15 +98,17 @@ def download_track(song_id: int, title: str, source_url: str,
                 f"Downloaded file is only {duration:.0f}s — SoundCloud Go+ preview detected. "
                 f"Searching YouTube for full track..."
             )
+            if on_progress:
+                on_progress(None, "Got SoundCloud preview only — searching YouTube fallback…")
             path.unlink()
-            fb = _fallback_youtube(title, artist, out_path)
+            fb = _fallback_youtube(title, artist, out_path, on_progress=on_progress)
             if fb:
                 yt_path, yt_secs = fb
                 return DownloadResult(yt_path, yt_secs)
             return None
 
     if path and path.exists():
-        return DownloadResult(path)
+        return DownloadResult(path, _get_duration(path))
     return None
 
 
@@ -130,16 +143,20 @@ def _run_ytdlp(
     extractor_args: Optional[str] = None,
     use_cookies: bool,
     playlist_item: Optional[int] = None,
+    on_progress: ProgressCb = None,
 ) -> bool:
     """
     Run yt-dlp once. Returns True if process exited 0 and an output file exists.
     """
+    from api.workers._progress import parse_ytdlp, stream_subprocess
+
     tmp_template = str(out_path.with_suffix("")) + ".%(ext)s"
     cmd: list[str] = [
         sys.executable, "-m", "yt_dlp",
         "-f", format_str,
         "--output", tmp_template,
         "--no-warnings",
+        "--newline",   # progress lines on their own line so our line splitter sees them
         *YTDLP_POSTARGS,
     ]
     if playlist_item is None:
@@ -153,8 +170,18 @@ def _run_ytdlp(
     cmd.append(url)
 
     log.info(f"Downloading: {url}" + (f" (item {playlist_item})" if playlist_item else ""))
+
+    def _on_line(line: str) -> None:
+        if not on_progress:
+            return
+        pct = parse_ytdlp(line)
+        if pct is not None:
+            on_progress(pct, f"yt-dlp: {pct}%")
+        elif line.strip().startswith("[") and len(line) < 200:
+            on_progress(None, line.strip())
+
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        result = stream_subprocess(cmd, _on_line, timeout=300)
     except FileNotFoundError:
         log.error("Python or yt-dlp not found. Install with: pip install yt-dlp")
         return False
@@ -163,7 +190,7 @@ def _run_ytdlp(
         return False
 
     if result.returncode != 0:
-        log.warning(f"yt-dlp attempt failed [{result.returncode}]: {result.stderr[:400]}")
+        log.warning(f"yt-dlp attempt failed [{result.returncode}]: {result.stdout[-400:]}")
         return False
 
     if out_path.exists():
@@ -182,6 +209,7 @@ def _download_ytdlp(
     out_path: Path,
     *,
     playlist_item: Optional[int] = None,
+    on_progress: ProgressCb = None,
 ) -> Optional[Path]:
     """
     Download with yt-dlp. YouTube / ytsearch URLs use a retry ladder;
@@ -197,6 +225,7 @@ def _download_ytdlp(
             extractor_args=None,
             use_cookies=False,
             playlist_item=playlist_item,
+            on_progress=on_progress,
         )
         if ok and out_path.exists():
             log.info(f"Downloaded: {out_path.name}")
@@ -206,6 +235,8 @@ def _download_ytdlp(
 
     for att in _youtube_attempts():
         _cleanup_stem_outputs(out_path)
+        if on_progress:
+            on_progress(None, f"YouTube attempt: {att.label}")
         ok = _run_ytdlp(
             url,
             out_path,
@@ -213,6 +244,7 @@ def _download_ytdlp(
             extractor_args=att.player_client,
             use_cookies=att.use_cookies,
             playlist_item=playlist_item,
+            on_progress=on_progress,
         )
         if ok and out_path.exists():
             log.info(f"Downloaded ({att.label}): {out_path.name}")
@@ -225,7 +257,8 @@ def _download_ytdlp(
 # ── YouTube fallback ──────────────────────────────────────────────────────────
 
 
-def _fallback_youtube(title: str, artist: str, out_path: Path) -> Optional[Tuple[Path, float]]:
+def _fallback_youtube(title: str, artist: str, out_path: Path,
+                       on_progress: ProgressCb = None) -> Optional[Tuple[Path, float]]:
     """
     Search YouTube for the full track using multiple query strategies.
     Strips parenthetical suffixes from title for cleaner search results.
@@ -242,7 +275,9 @@ def _fallback_youtube(title: str, artist: str, out_path: Path) -> Optional[Tuple
     for query in queries:
         for rank in range(1, n + 1):
             log.info(f"YouTube search: {query}  [trying result #{rank}]")
-            path = _download_ytdlp(query, out_path, playlist_item=rank)
+            if on_progress:
+                on_progress(None, f"YT search #{rank}: {clean_title[:40]}")
+            path = _download_ytdlp(query, out_path, playlist_item=rank, on_progress=on_progress)
             if path and path.exists():
                 duration = _get_duration(path)
                 if duration and duration > PREVIEW_MAX_SECS:

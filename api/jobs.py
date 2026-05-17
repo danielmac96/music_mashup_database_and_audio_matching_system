@@ -25,6 +25,7 @@ def new_job(kind: str, message: str = "Queued") -> str:
             "message": message,
             "result": None,
             "error": None,
+            "traceback": None,
             "created_at": _now(),
             "updated_at": _now(),
         }
@@ -44,8 +45,11 @@ def done(job_id: str, result: Optional[dict] = None) -> None:
     update(job_id, status="completed", progress=100, result=result, message="Completed")
 
 
-def fail(job_id: str, error: str) -> None:
-    update(job_id, status="failed", error=error, message=error)
+def fail(job_id: str, error: str, traceback_text: Optional[str] = None) -> None:
+    fields: dict[str, Any] = {"status": "failed", "error": error, "message": error}
+    if traceback_text is not None:
+        fields["traceback"] = traceback_text
+    update(job_id, **fields)
 
 
 def get(job_id: str) -> Optional[dict]:

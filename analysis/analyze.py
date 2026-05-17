@@ -4,10 +4,15 @@ analysis/analyze.py — Extract musical features from an audio file.
 Features: BPM, key, Camelot, loudness, energy, MFCC, spectral shape.
 Requires: librosa, numpy
 """
-from typing import Optional
+from typing import Callable, Optional
 import logging
 import numpy as np
 from pathlib import Path
+
+# Optional progress callback. percent is None (status-only) for analysis since
+# librosa stages aren't streamable; we just push stage messages so the UI can
+# show liveness alongside the elapsed timer.
+ProgressCb = Optional[Callable[[Optional[int], str], None]]
 
 log = logging.getLogger(__name__)
 
@@ -25,7 +30,12 @@ CAMELOT = {
 KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
-def analyze_file(audio_path: Path, trim_secs: Optional[int] = None) -> dict:
+def analyze_file(audio_path: Path, trim_secs: Optional[int] = None,
+                  on_progress: ProgressCb = None) -> dict:
+    def _tick(msg: str) -> None:
+        if on_progress:
+            on_progress(None, msg)
+
     try:
         import librosa
     except ImportError:
@@ -40,16 +50,19 @@ def analyze_file(audio_path: Path, trim_secs: Optional[int] = None) -> dict:
     except ImportError:
         SAMPLE_RATE, HOP_LENGTH, N_MFCC = 22050, 512, 13
 
+    _tick("Loading audio…")
     y, sr = librosa.load(str(audio_path), sr=SAMPLE_RATE,
                           duration=trim_secs, mono=True)
     features = {}
 
     # BPM
+    _tick("Detecting BPM…")
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=HOP_LENGTH)
     features["bpm"] = float(round(float(np.atleast_1d(tempo)[0]), 2))
     features["bpm_confidence"] = float(min(len(beats) / (len(y) / HOP_LENGTH), 1.0))
 
     # Key
+    _tick("Detecting key…")
     chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=HOP_LENGTH)
     chroma_mean = chroma.mean(axis=1)
     major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
@@ -71,16 +84,19 @@ def analyze_file(audio_path: Path, trim_secs: Optional[int] = None) -> dict:
     features["camelot"] = CAMELOT.get((key_idx, mode), "?")
 
     # Dynamics
+    _tick("Computing loudness + energy…")
     rms = librosa.feature.rms(y=y, hop_length=HOP_LENGTH)
     features["loudness_rms"] = float(round(float(rms.mean()), 6))
     S = np.abs(librosa.stft(y, hop_length=HOP_LENGTH))
     features["energy"] = float(round(float((S ** 2).mean()), 6))
 
     # MFCC
+    _tick("Computing MFCC…")
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC, hop_length=HOP_LENGTH)
     features["mfcc"] = [round(float(v), 4) for v in mfcc.mean(axis=1)]
 
     # Spectral
+    _tick("Computing spectral shape…")
     centroid = librosa.feature.spectral_centroid(y=y, sr=sr, hop_length=HOP_LENGTH)
     rolloff  = librosa.feature.spectral_rolloff(y=y, sr=sr, hop_length=HOP_LENGTH)
     zcr      = librosa.feature.zero_crossing_rate(y, hop_length=HOP_LENGTH)

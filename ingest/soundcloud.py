@@ -27,16 +27,78 @@ def _ytdlp_cmd(*args: str) -> list:
 
 def fetch_playlist(url: str) -> list:
     """
-    Fetch track metadata from a SoundCloud playlist URL.
+    Fetch track metadata from a SoundCloud playlist URL via full per-track extraction.
     Each item includes title, artist, source_url, duration_secs, genre,
     artist_id, track_id, duration_str, upload_date, likes, reposts,
     comments, plays, thumbnail (when yt-dlp provides them).
+
+    Note: with `--ignore-errors`, tracks that can't be fully extracted
+    (Go+ requiring auth, geo-restricted, removed) are silently dropped.
+    Use `fetch_playlist_flat` when you need a guaranteed full count.
     """
     log.info(f"Fetching playlist metadata: {url}")
     tracks = _fetch_via_ytdlp(url)
     if not tracks:
         log.error("No tracks found. Check the playlist URL.")
     return tracks
+
+
+def fetch_playlist_flat(url: str) -> list:
+    """
+    Enumerate every track in a playlist via `--flat-playlist`. Returns minimal
+    per-track metadata (title, source_url, track_id, thumbnail) with placeholder
+    artist/duration. Per-track extraction is skipped, so geo-restricted or
+    auth-required tracks are still listed.
+    """
+    log.info(f"Flat-enumerating playlist: {url}")
+    try:
+        result = subprocess.run(
+            _ytdlp_cmd(
+                "--flat-playlist",
+                "--dump-single-json",
+                "--no-warnings",
+                url,
+            ),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except FileNotFoundError:
+        log.error("Python or yt-dlp not found. Install with: pip install yt-dlp")
+        return []
+    except subprocess.TimeoutExpired:
+        log.error("yt-dlp flat enumerate timed out")
+        return []
+
+    if result.returncode != 0 and not result.stdout.strip():
+        err = (result.stderr or "").strip().splitlines()
+        log.error(f"yt-dlp flat enumerate failed: {'; '.join(err[:3])[:300]}")
+        return []
+
+    try:
+        info = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        log.error(f"yt-dlp flat enumerate returned unparseable JSON ({exc})")
+        return []
+
+    entries = info.get("entries") if isinstance(info, dict) else None
+    if not entries:
+        # Single-track URL handed to a flat call — still wrap consistently.
+        return [_normalise_flat(info)] if isinstance(info, dict) else []
+
+    out = []
+    for entry in entries:
+        if entry is None or not isinstance(entry, dict):
+            log.warning("Skipping null/non-dict flat entry")
+            continue
+        out.append(_normalise_flat(entry))
+    log.info(f"Flat-enumerated {len(out)} tracks")
+    return out
+
+
+def enrich_track(url: str) -> Optional[dict]:
+    """Full per-track extraction for a single track URL. Returns None on failure."""
+    return fetch_single(url)
 
 
 def fetch_single(url: str) -> Optional[dict]:
@@ -142,6 +204,29 @@ def _thumbnail_url(info: dict) -> str:
         elif isinstance(entry, str) and entry:
             return entry
     return ""
+
+
+def _normalise_flat(info: dict) -> dict:
+    """Map a flat-playlist entry to the same dict shape as full extraction,
+    leaving unknown fields blank so the UI can render them as '?'."""
+    raw_duration = info.get("duration")
+    duration_f = float(raw_duration) if raw_duration is not None else 0.0
+    return {
+        "title": info.get("title") or "Unknown",
+        "artist": _str_or_empty(info.get("uploader") or info.get("channel") or info.get("artist")),
+        "artist_id": _str_or_empty(info.get("uploader_id")),
+        "track_id": _str_or_empty(info.get("id")),
+        "duration_secs": duration_f,
+        "duration_str": _format_duration_str(duration_f),
+        "source_url": info.get("url") or info.get("webpage_url") or "",
+        "upload_date": "",
+        "likes": 0,
+        "reposts": 0,
+        "comments": 0,
+        "plays": 0,
+        "thumbnail": _thumbnail_url(info),
+        "genre": "",
+    }
 
 
 def _normalise(info: dict) -> dict:

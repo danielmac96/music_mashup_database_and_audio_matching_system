@@ -131,6 +131,7 @@ th {
 .badge.running         { background: #b87b15; color: #fff0cf; }
 .badge.completed       { background: #1f6a3a; color: #cfeed8; }
 .badge.failed          { background: #7a2222; color: #ffd0d0; }
+.badge.metadata-partial { background: #6a4a15; color: #ffe4b0; font-size: 0.65rem; }
 
 .muted { color: #9fa6b6; }
 
@@ -155,4 +156,49 @@ audio {
   color: #ff8b8b;
   font-size: 0.8rem;
   margin-top: 4px;
+}
+
+.progress-bar {
+  margin-top: 6px;
+  height: 6px;
+  width: 180px;
+  max-width: 100%;
+  background: #232734;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-bar > .fill {
+  height: 100%;
+  background: linear-gradient(90deg, #2c5fdc, #4d8bff);
+  transition: width 0.3s ease;
+}
+
+.elapsed {
+  font-size: 0.7rem;
+  color: #9fa6b6;
+  font-variant-numeric: tabular-nums;
+}
+
+.details-toggle {
+  background: transparent;
+  color: #9fa6b6;
+  padding: 2px 6px;
+  font-size: 0.7rem;
+  text-decoration: underline;
+  border: none;
+  cursor: pointer;
+}
+
+.traceback {
+  margin-top: 4px;
+  padding: 8px;
+  background: #0a0c10;
+  border: 1px solid #2a2f3a;
+  border-radius: 4px;
+  color: #ffb0b0;
+  font-size: 0.7rem;
+  white-space: pre-wrap;
+  max-height: 240px;
+  overflow: auto;
 }
