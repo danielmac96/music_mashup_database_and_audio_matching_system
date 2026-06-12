@@ -1,6 +1,6 @@
 """
 database/models.py — SQLite schema via raw sqlite3.
-Three tables: songs, stems, features.
+Tables: songs, stems, features, sections, mashup_candidates.
 """
 from typing import Optional, List, Dict
 import sqlite3
@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS songs (
     plays           INTEGER DEFAULT 0,   -- view_count
     thumbnail       TEXT,
     metadata_partial INTEGER DEFAULT 0,  -- 1 = full per-track enrichment failed; row was seeded from flat playlist data only
+    tags            TEXT,                 -- JSON array of SoundCloud tags
+    release_year    INTEGER DEFAULT 0,    -- derived from upload_date (YYYY)
     created_at      TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))
 );
@@ -64,6 +66,22 @@ CREATE TABLE IF NOT EXISTS features (
 CREATE INDEX IF NOT EXISTS idx_features_bpm ON features(bpm);
 CREATE INDEX IF NOT EXISTS idx_features_key ON features(key, mode);
 CREATE INDEX IF NOT EXISTS idx_songs_status ON songs(status);
+
+CREATE TABLE IF NOT EXISTS sections (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    song_id         INTEGER NOT NULL,
+    section_index   INTEGER NOT NULL,     -- 0-based position within the track
+    start_sec       REAL NOT NULL,
+    end_sec         REAL NOT NULL,
+    label           TEXT,                 -- intro|verse|chorus|drop|breakdown|bridge|outro
+    energy          REAL,                 -- mean RMS in section, 0-1 relative to track max
+    vocal_presence  REAL,                 -- 0-1 vocal-stem activity in section
+    repetition      INTEGER DEFAULT 1,    -- count of similar-sounding sections in the track
+    confidence      REAL,                 -- 0-1 labelling confidence
+    UNIQUE(song_id, section_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sections_song ON sections(song_id);
 
 CREATE TABLE IF NOT EXISTS mashup_candidates (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +152,8 @@ _SONGS_OPTIONAL_COLUMNS = (
     ("plays", "INTEGER DEFAULT 0"),
     ("thumbnail", "TEXT"),
     ("metadata_partial", "INTEGER DEFAULT 0"),
+    ("tags", "TEXT"),
+    ("release_year", "INTEGER DEFAULT 0"),
 )
 
 
@@ -143,6 +163,12 @@ def _migrate_songs_columns(conn: sqlite3.Connection) -> None:
     for col, decl in _SONGS_OPTIONAL_COLUMNS:
         if col not in existing:
             conn.execute(f"ALTER TABLE songs ADD COLUMN {col} {decl}")
+    # Backfill release_year for rows ingested before the column existed.
+    conn.execute(
+        """UPDATE songs SET release_year = CAST(substr(upload_date, 1, 4) AS INTEGER)
+           WHERE (release_year IS NULL OR release_year = 0)
+             AND upload_date IS NOT NULL AND length(upload_date) >= 4"""
+    )
 
 
 def init_db(db_path: Path = DB_PATH) -> Path:
@@ -173,6 +199,8 @@ def upsert_song(
     plays: int = 0,
     thumbnail: str = "",
     metadata_partial: int = 0,
+    tags: str = "",
+    release_year: int = 0,
     db_path: Path = DB_PATH,
 ) -> int:
     """Insert or update a song row. Returns the song id.
@@ -186,9 +214,10 @@ def upsert_song(
         """INSERT INTO songs (
                title, artist, source_url, duration_secs, genre, raw_path, status,
                artist_id, track_id, duration_str, upload_date,
-               likes, reposts, comments, plays, thumbnail, metadata_partial
+               likes, reposts, comments, plays, thumbnail, metadata_partial,
+               tags, release_year
            )
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(source_url) DO UPDATE SET
                title=excluded.title,
                artist=excluded.artist,
@@ -206,6 +235,9 @@ def upsert_song(
                plays=excluded.plays,
                thumbnail=excluded.thumbnail,
                metadata_partial=MIN(metadata_partial, excluded.metadata_partial),
+               tags=CASE WHEN excluded.tags != '' THEN excluded.tags ELSE tags END,
+               release_year=CASE WHEN excluded.release_year > 0
+                                 THEN excluded.release_year ELSE release_year END,
                updated_at=datetime('now')""",
         (
             title,
@@ -225,6 +257,8 @@ def upsert_song(
             plays,
             thumbnail,
             int(bool(metadata_partial)),
+            tags,
+            int(release_year or 0),
         ),
     )
     conn.commit()
@@ -317,6 +351,13 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
     conn.close()
 
 
+def get_song(song_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
+    conn = get_conn(db_path)
+    row = conn.execute("SELECT * FROM songs WHERE id=?", (song_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def get_all_songs(db_path: Path = DB_PATH) -> List[Dict]:
     conn = get_conn(db_path)
     rows = conn.execute("SELECT * FROM songs ORDER BY id").fetchall()
@@ -383,6 +424,46 @@ def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[D
         result.append(d)
     return result
 
+# ── Sections (song structure: intro/verse/chorus/drop/…) ─────────────────────
+
+def replace_sections(song_id: int, sections: List[Dict],
+                     db_path: Path = DB_PATH) -> None:
+    """Replace all structure sections for a song with a fresh analysis result.
+
+    Each section dict: start_sec, end_sec, label, energy, vocal_presence,
+    repetition, confidence."""
+    conn = get_conn(db_path)
+    conn.execute("DELETE FROM sections WHERE song_id=?", (song_id,))
+    conn.executemany(
+        """INSERT INTO sections
+               (song_id, section_index, start_sec, end_sec, label,
+                energy, vocal_presence, repetition, confidence)
+           VALUES (?,?,?,?,?,?,?,?,?)""",
+        [
+            (
+                song_id, idx,
+                float(s["start_sec"]), float(s["end_sec"]),
+                s.get("label", ""),
+                s.get("energy"), s.get("vocal_presence"),
+                int(s.get("repetition", 1)), s.get("confidence"),
+            )
+            for idx, s in enumerate(sections)
+        ],
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        "SELECT * FROM sections WHERE song_id=? ORDER BY section_index",
+        (song_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def upsert_candidate(vocal: dict, inst: dict, scores: dict,
                      combo_type: str = "vocal_over_instrumental",
                      db_path: Path = DB_PATH):
@@ -448,6 +529,55 @@ def get_candidates(min_score: float = 0.0, limit: int = 100,
            ORDER BY score_total DESC
            LIMIT ?""",
         (min_score, limit)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
+                            limit: int = 100,
+                            db_path: Path = DB_PATH) -> List[Dict]:
+    """Scored candidates joined with song metadata for both sides:
+    genre, release_year, plays, likes, a 0-1 popularity percentile
+    (rank of plays + 2*likes across the library), and how many structure
+    sections each side has (0 = structure not analysed yet)."""
+    conn = get_conn(db_path)
+    where = ["mc.score_total >= ?"]
+    params: list = [min_score]
+    if combo_type:
+        where.append("mc.combo_type = ?")
+        params.append(combo_type)
+    params.append(limit)
+    rows = conn.execute(
+        f"""WITH pop AS (
+                SELECT id,
+                       PERCENT_RANK() OVER (ORDER BY (plays + 2 * likes)) AS popularity
+                FROM songs
+            )
+            SELECT mc.*,
+                   sv.genre        AS vocal_genre,
+                   sv.release_year AS vocal_year,
+                   sv.plays        AS vocal_plays,
+                   sv.likes        AS vocal_likes,
+                   pv.popularity   AS vocal_popularity,
+                   si.genre        AS inst_genre,
+                   si.release_year AS inst_year,
+                   si.plays        AS inst_plays,
+                   si.likes        AS inst_likes,
+                   pi.popularity   AS inst_popularity,
+                   (SELECT COUNT(*) FROM sections WHERE song_id = mc.vocal_song_id)
+                       AS vocal_section_count,
+                   (SELECT COUNT(*) FROM sections WHERE song_id = mc.inst_song_id)
+                       AS inst_section_count
+            FROM mashup_candidates mc
+            LEFT JOIN songs sv ON sv.id = mc.vocal_song_id
+            LEFT JOIN songs si ON si.id = mc.inst_song_id
+            LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
+            LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
+            WHERE {' AND '.join(where)}
+            ORDER BY mc.score_total DESC
+            LIMIT ?""",
+        params,
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

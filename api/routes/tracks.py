@@ -7,7 +7,7 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 
-from database.models import get_all_features, get_all_songs, get_conn
+from database.models import get_all_features, get_all_songs, get_conn, get_sections
 
 from api import jobs
 from api.workers import analysis_worker, download_worker, stems_worker
@@ -114,6 +114,18 @@ def queue_analyze(song_id: int, background: BackgroundTasks) -> dict:
     job_id = jobs.new_job(kind="analyze", message="Queued for analysis")
     background.add_task(analysis_worker.run, job_id, song_id)
     return {"job_id": job_id}
+
+
+@router.get("/{song_id}/sections")
+def list_sections(song_id: int) -> dict:
+    """Detected structure sections (chorus/verse/drop with timestamps)."""
+    conn = get_conn()
+    row = conn.execute("SELECT id FROM songs WHERE id=?", (song_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="song not found")
+    sections = get_sections(song_id)
+    return {"count": len(sections), "sections": sections}
 
 
 @router.get("/{song_id}/audio/{stem_type}")

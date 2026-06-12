@@ -28,12 +28,13 @@ from config import BEAT_TRIM_SECS, TOP_K_RESULTS
 from database.models import (
     init_db, upsert_song, update_song_status, update_song_duration,
     upsert_stem, upsert_features, get_all_songs, get_songs_by_status,
-    get_features_for_song,
+    get_features_for_song, replace_sections,
 )
 from ingest.soundcloud   import fetch_playlist
 from downloader.download import download_track
 from stems.separate      import separate
 from analysis.analyze    import analyze_file
+from analysis.structure  import detect_sections
 from matcher.match       import find_matches, format_results
 
 log = logging.getLogger(__name__)
@@ -95,6 +96,8 @@ def run_ingest(playlist_url: str) -> list:
                 comments=t.get("comments", 0),
                 plays=t.get("plays", 0),
                 thumbnail=t.get("thumbnail", ""),
+                tags=t.get("tags", ""),
+                release_year=t.get("release_year", 0),
             )
             song_ids.append(sid)
             log.info(f"  [{idx}/{len(tracks)}] Ingested [{sid}] {t['title']} — {t['artist']}")
@@ -259,6 +262,25 @@ def run_analysis() -> dict:
                 f"Key={features['key']} {features['mode']} "
                 f"Camelot={features['camelot']}"
             )
+
+        # Structure detection (sections with chorus/verse/drop timestamps).
+        # Non-fatal: matching still works without sections, just less precise.
+        full_fp = stems_for_song.get("full", "")
+        if per_stem and full_fp and Path(full_fp).exists():
+            vocals_fp = stems_for_song.get("vocals", "")
+            vocals_path = Path(vocals_fp) if vocals_fp else None
+            try:
+                sections = detect_sections(Path(full_fp), vocals_path)
+                if sections:
+                    replace_sections(sid, sections)
+                    _track_note(
+                        f"[structure] {len(sections)} sections: "
+                        + ", ".join(f"{s['label']} @{_fmt_secs(s['start_sec'])}"
+                                    for s in sections)
+                    )
+            except Exception:
+                log.warning(f"         Exception detecting structure:\n{traceback.format_exc()}")
+                _track_note("[structure] detection failed — continuing without sections")
 
         if per_stem and not any_failure:
             update_song_status(sid, "analysed")

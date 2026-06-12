@@ -9,7 +9,9 @@ SoundCloud playlist
   [2] downloader/    → yt-dlp download (best quality MP3, with YouTube fallback for SC Go+ previews)
   [3] stems/         → Demucs vocal + instrumental separation
   [4] analysis/      → BPM, key, MFCC, energy (librosa)
+                       + song structure: intro/verse/chorus/drop timestamps
   [5] matcher/       → seed song → ranked mashup candidates (opt-in via --stages match)
+                       + section-level mashup plans (which chorus over which drop)
 ```
 
 ---
@@ -130,12 +132,61 @@ Matches are scored on four dimensions (weights in `config.py`):
 ## Database schema
 
 ```
-songs(id, title, artist, source_url, duration_secs, genre, raw_path, status, ...)
+songs(id, title, artist, source_url, duration_secs, genre, tags, release_year,
+      likes, reposts, comments, plays, raw_path, status, ...)
 stems(id, song_id, stem_type, file_path)
 features(id, song_id, stem_type, bpm, key, mode, camelot,
          loudness_rms, energy, mfcc_json,
          spectral_centroid, spectral_rolloff, zero_crossing_rate)
+sections(id, song_id, section_index, start_sec, end_sec, label,
+         energy, vocal_presence, repetition, confidence)
+mashup_candidates(combo_type, vocal_*, inst_*, score_total, score_bpm,
+                  score_key, score_energy, score_timbre)
 ```
+
+Existing databases migrate automatically on next run: new columns are added,
+and `release_year` is backfilled from `upload_date`.
+
+---
+
+## Song structure detection (chorus/verse timestamps)
+
+The analysis stage now segments every track and stores labelled sections in
+the `sections` table:
+
+1. Beat-synchronous chroma + MFCC features over the full mix
+2. Self-similarity novelty curve → section boundaries (snapped to beats)
+3. Per-section relative **energy** (full-mix RMS) and **vocal presence**
+   (RMS of the Demucs vocal stem inside the section)
+4. Repetition counting via chroma similarity (the repeated, loud, vocal-heavy
+   cluster is the chorus)
+5. Labels: `intro / verse / chorus / drop / breakdown / bridge / outro`
+
+Tracks analysed before this feature have no sections — re-run analysis
+(`python test_flow.py --stages analysis` after resetting their status, or the
+**Analyze** button in the web app) to populate them. Note `BEAT_TRIM_SECS` now
+defaults to `None` (full-track analysis) for reliable BPM/key — the old default
+only analysed the first 30 seconds.
+
+---
+
+## Mashup suggestion engine (web app)
+
+The **Mashups** tab in the web app drives the suggestion workflow:
+
+- **Score library** — scores every qualifying vocal+instrumental and
+  instrumental+instrumental pair (BPM/key pre-filter, then the weighted
+  composite score) into `mashup_candidates`.
+- The ranked table shows the score breakdown plus genre, release year, and a
+  0–1 popularity percentile (plays + 2×likes rank within your library) for
+  both sides of each pair.
+- **Plan** expands an actionable, section-level recipe: project tempo, the
+  instrumental stretch factor (halftime/doubletime aware), the semitone shift
+  to align keys, and which vocal chorus/verse to lay over which instrumental
+  drop/chorus — with timestamps and duration fit after stretching.
+
+API endpoints: `POST /api/mashups/score`, `GET /api/mashups`,
+`GET /api/mashups/plan?vocal_id=&inst_id=`, `GET /api/tracks/{id}/sections`.
 
 ---
 

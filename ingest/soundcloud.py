@@ -226,6 +226,8 @@ def _normalise_flat(info: dict) -> dict:
         "plays": 0,
         "thumbnail": _thumbnail_url(info),
         "genre": "",
+        "tags": "",
+        "release_year": 0,
     }
 
 
@@ -255,6 +257,8 @@ def _normalise(info: dict) -> dict:
         "plays": _int_or_zero(info.get("view_count")),
         "thumbnail": _thumbnail_url(info),
         "genre": _normalise_genre(info.get("genre")),
+        "tags": _tags_json(info.get("tags")),
+        "release_year": _release_year(info),
     }
 
 
@@ -264,3 +268,32 @@ def _normalise_genre(g: Any) -> str:
     if isinstance(g, str):
         return g.strip()
     return str(g).strip()
+
+
+def _tags_json(tags: Any) -> str:
+    """Serialise yt-dlp tags (list or comma string) to a JSON array string."""
+    if not tags:
+        return ""
+    if isinstance(tags, str):
+        items = [t.strip() for t in tags.split(",") if t.strip()]
+    elif isinstance(tags, (list, tuple)):
+        items = [str(t).strip() for t in tags if str(t).strip()]
+    else:
+        return ""
+    return json.dumps(items) if items else ""
+
+
+def _release_year(info: dict) -> int:
+    """Best-effort release year: explicit release fields first, then upload date."""
+    for field in ("release_year",):
+        val = info.get(field)
+        if val:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+    for field in ("release_date", "upload_date"):
+        val = info.get(field)
+        if isinstance(val, str) and len(val) >= 4 and val[:4].isdigit():
+            return int(val[:4])
+    return 0

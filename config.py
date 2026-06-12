@@ -49,8 +49,15 @@ STEMS_TO_KEEP = ["vocals", "no_vocals"]   # no_vocals = instrumental
 SAMPLE_RATE      = 22050
 HOP_LENGTH       = 512
 N_MFCC           = 13      # MFCC coefficients stored per track
-BEAT_TRIM_SECS   = 30      # analyse first N seconds for speed during testing
-                           # set to None for full track
+BEAT_TRIM_SECS   = None    # None = analyse the FULL track (best match quality —
+                           # BPM/key from only the intro is unreliable).
+                           # Set to e.g. 30 to trade accuracy for speed.
+
+# ── Structure detection (sections: intro/verse/chorus/drop/…) ─────────────────
+SECTION_MIN_LEN_SECS  = 12.0   # minimum section length
+SECTION_MAX_COUNT     = 14     # cap on sections per track
+SECTION_SIM_THRESHOLD = 0.92   # chroma cosine sim above which two sections
+                               # count as repeats of each other (chorus finder)
 
 # ── Matching ──────────────────────────────────────────────────────────────────
 # Weights used in the composite similarity score (must sum to 1.0)
