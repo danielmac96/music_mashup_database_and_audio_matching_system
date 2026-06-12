@@ -43,4 +43,19 @@ export const api = {
   getJob: (jobId) => jsonFetch(`/api/jobs/${jobId}`),
 
   audioUrl: (id, stemType) => `/api/tracks/${id}/audio/${stemType}`,
+
+  getSections: (id) => jsonFetch(`/api/tracks/${id}/sections`),
+
+  startScoring: () => jsonFetch("/api/mashups/score", { method: "POST" }),
+
+  getMashups: ({ comboType = "", minScore = 0, limit = 50 } = {}) => {
+    const params = new URLSearchParams();
+    if (comboType) params.set("combo_type", comboType);
+    if (minScore) params.set("min_score", String(minScore));
+    params.set("limit", String(limit));
+    return jsonFetch(`/api/mashups?${params}`);
+  },
+
+  getMashupPlan: (vocalId, instId) =>
+    jsonFetch(`/api/mashups/plan?vocal_id=${vocalId}&inst_id=${instId}`),
 };

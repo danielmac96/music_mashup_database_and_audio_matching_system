@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { PlaylistImporter } from "./components/PlaylistImporter";
 import { TrackList } from "./components/TrackList";
+import { MashupSuggestions } from "./components/MashupSuggestions";
 
 export default function App() {
   const [tab, setTab] = useState("import");
@@ -31,10 +32,17 @@ export default function App() {
         >
           Library
         </button>
+        <button
+          className={tab === "mashups" ? "active" : ""}
+          onClick={() => setTab("mashups")}
+        >
+          Mashups
+        </button>
       </div>
 
       {tab === "import" && <PlaylistImporter onIngested={handleIngested} />}
       {tab === "library" && <TrackList refreshKey={refreshKey} />}
+      {tab === "mashups" && <MashupSuggestions />}
     </div>
   );
 }

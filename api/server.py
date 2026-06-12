@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:
 from database.models import init_db  # noqa: E402
 
 from api.routes import jobs as jobs_routes  # noqa: E402
+from api.routes import mashups as mashup_routes  # noqa: E402
 from api.routes import playlists as playlist_routes  # noqa: E402
 from api.routes import tracks as track_routes  # noqa: E402
 
@@ -37,6 +38,7 @@ app.add_middleware(
 app.include_router(playlist_routes.router, prefix="/api/playlists", tags=["playlists"])
 app.include_router(track_routes.router, prefix="/api/tracks", tags=["tracks"])
 app.include_router(jobs_routes.router, prefix="/api/jobs", tags=["jobs"])
+app.include_router(mashup_routes.router, prefix="/api/mashups", tags=["mashups"])
 
 
 @app.get("/api/health")

@@ -80,6 +80,8 @@ def ingest(req: IngestRequest) -> dict:
             plays=int(merged.get("plays") or 0),
             thumbnail=merged.get("thumbnail", ""),
             metadata_partial=metadata_partial,
+            tags=merged.get("tags", ""),
+            release_year=int(merged.get("release_year") or 0),
         )
         inserted_ids.append(sid)
 
