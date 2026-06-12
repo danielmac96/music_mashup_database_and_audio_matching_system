@@ -30,7 +30,8 @@
       "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -c \"import yt_dlp, librosa, soundfile, demucs; print\\('all imports OK'\\); print\\('numpy:', __import__\\('numpy'\\).__version__\\)\")",
       "Bash(Get-ChildItem *)",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\danie\\\\Documents\\\\PythonProject\\\\music_mashup_database_and_audio_matching_system\\\\frontend\\\\src\" -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object -ExpandProperty FullName | Sort-Object)",
-      "Bash(.venv/Scripts/python.exe *)"
+      "Bash(.venv/Scripts/python.exe *)",
+      "mcp__a52849fa-c674-405b-ac6a-1383cc8b2892__list_projects"
     ]
   }
 }
