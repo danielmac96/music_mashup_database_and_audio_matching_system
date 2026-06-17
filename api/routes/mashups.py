@@ -2,13 +2,17 @@
 and fetch an actionable section-level plan for a pair."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi.responses import FileResponse
 
 from database.models import get_candidates_enriched
 
 from api import jobs
-from api.workers import match_worker
+from api.workers import match_worker, preview_worker
 from matcher.plan import build_mashup_plan
+from render.preview import preview_path
 
 router = APIRouter()
 
@@ -25,14 +29,17 @@ def queue_score(background: BackgroundTasks) -> dict:
 
 @router.get("")
 def list_candidates(combo_type: str = "", min_score: float = 0.0,
-                    limit: int = 50) -> dict:
+                    limit: int = 50, vocal_song_id: Optional[int] = None,
+                    inst_song_id: Optional[int] = None) -> dict:
     if combo_type and combo_type not in _COMBO_TYPES:
         raise HTTPException(
             status_code=400,
             detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}",
         )
     rows = get_candidates_enriched(
-        combo_type=combo_type, min_score=min_score, limit=max(1, min(limit, 500))
+        combo_type=combo_type, min_score=min_score,
+        limit=max(1, min(limit, 500)),
+        vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
     )
     return {"count": len(rows), "candidates": rows}
 
@@ -43,3 +50,29 @@ def get_plan(vocal_id: int, inst_id: int) -> dict:
     if plan is None:
         raise HTTPException(status_code=404, detail="song not found")
     return plan
+
+
+@router.post("/preview")
+def queue_preview(vocal_id: int, inst_id: int,
+                  background: BackgroundTasks) -> dict:
+    """Render an audible preview of the vocal-over-instrumental pair so the
+    producer can audition it before committing to a DAW."""
+    job_id = jobs.new_job(kind="preview", message="Queued for preview render")
+    background.add_task(preview_worker.run, job_id, vocal_id, inst_id)
+    return {"job_id": job_id}
+
+
+@router.get("/preview/audio")
+def stream_preview(vocal_id: int, inst_id: int):
+    path = preview_path(vocal_id, inst_id)
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="preview not rendered yet — POST /api/mashups/preview first",
+        )
+    return FileResponse(
+        path,
+        media_type="audio/wav",
+        headers={"Accept-Ranges": "bytes"},
+        filename=path.name,
+    )

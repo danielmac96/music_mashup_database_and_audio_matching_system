@@ -407,6 +407,77 @@ def get_features_for_song(song_id: int, stem_type: str = "full",
     return d
 
 
+_FLAT_TO_SHARP = {"Db": "C#", "Eb": "D#", "Gb": "F#", "Ab": "G#", "Bb": "A#",
+                  "Cb": "B", "Fb": "E"}
+
+# Camelot wheel — mirrors analysis.analyze.{KEY_NAMES,CAMELOT}, duplicated here so
+# manual corrections don't drag in numpy/librosa via the analysis module.
+_KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+_CAMELOT = {
+    (0,  "major"): "8B",  (1,  "major"): "3B",  (2,  "major"): "10B",
+    (3,  "major"): "5B",  (4,  "major"): "12B", (5,  "major"): "7B",
+    (6,  "major"): "2B",  (7,  "major"): "9B",  (8,  "major"): "4B",
+    (9,  "major"): "11B", (10, "major"): "6B",  (11, "major"): "1B",
+    (0,  "minor"): "5A",  (1,  "minor"): "12A", (2,  "minor"): "7A",
+    (3,  "minor"): "2A",  (4,  "minor"): "9A",  (5,  "minor"): "4A",
+    (6,  "minor"): "11A", (7,  "minor"): "6A",  (8,  "minor"): "1A",
+    (9,  "minor"): "8A",  (10, "minor"): "3A",  (11, "minor"): "10A",
+}
+
+
+def camelot_for(key: Optional[str], mode: Optional[str]) -> Optional[str]:
+    """Map a musical key + mode (e.g. 'A', 'minor') to its Camelot wheel code
+    (e.g. '8A'). Returns None for an unrecognised key/mode. Flats are normalised
+    to the sharp spelling used by the analyser."""
+    if not key or not mode:
+        return None
+    k = _FLAT_TO_SHARP.get(key, key)
+    if k not in _KEY_NAMES or mode not in ("major", "minor"):
+        return None
+    return _CAMELOT.get((_KEY_NAMES.index(k), mode))
+
+
+def update_features_manual(song_id: int, *, bpm: Optional[float] = None,
+                           key: Optional[str] = None, mode: Optional[str] = None,
+                           db_path: Path = DB_PATH) -> int:
+    """Apply a producer's manual correction to a song's analysed features.
+
+    The correction is applied to every stem row (full/vocals/instrumental) for
+    the song, because a song's tempo and key are shared across its stems and the
+    matcher reads BPM/key from the vocals and instrumental rows. Camelot is
+    recomputed whenever key or mode changes. Only the fields passed are touched.
+    Returns the number of feature rows updated (0 = track not analysed yet)."""
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        "SELECT stem_type, key, mode FROM features WHERE song_id=?", (song_id,)
+    ).fetchall()
+    updated = 0
+    for r in rows:
+        new_key = key if key is not None else r["key"]
+        new_mode = mode if mode is not None else r["mode"]
+        sets: list[str] = []
+        params: list = []
+        if bpm is not None:
+            sets.append("bpm=?"); params.append(float(bpm))
+        if key is not None:
+            sets.append("key=?"); params.append(key)
+        if mode is not None:
+            sets.append("mode=?"); params.append(mode)
+        if key is not None or mode is not None:
+            sets.append("camelot=?"); params.append(camelot_for(new_key, new_mode))
+        if not sets:
+            break
+        params += [song_id, r["stem_type"]]
+        conn.execute(
+            f"UPDATE features SET {', '.join(sets)} WHERE song_id=? AND stem_type=?",
+            params,
+        )
+        updated += 1
+    conn.commit()
+    conn.close()
+    return updated
+
+
 def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[Dict]:
     conn = get_conn(db_path)
     rows = conn.execute(
@@ -535,18 +606,28 @@ def get_candidates(min_score: float = 0.0, limit: int = 100,
 
 
 def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
-                            limit: int = 100,
+                            limit: int = 100, vocal_song_id: Optional[int] = None,
+                            inst_song_id: Optional[int] = None,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
     (rank of plays + 2*likes across the library), and how many structure
-    sections each side has (0 = structure not analysed yet)."""
+    sections each side has (0 = structure not analysed yet).
+
+    Pass vocal_song_id and/or inst_song_id to do a directed search — e.g.
+    'which beds work under this acapella?' (vocal_song_id set)."""
     conn = get_conn(db_path)
     where = ["mc.score_total >= ?"]
     params: list = [min_score]
     if combo_type:
         where.append("mc.combo_type = ?")
         params.append(combo_type)
+    if vocal_song_id is not None:
+        where.append("mc.vocal_song_id = ?")
+        params.append(vocal_song_id)
+    if inst_song_id is not None:
+        where.append("mc.inst_song_id = ?")
+        params.append(inst_song_id)
     params.append(limit)
     rows = conn.execute(
         f"""WITH pop AS (

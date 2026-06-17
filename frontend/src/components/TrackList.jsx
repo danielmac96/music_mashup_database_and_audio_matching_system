@@ -2,12 +2,76 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { JobBadge } from "./JobBadge";
 
-export function TrackList({ refreshKey }) {
+const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+
+function FeatureEditor({ track, onSaved, onCancel }) {
+  const feats = track.features?.full || {};
+  const [bpm, setBpm] = useState(feats.bpm != null ? String(feats.bpm) : "");
+  const [key, setKey] = useState(feats.key || "C");
+  const [mode, setMode] = useState(feats.mode || "major");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const payload = {};
+      const bpmNum = parseFloat(bpm);
+      if (!Number.isNaN(bpmNum) && bpmNum > 0) payload.bpm = bpmNum;
+      payload.key = key;
+      payload.mode = mode;
+      await api.correctFeatures(track.id, payload);
+      onSaved();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ fontSize: "0.75rem", display: "flex", flexDirection: "column", gap: 4 }}>
+      <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <span className="muted" style={{ width: 34 }}>BPM</span>
+        <input
+          type="number"
+          step="0.1"
+          min="1"
+          value={bpm}
+          onChange={(e) => setBpm(e.target.value)}
+          style={{ width: 70 }}
+        />
+      </label>
+      <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+        <span className="muted" style={{ width: 34 }}>Key</span>
+        <select value={key} onChange={(e) => setKey(e.target.value)}>
+          {KEY_NAMES.map((k) => (
+            <option key={k} value={k}>{k}</option>
+          ))}
+        </select>
+        <select value={mode} onChange={(e) => setMode(e.target.value)}>
+          <option value="major">major</option>
+          <option value="minor">minor</option>
+        </select>
+      </label>
+      {error && <div className="error-text">{error}</div>}
+      <div className="actions">
+        <button onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+        <button className="secondary" onClick={onCancel} disabled={saving}>Cancel</button>
+      </div>
+      <span className="muted">Re-run “Score library” after correcting.</span>
+    </div>
+  );
+}
+
+export function TrackList({ refreshKey, onSendToAudition, onFindMatches }) {
   const [tracks, setTracks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   // jobs[trackId] = { kind: 'download'|'separate', jobId }
   const [jobs, setJobs] = useState({});
+  const [editing, setEditing] = useState(null); // track id being edited
 
   const refresh = async () => {
     setLoading(true);
@@ -85,6 +149,7 @@ export function TrackList({ refreshKey }) {
               <th>Length</th>
               <th>Features</th>
               <th>Actions</th>
+              <th>Mashup</th>
               <th>Audio</th>
             </tr>
           </thead>
@@ -98,6 +163,7 @@ export function TrackList({ refreshKey }) {
               const canAnalyze =
                 !job && t.stems.full;
               const feats = t.features?.full;
+              const analysed = !!feats;
 
               return (
                 <tr key={t.id}>
@@ -126,11 +192,25 @@ export function TrackList({ refreshKey }) {
                   </td>
                   <td>{t.duration_str || "—"}</td>
                   <td style={{ fontSize: "0.75rem" }}>
-                    {feats ? (
+                    {editing === t.id ? (
+                      <FeatureEditor
+                        track={t}
+                        onSaved={() => { setEditing(null); refresh(); }}
+                        onCancel={() => setEditing(null)}
+                      />
+                    ) : feats ? (
                       <>
                         <div><span className="muted">BPM:</span> {feats.bpm != null ? feats.bpm.toFixed(1) : "—"}</div>
                         <div><span className="muted">Key:</span> {feats.key || "—"} {feats.mode || ""} {feats.camelot ? `(${feats.camelot})` : ""}</div>
                         <div><span className="muted">Energy:</span> {feats.energy != null ? feats.energy.toFixed(2) : "—"}</div>
+                        <button
+                          className="secondary"
+                          style={{ marginTop: 4 }}
+                          onClick={() => setEditing(t.id)}
+                          title="Manually correct BPM / key (fixes wrong auto-detection)"
+                        >
+                          Edit
+                        </button>
                       </>
                     ) : (
                       <span className="muted">—</span>
@@ -158,6 +238,34 @@ export function TrackList({ refreshKey }) {
                         title={canAnalyze ? "" : "Needs a downloaded file"}
                       >
                         Analyze
+                      </button>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="actions">
+                      <button
+                        className="secondary"
+                        disabled={!analysed || !t.stems.vocals}
+                        title={analysed && t.stems.vocals ? "Send to Audition as the vocal" : "Needs analysed vocal stem"}
+                        onClick={() => onSendToAudition?.({ vocalId: t.id })}
+                      >
+                        ♪ as vocal
+                      </button>
+                      <button
+                        className="secondary"
+                        disabled={!analysed || !t.stems.instrumental}
+                        title={analysed && t.stems.instrumental ? "Send to Audition as the instrumental bed" : "Needs analysed instrumental stem"}
+                        onClick={() => onSendToAudition?.({ instId: t.id })}
+                      >
+                        ♪ as bed
+                      </button>
+                      <button
+                        className="secondary"
+                        disabled={!analysed}
+                        title={analysed ? "Find scored beds for this vocal" : "Analyze first"}
+                        onClick={() => onFindMatches?.(t.id, "vocal")}
+                      >
+                        Find beds
                       </button>
                     </div>
                   </td>

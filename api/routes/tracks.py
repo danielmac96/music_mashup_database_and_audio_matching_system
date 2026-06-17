@@ -6,8 +6,12 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
-from database.models import get_all_features, get_all_songs, get_conn, get_sections
+from database.models import (
+    get_all_features, get_all_songs, get_conn, get_features_for_song,
+    get_sections, update_features_manual,
+)
 
 from api import jobs
 from api.workers import analysis_worker, download_worker, stems_worker
@@ -15,6 +19,8 @@ from api.workers import analysis_worker, download_worker, stems_worker
 router = APIRouter()
 
 _STEM_TYPES = {"full", "vocals", "instrumental"}
+_KEY_NAMES = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
+_MODES = {"major", "minor"}
 _AUDIO_MEDIA = {
     "full": "audio/mpeg",
     "vocals": "audio/wav",
@@ -114,6 +120,41 @@ def queue_analyze(song_id: int, background: BackgroundTasks) -> dict:
     job_id = jobs.new_job(kind="analyze", message="Queued for analysis")
     background.add_task(analysis_worker.run, job_id, song_id)
     return {"job_id": job_id}
+
+
+class FeatureCorrection(BaseModel):
+    bpm: Optional[float] = None
+    key: Optional[str] = None
+    mode: Optional[str] = None
+
+
+@router.patch("/{song_id}/features")
+def correct_features(song_id: int, body: FeatureCorrection) -> dict:
+    """Manually correct a track's detected BPM and/or key.
+
+    Auto-detected tempo (octave errors) and key (major/minor confusion) are
+    often wrong and silently poison every match for the track. The correction
+    is written to all of the song's stem rows and Camelot is recomputed.
+    Mashup candidates are NOT auto-rescored — re-run 'Score library' afterwards.
+    """
+    if body.bpm is None and body.key is None and body.mode is None:
+        raise HTTPException(status_code=400, detail="nothing to update")
+    if body.bpm is not None and body.bpm <= 0:
+        raise HTTPException(status_code=400, detail="bpm must be > 0")
+    if body.key is not None and body.key not in _KEY_NAMES:
+        raise HTTPException(status_code=400,
+                            detail=f"key must be one of {sorted(_KEY_NAMES)}")
+    if body.mode is not None and body.mode not in _MODES:
+        raise HTTPException(status_code=400, detail="mode must be 'major' or 'minor'")
+
+    updated = update_features_manual(song_id, bpm=body.bpm, key=body.key,
+                                     mode=body.mode)
+    if updated == 0:
+        raise HTTPException(
+            status_code=404,
+            detail="track has no analysed features yet — analyze it first",
+        )
+    return {"updated_rows": updated, "features": get_features_for_song(song_id, "full")}
 
 
 @router.get("/{song_id}/sections")

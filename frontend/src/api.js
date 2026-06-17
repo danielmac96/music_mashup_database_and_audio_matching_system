@@ -40,6 +40,12 @@ export const api = {
   startAnalyze: (id) =>
     jsonFetch(`/api/tracks/${id}/analyze`, { method: "POST" }),
 
+  correctFeatures: (id, { bpm, key, mode } = {}) =>
+    jsonFetch(`/api/tracks/${id}/features`, {
+      method: "PATCH",
+      body: JSON.stringify({ bpm, key, mode }),
+    }),
+
   getJob: (jobId) => jsonFetch(`/api/jobs/${jobId}`),
 
   audioUrl: (id, stemType) => `/api/tracks/${id}/audio/${stemType}`,
@@ -48,14 +54,30 @@ export const api = {
 
   startScoring: () => jsonFetch("/api/mashups/score", { method: "POST" }),
 
-  getMashups: ({ comboType = "", minScore = 0, limit = 50 } = {}) => {
+  getMashups: ({
+    comboType = "",
+    minScore = 0,
+    limit = 50,
+    vocalSongId = null,
+    instSongId = null,
+  } = {}) => {
     const params = new URLSearchParams();
     if (comboType) params.set("combo_type", comboType);
     if (minScore) params.set("min_score", String(minScore));
     params.set("limit", String(limit));
+    if (vocalSongId != null) params.set("vocal_song_id", String(vocalSongId));
+    if (instSongId != null) params.set("inst_song_id", String(instSongId));
     return jsonFetch(`/api/mashups?${params}`);
   },
 
   getMashupPlan: (vocalId, instId) =>
     jsonFetch(`/api/mashups/plan?vocal_id=${vocalId}&inst_id=${instId}`),
+
+  startPreview: (vocalId, instId) =>
+    jsonFetch(`/api/mashups/preview?vocal_id=${vocalId}&inst_id=${instId}`, {
+      method: "POST",
+    }),
+
+  previewAudioUrl: (vocalId, instId) =>
+    `/api/mashups/preview/audio?vocal_id=${vocalId}&inst_id=${instId}`,
 };
