@@ -96,7 +96,7 @@ function PlanDetails({ vocalId, instId }) {
   );
 }
 
-export function MashupSuggestions() {
+export function MashupSuggestions({ seed, onClearSeed, onAudition }) {
   const [candidates, setCandidates] = useState([]);
   const [comboType, setComboType] = useState("vocal_over_instrumental");
   const [loading, setLoading] = useState(false);
@@ -104,11 +104,16 @@ export function MashupSuggestions() {
   const [scoreJobId, setScoreJobId] = useState(null);
   const [expanded, setExpanded] = useState(null); // candidate id
 
-  const refresh = async (type = comboType) => {
+  const refresh = async (type = comboType, activeSeed = seed) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await api.getMashups({ comboType: type, limit: 50 });
+      const opts = { comboType: type, limit: 50 };
+      if (activeSeed?.songId != null) {
+        if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
+        else opts.vocalSongId = activeSeed.songId;
+      }
+      const data = await api.getMashups(opts);
       setCandidates(data.candidates);
     } catch (e) {
       setError(e.message);
@@ -117,9 +122,11 @@ export function MashupSuggestions() {
     }
   };
 
+  // Refetch whenever a directed-search seed arrives from the Library tab.
   useEffect(() => {
-    refresh();
-  }, []);
+    refresh(comboType, seed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed]);
 
   const startScoring = async () => {
     try {
@@ -180,6 +187,16 @@ export function MashupSuggestions() {
           Instrumental / Instrumental
         </button>
       </div>
+
+      {seed?.songId != null && (
+        <div className="muted" style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+          Showing matches where track #{seed.songId} is the{" "}
+          {seed.role === "instrumental" ? "instrumental" : "vocal"}.
+          <button className="secondary" onClick={() => { onClearSeed?.(); refresh(comboType, null); }}>
+            Clear filter
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="error-text" style={{ marginTop: 8 }}>
@@ -242,19 +259,29 @@ export function MashupSuggestions() {
                     </div>
                   </td>
                   <td>
-                    <button
-                      className="secondary"
-                      onClick={() =>
-                        setExpanded(expanded === c.id ? null : c.id)
-                      }
-                      title={
-                        c.vocal_section_count && c.inst_section_count
-                          ? "Section-level mashup plan"
-                          : "Plan available — analyze both tracks for section timestamps"
-                      }
-                    >
-                      {expanded === c.id ? "Hide" : "Plan"}
-                    </button>
+                    <div className="actions">
+                      <button
+                        className="secondary"
+                        onClick={() =>
+                          setExpanded(expanded === c.id ? null : c.id)
+                        }
+                        title={
+                          c.vocal_section_count && c.inst_section_count
+                            ? "Section-level mashup plan"
+                            : "Plan available — analyze both tracks for section timestamps"
+                        }
+                      >
+                        {expanded === c.id ? "Hide" : "Plan"}
+                      </button>
+                      {comboType === "vocal_over_instrumental" && (
+                        <button
+                          onClick={() => onAudition?.(c.vocal_song_id, c.inst_song_id)}
+                          title="Render and hear this mashup in the Audition tab"
+                        >
+                          Audition
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
                 {expanded === c.id && (

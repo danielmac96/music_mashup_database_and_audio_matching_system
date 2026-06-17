@@ -19,12 +19,13 @@ AUDIO_DIR        = Path(os.environ.get("MASHUP_AUDIO_ROOT", BASE_DIR / "audio"))
 RAW_DIR          = AUDIO_DIR / "full_song"
 VOCALS_DIR       = AUDIO_DIR / "vocals"
 INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
+PREVIEWS_DIR     = AUDIO_DIR / "previews"   # rendered audition mashup previews
 
 # SQLite file path — must not be BASE_DIR / "database" (that is the Python package directory).
 DB_PATH = Path(os.environ.get("MASHUP_DB_PATH", BASE_DIR / "mashup.db"))
 
 # Create dirs if missing
-for d in [RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR]:
+for d in [RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR, PREVIEWS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 

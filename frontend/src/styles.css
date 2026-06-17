@@ -202,3 +202,21 @@ audio {
   max-height: 240px;
   overflow: auto;
 }
+
+/* ── Manual feature edit + audition controls ──────────────────────────────── */
+select,
+input[type="number"] {
+  padding: 6px 8px;
+  background: #1c2029;
+  color: #e7e9ee;
+  border: 1px solid #2a2f3a;
+  border-radius: 6px;
+}
+
+.plan-summary > div {
+  min-width: 110px;
+}
+
+.plan-summary .muted {
+  font-size: 0.75rem;
+}
