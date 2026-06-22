@@ -135,6 +135,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     _migrate_songs_columns(conn)
+    _migrate_features_columns(conn)
     conn.commit()
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -155,6 +156,19 @@ _SONGS_OPTIONAL_COLUMNS = (
     ("tags", "TEXT"),
     ("release_year", "INTEGER DEFAULT 0"),
 )
+
+
+_FEATURES_OPTIONAL_COLUMNS = (
+    ("beat_times_json", "TEXT"),
+    ("waveform_rms_json", "TEXT"),
+)
+
+
+def _migrate_features_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(features)").fetchall()}
+    for col, decl in _FEATURES_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE features ADD COLUMN {col} {decl}")
 
 
 def _migrate_songs_columns(conn: sqlite3.Connection) -> None:
@@ -325,13 +339,18 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
                     db_path: Path = DB_PATH):
     mfcc = features.pop("mfcc", None)
     mfcc_json = json.dumps(mfcc) if mfcc is not None else None
+    beat_times = features.pop("beat_times", None)
+    beat_times_json = json.dumps(beat_times) if beat_times is not None else None
+    waveform_rms = features.pop("waveform_rms", None)
+    waveform_rms_json = json.dumps(waveform_rms) if waveform_rms is not None else None
     conn = get_conn(db_path)
     conn.execute(
         """INSERT INTO features
                (song_id, stem_type, bpm, bpm_confidence, key, mode, camelot,
                 loudness_rms, energy, mfcc_json,
-                spectral_centroid, spectral_rolloff, zero_crossing_rate)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                spectral_centroid, spectral_rolloff, zero_crossing_rate,
+                beat_times_json, waveform_rms_json)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(song_id, stem_type) DO UPDATE SET
                bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
                key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
@@ -339,13 +358,16 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
                mfcc_json=excluded.mfcc_json,
                spectral_centroid=excluded.spectral_centroid,
                spectral_rolloff=excluded.spectral_rolloff,
-               zero_crossing_rate=excluded.zero_crossing_rate""",
+               zero_crossing_rate=excluded.zero_crossing_rate,
+               beat_times_json=excluded.beat_times_json,
+               waveform_rms_json=excluded.waveform_rms_json""",
         (song_id, stem_type,
          features.get("bpm"), features.get("bpm_confidence"),
          features.get("key"), features.get("mode"), features.get("camelot"),
          features.get("loudness_rms"), features.get("energy"), mfcc_json,
          features.get("spectral_centroid"), features.get("spectral_rolloff"),
-         features.get("zero_crossing_rate"))
+         features.get("zero_crossing_rate"),
+         beat_times_json, waveform_rms_json)
     )
     conn.commit()
     conn.close()
@@ -404,6 +426,16 @@ def get_features_for_song(song_id: int, stem_type: str = "full",
     d = dict(row)
     if d.get("mfcc_json"):
         d["mfcc"] = json.loads(d.pop("mfcc_json"))
+    else:
+        d.pop("mfcc_json", None)
+    if d.get("beat_times_json"):
+        d["beat_times"] = json.loads(d.pop("beat_times_json"))
+    else:
+        d.pop("beat_times_json", None)
+    if d.get("waveform_rms_json"):
+        d["waveform_rms"] = json.loads(d.pop("waveform_rms_json"))
+    else:
+        d.pop("waveform_rms_json", None)
     return d
 
 

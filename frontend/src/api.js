@@ -52,6 +52,8 @@ export const api = {
 
   getSections: (id) => jsonFetch(`/api/tracks/${id}/sections`),
 
+  getWaveform: (id, stem) => jsonFetch(`/api/tracks/${id}/waveform?stem=${stem}`),
+
   startScoring: () => jsonFetch("/api/mashups/score", { method: "POST" }),
 
   getMashups: ({
@@ -73,10 +75,12 @@ export const api = {
   getMashupPlan: (vocalId, instId) =>
     jsonFetch(`/api/mashups/plan?vocal_id=${vocalId}&inst_id=${instId}`),
 
-  startPreview: (vocalId, instId) =>
-    jsonFetch(`/api/mashups/preview?vocal_id=${vocalId}&inst_id=${instId}`, {
-      method: "POST",
-    }),
+  startPreview: (vocalId, instId, vocalStart = null, instStart = null) => {
+    const params = new URLSearchParams({ vocal_id: vocalId, inst_id: instId });
+    if (vocalStart != null) params.set("vocal_start", vocalStart.toFixed(3));
+    if (instStart  != null) params.set("inst_start",  instStart.toFixed(3));
+    return jsonFetch(`/api/mashups/preview?${params}`, { method: "POST" });
+  },
 
   previewAudioUrl: (vocalId, instId) =>
     `/api/mashups/preview/audio?vocal_id=${vocalId}&inst_id=${instId}`,

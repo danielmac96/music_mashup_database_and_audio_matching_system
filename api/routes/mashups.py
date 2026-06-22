@@ -54,11 +54,17 @@ def get_plan(vocal_id: int, inst_id: int) -> dict:
 
 @router.post("/preview")
 def queue_preview(vocal_id: int, inst_id: int,
-                  background: BackgroundTasks) -> dict:
+                  background: BackgroundTasks,
+                  vocal_start: Optional[float] = None,
+                  inst_start: Optional[float] = None) -> dict:
     """Render an audible preview of the vocal-over-instrumental pair so the
-    producer can audition it before committing to a DAW."""
+    producer can audition it before committing to a DAW.
+
+    vocal_start / inst_start: override the auto-detected alignment; use the
+    marker positions from the Audition Studio timeline when supplied."""
     job_id = jobs.new_job(kind="preview", message="Queued for preview render")
-    background.add_task(preview_worker.run, job_id, vocal_id, inst_id)
+    background.add_task(preview_worker.run, job_id, vocal_id, inst_id,
+                        vocal_start, inst_start)
     return {"job_id": job_id}
 
 

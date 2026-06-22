@@ -60,6 +60,8 @@ def analyze_file(audio_path: Path, trim_secs: Optional[int] = None,
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=HOP_LENGTH)
     features["bpm"] = float(round(float(np.atleast_1d(tempo)[0]), 2))
     features["bpm_confidence"] = float(min(len(beats) / (len(y) / HOP_LENGTH), 1.0))
+    beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP_LENGTH)
+    features["beat_times"] = [round(float(t), 4) for t in beat_times]
 
     # Key
     _tick("Detecting key…")
@@ -103,6 +105,13 @@ def analyze_file(audio_path: Path, trim_secs: Optional[int] = None,
     features["spectral_centroid"]   = float(round(float(centroid.mean()), 2))
     features["spectral_rolloff"]    = float(round(float(rolloff.mean()), 2))
     features["zero_crossing_rate"]  = float(round(float(zcr.mean()), 6))
+
+    _tick("Computing waveform envelope…")
+    N_WF = 360
+    chunk = max(1, len(y) // N_WF)
+    wf = [float(np.sqrt(np.mean(y[i * chunk:(i + 1) * chunk] ** 2))) for i in range(N_WF)]
+    mx = max(wf) or 1.0
+    features["waveform_rms"] = [round(v / mx, 5) for v in wf]
 
     log.info(f"  → BPM={features['bpm']}, Key={features['key']} {features['mode']}, "
              f"Camelot={features['camelot']}, RMS={features['loudness_rms']:.4f}")

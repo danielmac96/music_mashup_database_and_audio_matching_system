@@ -39,10 +39,14 @@ def preview_path(vocal_song_id: int, inst_song_id: int) -> Path:
 
 
 def build_preview(vocal_song_id: int, inst_song_id: int, db_path=None,
-                  on_progress: ProgressCb = None, force: bool = False
-                  ) -> Optional[Path]:
+                  on_progress: ProgressCb = None, force: bool = False,
+                  vocal_start: Optional[float] = None,
+                  inst_start: Optional[float] = None) -> Optional[Path]:
     """Render (and cache) a mashup preview WAV. Returns the path, or None when
-    stems/features are missing or the audio stack is unavailable."""
+    stems/features are missing or the audio stack is unavailable.
+
+    vocal_start / inst_start: when supplied (from the Audition Studio marker),
+    override the auto-detected pairing start times."""
     def _tick(pct, msg):
         if on_progress:
             on_progress(pct, msg)
@@ -76,13 +80,20 @@ def build_preview(vocal_song_id: int, inst_song_id: int, db_path=None,
     shift = int(plan.get("semitone_shift") or 0)
     pairings = plan.get("pairings") or []
 
-    # Alignment: lay the best vocal section over the best instrumental section.
+    # Alignment: use caller-supplied marker times when available; otherwise
+    # fall back to the auto-detected best pairing from the plan.
     if pairings:
         p = pairings[0]
-        v_start, v_end = float(p["vocal_start"]), float(p["vocal_end"])
-        i_start = float(p["inst_start"])
+        auto_v_start = float(p["vocal_start"])
+        auto_v_end   = float(p["vocal_end"])
+        auto_i_start = float(p["inst_start"])
     else:
-        v_start, v_end, i_start = 0.0, MAX_PREVIEW_SECS, 0.0
+        auto_v_start, auto_v_end, auto_i_start = 0.0, MAX_PREVIEW_SECS, 0.0
+
+    v_start = float(vocal_start) if vocal_start is not None else auto_v_start
+    i_start = float(inst_start)  if inst_start  is not None else auto_i_start
+    # Custom marker: render a full MAX_PREVIEW_SECS clip; auto: clip to section boundary
+    v_end   = auto_v_end if vocal_start is None else v_start + MAX_PREVIEW_SECS
 
     v_dur = min(max(v_end - v_start, 1.0), MAX_PREVIEW_SECS)
 
@@ -99,11 +110,11 @@ def build_preview(vocal_song_id: int, inst_song_id: int, db_path=None,
 
     if abs(stretch - 1.0) > 1e-3:
         _tick(45, f"Time-stretching instrumental ×{stretch:.3f}…")
-        i_y = librosa.effects.time_stretch(i_y, rate=float(stretch))
+        i_y = librosa.effects.time_stretch(i_y, rate=float(stretch), n_fft=1024)
 
     if shift:
         _tick(65, f"Pitch-shifting instrumental {shift:+d} st…")
-        i_y = librosa.effects.pitch_shift(i_y, sr=PREVIEW_SR, n_steps=shift)
+        i_y = librosa.effects.pitch_shift(i_y, sr=PREVIEW_SR, n_steps=shift, n_fft=1024)
 
     _tick(85, "Mixing…")
     n = min(len(v_y), len(i_y))
@@ -112,11 +123,10 @@ def build_preview(vocal_song_id: int, inst_song_id: int, db_path=None,
         return None
     v_y, i_y = v_y[:n], i_y[:n]
 
-    def _norm(x, peak=0.9):
-        m = float(np.max(np.abs(x))) or 1.0
-        return x * (peak / m)
-
-    mix = _norm(v_y, 0.9) * 0.9 + _norm(i_y, 0.9) * 0.7
+    # Mix at natural stem levels — no per-stem normalization so the vocal and
+    # instrumental volumes match what you hear when playing each stem alone.
+    # Light gain on vocal to sit above the bed, then peak-limit to prevent clip.
+    mix = v_y * 0.9 + i_y * 0.7
     peak = float(np.max(np.abs(mix))) or 1.0
     if peak > 1.0:
         mix = mix / peak

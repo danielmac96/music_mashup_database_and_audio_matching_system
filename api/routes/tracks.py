@@ -169,6 +169,23 @@ def list_sections(song_id: int) -> dict:
     return {"count": len(sections), "sections": sections}
 
 
+@router.get("/{song_id}/waveform")
+def get_waveform(song_id: int, stem: str = "vocals") -> dict:
+    """Waveform envelope (360 normalized RMS points) and beat timestamps for alignment."""
+    if stem not in _STEM_TYPES:
+        raise HTTPException(status_code=400, detail=f"stem must be one of {sorted(_STEM_TYPES)}")
+    conn = get_conn()
+    row = conn.execute("SELECT id FROM songs WHERE id=?", (song_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="song not found")
+    feat_stem = get_features_for_song(song_id, stem_type=stem)
+    waveform = feat_stem.get("waveform_rms", []) if feat_stem else []
+    feat_full = get_features_for_song(song_id, stem_type="full")
+    beat_times = feat_full.get("beat_times", []) if feat_full else []
+    return {"song_id": song_id, "stem": stem, "waveform": waveform, "beat_times": beat_times}
+
+
 @router.get("/{song_id}/audio/{stem_type}")
 def stream_audio(song_id: int, stem_type: str):
     if stem_type not in _STEM_TYPES:
