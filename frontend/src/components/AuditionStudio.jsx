@@ -189,6 +189,11 @@ export function AuditionStudio({ seed }) {
   const [anchor, setAnchor] = useState("instrumental"); // which side gets stretched/pitched
   const [adjustJobId, setAdjustJobId] = useState(null);
   const [adjustedKey, setAdjustedKey] = useState(null); // "vocalId:instId:anchor" once ready
+  const [adjustedStretch, setAdjustedStretch] = useState(1); // rate actually applied to the anchor side
+  const [adjustedShift, setAdjustedShift] = useState(0);
+  const [stretchInput, setStretchInput] = useState(1); // editable, pre-filled with engine suggestion
+  const [shiftInput, setShiftInput] = useState(0);
+  const pendingAdjustRef = useRef(null); // values sent with the in-flight adjust job
 
   const [vocalSections, setVocalSections] = useState([]);
   const [instSections, setInstSections] = useState([]);
@@ -204,6 +209,11 @@ export function AuditionStudio({ seed }) {
   const instAudioRef   = useRef(null);
   const mashupStopRef  = useRef(null);
   const rafRef         = useRef(null);
+  // Tracks whether the currently-loaded <audio> src for each side is the raw
+  // (original-timeline) stem or the adjusted (display-timeline) render, so
+  // the rAF tick can convert currentTime back to display-time correctly.
+  const vocalSrcModeRef = useRef("raw");
+  const instSrcModeRef  = useRef("raw");
 
   const [vocalPlaying,  setVocalPlaying]  = useState(false);
   const [instPlaying,   setInstPlaying]   = useState(false);
@@ -232,21 +242,65 @@ export function AuditionStudio({ seed }) {
   const vocalTrack = useMemo(() => tracks.find((t) => t.id === vocalId), [tracks, vocalId]);
   const instTrack  = useMemo(() => tracks.find((t) => t.id === instId),  [tracks, instId]);
 
-  const pps = useMemo(() => {
-    const maxDur = Math.max(vocalTrack?.duration_secs ?? 0, instTrack?.duration_secs ?? 0, 1);
-    return TIMELINE_WIDTH / maxDur;
-  }, [vocalTrack, instTrack]);
+  const isAdjustedNow = adjustedKey === `${vocalId}:${instId}:${anchor}`;
+  // Rate actually applied (via librosa time_stretch) to the anchor side's audio.
+  const appliedStretch = isAdjustedNow ? (adjustedStretch || 1) : 1;
 
-  // Timestamp at the center marker for each track
+  // "Display time" is the coordinate space the waveform/markers are drawn in.
+  // time_stretch(y, rate) shrinks duration by `rate`, so a point at original
+  // time t now plays at t / rate — i.e. display = orig * (1 / rate).
+  const vocalDisplayFactor = (isAdjustedNow && anchor === "vocal") ? 1 / appliedStretch : 1;
+  const instDisplayFactor  = (isAdjustedNow && anchor === "instrumental") ? 1 / appliedStretch : 1;
+
+  const vocalDisplayDuration = (vocalTrack?.duration_secs ?? 0) * vocalDisplayFactor;
+  const instDisplayDuration  = (instTrack?.duration_secs ?? 0) * instDisplayFactor;
+
+  const pps = useMemo(() => {
+    const maxDur = Math.max(vocalDisplayDuration, instDisplayDuration, 1);
+    return TIMELINE_WIDTH / maxDur;
+  }, [vocalDisplayDuration, instDisplayDuration]);
+
+  // Timestamp at the center marker for each track, in display-time.
   const vocalCenterTime = useMemo(() => {
     if (!vocalTrack) return 0;
-    return Math.max(0, Math.min(vocalTrack.duration_secs, TIMELINE_WIDTH / (2 * pps) - vocalOffset));
-  }, [pps, vocalOffset, vocalTrack]);
+    return Math.max(0, Math.min(vocalDisplayDuration, TIMELINE_WIDTH / (2 * pps) - vocalOffset));
+  }, [pps, vocalOffset, vocalTrack, vocalDisplayDuration]);
 
   const instCenterTime = useMemo(() => {
     if (!instTrack) return 0;
-    return Math.max(0, Math.min(instTrack.duration_secs, TIMELINE_WIDTH / (2 * pps) - instOffset));
-  }, [pps, instOffset, instTrack]);
+    return Math.max(0, Math.min(instDisplayDuration, TIMELINE_WIDTH / (2 * pps) - instOffset));
+  }, [pps, instOffset, instTrack, instDisplayDuration]);
+
+  // Same marker position translated back to the RAW (unstretched) stem's
+  // native timeline — used by the solo "Play vocal"/"Play inst" buttons,
+  // which always play the raw file regardless of which side is adjusted.
+  const vocalOrigCenterTime = vocalCenterTime / vocalDisplayFactor;
+  const instOrigCenterTime  = instCenterTime / instDisplayFactor;
+
+  const vocalDisplaySections = useMemo(
+    () => vocalSections.map((s) => ({
+      ...s,
+      start_sec: s.start_sec * vocalDisplayFactor,
+      end_sec: s.end_sec * vocalDisplayFactor,
+    })),
+    [vocalSections, vocalDisplayFactor]
+  );
+  const instDisplaySections = useMemo(
+    () => instSections.map((s) => ({
+      ...s,
+      start_sec: s.start_sec * instDisplayFactor,
+      end_sec: s.end_sec * instDisplayFactor,
+    })),
+    [instSections, instDisplayFactor]
+  );
+  const vocalDisplayBeatTimes = useMemo(
+    () => (vocalWaveform.beat_times || []).map((t) => t * vocalDisplayFactor),
+    [vocalWaveform.beat_times, vocalDisplayFactor]
+  );
+  const instDisplayBeatTimes = useMemo(
+    () => (instWaveform.beat_times || []).map((t) => t * instDisplayFactor),
+    [instWaveform.beat_times, instDisplayFactor]
+  );
 
   useEffect(() => {
     setVocalSections([]);
@@ -292,12 +346,25 @@ export function AuditionStudio({ seed }) {
     return () => { cancelled = true; };
   }, [vocalId, instId]);
 
-  const stretchFactor = plan?.stretch_factor || 1; // instrumental-to-vocal factor
-  const isAdjustedNow = adjustedKey === `${vocalId}:${instId}:${anchor}`;
+  // Engine-suggested stretch/pitch defaults for the current anchor side;
+  // reset the editable inputs to these whenever the anchor or plan changes.
+  useEffect(() => {
+    if (!plan) return;
+    const planStretch = plan.stretch_factor || 1;
+    const planShift = plan.semitone_shift || 0;
+    if (anchor === "instrumental") {
+      setStretchInput(planStretch);
+      setShiftInput(planShift);
+    } else {
+      setStretchInput(planStretch ? 1 / planStretch : 1);
+      setShiftInput(-planShift);
+    }
+  }, [anchor, plan]);
 
-  // rAF loop for red playhead while audio is playing. Whichever side is
-  // currently playing the adjusted (stretched) file needs its currentTime
-  // converted back to the original-timeline position the waveform is drawn in.
+  // rAF loop for red playhead while audio is playing. A side whose <audio>
+  // element is currently loaded with the adjusted (display-timeline) render
+  // reads currentTime directly; a side playing the raw stem converts via its
+  // display factor (a no-op unless that's the anchor side via a solo button).
   useEffect(() => {
     if (!vocalPlaying && !instPlaying) {
       cancelAnimationFrame(rafRef.current);
@@ -308,18 +375,18 @@ export function AuditionStudio({ seed }) {
       const next = { vocal: null, inst: null };
       if (vocalPlaying && vocalAudioRef.current) {
         const t = vocalAudioRef.current.currentTime;
-        next.vocal = (isAdjustedNow && anchor === "vocal") ? t * stretchFactor : t;
+        next.vocal = vocalSrcModeRef.current === "adjusted" ? t : t * vocalDisplayFactor;
       }
       if (instPlaying && instAudioRef.current) {
         const t = instAudioRef.current.currentTime;
-        next.inst = (isAdjustedNow && anchor === "instrumental") ? t / stretchFactor : t;
+        next.inst = instSrcModeRef.current === "adjusted" ? t : t * instDisplayFactor;
       }
       setPlayheadTimes(next);
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [vocalPlaying, instPlaying, isAdjustedNow, anchor, stretchFactor]);
+  }, [vocalPlaying, instPlaying, vocalDisplayFactor, instDisplayFactor]);
 
   const stopAllAudio = () => {
     if (vocalAudioRef.current) { vocalAudioRef.current.pause(); }
@@ -340,8 +407,9 @@ export function AuditionStudio({ seed }) {
       setVocalPlaying(false);
     } else {
       stopAllAudio();
-      audio.src = api.audioUrl(vocalId, "vocals"); // ensure raw, not a leftover adjusted src
-      audio.currentTime = vocalCenterTime;
+      audio.src = api.audioUrl(vocalId, "vocals"); // solo button always plays the raw stem
+      vocalSrcModeRef.current = "raw";
+      audio.currentTime = vocalOrigCenterTime;
       audio.play().catch(() => {});
       setVocalPlaying(true);
     }
@@ -356,19 +424,31 @@ export function AuditionStudio({ seed }) {
     } else {
       stopAllAudio();
       audio.src = api.audioUrl(instId, "instrumental");
-      audio.currentTime = instCenterTime;
+      instSrcModeRef.current = "raw";
+      audio.currentTime = instOrigCenterTime;
       audio.play().catch(() => {});
       setInstPlaying(true);
     }
   };
 
-  const handleSetAnchor = async (next) => {
+  const handleSetAnchor = (next) => {
+    if (next === anchor) return;
     setAnchor(next);
     setError(null);
+  };
+
+  const handleApplyAdjust = async () => {
+    setError(null);
     if (vocalId == null || instId == null || vocalId === instId) return;
-    if (adjustedKey === `${vocalId}:${instId}:${next}`) return; // already adjusted
+    const stretch = Number(stretchInput);
+    const shift = Math.round(Number(shiftInput));
+    if (!Number.isFinite(stretch) || stretch <= 0 || !Number.isFinite(shift)) {
+      setError("Stretch must be a positive number and pitch a whole number of semitones.");
+      return;
+    }
+    pendingAdjustRef.current = { stretch, shift };
     try {
-      const { job_id } = await api.startAdjust(vocalId, instId, next);
+      const { job_id } = await api.startAdjust(vocalId, instId, anchor, stretch, shift);
       setAdjustJobId(job_id);
     } catch (e) {
       setError(e.message);
@@ -386,25 +466,25 @@ export function AuditionStudio({ seed }) {
     }
     stopAllAudio();
 
-    const useAdjusted = isAdjustedNow;
-    vAudio.src = (useAdjusted && anchor === "vocal")
+    const vocalIsAdjusted = isAdjustedNow && anchor === "vocal";
+    const instIsAdjusted = isAdjustedNow && anchor === "instrumental";
+
+    vAudio.src = vocalIsAdjusted
       ? api.adjustedAudioUrl(vocalId, instId, "vocal")
       : api.audioUrl(vocalId, "vocals");
-    iAudio.src = (useAdjusted && anchor === "instrumental")
+    vocalSrcModeRef.current = vocalIsAdjusted ? "adjusted" : "raw";
+
+    iAudio.src = instIsAdjusted
       ? api.adjustedAudioUrl(vocalId, instId, "instrumental")
       : api.audioUrl(instId, "instrumental");
+    instSrcModeRef.current = instIsAdjusted ? "adjusted" : "raw";
 
-    const vSeek = (useAdjusted && anchor === "vocal")
-      ? vocalCenterTime * stretchFactor
-      : vocalCenterTime;
-    const iSeek = (useAdjusted && anchor === "instrumental")
-      ? instCenterTime / stretchFactor
-      : instCenterTime;
+    // Both sides' <audio> elements are now loaded with files whose native
+    // timeline matches display-time, so the marker position seeks directly.
+    vAudio.currentTime = vocalCenterTime;
+    iAudio.currentTime = instCenterTime;
 
-    vAudio.currentTime = vSeek;
-    iAudio.currentTime = iSeek;
-
-    const stopAt = vSeek + 30;
+    const stopAt = vocalCenterTime + 30;
     const checkStop = () => {
       if (vAudio.currentTime >= stopAt) stopAllAudio();
     };
@@ -490,8 +570,8 @@ export function AuditionStudio({ seed }) {
           </div>
 
           <SectionTimeline
-            sections={vocalSections}
-            durationSecs={vocalTrack?.duration_secs ?? 0}
+            sections={vocalDisplaySections}
+            durationSecs={vocalDisplayDuration}
             label="Vocal"
             pps={pps}
             offsetSecs={vocalOffset}
@@ -499,7 +579,7 @@ export function AuditionStudio({ seed }) {
             selectedId={selVocal?.id}
             onSectionClick={setSelVocal}
             waveform={vocalWaveform.waveform}
-            beatTimes={vocalWaveform.beat_times}
+            beatTimes={vocalDisplayBeatTimes}
             trackRole="vocal"
             onPlay={vocalId ? handlePlayVocal : null}
             isPlaying={vocalPlaying}
@@ -507,8 +587,8 @@ export function AuditionStudio({ seed }) {
           />
 
           <SectionTimeline
-            sections={instSections}
-            durationSecs={instTrack?.duration_secs ?? 0}
+            sections={instDisplaySections}
+            durationSecs={instDisplayDuration}
             label="Inst"
             pps={pps}
             offsetSecs={instOffset}
@@ -516,7 +596,7 @@ export function AuditionStudio({ seed }) {
             selectedId={selInst?.id}
             onSectionClick={setSelInst}
             waveform={instWaveform.waveform}
-            beatTimes={instWaveform.beat_times}
+            beatTimes={instDisplayBeatTimes}
             trackRole="instrumental"
             onPlay={instId ? handlePlayInst : null}
             isPlaying={instPlaying}
@@ -525,7 +605,7 @@ export function AuditionStudio({ seed }) {
 
           <div className="alignment-readout">{alignmentText}</div>
 
-          <div className="anchor-toggle" style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+          <div className="anchor-toggle" style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
             <button
               className={anchor === "instrumental" ? "active" : "secondary"}
               onClick={() => handleSetAnchor("instrumental")}
@@ -540,12 +620,45 @@ export function AuditionStudio({ seed }) {
             >
               Stretch vocal → instrumental
             </button>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.8rem" }}>
+              <span className="muted">Stretch ×</span>
+              <input
+                type="number"
+                step="0.001"
+                min="0.01"
+                value={stretchInput}
+                onChange={(e) => setStretchInput(e.target.value)}
+                style={{ width: 70 }}
+              />
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.8rem" }}>
+              <span className="muted">Pitch (st)</span>
+              <input
+                type="number"
+                step="1"
+                value={shiftInput}
+                onChange={(e) => setShiftInput(e.target.value)}
+                style={{ width: 56 }}
+              />
+            </label>
+            <button
+              onClick={handleApplyAdjust}
+              disabled={samePair || vocalId == null || instId == null || adjustJobId != null}
+            >
+              Apply
+            </button>
+
             {adjustJobId && (
               <JobBadge
                 jobId={adjustJobId}
                 onComplete={() => {
                   setAdjustJobId(null);
                   setAdjustedKey(`${vocalId}:${instId}:${anchor}`);
+                  setAdjustedStretch(pendingAdjustRef.current?.stretch ?? 1);
+                  setAdjustedShift(pendingAdjustRef.current?.shift ?? 0);
+                  if (anchor === "instrumental") setInstOffset(0);
+                  else setVocalOffset(0);
                 }}
               />
             )}

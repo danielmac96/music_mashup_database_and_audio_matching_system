@@ -44,7 +44,8 @@ def adjusted_path(stem_song_id: int, ref_song_id: int) -> Path:
 
 def build_adjusted_stem(vocal_song_id: int, inst_song_id: int, anchor: str,
                         db_path=None, on_progress: ProgressCb = None,
-                        force: bool = False) -> Optional[Path]:
+                        force: bool = False, stretch_override: Optional[float] = None,
+                        shift_override: Optional[int] = None) -> Optional[Path]:
     """Render (and cache) a full-length, tempo/key-matched stem so the Audition
     Studio can scrub and replay freely without re-running the DSP each time.
 
@@ -52,7 +53,10 @@ def build_adjusted_stem(vocal_song_id: int, inst_song_id: int, anchor: str,
       the vocal's tempo/key (the plan's stretch_factor / semitone_shift).
     anchor='vocal': stretch+pitch-shift the FULL vocal stem to the
       instrumental's tempo/key (the inverse: 1/stretch_factor, -semitone_shift).
-    """
+
+    stretch_override / shift_override: when supplied, used in place of the
+    plan-suggested values (e.g. the user edited the suggested numbers in the
+    Audition Studio before applying)."""
     def _tick(pct, msg):
         if on_progress:
             on_progress(pct, msg)
@@ -69,13 +73,16 @@ def build_adjusted_stem(vocal_song_id: int, inst_song_id: int, anchor: str,
     if anchor == "instrumental":
         src_path = plan["files"].get("instrumental")
         out = adjusted_path(inst_song_id, vocal_song_id)
-        eff_stretch, eff_shift = stretch, shift
+        suggested_stretch, suggested_shift = stretch, shift
     elif anchor == "vocal":
         src_path = plan["files"].get("vocals")
         out = adjusted_path(vocal_song_id, inst_song_id)
-        eff_stretch, eff_shift = (1.0 / stretch if stretch else 1.0), -shift
+        suggested_stretch, suggested_shift = (1.0 / stretch if stretch else 1.0), -shift
     else:
         raise ValueError("anchor must be 'vocal' or 'instrumental'")
+
+    eff_stretch = float(stretch_override) if stretch_override is not None else suggested_stretch
+    eff_shift = int(shift_override) if shift_override is not None else suggested_shift
 
     if out.exists() and not force:
         _tick(100, "Already adjusted")

@@ -86,17 +86,21 @@ def stream_preview(vocal_id: int, inst_id: int):
 
 @router.post("/adjust")
 def queue_adjust(vocal_id: int, inst_id: int, anchor: str,
-                 background: BackgroundTasks) -> dict:
+                 background: BackgroundTasks,
+                 stretch: Optional[float] = None,
+                 shift: Optional[int] = None) -> dict:
     """Render (once, cached) a full-length tempo/key-matched stem so the
     Audition Studio can scrub and replay without re-running DSP each time.
 
     anchor='instrumental': stretch/pitch the instrumental to match the vocal.
-    anchor='vocal': stretch/pitch the vocal to match the instrumental."""
+    anchor='vocal': stretch/pitch the vocal to match the instrumental.
+    stretch / shift: optional overrides for the engine-suggested values."""
     if anchor not in ("vocal", "instrumental"):
         raise HTTPException(status_code=400,
                             detail="anchor must be 'vocal' or 'instrumental'")
     job_id = jobs.new_job(kind="adjust", message="Queued for stem adjustment")
-    background.add_task(adjust_worker.run, job_id, vocal_id, inst_id, anchor)
+    background.add_task(adjust_worker.run, job_id, vocal_id, inst_id, anchor,
+                        stretch, shift)
     return {"job_id": job_id}
 
 
