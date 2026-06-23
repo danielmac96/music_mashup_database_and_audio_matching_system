@@ -186,8 +186,9 @@ export function AuditionStudio({ seed }) {
   const [vocalId, setVocalId] = useState(seed?.vocalId ?? null);
   const [instId, setInstId] = useState(seed?.instId ?? null);
   const [plan, setPlan] = useState(null);
-  const [previewJobId, setPreviewJobId] = useState(null);
-  const [previewTs, setPreviewTs] = useState(null);
+  const [anchor, setAnchor] = useState("instrumental"); // which side gets stretched/pitched
+  const [adjustJobId, setAdjustJobId] = useState(null);
+  const [adjustedKey, setAdjustedKey] = useState(null); // "vocalId:instId:anchor" once ready
 
   const [vocalSections, setVocalSections] = useState([]);
   const [instSections, setInstSections] = useState([]);
@@ -199,16 +200,14 @@ export function AuditionStudio({ seed }) {
   const [instWaveform,  setInstWaveform]  = useState({ waveform: [], beat_times: [] });
 
   // Audio playback
-  const vocalAudioRef   = useRef(null);
-  const instAudioRef    = useRef(null);
-  const previewAudioRef = useRef(null);
-  const previewStopRef  = useRef(null);
-  const rafRef          = useRef(null);
+  const vocalAudioRef  = useRef(null);
+  const instAudioRef   = useRef(null);
+  const mashupStopRef  = useRef(null);
+  const rafRef         = useRef(null);
 
-  const [vocalPlaying,   setVocalPlaying]   = useState(false);
-  const [instPlaying,    setInstPlaying]    = useState(false);
-  const [previewPlaying, setPreviewPlaying] = useState(false);
-  const [playheadTimes,  setPlayheadTimes]  = useState({ vocal: null, inst: null });
+  const [vocalPlaying,  setVocalPlaying]  = useState(false);
+  const [instPlaying,   setInstPlaying]   = useState(false);
+  const [playheadTimes, setPlayheadTimes] = useState({ vocal: null, inst: null });
 
   useEffect(() => {
     api.getTracks()
@@ -283,10 +282,8 @@ export function AuditionStudio({ seed }) {
 
   useEffect(() => {
     setPlan(null);
-    setPreviewTs(null);
-    setPreviewJobId(null);
-    if (previewAudioRef.current) { previewAudioRef.current.pause(); }
-    setPreviewPlaying(false);
+    setAdjustedKey(null);
+    setAdjustJobId(null);
     if (vocalId == null || instId == null || vocalId === instId) return;
     let cancelled = false;
     api.getMashupPlan(vocalId, instId)
@@ -295,15 +292,14 @@ export function AuditionStudio({ seed }) {
     return () => { cancelled = true; };
   }, [vocalId, instId]);
 
-  useEffect(() => {
-    if (!previewTs || !previewAudioRef.current) return;
-    previewAudioRef.current.src = `${api.previewAudioUrl(vocalId, instId)}&t=${previewTs}`;
-    previewAudioRef.current.load();
-  }, [previewTs, vocalId, instId]);
+  const stretchFactor = plan?.stretch_factor || 1; // instrumental-to-vocal factor
+  const isAdjustedNow = adjustedKey === `${vocalId}:${instId}:${anchor}`;
 
-  // rAF loop for red playhead while audio is playing
+  // rAF loop for red playhead while audio is playing. Whichever side is
+  // currently playing the adjusted (stretched) file needs its currentTime
+  // converted back to the original-timeline position the waveform is drawn in.
   useEffect(() => {
-    if (!vocalPlaying && !instPlaying && !previewPlaying) {
+    if (!vocalPlaying && !instPlaying) {
       cancelAnimationFrame(rafRef.current);
       setPlayheadTimes({ vocal: null, inst: null });
       return;
@@ -311,34 +307,29 @@ export function AuditionStudio({ seed }) {
     const tick = () => {
       const next = { vocal: null, inst: null };
       if (vocalPlaying && vocalAudioRef.current) {
-        next.vocal = vocalAudioRef.current.currentTime;
+        const t = vocalAudioRef.current.currentTime;
+        next.vocal = (isAdjustedNow && anchor === "vocal") ? t * stretchFactor : t;
       }
       if (instPlaying && instAudioRef.current) {
-        next.inst = instAudioRef.current.currentTime;
-      }
-      if (previewPlaying && previewAudioRef.current) {
-        const t = previewAudioRef.current.currentTime;
-        next.vocal = vocalCenterTime + t;
-        next.inst  = instCenterTime + t;
+        const t = instAudioRef.current.currentTime;
+        next.inst = (isAdjustedNow && anchor === "instrumental") ? t / stretchFactor : t;
       }
       setPlayheadTimes(next);
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [vocalPlaying, instPlaying, previewPlaying, vocalCenterTime, instCenterTime]);
+  }, [vocalPlaying, instPlaying, isAdjustedNow, anchor, stretchFactor]);
 
   const stopAllAudio = () => {
-    if (vocalAudioRef.current)   { vocalAudioRef.current.pause(); }
-    if (instAudioRef.current)    { instAudioRef.current.pause(); }
-    if (previewAudioRef.current) { previewAudioRef.current.pause(); }
-    if (previewStopRef.current && previewAudioRef.current) {
-      previewAudioRef.current.removeEventListener("timeupdate", previewStopRef.current);
-      previewStopRef.current = null;
+    if (vocalAudioRef.current) { vocalAudioRef.current.pause(); }
+    if (instAudioRef.current)  { instAudioRef.current.pause(); }
+    if (mashupStopRef.current) {
+      vocalAudioRef.current?.removeEventListener("timeupdate", mashupStopRef.current);
+      mashupStopRef.current = null;
     }
     setVocalPlaying(false);
     setInstPlaying(false);
-    setPreviewPlaying(false);
   };
 
   const handlePlayVocal = () => {
@@ -349,6 +340,7 @@ export function AuditionStudio({ seed }) {
       setVocalPlaying(false);
     } else {
       stopAllAudio();
+      audio.src = api.audioUrl(vocalId, "vocals"); // ensure raw, not a leftover adjusted src
       audio.currentTime = vocalCenterTime;
       audio.play().catch(() => {});
       setVocalPlaying(true);
@@ -363,49 +355,65 @@ export function AuditionStudio({ seed }) {
       setInstPlaying(false);
     } else {
       stopAllAudio();
+      audio.src = api.audioUrl(instId, "instrumental");
       audio.currentTime = instCenterTime;
       audio.play().catch(() => {});
       setInstPlaying(true);
     }
   };
 
-  const handlePlayPreview = () => {
-    const audio = previewAudioRef.current;
-    if (!audio || !previewTs) return;
-    if (previewPlaying) {
-      audio.pause();
-      if (previewStopRef.current) {
-        audio.removeEventListener("timeupdate", previewStopRef.current);
-        previewStopRef.current = null;
-      }
-      setPreviewPlaying(false);
-    } else {
-      stopAllAudio();
-      audio.currentTime = 0;
-      const stopAt = 30;
-      const checkStop = () => {
-        if (audio.currentTime >= stopAt) {
-          audio.pause();
-          audio.removeEventListener("timeupdate", checkStop);
-          previewStopRef.current = null;
-          setPreviewPlaying(false);
-        }
-      };
-      previewStopRef.current = checkStop;
-      audio.addEventListener("timeupdate", checkStop);
-      audio.play().catch(() => {});
-      setPreviewPlaying(true);
-    }
-  };
-
-  const renderPreview = async () => {
+  const handleSetAnchor = async (next) => {
+    setAnchor(next);
     setError(null);
+    if (vocalId == null || instId == null || vocalId === instId) return;
+    if (adjustedKey === `${vocalId}:${instId}:${next}`) return; // already adjusted
     try {
-      const { job_id } = await api.startPreview(vocalId, instId, vocalCenterTime, instCenterTime);
-      setPreviewJobId(job_id);
+      const { job_id } = await api.startAdjust(vocalId, instId, next);
+      setAdjustJobId(job_id);
     } catch (e) {
       setError(e.message);
     }
+  };
+
+  const handlePlayMashup = () => {
+    const vAudio = vocalAudioRef.current;
+    const iAudio = instAudioRef.current;
+    if (!vAudio || !iAudio || !vocalId || !instId) return;
+
+    if (vocalPlaying && instPlaying) {
+      stopAllAudio();
+      return;
+    }
+    stopAllAudio();
+
+    const useAdjusted = isAdjustedNow;
+    vAudio.src = (useAdjusted && anchor === "vocal")
+      ? api.adjustedAudioUrl(vocalId, instId, "vocal")
+      : api.audioUrl(vocalId, "vocals");
+    iAudio.src = (useAdjusted && anchor === "instrumental")
+      ? api.adjustedAudioUrl(vocalId, instId, "instrumental")
+      : api.audioUrl(instId, "instrumental");
+
+    const vSeek = (useAdjusted && anchor === "vocal")
+      ? vocalCenterTime * stretchFactor
+      : vocalCenterTime;
+    const iSeek = (useAdjusted && anchor === "instrumental")
+      ? instCenterTime / stretchFactor
+      : instCenterTime;
+
+    vAudio.currentTime = vSeek;
+    iAudio.currentTime = iSeek;
+
+    const stopAt = vSeek + 30;
+    const checkStop = () => {
+      if (vAudio.currentTime >= stopAt) stopAllAudio();
+    };
+    mashupStopRef.current = checkStop;
+    vAudio.addEventListener("timeupdate", checkStop);
+
+    Promise.all([vAudio.play(), iAudio.play()]).catch(() => {});
+    setVocalPlaying(true);
+    setInstPlaying(true);
   };
 
   const samePair = vocalId != null && instId === vocalId;
@@ -423,8 +431,8 @@ export function AuditionStudio({ seed }) {
       <h2 style={{ margin: 0 }}>Audition Studio</h2>
       <p className="muted" style={{ marginTop: 4 }}>
         Pick a vocal and an instrumental, drag either waveform to line up sections under the
-        center marker, then preview the pair with the instrumental time-stretched to the
-        vocal tempo.
+        center marker, choose which side to stretch/pitch to match the other (one-time), then
+        hit play to hear them together from the marker.
       </p>
 
       {error && <div className="error-text" style={{ marginTop: 8 }}>{error}</div>}
@@ -517,16 +525,48 @@ export function AuditionStudio({ seed }) {
 
           <div className="alignment-readout">{alignmentText}</div>
 
-          <div className="preview-play-row">
+          <div className="anchor-toggle" style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
             <button
-              className={`preview-play-btn${previewPlaying ? " playing" : ""}`}
-              onClick={handlePlayPreview}
-              disabled={!previewTs}
-              title={previewTs ? "Play 30s of mashup from center marker" : "Render a preview first"}
+              className={anchor === "instrumental" ? "active" : "secondary"}
+              onClick={() => handleSetAnchor("instrumental")}
+              disabled={samePair || vocalId == null || instId == null}
             >
-              {previewPlaying ? "⏸ Pause preview" : "▶ Play 30s mashup from marker"}
+              Stretch instrumental → vocal
             </button>
-            {!previewTs && <span className="muted" style={{ fontSize: "0.75rem" }}>render a preview below first</span>}
+            <button
+              className={anchor === "vocal" ? "active" : "secondary"}
+              onClick={() => handleSetAnchor("vocal")}
+              disabled={samePair || vocalId == null || instId == null}
+            >
+              Stretch vocal → instrumental
+            </button>
+            {adjustJobId && (
+              <JobBadge
+                jobId={adjustJobId}
+                onComplete={() => {
+                  setAdjustJobId(null);
+                  setAdjustedKey(`${vocalId}:${instId}:${anchor}`);
+                }}
+              />
+            )}
+          </div>
+
+          <div className="preview-play-row" style={{ marginTop: 8 }}>
+            <button
+              className={`preview-play-btn${vocalPlaying && instPlaying ? " playing" : ""}`}
+              onClick={handlePlayMashup}
+              disabled={samePair || vocalId == null || instId == null}
+              title={isAdjustedNow
+                ? "Play both stems together (one stretched, one raw) from the marker"
+                : "Play both raw stems together from the marker"}
+            >
+              {vocalPlaying && instPlaying ? "⏸ Stop mashup" : "▶ Play mashup"}
+            </button>
+            {!isAdjustedNow && (
+              <span className="muted" style={{ fontSize: "0.75rem" }}>
+                playing raw stems — pick a stretch side above to tempo/key-match
+              </span>
+            )}
           </div>
 
           {(selVocal || selInst) && (
@@ -579,22 +619,6 @@ export function AuditionStudio({ seed }) {
             </div>
           </div>
 
-          <div className="actions" style={{ marginTop: 16, alignItems: "center" }}>
-            {previewJobId ? (
-              <JobBadge
-                jobId={previewJobId}
-                onComplete={() => {
-                  setPreviewJobId(null);
-                  setPreviewTs(Date.now());
-                }}
-              />
-            ) : (
-              <button onClick={renderPreview} disabled={samePair}>
-                {previewTs ? "Re-render preview" : "Render preview"}
-              </button>
-            )}
-          </div>
-
           {plan.pairings?.length > 0 && (
             <p className="muted" style={{ marginTop: 12, fontSize: "0.8rem" }}>
               Auto-aligned on: {plan.pairings[0].note}.
@@ -616,12 +640,6 @@ export function AuditionStudio({ seed }) {
         preload="none"
         src={instId ? api.audioUrl(instId, "instrumental") : ""}
         onEnded={() => setInstPlaying(false)}
-        style={{ display: "none" }}
-      />
-      <audio
-        ref={previewAudioRef}
-        preload="none"
-        onEnded={() => { setPreviewPlaying(false); previewStopRef.current = null; }}
         style={{ display: "none" }}
       />
     </div>

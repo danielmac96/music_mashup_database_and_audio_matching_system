@@ -38,6 +38,78 @@ def preview_path(vocal_song_id: int, inst_song_id: int) -> Path:
     return PREVIEWS_DIR / f"preview_{vocal_song_id}_over_{inst_song_id}.wav"
 
 
+def adjusted_path(stem_song_id: int, ref_song_id: int) -> Path:
+    return PREVIEWS_DIR / f"adjusted_{stem_song_id}_to_{ref_song_id}.wav"
+
+
+def build_adjusted_stem(vocal_song_id: int, inst_song_id: int, anchor: str,
+                        db_path=None, on_progress: ProgressCb = None,
+                        force: bool = False) -> Optional[Path]:
+    """Render (and cache) a full-length, tempo/key-matched stem so the Audition
+    Studio can scrub and replay freely without re-running the DSP each time.
+
+    anchor='instrumental': stretch+pitch-shift the FULL instrumental stem to
+      the vocal's tempo/key (the plan's stretch_factor / semitone_shift).
+    anchor='vocal': stretch+pitch-shift the FULL vocal stem to the
+      instrumental's tempo/key (the inverse: 1/stretch_factor, -semitone_shift).
+    """
+    def _tick(pct, msg):
+        if on_progress:
+            on_progress(pct, msg)
+
+    plan = build_mashup_plan(vocal_song_id, inst_song_id, db_path=db_path)
+    if not plan:
+        log.warning("adjust: no plan (song missing) for %s/%s",
+                    vocal_song_id, inst_song_id)
+        return None
+
+    stretch = plan.get("stretch_factor") or 1.0
+    shift = int(plan.get("semitone_shift") or 0)
+
+    if anchor == "instrumental":
+        src_path = plan["files"].get("instrumental")
+        out = adjusted_path(inst_song_id, vocal_song_id)
+        eff_stretch, eff_shift = stretch, shift
+    elif anchor == "vocal":
+        src_path = plan["files"].get("vocals")
+        out = adjusted_path(vocal_song_id, inst_song_id)
+        eff_stretch, eff_shift = (1.0 / stretch if stretch else 1.0), -shift
+    else:
+        raise ValueError("anchor must be 'vocal' or 'instrumental'")
+
+    if out.exists() and not force:
+        _tick(100, "Already adjusted")
+        return out
+
+    if not src_path or not Path(src_path).exists():
+        log.warning("adjust: missing stem file (anchor=%s, path=%s)", anchor, src_path)
+        return None
+
+    try:
+        import librosa
+        import soundfile as sf
+    except ImportError as exc:
+        log.error("adjust render needs librosa + soundfile: %s", exc)
+        return None
+
+    _tick(10, "Loading stem…")
+    y, _ = librosa.load(src_path, sr=PREVIEW_SR, mono=True)
+
+    if abs(eff_stretch - 1.0) > 1e-3:
+        _tick(40, f"Time-stretching ×{eff_stretch:.3f}…")
+        y = librosa.effects.time_stretch(y, rate=float(eff_stretch), n_fft=1024)
+
+    if eff_shift:
+        _tick(70, f"Pitch-shifting {eff_shift:+d} st…")
+        y = librosa.effects.pitch_shift(y, sr=PREVIEW_SR, n_steps=eff_shift, n_fft=1024)
+
+    PREVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    sf.write(str(out), y.astype("float32"), PREVIEW_SR)
+    _tick(100, "Adjustment ready")
+    log.info("adjusted stem rendered: %s", out.name)
+    return out
+
+
 def build_preview(vocal_song_id: int, inst_song_id: int, db_path=None,
                   on_progress: ProgressCb = None, force: bool = False,
                   vocal_start: Optional[float] = None,

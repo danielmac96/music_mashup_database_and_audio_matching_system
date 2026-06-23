@@ -10,9 +10,9 @@ from fastapi.responses import FileResponse
 from database.models import get_candidates_enriched
 
 from api import jobs
-from api.workers import match_worker, preview_worker
+from api.workers import adjust_worker, match_worker, preview_worker
 from matcher.plan import build_mashup_plan
-from render.preview import preview_path
+from render.preview import adjusted_path, preview_path
 
 router = APIRouter()
 
@@ -75,6 +75,42 @@ def stream_preview(vocal_id: int, inst_id: int):
         raise HTTPException(
             status_code=404,
             detail="preview not rendered yet — POST /api/mashups/preview first",
+        )
+    return FileResponse(
+        path,
+        media_type="audio/wav",
+        headers={"Accept-Ranges": "bytes"},
+        filename=path.name,
+    )
+
+
+@router.post("/adjust")
+def queue_adjust(vocal_id: int, inst_id: int, anchor: str,
+                 background: BackgroundTasks) -> dict:
+    """Render (once, cached) a full-length tempo/key-matched stem so the
+    Audition Studio can scrub and replay without re-running DSP each time.
+
+    anchor='instrumental': stretch/pitch the instrumental to match the vocal.
+    anchor='vocal': stretch/pitch the vocal to match the instrumental."""
+    if anchor not in ("vocal", "instrumental"):
+        raise HTTPException(status_code=400,
+                            detail="anchor must be 'vocal' or 'instrumental'")
+    job_id = jobs.new_job(kind="adjust", message="Queued for stem adjustment")
+    background.add_task(adjust_worker.run, job_id, vocal_id, inst_id, anchor)
+    return {"job_id": job_id}
+
+
+@router.get("/adjust/audio")
+def stream_adjusted(vocal_id: int, inst_id: int, anchor: str):
+    if anchor not in ("vocal", "instrumental"):
+        raise HTTPException(status_code=400,
+                            detail="anchor must be 'vocal' or 'instrumental'")
+    path = (adjusted_path(inst_id, vocal_id) if anchor == "instrumental"
+            else adjusted_path(vocal_id, inst_id))
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="not adjusted yet — POST /api/mashups/adjust first",
         )
     return FileResponse(
         path,
