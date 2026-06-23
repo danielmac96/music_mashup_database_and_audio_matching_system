@@ -25,9 +25,11 @@ function SectionTimeline({
   sections, durationSecs, label, pps, offsetSecs, onOffsetChange,
   selectedId, onSectionClick, waveform = [], beatTimes = [], trackRole = "vocal",
   onPlay, isPlaying, playheadTime,
+  otherBeatTimes = [], otherOffsetSecs = 0, snapEnabled = true,
 }) {
   const isDraggable = onOffsetChange != null;
   const [dragging, setDragging] = useState(false);
+  const [snapped, setSnapped] = useState(false);
   const dragRef = useRef(null);
   const canvasRef = useRef(null);
 
@@ -102,10 +104,16 @@ function SectionTimeline({
     const onMove = (me) => {
       if (!dragRef.current) return;
       const dx = me.clientX - dragRef.current.startX;
-      onOffsetChange(dragRef.current.startOffset + dx / pps);
+      const raw = dragRef.current.startOffset + dx / pps;
+      const snappedOffset = snapEnabled
+        ? snapOffsetToBeats(raw, beatTimes, otherBeatTimes, otherOffsetSecs, pps)
+        : raw;
+      setSnapped(snappedOffset !== raw);
+      onOffsetChange(snappedOffset);
     };
     const onUp = () => {
       setDragging(false);
+      setSnapped(false);
       dragRef.current = null;
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
@@ -133,7 +141,7 @@ function SectionTimeline({
       </button>
       <div className="timeline-row-label">{label}</div>
       <div
-        className={`timeline-track${isDraggable ? " draggable" : ""}${dragging ? " dragging" : ""}`}
+        className={`timeline-track${isDraggable ? " draggable" : ""}${dragging ? " dragging" : ""}${snapped ? " snapped" : ""}`}
         onMouseDown={handleMouseDown}
       >
         <canvas
@@ -180,6 +188,59 @@ function trackLabel(t) {
   return `${t.title}${t.artist ? ` — ${t.artist}` : ""}`;
 }
 
+function lowerBoundIndex(sortedArr, val) {
+  let lo = 0, hi = sortedArr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sortedArr[mid] < val) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
+// Beats are stored without their offset baked in; restrict to the slice that
+// would currently land on screen (plus a small margin) so snapping always
+// reacts to what the user can actually see, not a coincidental match far
+// down the track.
+function visibleBeatWindow(beatTimes, offsetSecs, pps, marginPx = 150) {
+  if (beatTimes.length === 0) return beatTimes;
+  const loSec = -marginPx / pps - offsetSecs;
+  const hiSec = (TIMELINE_WIDTH + marginPx) / pps - offsetSecs;
+  return beatTimes.slice(lowerBoundIndex(beatTimes, loSec), lowerBoundIndex(beatTimes, hiSec));
+}
+
+// While dragging, finds the closest on-screen pair of beat markers between
+// the track being dragged and the other (fixed) track, and snaps the drag
+// offset so that pair lines up exactly once it's within `snapPx` of doing so.
+function snapOffsetToBeats(rawOffsetSecs, ownBeats, otherBeats, otherOffsetSecs, pps, snapPx = 10) {
+  const a = visibleBeatWindow(ownBeats, rawOffsetSecs, pps);
+  const b = visibleBeatWindow(otherBeats, otherOffsetSecs, pps);
+  if (a.length === 0 || b.length === 0) return rawOffsetSecs;
+  let i = 0, j = 0, bestAbsDiff = Infinity, bestDelta = 0;
+  while (i < a.length && j < b.length) {
+    const av = a[i] + rawOffsetSecs;
+    const bv = b[j] + otherOffsetSecs;
+    const diff = bv - av;
+    if (Math.abs(diff) < bestAbsDiff) { bestAbsDiff = Math.abs(diff); bestDelta = diff; }
+    if (av < bv) i++; else j++;
+  }
+  const snapSecs = snapPx / pps;
+  return bestAbsDiff <= snapSecs ? rawOffsetSecs + bestDelta : rawOffsetSecs;
+}
+
+// Simple beat-grid ratios to suggest as stretch values, ordered later by how
+// close they land to ×1 (least audible distortion). A ratio of 1:1 means the
+// two tracks' beat grids align every beat; 2:1 means the dragged side's beats
+// align every other beat, and so on.
+const BEAT_LOCK_RATIOS = [
+  { label: "1:1", value: 1 },
+  { label: "2:1", value: 2 },
+  { label: "1:2", value: 0.5 },
+  { label: "3:2", value: 1.5 },
+  { label: "2:3", value: 2 / 3 },
+  { label: "4:3", value: 4 / 3 },
+  { label: "3:4", value: 3 / 4 },
+];
+
 export function AuditionStudio({ seed }) {
   const [tracks, setTracks] = useState([]);
   const [error, setError] = useState(null);
@@ -203,6 +264,7 @@ export function AuditionStudio({ seed }) {
   const [selInst, setSelInst] = useState(null);
   const [vocalWaveform, setVocalWaveform] = useState({ waveform: [], beat_times: [] });
   const [instWaveform,  setInstWaveform]  = useState({ waveform: [], beat_times: [] });
+  const [snapEnabled, setSnapEnabled] = useState(true);
 
   // Audio playback
   const vocalAudioRef  = useRef(null);
@@ -496,6 +558,24 @@ export function AuditionStudio({ seed }) {
     setInstPlaying(true);
   };
 
+  // Suggests stretch values that lock the two tracks' beat grids onto a
+  // simple ratio (1:1 first if it's close enough to be usable), rather than
+  // only the plan's exact tempo-match value.
+  const stretchSuggestions = useMemo(() => {
+    const vocalBpm = vocalTrack?.features?.full?.bpm;
+    const instBpm = instTrack?.features?.full?.bpm;
+    if (!vocalBpm || !instBpm) return [];
+    return BEAT_LOCK_RATIOS
+      .map(({ label, value }) => ({
+        label,
+        stretch: anchor === "instrumental"
+          ? (vocalBpm * value) / instBpm
+          : (instBpm * value) / vocalBpm,
+      }))
+      .filter((s) => s.stretch >= 0.5 && s.stretch <= 2)
+      .sort((a, b) => Math.abs(a.stretch - 1) - Math.abs(b.stretch - 1));
+  }, [vocalTrack, instTrack, anchor]);
+
   const samePair = vocalId != null && instId === vocalId;
   const showTimeline = vocalSections.length > 0 || instSections.length > 0;
 
@@ -584,6 +664,9 @@ export function AuditionStudio({ seed }) {
             onPlay={vocalId ? handlePlayVocal : null}
             isPlaying={vocalPlaying}
             playheadTime={playheadTimes.vocal}
+            otherBeatTimes={instDisplayBeatTimes}
+            otherOffsetSecs={instOffset}
+            snapEnabled={snapEnabled}
           />
 
           <SectionTimeline
@@ -601,9 +684,22 @@ export function AuditionStudio({ seed }) {
             onPlay={instId ? handlePlayInst : null}
             isPlaying={instPlaying}
             playheadTime={playheadTimes.inst}
+            otherBeatTimes={vocalDisplayBeatTimes}
+            otherOffsetSecs={vocalOffset}
+            snapEnabled={snapEnabled}
           />
 
-          <div className="alignment-readout">{alignmentText}</div>
+          <div className="alignment-readout">
+            {alignmentText}
+            <label style={{ marginLeft: 14, display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.75rem", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={snapEnabled}
+                onChange={(e) => setSnapEnabled(e.target.checked)}
+              />
+              Snap to beat while dragging
+            </label>
+          </div>
 
           <div className="anchor-toggle" style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
             <button
@@ -663,6 +759,23 @@ export function AuditionStudio({ seed }) {
               />
             )}
           </div>
+
+          {stretchSuggestions.length > 0 && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6, alignItems: "center" }}>
+              <span className="muted" style={{ fontSize: "0.75rem" }}>Beat-lock ratios:</span>
+              {stretchSuggestions.map((s) => (
+                <button
+                  key={s.label}
+                  className="secondary"
+                  style={{ fontSize: "0.7rem", padding: "2px 7px" }}
+                  onClick={() => setStretchInput(s.stretch.toFixed(4))}
+                  title={`Set stretch to ×${s.stretch.toFixed(4)} so the beat grids align at a ${s.label} ratio`}
+                >
+                  {s.label} (×{s.stretch.toFixed(3)})
+                </button>
+              ))}
+            </div>
+          )}
 
           <div className="preview-play-row" style={{ marginTop: 8 }}>
             <button
