@@ -265,6 +265,58 @@ input[type="number"] {
   text-align: right;
 }
 
+.bpm-tag {
+  font-size: 0.62rem;
+  color: #6ee7b7;
+  margin-top: 2px;
+  line-height: 1.1;
+}
+
+/* ── Transport scrub ruler ────────────────────────────────────────────────── */
+.transport-ruler {
+  position: relative;
+  height: 16px;
+  margin-left: 86px; /* line up with the timeline tracks past play-btn + label */
+  background: #15171c;
+  border-radius: 3px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ruler-playhead {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 20px;
+  background: rgba(239, 68, 68, 0.95);
+  transform: translateX(-1px);
+  pointer-events: none;
+  box-shadow: 0 0 4px rgba(239, 68, 68, 0.6);
+}
+
+.ruler-loop {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(99, 102, 241, 0.35);
+  border-left: 1px solid rgba(165, 180, 252, 0.8);
+  border-right: 1px solid rgba(165, 180, 252, 0.8);
+  pointer-events: none;
+}
+
+.loop-band {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(99, 102, 241, 0.12);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.key-hint {
+  color: #c7cbd6;
+}
+
 .timeline-track {
   position: relative;
   overflow: hidden;

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { JobBadge } from "./JobBadge";
+import { MashupEngine } from "../engine/MashupEngine";
+import { decodeStem } from "../engine/decode";
 
 const SECTION_COLORS = {
   intro:     "#4b5563",
@@ -21,11 +23,19 @@ function fmt(secs) {
   return `${m}:${s}`;
 }
 
+// Logical-second position under a pointer event, mapped through the element's
+// rendered width so it lines up with the canvas drawn at TIMELINE_WIDTH.
+function eventPos(e, el, pps) {
+  const rect = el.getBoundingClientRect();
+  const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  return (frac * TIMELINE_WIDTH) / pps;
+}
+
 function SectionTimeline({
   sections, durationSecs, label, pps, offsetSecs, onOffsetChange,
   selectedId, onSectionClick, waveform = [], beatTimes = [], trackRole = "vocal",
-  onPlay, isPlaying, playheadTime,
-  otherBeatTimes = [], otherOffsetSecs = 0, snapEnabled = true,
+  onPlay, isPlaying, playheadPos, loopBand,
+  otherBeatTimes = [], otherOffsetSecs = 0, snapMode = "beat", bpmText,
 }) {
   const isDraggable = onOffsetChange != null;
   const [dragging, setDragging] = useState(false);
@@ -61,18 +71,15 @@ function SectionTimeline({
         ctx.lineTo(x, midY + amp);
       }
       ctx.closePath();
-      // Colored fill
       ctx.fillStyle = trackRole === "vocal"
         ? "rgba(99,179,255,0.18)"
         : "rgba(251,191,36,0.18)";
       ctx.fill();
-      // Colored inner stroke
       ctx.strokeStyle = trackRole === "vocal"
         ? "rgba(99,179,255,0.4)"
         : "rgba(251,191,36,0.4)";
       ctx.lineWidth = 1;
       ctx.stroke();
-      // Bold white outline on top
       ctx.strokeStyle = "rgba(255,255,255,0.55)";
       ctx.lineWidth = 1.5;
       ctx.stroke();
@@ -105,9 +112,9 @@ function SectionTimeline({
       if (!dragRef.current) return;
       const dx = me.clientX - dragRef.current.startX;
       const raw = dragRef.current.startOffset + dx / pps;
-      const snappedOffset = snapEnabled
-        ? snapOffsetToBeats(raw, beatTimes, otherBeatTimes, otherOffsetSecs, pps)
-        : raw;
+      const snappedOffset = snapMode === "off"
+        ? raw
+        : snapOffsetToBeats(raw, beatTimes, otherBeatTimes, otherOffsetSecs, pps, snapMode);
       setSnapped(snappedOffset !== raw);
       onOffsetChange(snappedOffset);
     };
@@ -122,11 +129,17 @@ function SectionTimeline({
     document.addEventListener("mouseup", onUp);
   };
 
-  // Red playhead position as CSS percentage
   const playheadPct = (() => {
-    if (playheadTime == null) return null;
-    const pct = ((playheadTime + offsetSecs) * pps / TIMELINE_WIDTH) * 100;
+    if (playheadPos == null) return null;
+    const pct = (playheadPos * pps / TIMELINE_WIDTH) * 100;
     return pct >= 0 && pct <= 100 ? pct : null;
+  })();
+
+  const loopPct = (() => {
+    if (!loopBand) return null;
+    const l = (loopBand.start * pps / TIMELINE_WIDTH) * 100;
+    const r = (loopBand.end   * pps / TIMELINE_WIDTH) * 100;
+    return { left: Math.max(0, l), width: Math.min(100, r) - Math.max(0, l) };
   })();
 
   return (
@@ -135,11 +148,14 @@ function SectionTimeline({
         className={`track-play-btn${isPlaying ? " playing" : ""}`}
         onClick={onPlay}
         disabled={!onPlay}
-        title={isPlaying ? "Pause" : "Play from marker"}
+        title={isPlaying ? "Pause" : "Solo this stem from the playhead"}
       >
         {isPlaying ? "⏸" : "▶"}
       </button>
-      <div className="timeline-row-label">{label}</div>
+      <div className="timeline-row-label">
+        {label}
+        {bpmText && <div className="bpm-tag">{bpmText}</div>}
+      </div>
       <div
         className={`timeline-track${isDraggable ? " draggable" : ""}${dragging ? " dragging" : ""}${snapped ? " snapped" : ""}`}
         onMouseDown={handleMouseDown}
@@ -151,6 +167,9 @@ function SectionTimeline({
           style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%",
                    zIndex: 1, pointerEvents: "none" }}
         />
+        {loopPct != null && loopPct.width > 0 && (
+          <div className="loop-band" style={{ left: `${loopPct.left}%`, width: `${loopPct.width}%` }} />
+        )}
         <div
           style={{
             position: "absolute",
@@ -197,10 +216,6 @@ function lowerBoundIndex(sortedArr, val) {
   return lo;
 }
 
-// Beats are stored without their offset baked in; restrict to the slice that
-// would currently land on screen (plus a small margin) so snapping always
-// reacts to what the user can actually see, not a coincidental match far
-// down the track.
 function visibleBeatWindow(beatTimes, offsetSecs, pps, marginPx = 150) {
   if (beatTimes.length === 0) return beatTimes;
   const loSec = -marginPx / pps - offsetSecs;
@@ -208,12 +223,15 @@ function visibleBeatWindow(beatTimes, offsetSecs, pps, marginPx = 150) {
   return beatTimes.slice(lowerBoundIndex(beatTimes, loSec), lowerBoundIndex(beatTimes, hiSec));
 }
 
-// While dragging, finds the closest on-screen pair of beat markers between
-// the track being dragged and the other (fixed) track, and snaps the drag
-// offset so that pair lines up exactly once it's within `snapPx` of doing so.
-function snapOffsetToBeats(rawOffsetSecs, ownBeats, otherBeats, otherOffsetSecs, pps, snapPx = 10) {
-  const a = visibleBeatWindow(ownBeats, rawOffsetSecs, pps);
-  const b = visibleBeatWindow(otherBeats, otherOffsetSecs, pps);
+// Snap the drag offset so the closest on-screen beat (mode "beat") or downbeat
+// (mode "bar") of the dragged track lines up exactly with the other track's
+// nearest beat/downbeat, once within `snapPx`.
+function snapOffsetToBeats(rawOffsetSecs, ownBeats, otherBeats, otherOffsetSecs, pps, mode, snapPx = 10) {
+  const stride = mode === "bar" ? 4 : 1;
+  const own = stride > 1 ? ownBeats.filter((_, i) => i % stride === 0) : ownBeats;
+  const oth = stride > 1 ? otherBeats.filter((_, i) => i % stride === 0) : otherBeats;
+  const a = visibleBeatWindow(own, rawOffsetSecs, pps);
+  const b = visibleBeatWindow(oth, otherOffsetSecs, pps);
   if (a.length === 0 || b.length === 0) return rawOffsetSecs;
   let i = 0, j = 0, bestAbsDiff = Infinity, bestDelta = 0;
   while (i < a.length && j < b.length) {
@@ -227,10 +245,6 @@ function snapOffsetToBeats(rawOffsetSecs, ownBeats, otherBeats, otherOffsetSecs,
   return bestAbsDiff <= snapSecs ? rawOffsetSecs + bestDelta : rawOffsetSecs;
 }
 
-// Simple beat-grid ratios to suggest as stretch values, ordered later by how
-// close they land to ×1 (least audible distortion). A ratio of 1:1 means the
-// two tracks' beat grids align every beat; 2:1 means the dragged side's beats
-// align every other beat, and so on.
 const BEAT_LOCK_RATIOS = [
   { label: "1:1", value: 1 },
   { label: "2:1", value: 2 },
@@ -241,6 +255,9 @@ const BEAT_LOCK_RATIOS = [
   { label: "3:4", value: 3 / 4 },
 ];
 
+const VOCAL_GAIN = 0.95;
+const INST_GAIN  = 0.8;
+
 export function AuditionStudio({ seed }) {
   const [tracks, setTracks] = useState([]);
   const [error, setError] = useState(null);
@@ -248,13 +265,8 @@ export function AuditionStudio({ seed }) {
   const [instId, setInstId] = useState(seed?.instId ?? null);
   const [plan, setPlan] = useState(null);
   const [anchor, setAnchor] = useState("instrumental"); // which side gets stretched/pitched
-  const [adjustJobId, setAdjustJobId] = useState(null);
-  const [adjustedKey, setAdjustedKey] = useState(null); // "vocalId:instId:anchor" once ready
-  const [adjustedStretch, setAdjustedStretch] = useState(1); // rate actually applied to the anchor side
-  const [adjustedShift, setAdjustedShift] = useState(0);
-  const [stretchInput, setStretchInput] = useState(1); // editable, pre-filled with engine suggestion
+  const [stretchInput, setStretchInput] = useState(1);
   const [shiftInput, setShiftInput] = useState(0);
-  const pendingAdjustRef = useRef(null); // values sent with the in-flight adjust job
 
   const [vocalSections, setVocalSections] = useState([]);
   const [instSections, setInstSections] = useState([]);
@@ -264,22 +276,34 @@ export function AuditionStudio({ seed }) {
   const [selInst, setSelInst] = useState(null);
   const [vocalWaveform, setVocalWaveform] = useState({ waveform: [], beat_times: [] });
   const [instWaveform,  setInstWaveform]  = useState({ waveform: [], beat_times: [] });
-  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [snapMode, setSnapMode] = useState("beat"); // beat | bar | off
 
-  // Audio playback
-  const vocalAudioRef  = useRef(null);
-  const instAudioRef   = useRef(null);
-  const mashupStopRef  = useRef(null);
-  const rafRef         = useRef(null);
-  // Tracks whether the currently-loaded <audio> src for each side is the raw
-  // (original-timeline) stem or the adjusted (display-timeline) render, so
-  // the rAF tick can convert currentTime back to display-time correctly.
-  const vocalSrcModeRef = useRef("raw");
-  const instSrcModeRef  = useRef("raw");
+  // Audio engine + decoded buffers
+  const engineRef = useRef(null);
+  const [vocalBuffer, setVocalBuffer] = useState(null);
+  const [instBuffer, setInstBuffer]   = useState(null);
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [audioError, setAudioError] = useState(null);
 
-  const [vocalPlaying,  setVocalPlaying]  = useState(false);
-  const [instPlaying,   setInstPlaying]   = useState(false);
-  const [playheadTimes, setPlayheadTimes] = useState({ vocal: null, inst: null });
+  // Transport
+  const [position, setPosition] = useState(null); // global display sec; null = center
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [soloRole, setSoloRole] = useState(null);  // null = mashup, "vocal" | "inst"
+  const [loop, setLoop] = useState(null);          // global display { start, end }
+
+  // Export
+  const [exportJobId, setExportJobId] = useState(null);
+  const [exportReady, setExportReady] = useState(null); // job result payload
+
+  useEffect(() => {
+    engineRef.current = new MashupEngine();
+    engineRef.current.init().catch((e) => setAudioError(`Audio engine: ${e.message}`));
+    engineRef.current.onTick((pos, playing) => {
+      setPosition(pos);
+      setIsPlaying(playing);
+    });
+    return () => { engineRef.current?.dispose(); engineRef.current = null; };
+  }, []);
 
   useEffect(() => {
     api.getTracks()
@@ -304,15 +328,38 @@ export function AuditionStudio({ seed }) {
   const vocalTrack = useMemo(() => tracks.find((t) => t.id === vocalId), [tracks, vocalId]);
   const instTrack  = useMemo(() => tracks.find((t) => t.id === instId),  [tracks, instId]);
 
-  const isAdjustedNow = adjustedKey === `${vocalId}:${instId}:${anchor}`;
-  // Rate actually applied (via librosa time_stretch) to the anchor side's audio.
-  const appliedStretch = isAdjustedNow ? (adjustedStretch || 1) : 1;
+  // Stems-first with fallback: trust the vocal stem's own tempo only when its
+  // bpm_confidence clears the threshold the backend also uses for beat grids
+  // (vocals aren't percussive, so low-confidence stem tracking falls back to
+  // the full-mix BPM). The instrumental stem is reliable, so prefer it
+  // outright and only fall back to full-mix if it's missing.
+  const VOCAL_BPM_CONFIDENCE_MIN = 0.35;
+  const vocalStemFeat = vocalTrack?.features?.vocals;
+  const vocalFullFeat = vocalTrack?.features?.full;
+  const useVocalStemBpm = vocalStemFeat?.bpm
+    && (vocalStemFeat?.bpm_confidence ?? 0) >= VOCAL_BPM_CONFIDENCE_MIN;
+  const vocalBpm  = useVocalStemBpm ? vocalStemFeat.bpm : vocalFullFeat?.bpm;
+  const vocalConf = useVocalStemBpm ? vocalStemFeat.bpm_confidence : vocalFullFeat?.bpm_confidence;
 
-  // "Display time" is the coordinate space the waveform/markers are drawn in.
-  // time_stretch(y, rate) shrinks duration by `rate`, so a point at original
-  // time t now plays at t / rate — i.e. display = orig * (1 / rate).
-  const vocalDisplayFactor = (isAdjustedNow && anchor === "vocal") ? 1 / appliedStretch : 1;
-  const instDisplayFactor  = (isAdjustedNow && anchor === "instrumental") ? 1 / appliedStretch : 1;
+  const instStemFeat = instTrack?.features?.instrumental;
+  const instFullFeat = instTrack?.features?.full;
+  const instBpm  = instStemFeat?.bpm ?? instFullFeat?.bpm;
+  const instConf = instStemFeat?.bpm ? instStemFeat?.bpm_confidence : instFullFeat?.bpm_confidence;
+
+  // Live, decoupled stretch/pitch applied in real time to the anchor side.
+  const appliedStretch = (() => {
+    const s = Number(stretchInput);
+    return Number.isFinite(s) && s > 0 ? s : 1;
+  })();
+  const appliedShift = (() => {
+    const s = Math.round(Number(shiftInput));
+    return Number.isFinite(s) ? Math.max(-24, Math.min(24, s)) : 0;
+  })();
+
+  // time_stretch(rate) shrinks duration by `rate`, so a point at original time
+  // t now plays at t / rate — display = orig * (1 / rate).
+  const vocalDisplayFactor = anchor === "vocal" ? 1 / appliedStretch : 1;
+  const instDisplayFactor  = anchor === "instrumental" ? 1 / appliedStretch : 1;
 
   const vocalDisplayDuration = (vocalTrack?.duration_secs ?? 0) * vocalDisplayFactor;
   const instDisplayDuration  = (instTrack?.duration_secs ?? 0) * instDisplayFactor;
@@ -322,22 +369,12 @@ export function AuditionStudio({ seed }) {
     return TIMELINE_WIDTH / maxDur;
   }, [vocalDisplayDuration, instDisplayDuration]);
 
-  // Timestamp at the center marker for each track, in display-time.
-  const vocalCenterTime = useMemo(() => {
-    if (!vocalTrack) return 0;
-    return Math.max(0, Math.min(vocalDisplayDuration, TIMELINE_WIDTH / (2 * pps) - vocalOffset));
-  }, [pps, vocalOffset, vocalTrack, vocalDisplayDuration]);
+  const centerGlobal = TIMELINE_WIDTH / (2 * pps);
+  const playPos = position ?? centerGlobal;
 
-  const instCenterTime = useMemo(() => {
-    if (!instTrack) return 0;
-    return Math.max(0, Math.min(instDisplayDuration, TIMELINE_WIDTH / (2 * pps) - instOffset));
-  }, [pps, instOffset, instTrack, instDisplayDuration]);
-
-  // Same marker position translated back to the RAW (unstretched) stem's
-  // native timeline — used by the solo "Play vocal"/"Play inst" buttons,
-  // which always play the raw file regardless of which side is adjusted.
-  const vocalOrigCenterTime = vocalCenterTime / vocalDisplayFactor;
-  const instOrigCenterTime  = instCenterTime / instDisplayFactor;
+  // Content time under the playhead for each track (display-time).
+  const vocalCenterTime = Math.max(0, Math.min(vocalDisplayDuration, playPos - vocalOffset));
+  const instCenterTime  = Math.max(0, Math.min(instDisplayDuration, playPos - instOffset));
 
   const vocalDisplaySections = useMemo(
     () => vocalSections.map((s) => ({
@@ -364,42 +401,48 @@ export function AuditionStudio({ seed }) {
     [instWaveform.beat_times, instDisplayFactor]
   );
 
+  // ── Load metadata + decode audio when a side changes ──────────────────────
   useEffect(() => {
-    setVocalSections([]);
-    setSelVocal(null);
+    setVocalSections([]); setSelVocal(null);
     setVocalWaveform({ waveform: [], beat_times: [] });
-    setVocalOffset(0);
-    if (vocalAudioRef.current) { vocalAudioRef.current.pause(); }
-    setVocalPlaying(false);
+    setVocalOffset(0); setVocalBuffer(null);
+    engineRef.current?.stop();
+    setLoop(null); setPosition(null);
     if (!vocalId) return;
-    api.getSections(vocalId)
-      .then((d) => setVocalSections(d.sections))
-      .catch(() => {});
-    api.getWaveform(vocalId, "vocals")
-      .then(setVocalWaveform)
-      .catch(() => {});
+    api.getSections(vocalId).then((d) => setVocalSections(d.sections)).catch(() => {});
+    api.getWaveform(vocalId, "vocals").then(setVocalWaveform).catch(() => {});
+    let cancelled = false;
+    setAudioLoading(true); setAudioError(null);
+    engineRef.current.init()
+      .then(() => decodeStem(engineRef.current.ctx, api.audioUrl(vocalId, "vocals")))
+      .then((buf) => { if (!cancelled) setVocalBuffer(buf); })
+      .catch((e) => { if (!cancelled) setAudioError(`Vocal audio: ${e.message}`); })
+      .finally(() => { if (!cancelled) setAudioLoading(false); });
+    return () => { cancelled = true; };
   }, [vocalId]);
 
   useEffect(() => {
-    setInstSections([]);
-    setInstOffset(0);
-    setSelInst(null);
+    setInstSections([]); setSelInst(null);
     setInstWaveform({ waveform: [], beat_times: [] });
-    if (instAudioRef.current) { instAudioRef.current.pause(); }
-    setInstPlaying(false);
+    setInstOffset(0); setInstBuffer(null);
+    engineRef.current?.stop();
+    setLoop(null); setPosition(null);
     if (!instId) return;
-    api.getSections(instId)
-      .then((d) => setInstSections(d.sections))
-      .catch(() => {});
-    api.getWaveform(instId, "instrumental")
-      .then(setInstWaveform)
-      .catch(() => {});
+    api.getSections(instId).then((d) => setInstSections(d.sections)).catch(() => {});
+    api.getWaveform(instId, "instrumental").then(setInstWaveform).catch(() => {});
+    let cancelled = false;
+    setAudioLoading(true); setAudioError(null);
+    engineRef.current.init()
+      .then(() => decodeStem(engineRef.current.ctx, api.audioUrl(instId, "instrumental")))
+      .then((buf) => { if (!cancelled) setInstBuffer(buf); })
+      .catch((e) => { if (!cancelled) setAudioError(`Instrumental audio: ${e.message}`); })
+      .finally(() => { if (!cancelled) setAudioLoading(false); });
+    return () => { cancelled = true; };
   }, [instId]);
 
   useEffect(() => {
     setPlan(null);
-    setAdjustedKey(null);
-    setAdjustJobId(null);
+    setExportJobId(null); setExportReady(null);
     if (vocalId == null || instId == null || vocalId === instId) return;
     let cancelled = false;
     api.getMashupPlan(vocalId, instId)
@@ -408,8 +451,7 @@ export function AuditionStudio({ seed }) {
     return () => { cancelled = true; };
   }, [vocalId, instId]);
 
-  // Engine-suggested stretch/pitch defaults for the current anchor side;
-  // reset the editable inputs to these whenever the anchor or plan changes.
+  // Engine-suggested stretch/pitch defaults for the current anchor side.
   useEffect(() => {
     if (!plan) return;
     const planStretch = plan.stretch_factor || 1;
@@ -423,74 +465,124 @@ export function AuditionStudio({ seed }) {
     }
   }, [anchor, plan]);
 
-  // rAF loop for red playhead while audio is playing. A side whose <audio>
-  // element is currently loaded with the adjusted (display-timeline) render
-  // reads currentTime directly; a side playing the raw stem converts via its
-  // display factor (a no-op unless that's the anchor side via a solo button).
+  // Keep stretch/shift readable inside effects below without making every
+  // tiny slider tick re-run the buffer/offset sync effect.
+  const stretchShiftRef = useRef({ stretch: appliedStretch, shift: appliedShift });
+  stretchShiftRef.current = { stretch: appliedStretch, shift: appliedShift };
+
+  // Structural sync: buffers, alignment offsets, anchor side, solo muting.
+  // Reads the *current* stretch/shift via the ref so it doesn't need them as
+  // deps (those get their own live/debounced handling below).
   useEffect(() => {
-    if (!vocalPlaying && !instPlaying) {
-      cancelAnimationFrame(rafRef.current);
-      setPlayheadTimes({ vocal: null, inst: null });
+    const engine = engineRef.current;
+    if (!engine || !engine.ctx) return;
+    const { stretch, shift } = stretchShiftRef.current;
+    const vGain = soloRole === "inst" ? 0 : VOCAL_GAIN;
+    const iGain = soloRole === "vocal" ? 0 : INST_GAIN;
+    if (vocalBuffer) {
+      engine.setVoice("vocal", {
+        buffer: vocalBuffer,
+        offsetSec: vocalOffset,
+        rate: anchor === "vocal" ? stretch : 1,
+        semitones: anchor === "vocal" ? shift : 0,
+        gain: vGain,
+      });
+    } else engine.removeVoice("vocal");
+    if (instBuffer) {
+      engine.setVoice("inst", {
+        buffer: instBuffer,
+        offsetSec: instOffset,
+        rate: anchor === "instrumental" ? stretch : 1,
+        semitones: anchor === "instrumental" ? shift : 0,
+        gain: iGain,
+      });
+    } else engine.removeVoice("inst");
+    engine.refresh();
+  }, [vocalBuffer, instBuffer, vocalOffset, instOffset, anchor, soloRole]);
+
+  // Pitch: applies instantly, live, with no re-arm (SoundTouch handles the
+  // semitone change in place) — safe to fire on every slider movement.
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !engine.ctx) return;
+    engine.updateVoiceParams("vocal", { semitones: anchor === "vocal" ? appliedShift : 0 });
+    engine.updateVoiceParams("inst",  { semitones: anchor === "instrumental" ? appliedShift : 0 });
+  }, [appliedShift, anchor]);
+
+  // Stretch: changing the rate remaps the whole timeline and re-arms both
+  // voices, which is audible as a glitch if it fires on every drag tick — so
+  // debounce until the slider settles (or the user releases it).
+  const stretchDebounceRef = useRef(null);
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !engine.ctx) return;
+    if (stretchDebounceRef.current) clearTimeout(stretchDebounceRef.current);
+    stretchDebounceRef.current = setTimeout(() => {
+      engine.updateVoiceParams("vocal", { rate: anchor === "vocal" ? appliedStretch : 1 });
+      engine.updateVoiceParams("inst",  { rate: anchor === "instrumental" ? appliedStretch : 1 });
+    }, 150);
+    return () => clearTimeout(stretchDebounceRef.current);
+  }, [appliedStretch, anchor]);
+
+  useEffect(() => {
+    engineRef.current?.setLoop(loop);
+  }, [loop]);
+
+  // ── Transport handlers ────────────────────────────────────────────────────
+  const startPlayback = async (solo) => {
+    setError(null); setAudioError(null);
+    setSoloRole(solo);
+    const engine = engineRef.current;
+    if (!engine) return;
+    // Apply solo muting immediately so play reflects it without waiting a frame.
+    engine.setVoiceGain("vocal", solo === "inst" ? 0 : VOCAL_GAIN);
+    engine.setVoiceGain("inst",  solo === "vocal" ? 0 : INST_GAIN);
+    try {
+      await engine.play(position ?? centerGlobal);
+    } catch (e) {
+      setAudioError(`Playback: ${e.message}`);
+    }
+  };
+
+  const handlePlayMashup = () => {
+    if (isPlaying && soloRole === null) { engineRef.current?.pause(); return; }
+    startPlayback(null);
+  };
+  const handleSolo = (role) => {
+    if (isPlaying && soloRole === role) { engineRef.current?.pause(); return; }
+    startPlayback(role);
+  };
+
+  const handleScrub = (e, el) => {
+    const pos = eventPos(e, el, pps);
+    if (e.shiftKey) {
+      // Shift-drag on the ruler sets a loop region.
+      const startPos = pos;
+      const onMove = (me) => {
+        const p2 = eventPos(me, el, pps);
+        setLoop({ start: Math.min(startPos, p2), end: Math.max(startPos, p2) });
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
       return;
     }
-    const tick = () => {
-      const next = { vocal: null, inst: null };
-      if (vocalPlaying && vocalAudioRef.current) {
-        const t = vocalAudioRef.current.currentTime;
-        next.vocal = vocalSrcModeRef.current === "adjusted" ? t : t * vocalDisplayFactor;
-      }
-      if (instPlaying && instAudioRef.current) {
-        const t = instAudioRef.current.currentTime;
-        next.inst = instSrcModeRef.current === "adjusted" ? t : t * instDisplayFactor;
-      }
-      setPlayheadTimes(next);
-      rafRef.current = requestAnimationFrame(tick);
+    setPosition(pos);
+    engineRef.current?.seek(pos);
+    const onMove = (me) => {
+      const p2 = eventPos(me, el, pps);
+      setPosition(p2);
+      engineRef.current?.seek(p2);
     };
-    rafRef.current = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [vocalPlaying, instPlaying, vocalDisplayFactor, instDisplayFactor]);
-
-  const stopAllAudio = () => {
-    if (vocalAudioRef.current) { vocalAudioRef.current.pause(); }
-    if (instAudioRef.current)  { instAudioRef.current.pause(); }
-    if (mashupStopRef.current) {
-      vocalAudioRef.current?.removeEventListener("timeupdate", mashupStopRef.current);
-      mashupStopRef.current = null;
-    }
-    setVocalPlaying(false);
-    setInstPlaying(false);
-  };
-
-  const handlePlayVocal = () => {
-    const audio = vocalAudioRef.current;
-    if (!audio || !vocalId) return;
-    if (vocalPlaying) {
-      audio.pause();
-      setVocalPlaying(false);
-    } else {
-      stopAllAudio();
-      audio.src = api.audioUrl(vocalId, "vocals"); // solo button always plays the raw stem
-      vocalSrcModeRef.current = "raw";
-      audio.currentTime = vocalOrigCenterTime;
-      audio.play().catch(() => {});
-      setVocalPlaying(true);
-    }
-  };
-
-  const handlePlayInst = () => {
-    const audio = instAudioRef.current;
-    if (!audio || !instId) return;
-    if (instPlaying) {
-      audio.pause();
-      setInstPlaying(false);
-    } else {
-      stopAllAudio();
-      audio.src = api.audioUrl(instId, "instrumental");
-      instSrcModeRef.current = "raw";
-      audio.currentTime = instOrigCenterTime;
-      audio.play().catch(() => {});
-      setInstPlaying(true);
-    }
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
   };
 
   const handleSetAnchor = (next) => {
@@ -499,71 +591,44 @@ export function AuditionStudio({ seed }) {
     setError(null);
   };
 
-  const handleApplyAdjust = async () => {
+  const loopFromSelection = () => {
+    const sel = selVocal ? { sec: selVocal, off: vocalOffset } :
+                selInst ? { sec: selInst, off: instOffset } : null;
+    if (!sel) return;
+    setLoop({ start: sel.sec.start_sec + sel.off, end: sel.sec.end_sec + sel.off });
+  };
+
+  const applySuggestedPitch = () => {
+    if (!plan || plan.semitone_shift == null) return;
+    setShiftInput(anchor === "instrumental" ? plan.semitone_shift : -plan.semitone_shift);
+  };
+
+  const resetAll = () => {
+    engineRef.current?.stop();
+    setVocalOffset(0); setInstOffset(0);
+    setLoop(null); setPosition(null);
+    setSelVocal(null); setSelInst(null);
+    const planStretch = plan?.stretch_factor || 1;
+    const planShift = plan?.semitone_shift || 0;
+    if (anchor === "instrumental") { setStretchInput(planStretch); setShiftInput(planShift); }
+    else { setStretchInput(planStretch ? 1 / planStretch : 1); setShiftInput(-planShift); }
+  };
+
+  const handleExport = async () => {
     setError(null);
     if (vocalId == null || instId == null || vocalId === instId) return;
-    const stretch = Number(stretchInput);
-    const shift = Math.round(Number(shiftInput));
-    if (!Number.isFinite(stretch) || stretch <= 0 || !Number.isFinite(shift)) {
-      setError("Stretch must be a positive number and pitch a whole number of semitones.");
-      return;
-    }
-    pendingAdjustRef.current = { stretch, shift };
     try {
-      const { job_id } = await api.startAdjust(vocalId, instId, anchor, stretch, shift);
-      setAdjustJobId(job_id);
+      const { job_id } = await api.startExport(
+        vocalId, instId, anchor, appliedStretch, appliedShift, vocalOffset, instOffset,
+      );
+      setExportReady(null);
+      setExportJobId(job_id);
     } catch (e) {
       setError(e.message);
     }
   };
 
-  const handlePlayMashup = () => {
-    const vAudio = vocalAudioRef.current;
-    const iAudio = instAudioRef.current;
-    if (!vAudio || !iAudio || !vocalId || !instId) return;
-
-    if (vocalPlaying && instPlaying) {
-      stopAllAudio();
-      return;
-    }
-    stopAllAudio();
-
-    const vocalIsAdjusted = isAdjustedNow && anchor === "vocal";
-    const instIsAdjusted = isAdjustedNow && anchor === "instrumental";
-
-    vAudio.src = vocalIsAdjusted
-      ? api.adjustedAudioUrl(vocalId, instId, "vocal")
-      : api.audioUrl(vocalId, "vocals");
-    vocalSrcModeRef.current = vocalIsAdjusted ? "adjusted" : "raw";
-
-    iAudio.src = instIsAdjusted
-      ? api.adjustedAudioUrl(vocalId, instId, "instrumental")
-      : api.audioUrl(instId, "instrumental");
-    instSrcModeRef.current = instIsAdjusted ? "adjusted" : "raw";
-
-    // Both sides' <audio> elements are now loaded with files whose native
-    // timeline matches display-time, so the marker position seeks directly.
-    vAudio.currentTime = vocalCenterTime;
-    iAudio.currentTime = instCenterTime;
-
-    const stopAt = vocalCenterTime + 30;
-    const checkStop = () => {
-      if (vAudio.currentTime >= stopAt) stopAllAudio();
-    };
-    mashupStopRef.current = checkStop;
-    vAudio.addEventListener("timeupdate", checkStop);
-
-    Promise.all([vAudio.play(), iAudio.play()]).catch(() => {});
-    setVocalPlaying(true);
-    setInstPlaying(true);
-  };
-
-  // Suggests stretch values that lock the two tracks' beat grids onto a
-  // simple ratio (1:1 first if it's close enough to be usable), rather than
-  // only the plan's exact tempo-match value.
   const stretchSuggestions = useMemo(() => {
-    const vocalBpm = vocalTrack?.features?.full?.bpm;
-    const instBpm = instTrack?.features?.full?.bpm;
     if (!vocalBpm || !instBpm) return [];
     return BEAT_LOCK_RATIOS
       .map(({ label, value }) => ({
@@ -574,32 +639,39 @@ export function AuditionStudio({ seed }) {
       }))
       .filter((s) => s.stretch >= 0.5 && s.stretch <= 2)
       .sort((a, b) => Math.abs(a.stretch - 1) - Math.abs(b.stretch - 1));
-  }, [vocalTrack, instTrack, anchor]);
+  }, [vocalBpm, instBpm, anchor]);
 
   const samePair = vocalId != null && instId === vocalId;
   const showTimeline = vocalSections.length > 0 || instSections.length > 0;
 
   const alignmentText = (() => {
     if (!vocalTrack || !instTrack) {
-      return "Drag either track to align sections under the center marker ↕";
+      return "Drag either track to align sections under the playhead ↕";
     }
-    return `Marker — Vocal: ${fmt(vocalCenterTime)}  |  Instrumental: ${fmt(instCenterTime)}`;
+    return `Playhead — Vocal: ${fmt(vocalCenterTime)}  |  Instrumental: ${fmt(instCenterTime)}`;
   })();
+
+  const bpmTag = (bpm, conf) => {
+    if (!bpm) return null;
+    const c = conf != null ? ` · ${Math.round(conf * 100)}%` : "";
+    return `${bpm.toFixed(1)} BPM${c}`;
+  };
 
   return (
     <div className="panel">
       <h2 style={{ margin: 0 }}>Audition Studio</h2>
       <p className="muted" style={{ marginTop: 4 }}>
         Pick a vocal and an instrumental, drag either waveform to line up sections under the
-        center marker, choose which side to stretch/pitch to match the other (one-time), then
-        hit play to hear them together from the marker.
+        playhead, then play them together. Tempo and pitch are matched live (decoupled — no
+        chipmunking) and nothing is written until you export.
       </p>
 
       {error && <div className="error-text" style={{ marginTop: 8 }}>{error}</div>}
+      {audioError && <div className="error-text" style={{ marginTop: 8 }}>{audioError}</div>}
 
       <div className="audition-pickers" style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 12 }}>
         <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span className="muted">Vocal (top)</span>
+          <span className="muted">Vocal (top){vocalBpm ? ` — ${bpmTag(vocalBpm, vocalConf)}` : ""}</span>
           <select
             value={vocalId ?? ""}
             onChange={(e) => setVocalId(e.target.value ? Number(e.target.value) : null)}
@@ -612,7 +684,7 @@ export function AuditionStudio({ seed }) {
         </label>
 
         <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span className="muted">Instrumental (bed)</span>
+          <span className="muted">Instrumental (bed){instBpm ? ` — ${bpmTag(instBpm, instConf)}` : ""}</span>
           <select
             value={instId ?? ""}
             onChange={(e) => setInstId(e.target.value ? Number(e.target.value) : null)}
@@ -638,6 +710,10 @@ export function AuditionStudio({ seed }) {
         </div>
       )}
 
+      {audioLoading && (
+        <p className="muted" style={{ marginTop: 8 }}>Decoding stems for playback…</p>
+      )}
+
       {showTimeline && (
         <div className="timeline-panel" style={{ marginTop: 20 }}>
           <div className="section-legend">
@@ -649,10 +725,29 @@ export function AuditionStudio({ seed }) {
             ))}
           </div>
 
+          {/* Scrub ruler: click/drag to move the playhead, shift-drag to set a loop. */}
+          <div
+            className="transport-ruler"
+            onMouseDown={(e) => handleScrub(e, e.currentTarget)}
+            title="Click or drag to scrub · Shift-drag to set a loop region"
+          >
+            <div className="ruler-playhead" style={{ left: `${(playPos * pps / TIMELINE_WIDTH) * 100}%` }} />
+            {loop && (
+              <div
+                className="ruler-loop"
+                style={{
+                  left: `${(loop.start * pps / TIMELINE_WIDTH) * 100}%`,
+                  width: `${((loop.end - loop.start) * pps / TIMELINE_WIDTH) * 100}%`,
+                }}
+              />
+            )}
+          </div>
+
           <SectionTimeline
             sections={vocalDisplaySections}
             durationSecs={vocalDisplayDuration}
             label="Vocal"
+            bpmText={bpmTag(vocalBpm, vocalConf)}
             pps={pps}
             offsetSecs={vocalOffset}
             onOffsetChange={setVocalOffset}
@@ -661,18 +756,20 @@ export function AuditionStudio({ seed }) {
             waveform={vocalWaveform.waveform}
             beatTimes={vocalDisplayBeatTimes}
             trackRole="vocal"
-            onPlay={vocalId ? handlePlayVocal : null}
-            isPlaying={vocalPlaying}
-            playheadTime={playheadTimes.vocal}
+            onPlay={vocalBuffer ? () => handleSolo("vocal") : null}
+            isPlaying={isPlaying && soloRole === "vocal"}
+            playheadPos={playPos}
+            loopBand={loop}
             otherBeatTimes={instDisplayBeatTimes}
             otherOffsetSecs={instOffset}
-            snapEnabled={snapEnabled}
+            snapMode={snapMode}
           />
 
           <SectionTimeline
             sections={instDisplaySections}
             durationSecs={instDisplayDuration}
             label="Inst"
+            bpmText={bpmTag(instBpm, instConf)}
             pps={pps}
             offsetSecs={instOffset}
             onOffsetChange={setInstOffset}
@@ -681,23 +778,24 @@ export function AuditionStudio({ seed }) {
             waveform={instWaveform.waveform}
             beatTimes={instDisplayBeatTimes}
             trackRole="instrumental"
-            onPlay={instId ? handlePlayInst : null}
-            isPlaying={instPlaying}
-            playheadTime={playheadTimes.inst}
+            onPlay={instBuffer ? () => handleSolo("inst") : null}
+            isPlaying={isPlaying && soloRole === "inst"}
+            playheadPos={playPos}
+            loopBand={loop}
             otherBeatTimes={vocalDisplayBeatTimes}
             otherOffsetSecs={vocalOffset}
-            snapEnabled={snapEnabled}
+            snapMode={snapMode}
           />
 
           <div className="alignment-readout">
             {alignmentText}
-            <label style={{ marginLeft: 14, display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.75rem", cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={snapEnabled}
-                onChange={(e) => setSnapEnabled(e.target.checked)}
-              />
-              Snap to beat while dragging
+            <label style={{ marginLeft: 14, display: "inline-flex", alignItems: "center", gap: 4, fontSize: "0.75rem" }}>
+              Snap while dragging:
+              <select value={snapMode} onChange={(e) => setSnapMode(e.target.value)} style={{ fontSize: "0.75rem" }}>
+                <option value="beat">beats</option>
+                <option value="bar">bars</option>
+                <option value="off">off</option>
+              </select>
             </label>
           </div>
 
@@ -717,46 +815,79 @@ export function AuditionStudio({ seed }) {
               Stretch vocal → instrumental
             </button>
 
-            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.8rem" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.8rem" }}>
               <span className="muted">Stretch ×</span>
+              <button
+                className="secondary"
+                style={{ padding: "1px 7px" }}
+                onClick={() => setStretchInput((Number(stretchInput) - 0.01).toFixed(4))}
+                title="Nudge stretch down 0.01"
+              >−</button>
               <input
-                type="number"
+                type="range"
+                min="0.5"
+                max="2"
                 step="0.001"
-                min="0.01"
-                value={stretchInput}
+                value={appliedStretch}
                 onChange={(e) => setStretchInput(e.target.value)}
-                style={{ width: 70 }}
+                style={{ width: 110 }}
               />
+              <button
+                className="secondary"
+                style={{ padding: "1px 7px" }}
+                onClick={() => setStretchInput((Number(stretchInput) + 0.01).toFixed(4))}
+                title="Nudge stretch up 0.01"
+              >+</button>
+              <span className="muted" style={{ minWidth: 52, fontVariantNumeric: "tabular-nums" }}>
+                ×{appliedStretch.toFixed(3)}
+              </span>
             </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.8rem" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.8rem" }}>
               <span className="muted">Pitch (st)</span>
+              <button
+                className="secondary"
+                style={{ padding: "1px 7px" }}
+                onClick={() => setShiftInput(Math.max(-24, appliedShift - 1))}
+                title="Nudge pitch down 1 semitone"
+              >−</button>
               <input
-                type="number"
+                type="range"
+                min="-24"
+                max="24"
                 step="1"
-                value={shiftInput}
+                value={appliedShift}
                 onChange={(e) => setShiftInput(e.target.value)}
-                style={{ width: 56 }}
+                style={{ width: 90 }}
               />
+              <button
+                className="secondary"
+                style={{ padding: "1px 7px" }}
+                onClick={() => setShiftInput(Math.min(24, appliedShift + 1))}
+                title="Nudge pitch up 1 semitone"
+              >+</button>
+              <span className="muted" style={{ minWidth: 30, fontVariantNumeric: "tabular-nums" }}>
+                {appliedShift > 0 ? "+" : ""}{appliedShift}
+              </span>
             </label>
             <button
-              onClick={handleApplyAdjust}
-              disabled={samePair || vocalId == null || instId == null || adjustJobId != null}
+              className="secondary"
+              style={{ fontSize: "0.75rem" }}
+              onClick={() => startPlayback(null)}
+              title="Re-audition from the current marker with the latest stretch/pitch"
             >
-              Apply
+              ▶ Play from marker
             </button>
-
-            {adjustJobId && (
-              <JobBadge
-                jobId={adjustJobId}
-                onComplete={() => {
-                  setAdjustJobId(null);
-                  setAdjustedKey(`${vocalId}:${instId}:${anchor}`);
-                  setAdjustedStretch(pendingAdjustRef.current?.stretch ?? 1);
-                  setAdjustedShift(pendingAdjustRef.current?.shift ?? 0);
-                  if (anchor === "instrumental") setInstOffset(0);
-                  else setVocalOffset(0);
-                }}
-              />
+            {plan?.stretch_factor && (
+              <button
+                className="secondary"
+                style={{ fontSize: "0.75rem" }}
+                onClick={() => setStretchInput(anchor === "instrumental"
+                  ? plan.stretch_factor
+                  : (plan.stretch_factor ? 1 / plan.stretch_factor : 1))}
+                title="Auto tempo-match using the detected BPMs"
+              >
+                Auto tempo-match
+              </button>
             )}
           </div>
 
@@ -777,21 +908,84 @@ export function AuditionStudio({ seed }) {
             </div>
           )}
 
+          {plan && (
+            <div className="key-hint" style={{ marginTop: 6, fontSize: "0.78rem" }}>
+              <span className="muted">Key:</span>{" "}
+              {plan.vocal?.key ?? "?"} {plan.vocal?.mode ?? ""} (vocal) vs{" "}
+              {plan.inst?.key ?? "?"} {plan.inst?.mode ?? ""} (inst) — {plan.key_relation}
+              {plan.semitone_shift ? (
+                <button
+                  className="secondary"
+                  style={{ fontSize: "0.7rem", padding: "2px 7px", marginLeft: 8 }}
+                  onClick={applySuggestedPitch}
+                  title="Set pitch to the suggested semitone offset to bring the keys together"
+                >
+                  Apply suggested pitch ({plan.semitone_shift >= 0 ? "+" : ""}{plan.semitone_shift} st)
+                </button>
+              ) : null}
+            </div>
+          )}
+
+          <div className="preview-play-row" style={{ marginTop: 10 }}>
+            <button
+              className={`preview-play-btn${isPlaying && soloRole === null ? " playing" : ""}`}
+              onClick={handlePlayMashup}
+              disabled={samePair || !vocalBuffer || !instBuffer}
+              title="Play both stems together, tempo/pitch-matched live, from the playhead"
+            >
+              {isPlaying && soloRole === null ? "⏸ Stop mashup" : "▶ Play mashup"}
+            </button>
+
+            <button
+              className="secondary"
+              onClick={loopFromSelection}
+              disabled={!selVocal && !selInst}
+              title="Loop the selected section"
+            >
+              Loop selection
+            </button>
+            {loop && (
+              <button className="secondary" onClick={() => setLoop(null)}>
+                Clear loop ({fmt(loop.start)}–{fmt(loop.end)})
+              </button>
+            )}
+
+            <button
+              className="secondary"
+              onClick={resetAll}
+              title="Reset alignment, stretch, pitch and loop to defaults"
+            >
+              Reset all
+            </button>
+          </div>
+
           <div className="preview-play-row" style={{ marginTop: 8 }}>
             <button
-              className={`preview-play-btn${vocalPlaying && instPlaying ? " playing" : ""}`}
-              onClick={handlePlayMashup}
-              disabled={samePair || vocalId == null || instId == null}
-              title={isAdjustedNow
-                ? "Play both stems together (one stretched, one raw) from the marker"
-                : "Play both raw stems together from the marker"}
+              onClick={handleExport}
+              disabled={samePair || vocalId == null || instId == null || exportJobId != null}
+              title="Render the current mashup (alignment + stretch + pitch) to a WAV"
             >
-              {vocalPlaying && instPlaying ? "⏸ Stop mashup" : "▶ Play mashup"}
+              Export mashup WAV
             </button>
-            {!isAdjustedNow && (
-              <span className="muted" style={{ fontSize: "0.75rem" }}>
-                playing raw stems — pick a stretch side above to tempo/key-match
-              </span>
+            {exportJobId && (
+              <JobBadge
+                jobId={exportJobId}
+                onComplete={(job) => {
+                  setExportJobId(null);
+                  if (job.status === "completed") setExportReady(job.result || {});
+                }}
+              />
+            )}
+            {exportReady && (
+              <a
+                href={api.exportAudioUrl(vocalId, instId)}
+                target="_blank"
+                rel="noreferrer"
+                className="muted"
+                style={{ fontSize: "0.8rem" }}
+              >
+                ↓ download / play export
+              </a>
             )}
           </div>
 
@@ -806,16 +1000,6 @@ export function AuditionStudio({ seed }) {
                 ? `Inst ${selInst.label} (${fmt(selInst.start_sec)}–${fmt(selInst.end_sec)})`
                 : " —"}
             </div>
-          )}
-
-          {(vocalOffset !== 0 || instOffset !== 0) && (
-            <button
-              className="secondary"
-              style={{ alignSelf: "flex-start", marginTop: 4, fontSize: "0.75rem", padding: "3px 8px" }}
-              onClick={() => { setVocalOffset(0); setInstOffset(0); }}
-            >
-              Reset alignment
-            </button>
           )}
         </div>
       )}
@@ -852,22 +1036,6 @@ export function AuditionStudio({ seed }) {
           )}
         </div>
       )}
-
-      {/* Hidden audio elements */}
-      <audio
-        ref={vocalAudioRef}
-        preload="none"
-        src={vocalId ? api.audioUrl(vocalId, "vocals") : ""}
-        onEnded={() => setVocalPlaying(false)}
-        style={{ display: "none" }}
-      />
-      <audio
-        ref={instAudioRef}
-        preload="none"
-        src={instId ? api.audioUrl(instId, "instrumental") : ""}
-        onEnded={() => setInstPlaying(false)}
-        style={{ display: "none" }}
-      />
     </div>
   );
 }

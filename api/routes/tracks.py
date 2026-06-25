@@ -28,7 +28,13 @@ _AUDIO_MEDIA = {
 }
 
 
-_FEATURE_FIELDS = ("bpm", "key", "mode", "camelot", "energy", "loudness_rms")
+_FEATURE_FIELDS = ("bpm", "key", "mode", "camelot", "energy", "loudness_rms",
+                   "bpm_confidence")
+
+# Below this, vocal-stem beat tracking is too unreliable (vocals aren't
+# percussive) to trust for tempo/beat-grid display — fall back to the
+# full-mix grid for that stem instead.
+VOCAL_BEAT_CONFIDENCE_MIN = 0.35
 
 
 def _stems_by_song() -> dict[int, dict[str, str]]:
@@ -41,9 +47,9 @@ def _stems_by_song() -> dict[int, dict[str, str]]:
     return out
 
 
-def _features_by_song() -> dict[int, dict]:
+def _features_by_song(stem_type: str) -> dict[int, dict]:
     out: dict[int, dict] = {}
-    for f in get_all_features(stem_type="full"):
+    for f in get_all_features(stem_type=stem_type):
         sid = f.get("song_id")
         if sid is None:
             continue
@@ -55,7 +61,9 @@ def _features_by_song() -> dict[int, dict]:
 def list_tracks() -> dict:
     songs = get_all_songs()
     stems = _stems_by_song()
-    features = _features_by_song()
+    features_full   = _features_by_song("full")
+    features_vocals = _features_by_song("vocals")
+    features_inst   = _features_by_song("instrumental")
 
     rows = []
     for s in songs:
@@ -63,6 +71,13 @@ def list_tracks() -> dict:
         stem_paths = stems.get(sid, {})
         # 'full' exists if either the stems table has it OR raw_path is set
         has_full = "full" in stem_paths or bool(s.get("raw_path"))
+        feats = {}
+        if sid in features_full:
+            feats["full"] = features_full[sid]
+        if sid in features_vocals:
+            feats["vocals"] = features_vocals[sid]
+        if sid in features_inst:
+            feats["instrumental"] = features_inst[sid]
         rows.append({
             **s,
             "stems": {
@@ -70,7 +85,7 @@ def list_tracks() -> dict:
                 "vocals": "vocals" in stem_paths,
                 "instrumental": "instrumental" in stem_paths,
             },
-            "features": {"full": features.get(sid)} if sid in features else None,
+            "features": feats or None,
         })
     return {"count": len(rows), "tracks": rows}
 
@@ -171,7 +186,14 @@ def list_sections(song_id: int) -> dict:
 
 @router.get("/{song_id}/waveform")
 def get_waveform(song_id: int, stem: str = "vocals") -> dict:
-    """Waveform envelope (360 normalized RMS points) and beat timestamps for alignment."""
+    """Waveform envelope (360 normalized RMS points) and beat timestamps for alignment.
+
+    Beat grid source — stems-first with fallback: the instrumental stem's own
+    beats are always used (percussive content tracks reliably). The vocal
+    stem's beats are used only when its bpm_confidence clears
+    VOCAL_BEAT_CONFIDENCE_MIN; below that, vocals aren't percussive enough for
+    librosa's beat tracker to trust, so we fall back to the full-mix grid.
+    The 'full' stem always uses its own beats."""
     if stem not in _STEM_TYPES:
         raise HTTPException(status_code=400, detail=f"stem must be one of {sorted(_STEM_TYPES)}")
     conn = get_conn()
@@ -179,11 +201,31 @@ def get_waveform(song_id: int, stem: str = "vocals") -> dict:
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="song not found")
+
     feat_stem = get_features_for_song(song_id, stem_type=stem)
     waveform = feat_stem.get("waveform_rms", []) if feat_stem else []
-    feat_full = get_features_for_song(song_id, stem_type="full")
-    beat_times = feat_full.get("beat_times", []) if feat_full else []
-    return {"song_id": song_id, "stem": stem, "waveform": waveform, "beat_times": beat_times}
+
+    beat_times, beat_source = [], stem
+    if stem == "vocals":
+        confidence = (feat_stem or {}).get("bpm_confidence") or 0.0
+        stem_beats = (feat_stem or {}).get("beat_times") or []
+        if stem_beats and confidence >= VOCAL_BEAT_CONFIDENCE_MIN:
+            beat_times = stem_beats
+        else:
+            feat_full = get_features_for_song(song_id, stem_type="full")
+            beat_times = feat_full.get("beat_times", []) if feat_full else []
+            beat_source = "full"
+    else:
+        beat_times = (feat_stem or {}).get("beat_times") or []
+        if not beat_times and stem == "instrumental":
+            feat_full = get_features_for_song(song_id, stem_type="full")
+            beat_times = feat_full.get("beat_times", []) if feat_full else []
+            beat_source = "full"
+
+    return {
+        "song_id": song_id, "stem": stem, "waveform": waveform,
+        "beat_times": beat_times, "beat_source": beat_source,
+    }
 
 
 @router.get("/{song_id}/audio/{stem_type}")

@@ -10,9 +10,9 @@ from fastapi.responses import FileResponse
 from database.models import get_candidates_enriched
 
 from api import jobs
-from api.workers import adjust_worker, match_worker, preview_worker
+from api.workers import adjust_worker, export_worker, match_worker, preview_worker
 from matcher.plan import build_mashup_plan
-from render.preview import adjusted_path, preview_path
+from render.preview import adjusted_path, export_path, preview_path
 
 router = APIRouter()
 
@@ -102,6 +102,39 @@ def queue_adjust(vocal_id: int, inst_id: int, anchor: str,
     background.add_task(adjust_worker.run, job_id, vocal_id, inst_id, anchor,
                         stretch, shift)
     return {"job_id": job_id}
+
+
+@router.post("/export")
+def queue_export(vocal_id: int, inst_id: int, anchor: str,
+                 background: BackgroundTasks,
+                 stretch: float = 1.0, shift: int = 0,
+                 vocal_offset: float = 0.0, inst_offset: float = 0.0) -> dict:
+    """Render the full Audition Studio mashup to a WAV: anchor stem stretched +
+    pitched (decoupled), both stems laid out at their drag offsets, then mixed.
+    This is the only step that writes audio — source stems stay untouched."""
+    if anchor not in ("vocal", "instrumental"):
+        raise HTTPException(status_code=400,
+                            detail="anchor must be 'vocal' or 'instrumental'")
+    job_id = jobs.new_job(kind="export", message="Queued for mashup export")
+    background.add_task(export_worker.run, job_id, vocal_id, inst_id, anchor,
+                        stretch, shift, vocal_offset, inst_offset)
+    return {"job_id": job_id}
+
+
+@router.get("/export/audio")
+def stream_export(vocal_id: int, inst_id: int):
+    path = export_path(vocal_id, inst_id)
+    if not path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail="not exported yet — POST /api/mashups/export first",
+        )
+    return FileResponse(
+        path,
+        media_type="audio/wav",
+        headers={"Accept-Ranges": "bytes"},
+        filename=path.name,
+    )
 
 
 @router.get("/adjust/audio")

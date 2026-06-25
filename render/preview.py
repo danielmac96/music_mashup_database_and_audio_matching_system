@@ -117,6 +117,112 @@ def build_adjusted_stem(vocal_song_id: int, inst_song_id: int, anchor: str,
     return out
 
 
+def export_path(vocal_song_id: int, inst_song_id: int) -> Path:
+    return PREVIEWS_DIR / f"export_{vocal_song_id}_x_{inst_song_id}.wav"
+
+
+MAX_EXPORT_SECS = 600.0  # safety cap so a runaway render can't fill the disk
+
+
+def build_mashup_export(vocal_song_id: int, inst_song_id: int, anchor: str,
+                        stretch: float, shift: int,
+                        vocal_offset: float, inst_offset: float,
+                        db_path=None, on_progress: ProgressCb = None,
+                        force: bool = True) -> Optional[Path]:
+    """Render the full mashup exactly as aligned in the Audition Studio:
+    the anchor stem is time-stretched (×stretch) and pitch-shifted (shift st)
+    with the two effects decoupled, then both stems are laid on one timeline at
+    their drag offsets (in display-seconds) and mixed.
+
+    This is the non-destructive boundary: the source stems are never modified;
+    only this mixed WAV is written, and only when the user clicks Export."""
+    def _tick(pct, msg):
+        if on_progress:
+            on_progress(pct, msg)
+
+    if anchor not in ("vocal", "instrumental"):
+        raise ValueError("anchor must be 'vocal' or 'instrumental'")
+
+    plan = build_mashup_plan(vocal_song_id, inst_song_id, db_path=db_path)
+    if not plan:
+        log.warning("export: no plan (song missing) for %s/%s",
+                    vocal_song_id, inst_song_id)
+        return None
+
+    v_path = plan["files"].get("vocals")
+    i_path = plan["files"].get("instrumental")
+    if not v_path or not i_path or not Path(v_path).exists() or not Path(i_path).exists():
+        log.warning("export: missing stem files (vocals=%s, inst=%s)", v_path, i_path)
+        return None
+
+    out = export_path(vocal_song_id, inst_song_id)
+    if out.exists() and not force:
+        _tick(100, "Export already rendered")
+        return out
+
+    try:
+        import numpy as np
+        import librosa
+        import soundfile as sf
+    except ImportError as exc:
+        log.error("export render needs librosa + soundfile: %s", exc)
+        return None
+
+    _tick(10, "Loading vocal…")
+    v_y, _ = librosa.load(v_path, sr=PREVIEW_SR, mono=True)
+    _tick(25, "Loading instrumental…")
+    i_y, _ = librosa.load(i_path, sr=PREVIEW_SR, mono=True)
+
+    rate = float(stretch) if stretch and stretch > 0 else 1.0
+    n_steps = int(shift or 0)
+
+    # Apply the decoupled stretch + pitch to whichever side is anchored. After
+    # this, both arrays live on the shared "display" timeline (samples / SR).
+    if anchor == "vocal":
+        if abs(rate - 1.0) > 1e-3:
+            _tick(45, f"Time-stretching vocal ×{rate:.3f}…")
+            v_y = librosa.effects.time_stretch(v_y, rate=rate, n_fft=1024)
+        if n_steps:
+            _tick(60, f"Pitch-shifting vocal {n_steps:+d} st…")
+            v_y = librosa.effects.pitch_shift(v_y, sr=PREVIEW_SR, n_steps=n_steps, n_fft=1024)
+    else:
+        if abs(rate - 1.0) > 1e-3:
+            _tick(45, f"Time-stretching instrumental ×{rate:.3f}…")
+            i_y = librosa.effects.time_stretch(i_y, rate=rate, n_fft=1024)
+        if n_steps:
+            _tick(60, f"Pitch-shifting instrumental {n_steps:+d} st…")
+            i_y = librosa.effects.pitch_shift(i_y, sr=PREVIEW_SR, n_steps=n_steps, n_fft=1024)
+
+    _tick(80, "Aligning + mixing…")
+    # Place each stem on the global timeline at its drag offset (display secs).
+    base = min(vocal_offset, inst_offset, 0.0)
+    v_at = int(round((vocal_offset - base) * PREVIEW_SR))
+    i_at = int(round((inst_offset - base) * PREVIEW_SR))
+    total = max(v_at + len(v_y), i_at + len(i_y))
+    total = min(total, int(MAX_EXPORT_SECS * PREVIEW_SR))
+    if total <= 0:
+        log.warning("export: empty timeline")
+        return None
+
+    mix = np.zeros(total, dtype="float32")
+    v_end = min(total, v_at + len(v_y))
+    if v_at < total and v_end > v_at:
+        mix[v_at:v_end] += v_y[: v_end - v_at] * 0.95
+    i_end = min(total, i_at + len(i_y))
+    if i_at < total and i_end > i_at:
+        mix[i_at:i_end] += i_y[: i_end - i_at] * 0.8
+
+    peak = float(np.max(np.abs(mix))) or 1.0
+    if peak > 1.0:
+        mix = mix / peak
+
+    PREVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    sf.write(str(out), mix.astype("float32"), PREVIEW_SR)
+    _tick(100, "Export ready")
+    log.info("mashup export rendered: %s", out.name)
+    return out
+
+
 def build_preview(vocal_song_id: int, inst_song_id: int, db_path=None,
                   on_progress: ProgressCb = None, force: bool = False,
                   vocal_start: Optional[float] = None,
