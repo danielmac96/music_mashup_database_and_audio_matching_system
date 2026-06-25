@@ -40,6 +40,9 @@ export const api = {
   startAnalyze: (id) =>
     jsonFetch(`/api/tracks/${id}/analyze`, { method: "POST" }),
 
+  startStructure: (id) =>
+    jsonFetch(`/api/tracks/${id}/structure`, { method: "POST" }),
+
   correctFeatures: (id, { bpm, key, mode } = {}) =>
     jsonFetch(`/api/tracks/${id}/features`, {
       method: "PATCH",

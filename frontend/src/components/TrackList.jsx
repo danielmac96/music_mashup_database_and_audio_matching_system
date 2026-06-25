@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { JobBadge } from "./JobBadge";
+import { MetricGrid } from "./MetricIndicators";
 
 const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -117,6 +118,15 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches }) {
     }
   };
 
+  const startStructure = async (id) => {
+    try {
+      const { job_id } = await api.startStructure(id);
+      setJobs((prev) => ({ ...prev, [id]: { kind: "structure", jobId: job_id } }));
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const onJobDone = (id) => {
     setJobs((prev) => {
       const copy = { ...prev };
@@ -148,6 +158,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches }) {
               <th>Status</th>
               <th>Length</th>
               <th>Features</th>
+              <th>Metrics</th>
               <th>Actions</th>
               <th>Mashup</th>
               <th>Audio</th>
@@ -161,6 +172,8 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches }) {
               const canSeparate =
                 !job && t.stems.full && (!t.stems.vocals || !t.stems.instrumental);
               const canAnalyze =
+                !job && t.stems.full;
+              const canDetectStructure =
                 !job && t.stems.full;
               const feats = t.features?.full;
               const analysed = !!feats;
@@ -233,6 +246,13 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches }) {
                     )}
                   </td>
                   <td>
+                    <MetricGrid
+                      stems={t.stems}
+                      features={t.features}
+                      sectionCount={t.section_count}
+                    />
+                  </td>
+                  <td>
                     <div className="actions">
                       <button
                         onClick={() => startDownload(t.id)}
@@ -254,6 +274,14 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches }) {
                         title={canAnalyze ? "" : "Needs a downloaded file"}
                       >
                         Analyze
+                      </button>
+                      <button
+                        className="secondary"
+                        onClick={() => startStructure(t.id)}
+                        disabled={!canDetectStructure}
+                        title={canDetectStructure ? "Detect intro/verse/chorus/drop sections" : "Needs a downloaded file"}
+                      >
+                        Detect structure
                       </button>
                     </div>
                   </td>

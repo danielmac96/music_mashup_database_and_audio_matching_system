@@ -258,9 +258,9 @@ def run_analysis() -> dict:
             upsert_features(sid, stem_type, features.copy())
             per_stem[stem_type] = features
             _track_note(
-                f"[{stem_type}] BPM={features['bpm']} "
-                f"Key={features['key']} {features['mode']} "
-                f"Camelot={features['camelot']}"
+                f"[{stem_type}] BPM={features.get('bpm', '?')} "
+                f"Key={features.get('key', '?')} {features.get('mode', '')} "
+                f"Camelot={features.get('camelot', '?')}"
             )
 
         # Structure detection (sections with chorus/verse/drop timestamps).

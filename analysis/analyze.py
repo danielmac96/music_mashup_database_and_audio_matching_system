@@ -3,6 +3,11 @@ analysis/analyze.py — Extract musical features from an audio file.
 
 Features: BPM, key, Camelot, loudness, energy, MFCC, spectral shape.
 Requires: librosa, numpy
+
+Each metric group below is its own step function (tempo, key, dynamics,
+timbre, waveform) so one failing measurement doesn't take the rest down with
+it — a stem that defeats the key detector (e.g. a noisy/atonal stem) still
+comes back with BPM, loudness and timbre filled in.
 """
 from typing import Callable, Optional
 import logging
@@ -29,6 +34,82 @@ CAMELOT = {
 
 KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
+# The ordered metric steps analyze_file runs. Exposed so callers (and tests)
+# can see what "fully analysed" means without re-deriving it from the code.
+STEPS = ("tempo", "key", "dynamics", "timbre", "waveform")
+
+
+# ── Per-metric step functions ─────────────────────────────────────────────────
+# Each takes the loaded signal (+ sr/hop) and returns a dict of feature keys.
+# None of these mutate shared state, so any one of them can fail without
+# corrupting the others.
+
+def _step_tempo(y: np.ndarray, sr: int, hop_length: int) -> dict:
+    import librosa
+    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop_length)
+    beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=hop_length)
+    return {
+        "bpm": float(round(float(np.atleast_1d(tempo)[0]), 2)),
+        "bpm_confidence": float(min(len(beats) / (len(y) / hop_length), 1.0)),
+        "beat_times": [round(float(t), 4) for t in beat_times],
+    }
+
+
+def _step_key(y: np.ndarray, sr: int, hop_length: int) -> dict:
+    import librosa
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length)
+    chroma_mean = chroma.mean(axis=1)
+    major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
+                               2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+    minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
+                               2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
+    major_corrs = [np.corrcoef(np.roll(major_profile, i), chroma_mean)[0, 1]
+                   for i in range(12)]
+    minor_corrs = [np.corrcoef(np.roll(minor_profile, i), chroma_mean)[0, 1]
+                   for i in range(12)]
+    best_major_idx = int(np.argmax(major_corrs))
+    best_minor_idx = int(np.argmax(minor_corrs))
+    if major_corrs[best_major_idx] >= minor_corrs[best_minor_idx]:
+        key_idx, mode = best_major_idx, "major"
+    else:
+        key_idx, mode = best_minor_idx, "minor"
+    return {
+        "key": KEY_NAMES[key_idx],
+        "mode": mode,
+        "camelot": CAMELOT.get((key_idx, mode), "?"),
+    }
+
+
+def _step_dynamics(y: np.ndarray, sr: int, hop_length: int) -> dict:
+    import librosa
+    rms = librosa.feature.rms(y=y, hop_length=hop_length)
+    S = np.abs(librosa.stft(y, hop_length=hop_length))
+    return {
+        "loudness_rms": float(round(float(rms.mean()), 6)),
+        "energy": float(round(float((S ** 2).mean()), 6)),
+    }
+
+
+def _step_timbre(y: np.ndarray, sr: int, hop_length: int, n_mfcc: int) -> dict:
+    import librosa
+    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc, hop_length=hop_length)
+    centroid = librosa.feature.spectral_centroid(y=y, sr=sr, hop_length=hop_length)
+    rolloff  = librosa.feature.spectral_rolloff(y=y, sr=sr, hop_length=hop_length)
+    zcr      = librosa.feature.zero_crossing_rate(y, hop_length=hop_length)
+    return {
+        "mfcc": [round(float(v), 4) for v in mfcc.mean(axis=1)],
+        "spectral_centroid": float(round(float(centroid.mean()), 2)),
+        "spectral_rolloff": float(round(float(rolloff.mean()), 2)),
+        "zero_crossing_rate": float(round(float(zcr.mean()), 6)),
+    }
+
+
+def _step_waveform(y: np.ndarray, n_points: int = 360) -> dict:
+    chunk = max(1, len(y) // n_points)
+    wf = [float(np.sqrt(np.mean(y[i * chunk:(i + 1) * chunk] ** 2))) for i in range(n_points)]
+    mx = max(wf) or 1.0
+    return {"waveform_rms": [round(v / mx, 5) for v in wf]}
+
 
 def analyze_file(audio_path: Path, trim_secs: Optional[int] = None,
                   on_progress: ProgressCb = None) -> dict:
@@ -53,67 +134,34 @@ def analyze_file(audio_path: Path, trim_secs: Optional[int] = None,
     _tick("Loading audio…")
     y, sr = librosa.load(str(audio_path), sr=SAMPLE_RATE,
                           duration=trim_secs, mono=True)
-    features = {}
 
-    # BPM
-    _tick("Detecting BPM…")
-    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=HOP_LENGTH)
-    features["bpm"] = float(round(float(np.atleast_1d(tempo)[0]), 2))
-    features["bpm_confidence"] = float(min(len(beats) / (len(y) / HOP_LENGTH), 1.0))
-    beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP_LENGTH)
-    features["beat_times"] = [round(float(t), 4) for t in beat_times]
+    features: dict = {}
+    failed_steps: list[str] = []
 
-    # Key
-    _tick("Detecting key…")
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=HOP_LENGTH)
-    chroma_mean = chroma.mean(axis=1)
-    major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
-                               2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
-    minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53,
-                               2.54, 4.75, 3.98, 2.69, 3.34, 3.17])
-    major_corrs = [np.corrcoef(np.roll(major_profile, i), chroma_mean)[0, 1]
-                   for i in range(12)]
-    minor_corrs = [np.corrcoef(np.roll(minor_profile, i), chroma_mean)[0, 1]
-                   for i in range(12)]
-    best_major_idx = int(np.argmax(major_corrs))
-    best_minor_idx = int(np.argmax(minor_corrs))
-    if major_corrs[best_major_idx] >= minor_corrs[best_minor_idx]:
-        key_idx, mode = best_major_idx, "major"
-    else:
-        key_idx, mode = best_minor_idx, "minor"
-    features["key"]    = KEY_NAMES[key_idx]
-    features["mode"]   = mode
-    features["camelot"] = CAMELOT.get((key_idx, mode), "?")
+    step_plan = (
+        ("tempo",    "Detecting BPM…",               lambda: _step_tempo(y, sr, HOP_LENGTH)),
+        ("key",      "Detecting key…",                lambda: _step_key(y, sr, HOP_LENGTH)),
+        ("dynamics", "Computing loudness + energy…",  lambda: _step_dynamics(y, sr, HOP_LENGTH)),
+        ("timbre",   "Computing MFCC + spectral shape…", lambda: _step_timbre(y, sr, HOP_LENGTH, N_MFCC)),
+        ("waveform", "Computing waveform envelope…",  lambda: _step_waveform(y)),
+    )
 
-    # Dynamics
-    _tick("Computing loudness + energy…")
-    rms = librosa.feature.rms(y=y, hop_length=HOP_LENGTH)
-    features["loudness_rms"] = float(round(float(rms.mean()), 6))
-    S = np.abs(librosa.stft(y, hop_length=HOP_LENGTH))
-    features["energy"] = float(round(float((S ** 2).mean()), 6))
+    for step_name, msg, run_step in step_plan:
+        _tick(msg)
+        try:
+            features.update(run_step())
+        except Exception:  # noqa: BLE001
+            log.exception("  step '%s' failed for %s", step_name, audio_path.name)
+            failed_steps.append(step_name)
 
-    # MFCC
-    _tick("Computing MFCC…")
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC, hop_length=HOP_LENGTH)
-    features["mfcc"] = [round(float(v), 4) for v in mfcc.mean(axis=1)]
-
-    # Spectral
-    _tick("Computing spectral shape…")
-    centroid = librosa.feature.spectral_centroid(y=y, sr=sr, hop_length=HOP_LENGTH)
-    rolloff  = librosa.feature.spectral_rolloff(y=y, sr=sr, hop_length=HOP_LENGTH)
-    zcr      = librosa.feature.zero_crossing_rate(y, hop_length=HOP_LENGTH)
-    features["spectral_centroid"]   = float(round(float(centroid.mean()), 2))
-    features["spectral_rolloff"]    = float(round(float(rolloff.mean()), 2))
-    features["zero_crossing_rate"]  = float(round(float(zcr.mean()), 6))
-
-    _tick("Computing waveform envelope…")
-    N_WF = 360
-    chunk = max(1, len(y) // N_WF)
-    wf = [float(np.sqrt(np.mean(y[i * chunk:(i + 1) * chunk] ** 2))) for i in range(N_WF)]
-    mx = max(wf) or 1.0
-    features["waveform_rms"] = [round(v / mx, 5) for v in wf]
-
-    log.info(f"  → BPM={features['bpm']}, Key={features['key']} {features['mode']}, "
-             f"Camelot={features['camelot']}, RMS={features['loudness_rms']:.4f}")
+    if failed_steps:
+        log.warning(f"  → steps failed: {', '.join(failed_steps)}")
+    if "bpm" in features:
+        rms_text = f", RMS={features['loudness_rms']:.4f}" if features.get("loudness_rms") is not None else ""
+        log.info(
+            f"  → BPM={features.get('bpm')}, "
+            f"Key={features.get('key', '?')} {features.get('mode', '')}, "
+            f"Camelot={features.get('camelot', '?')}{rms_text}"
+        )
 
     return features

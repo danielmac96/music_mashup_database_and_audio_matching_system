@@ -3,6 +3,7 @@ import { PlaylistImporter } from "./components/PlaylistImporter";
 import { TrackList } from "./components/TrackList";
 import { MashupSuggestions } from "./components/MashupSuggestions";
 import { AuditionStudio } from "./components/AuditionStudio";
+import { DatabaseBrowser } from "./components/DatabaseBrowser";
 
 export default function App() {
   const [tab, setTab] = useState("import");
@@ -47,6 +48,9 @@ export default function App() {
         <button className={tab === "audition" ? "active" : ""} onClick={() => setTab("audition")}>
           Audition
         </button>
+        <button className={tab === "database" ? "active" : ""} onClick={() => setTab("database")}>
+          Database
+        </button>
       </div>
 
       {tab === "import" && <PlaylistImporter onIngested={handleIngested} />}
@@ -65,6 +69,7 @@ export default function App() {
         />
       )}
       {tab === "audition" && <AuditionStudio seed={auditionSeed} />}
+      {tab === "database" && <DatabaseBrowser />}
     </div>
   );
 }
