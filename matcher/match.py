@@ -190,6 +190,20 @@ def composite_score(feat_a: dict, feat_b: dict,
 
 # ── Score all qualifying pairs ────────────────────────────────────────────────
 
+def _with_full_bpm(feat: dict, full_by_song: Dict[int, dict]) -> dict:
+    """Return a copy of `feat` with bpm/bpm_confidence swapped to the song's
+    full-mix values when available, so matching uses the more reliable
+    whole-track tempo while key/camelot/timbre stay stem-derived."""
+    full_feat = full_by_song.get(feat.get("song_id"))
+    if not full_feat or not full_feat.get("bpm"):
+        return feat
+    out = dict(feat)
+    out["stem_bpm"] = feat.get("bpm")
+    out["bpm"] = full_feat["bpm"]
+    out["bpm_confidence"] = full_feat.get("bpm_confidence")
+    return out
+
+
 def score_all_pairs(db_path=None) -> dict:
     """
     Score every unique cross-song pair that passes the BPM + key filter.
@@ -209,6 +223,15 @@ def score_all_pairs(db_path=None) -> dict:
 
     vocals      = get_all_features(stem_type="vocals",        db_path=db)
     inst        = get_all_features(stem_type="instrumental",  db_path=db)
+    full        = get_all_features(stem_type="full",          db_path=db)
+    full_by_song = {f["song_id"]: f for f in full}
+
+    # Tempo compatibility is scored off the full-mix BPM (vocal-stem and even
+    # instrumental-stem tempo tracking can drift octave/onset-detection errors
+    # introduced by stem separation artifacts) while key/camelot/timbre stay
+    # stem-derived, since those are what the listener actually hears layered.
+    vocals = [_with_full_bpm(v, full_by_song) for v in vocals]
+    inst   = [_with_full_bpm(i, full_by_song) for i in inst]
 
     results = {
         "vocal_over_instrumental":        [],

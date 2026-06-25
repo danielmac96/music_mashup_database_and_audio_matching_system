@@ -328,10 +328,23 @@ export function AuditionStudio({ seed }) {
   const vocalTrack = useMemo(() => tracks.find((t) => t.id === vocalId), [tracks, vocalId]);
   const instTrack  = useMemo(() => tracks.find((t) => t.id === instId),  [tracks, instId]);
 
-  const vocalBpm = vocalTrack?.features?.full?.bpm;
-  const instBpm  = instTrack?.features?.full?.bpm;
-  const vocalConf = vocalTrack?.features?.full?.bpm_confidence;
-  const instConf  = instTrack?.features?.full?.bpm_confidence;
+  // Stems-first with fallback: trust the vocal stem's own tempo only when its
+  // bpm_confidence clears the threshold the backend also uses for beat grids
+  // (vocals aren't percussive, so low-confidence stem tracking falls back to
+  // the full-mix BPM). The instrumental stem is reliable, so prefer it
+  // outright and only fall back to full-mix if it's missing.
+  const VOCAL_BPM_CONFIDENCE_MIN = 0.35;
+  const vocalStemFeat = vocalTrack?.features?.vocals;
+  const vocalFullFeat = vocalTrack?.features?.full;
+  const useVocalStemBpm = vocalStemFeat?.bpm
+    && (vocalStemFeat?.bpm_confidence ?? 0) >= VOCAL_BPM_CONFIDENCE_MIN;
+  const vocalBpm  = useVocalStemBpm ? vocalStemFeat.bpm : vocalFullFeat?.bpm;
+  const vocalConf = useVocalStemBpm ? vocalStemFeat.bpm_confidence : vocalFullFeat?.bpm_confidence;
+
+  const instStemFeat = instTrack?.features?.instrumental;
+  const instFullFeat = instTrack?.features?.full;
+  const instBpm  = instStemFeat?.bpm ?? instFullFeat?.bpm;
+  const instConf = instStemFeat?.bpm ? instStemFeat?.bpm_confidence : instFullFeat?.bpm_confidence;
 
   // Live, decoupled stretch/pitch applied in real time to the anchor side.
   const appliedStretch = (() => {
@@ -452,18 +465,26 @@ export function AuditionStudio({ seed }) {
     }
   }, [anchor, plan]);
 
-  // Keep engine voices in sync with buffers, alignment, stretch/pitch, solo.
+  // Keep stretch/shift readable inside effects below without making every
+  // tiny slider tick re-run the buffer/offset sync effect.
+  const stretchShiftRef = useRef({ stretch: appliedStretch, shift: appliedShift });
+  stretchShiftRef.current = { stretch: appliedStretch, shift: appliedShift };
+
+  // Structural sync: buffers, alignment offsets, anchor side, solo muting.
+  // Reads the *current* stretch/shift via the ref so it doesn't need them as
+  // deps (those get their own live/debounced handling below).
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || !engine.ctx) return;
+    const { stretch, shift } = stretchShiftRef.current;
     const vGain = soloRole === "inst" ? 0 : VOCAL_GAIN;
     const iGain = soloRole === "vocal" ? 0 : INST_GAIN;
     if (vocalBuffer) {
       engine.setVoice("vocal", {
         buffer: vocalBuffer,
         offsetSec: vocalOffset,
-        rate: anchor === "vocal" ? appliedStretch : 1,
-        semitones: anchor === "vocal" ? appliedShift : 0,
+        rate: anchor === "vocal" ? stretch : 1,
+        semitones: anchor === "vocal" ? shift : 0,
         gain: vGain,
       });
     } else engine.removeVoice("vocal");
@@ -471,14 +492,37 @@ export function AuditionStudio({ seed }) {
       engine.setVoice("inst", {
         buffer: instBuffer,
         offsetSec: instOffset,
-        rate: anchor === "instrumental" ? appliedStretch : 1,
-        semitones: anchor === "instrumental" ? appliedShift : 0,
+        rate: anchor === "instrumental" ? stretch : 1,
+        semitones: anchor === "instrumental" ? shift : 0,
         gain: iGain,
       });
     } else engine.removeVoice("inst");
     engine.refresh();
-  }, [vocalBuffer, instBuffer, vocalOffset, instOffset, anchor,
-      appliedStretch, appliedShift, soloRole]);
+  }, [vocalBuffer, instBuffer, vocalOffset, instOffset, anchor, soloRole]);
+
+  // Pitch: applies instantly, live, with no re-arm (SoundTouch handles the
+  // semitone change in place) — safe to fire on every slider movement.
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !engine.ctx) return;
+    engine.updateVoiceParams("vocal", { semitones: anchor === "vocal" ? appliedShift : 0 });
+    engine.updateVoiceParams("inst",  { semitones: anchor === "instrumental" ? appliedShift : 0 });
+  }, [appliedShift, anchor]);
+
+  // Stretch: changing the rate remaps the whole timeline and re-arms both
+  // voices, which is audible as a glitch if it fires on every drag tick — so
+  // debounce until the slider settles (or the user releases it).
+  const stretchDebounceRef = useRef(null);
+  useEffect(() => {
+    const engine = engineRef.current;
+    if (!engine || !engine.ctx) return;
+    if (stretchDebounceRef.current) clearTimeout(stretchDebounceRef.current);
+    stretchDebounceRef.current = setTimeout(() => {
+      engine.updateVoiceParams("vocal", { rate: anchor === "vocal" ? appliedStretch : 1 });
+      engine.updateVoiceParams("inst",  { rate: anchor === "instrumental" ? appliedStretch : 1 });
+    }, 150);
+    return () => clearTimeout(stretchDebounceRef.current);
+  }, [appliedStretch, anchor]);
 
   useEffect(() => {
     engineRef.current?.setLoop(loop);
@@ -771,27 +815,68 @@ export function AuditionStudio({ seed }) {
               Stretch vocal → instrumental
             </button>
 
-            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.8rem" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.8rem" }}>
               <span className="muted">Stretch ×</span>
+              <button
+                className="secondary"
+                style={{ padding: "1px 7px" }}
+                onClick={() => setStretchInput((Number(stretchInput) - 0.01).toFixed(4))}
+                title="Nudge stretch down 0.01"
+              >−</button>
               <input
-                type="number"
+                type="range"
+                min="0.5"
+                max="2"
                 step="0.001"
-                min="0.01"
-                value={stretchInput}
+                value={appliedStretch}
                 onChange={(e) => setStretchInput(e.target.value)}
-                style={{ width: 70 }}
+                style={{ width: 110 }}
               />
+              <button
+                className="secondary"
+                style={{ padding: "1px 7px" }}
+                onClick={() => setStretchInput((Number(stretchInput) + 0.01).toFixed(4))}
+                title="Nudge stretch up 0.01"
+              >+</button>
+              <span className="muted" style={{ minWidth: 52, fontVariantNumeric: "tabular-nums" }}>
+                ×{appliedStretch.toFixed(3)}
+              </span>
             </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: "0.8rem" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "0.8rem" }}>
               <span className="muted">Pitch (st)</span>
+              <button
+                className="secondary"
+                style={{ padding: "1px 7px" }}
+                onClick={() => setShiftInput(Math.max(-24, appliedShift - 1))}
+                title="Nudge pitch down 1 semitone"
+              >−</button>
               <input
-                type="number"
+                type="range"
+                min="-24"
+                max="24"
                 step="1"
-                value={shiftInput}
+                value={appliedShift}
                 onChange={(e) => setShiftInput(e.target.value)}
-                style={{ width: 56 }}
+                style={{ width: 90 }}
               />
+              <button
+                className="secondary"
+                style={{ padding: "1px 7px" }}
+                onClick={() => setShiftInput(Math.min(24, appliedShift + 1))}
+                title="Nudge pitch up 1 semitone"
+              >+</button>
+              <span className="muted" style={{ minWidth: 30, fontVariantNumeric: "tabular-nums" }}>
+                {appliedShift > 0 ? "+" : ""}{appliedShift}
+              </span>
             </label>
+            <button
+              className="secondary"
+              style={{ fontSize: "0.75rem" }}
+              onClick={() => startPlayback(null)}
+              title="Re-audition from the current marker with the latest stretch/pitch"
+            >
+              ▶ Play from marker
+            </button>
             {plan?.stretch_factor && (
               <button
                 className="secondary"

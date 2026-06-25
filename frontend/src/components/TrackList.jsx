@@ -203,6 +203,22 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches }) {
                         <div><span className="muted">BPM:</span> {feats.bpm != null ? feats.bpm.toFixed(1) : "—"}</div>
                         <div><span className="muted">Key:</span> {feats.key || "—"} {feats.mode || ""} {feats.camelot ? `(${feats.camelot})` : ""}</div>
                         <div><span className="muted">Energy:</span> {feats.energy != null ? feats.energy.toFixed(2) : "—"}</div>
+                        {(t.features?.vocals || t.features?.instrumental) && (
+                          <div className="muted" style={{ marginTop: 3, fontSize: "0.68rem", lineHeight: 1.4 }}>
+                            {t.features?.vocals && (
+                              <div>
+                                vocals: {t.features.vocals.bpm != null ? `${t.features.vocals.bpm.toFixed(1)} BPM` : "—"}
+                                {" "}{t.features.vocals.camelot ? `(${t.features.vocals.camelot})` : ""}
+                              </div>
+                            )}
+                            {t.features?.instrumental && (
+                              <div>
+                                inst: {t.features.instrumental.bpm != null ? `${t.features.instrumental.bpm.toFixed(1)} BPM` : "—"}
+                                {" "}{t.features.instrumental.camelot ? `(${t.features.instrumental.camelot})` : ""}
+                              </div>
+                            )}
+                          </div>
+                        )}
                         <button
                           className="secondary"
                           style={{ marginTop: 4 }}
