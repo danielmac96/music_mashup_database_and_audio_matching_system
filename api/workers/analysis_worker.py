@@ -1,16 +1,16 @@
-"""Background worker: extract features + detect song structure for one track."""
+"""Background worker: extract per-stem audio features (tempo/key/dynamics/
+timbre/waveform) for one track. Structure detection (intro/verse/chorus/…)
+is a separate step — see structure_worker.py — since it only needs the full
+mix (+ optional vocal stem) and producers may want to re-run it on its own
+without re-analysing every stem."""
 from __future__ import annotations
 
 import logging
-import traceback
 from pathlib import Path
 
 from analysis.analyze import analyze_file
-from analysis.structure import detect_sections
 from config import BEAT_TRIM_SECS
-from database.models import (
-    get_conn, replace_sections, update_song_status, upsert_features,
-)
+from database.models import get_conn, update_song_status, upsert_features
 
 from api import jobs
 
@@ -74,30 +74,8 @@ def run(job_id: str, song_id: int) -> None:
         jobs.fail(job_id, "Analysis failed for every stem")
         return
 
-    # Structure detection — non-fatal if it errors.
-    section_count = 0
-    full_fp = stem_paths.get("full", "")
-    if full_fp and Path(full_fp).exists():
-        jobs.update(job_id, message="Detecting song structure (chorus/verse/drop)…")
-        vocals_fp = stem_paths.get("vocals", "")
-        try:
-            sections = detect_sections(
-                Path(full_fp),
-                Path(vocals_fp) if vocals_fp else None,
-                on_progress=_on_progress,
-            )
-            if sections:
-                replace_sections(song_id, sections)
-                section_count = len(sections)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("detect_sections raised")
-            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-            jobs.update(job_id, message=f"Structure detection failed: {exc}",
-                        traceback=tb)
-
     update_song_status(song_id, "analysed")
     jobs.done(job_id, {
         "analysed_stems": analysed,
         "failed_stems": failed,
-        "section_count": section_count,
     })

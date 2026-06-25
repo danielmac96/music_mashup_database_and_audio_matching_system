@@ -14,7 +14,7 @@ from database.models import (
 )
 
 from api import jobs
-from api.workers import analysis_worker, download_worker, stems_worker
+from api.workers import analysis_worker, download_worker, stems_worker, structure_worker
 
 router = APIRouter()
 
@@ -29,7 +29,22 @@ _AUDIO_MEDIA = {
 
 
 _FEATURE_FIELDS = ("bpm", "key", "mode", "camelot", "energy", "loudness_rms",
-                   "bpm_confidence")
+                   "bpm_confidence", "spectral_centroid", "spectral_rolloff",
+                   "zero_crossing_rate")
+
+# Analysis is organised into independent metric steps (analysis/analyze.py
+# runs each in isolation so one failing measurement doesn't blank out the
+# others). This maps each step to the row field(s) that prove it ran, so the
+# UI can show a per-stem availability checklist without shipping the raw
+# arrays (mfcc/beat_times/waveform_rms) over the wire.
+def _step_availability(row: dict) -> dict:
+    return {
+        "tempo":    row.get("bpm") is not None,
+        "key":      row.get("key") is not None and row.get("mode") is not None,
+        "dynamics": row.get("loudness_rms") is not None and row.get("energy") is not None,
+        "timbre":   bool(row.get("mfcc")) and row.get("spectral_centroid") is not None,
+        "waveform": bool(row.get("waveform_rms_json")),
+    }
 
 # Below this, vocal-stem beat tracking is too unreliable (vocals aren't
 # percussive) to trust for tempo/beat-grid display — fall back to the
@@ -53,8 +68,19 @@ def _features_by_song(stem_type: str) -> dict[int, dict]:
         sid = f.get("song_id")
         if sid is None:
             continue
-        out[sid] = {k: f.get(k) for k in _FEATURE_FIELDS}
+        feats = {k: f.get(k) for k in _FEATURE_FIELDS}
+        feats["metrics"] = _step_availability(f)
+        out[sid] = feats
     return out
+
+
+def _section_counts_by_song() -> dict[int, int]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT song_id, COUNT(*) AS n FROM sections GROUP BY song_id"
+    ).fetchall()
+    conn.close()
+    return {r["song_id"]: r["n"] for r in rows}
 
 
 @router.get("")
@@ -64,6 +90,7 @@ def list_tracks() -> dict:
     features_full   = _features_by_song("full")
     features_vocals = _features_by_song("vocals")
     features_inst   = _features_by_song("instrumental")
+    section_counts  = _section_counts_by_song()
 
     rows = []
     for s in songs:
@@ -86,6 +113,7 @@ def list_tracks() -> dict:
                 "instrumental": "instrumental" in stem_paths,
             },
             "features": feats or None,
+            "section_count": section_counts.get(sid, 0),
         })
     return {"count": len(rows), "tracks": rows}
 
@@ -134,6 +162,25 @@ def queue_analyze(song_id: int, background: BackgroundTasks) -> dict:
 
     job_id = jobs.new_job(kind="analyze", message="Queued for analysis")
     background.add_task(analysis_worker.run, job_id, song_id)
+    return {"job_id": job_id}
+
+
+@router.post("/{song_id}/structure")
+def queue_structure(song_id: int, background: BackgroundTasks) -> dict:
+    """Detect song structure (intro/verse/chorus/drop/…) as its own step,
+    independent of feature analysis — only needs the full mix downloaded."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, raw_path FROM songs WHERE id=?", (song_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="song not found")
+    if not row["raw_path"]:
+        raise HTTPException(status_code=400, detail="track is not downloaded yet")
+
+    job_id = jobs.new_job(kind="structure", message="Queued for structure detection")
+    background.add_task(structure_worker.run, job_id, song_id)
     return {"job_id": job_id}
 
 

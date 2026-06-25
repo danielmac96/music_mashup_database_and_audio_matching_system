@@ -3,6 +3,7 @@ import { api } from "../api";
 import { JobBadge } from "./JobBadge";
 import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
+import { MetricGrid } from "./MetricIndicators";
 
 const SECTION_COLORS = {
   intro:     "#4b5563",
@@ -696,6 +697,31 @@ export function AuditionStudio({ seed }) {
           </select>
         </label>
       </div>
+
+      {(vocalTrack || instTrack) && (
+        <div className="audition-metrics" style={{ display: "flex", gap: 32, flexWrap: "wrap", marginTop: 10 }}>
+          {vocalTrack && (
+            <div>
+              <span className="muted" style={{ fontSize: "0.75rem" }}>Vocal — what's analysed</span>
+              <MetricGrid
+                stems={vocalTrack.stems}
+                features={vocalTrack.features}
+                sectionCount={vocalTrack.section_count}
+              />
+            </div>
+          )}
+          {instTrack && (
+            <div>
+              <span className="muted" style={{ fontSize: "0.75rem" }}>Instrumental — what's analysed</span>
+              <MetricGrid
+                stems={instTrack.stems}
+                features={instTrack.features}
+                sectionCount={instTrack.section_count}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {vocalOptions.length === 0 && (
         <p className="muted" style={{ marginTop: 8 }}>
