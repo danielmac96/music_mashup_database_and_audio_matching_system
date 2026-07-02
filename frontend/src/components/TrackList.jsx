@@ -1,9 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { JobBadge } from "./JobBadge";
-import { MetricGrid } from "./MetricIndicators";
+import {
+  artGradient, camelotColor, fmtDur, isAnalysed, pipelineDots, statusMeta,
+} from "../theme";
+import { toast } from "../toast";
 
 const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const GENRES = ["All", "Pop", "Hip Hop", "Rap", "EDM"];
+const SORTS = ["Popularity", "BPM", "Title", "Energy"];
 
 function FeatureEditor({ track, onSaved, onCancel }) {
   const feats = track.features?.full || {};
@@ -17,12 +22,11 @@ function FeatureEditor({ track, onSaved, onCancel }) {
     setSaving(true);
     setError(null);
     try {
-      const payload = {};
+      const payload = { key, mode };
       const bpmNum = parseFloat(bpm);
       if (!Number.isNaN(bpmNum) && bpmNum > 0) payload.bpm = bpmNum;
-      payload.key = key;
-      payload.mode = mode;
       await api.correctFeatures(track.id, payload);
+      toast("Features corrected — re-score to update matches");
       onSaved();
     } catch (e) {
       setError(e.message);
@@ -32,24 +36,16 @@ function FeatureEditor({ track, onSaved, onCancel }) {
   };
 
   return (
-    <div style={{ fontSize: "0.75rem", display: "flex", flexDirection: "column", gap: 4 }}>
-      <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+    <div className="feat-edit">
+      <label>
         <span className="muted" style={{ width: 34 }}>BPM</span>
-        <input
-          type="number"
-          step="0.1"
-          min="1"
-          value={bpm}
-          onChange={(e) => setBpm(e.target.value)}
-          style={{ width: 70 }}
-        />
+        <input type="number" step="0.1" min="1" value={bpm}
+          onChange={(e) => setBpm(e.target.value)} style={{ width: 72 }} />
       </label>
-      <label style={{ display: "flex", gap: 4, alignItems: "center" }}>
+      <label>
         <span className="muted" style={{ width: 34 }}>Key</span>
         <select value={key} onChange={(e) => setKey(e.target.value)}>
-          {KEY_NAMES.map((k) => (
-            <option key={k} value={k}>{k}</option>
-          ))}
+          {KEY_NAMES.map((k) => <option key={k} value={k}>{k}</option>)}
         </select>
         <select value={mode} onChange={(e) => setMode(e.target.value)}>
           <option value="major">major</option>
@@ -57,22 +53,64 @@ function FeatureEditor({ track, onSaved, onCancel }) {
         </select>
       </label>
       {error && <div className="error-text">{error}</div>}
-      <div className="actions">
-        <button onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
-        <button className="secondary" onClick={onCancel} disabled={saving}>Cancel</button>
+      <div className="mini-actions">
+        <button className="mini-btn" onClick={save} disabled={saving}>
+          {saving ? "Saving…" : "Save"}
+        </button>
+        <button className="mini-btn" onClick={onCancel} disabled={saving}>Cancel</button>
       </div>
-      <span className="muted">Re-run “Score library” after correcting.</span>
     </div>
   );
 }
 
-export function TrackList({ refreshKey, onSendToAudition, onFindMatches }) {
+function PipelineDots({ track, runningKind }) {
+  const p = pipelineDots(track, runningKind);
+  return (
+    <div className="pipeline">
+      <span className="dot" style={{ color: p.dl }}>●</span>DL
+      <span className="dot" style={{ color: p.stems }}>●</span>Stems
+      <span className="dot" style={{ color: p.analyse }}>●</span>Analyse
+      <span className="dot" style={{ color: p.structure }}>●</span>Structure
+    </div>
+  );
+}
+
+function StatusTag({ status }) {
+  const m = statusMeta(status);
+  return (
+    <span
+      className={`status-tag${m.pulse ? " pulse" : ""}`}
+      style={{ color: m.color, background: m.bg, border: `1px solid ${m.border}` }}
+    >
+      {m.tag}
+    </span>
+  );
+}
+
+function metaLine(t) {
+  const genre = t.genre || "—";
+  const year = t.release_year || "—";
+  const plays = t.plays ? `${t.plays.toLocaleString()} ▶` : "0 ▶";
+  return `${genre} · ${year} · ${plays}`;
+}
+
+export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatus }) {
   const [tracks, setTracks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  // jobs[trackId] = { kind: 'download'|'separate', jobId }
-  const [jobs, setJobs] = useState({});
-  const [editing, setEditing] = useState(null); // track id being edited
+  const [jobs, setJobs] = useState({}); // trackId -> { kind, jobId }
+  const [editing, setEditing] = useState(null);
+
+  // filters
+  const [search, setSearch] = useState("");
+  const [genre, setGenre] = useState("All");
+  const [readyOnly, setReadyOnly] = useState(false);
+  const [sort, setSort] = useState("Popularity");
+  const [view, setView] = useState("cards");
+
+  // preview playback (full mix), single shared audio element
+  const audioRef = useRef(null);
+  const [playingId, setPlayingId] = useState(null);
 
   const refresh = async () => {
     setLoading(true);
@@ -87,41 +125,14 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches }) {
     }
   };
 
-  useEffect(() => {
-    refresh();
-  }, [refreshKey]);
+  useEffect(() => { refresh(); }, [refreshKey]);
 
-  const startDownload = async (id) => {
-    try {
-      const { job_id } = await api.startDownload(id);
-      setJobs((prev) => ({ ...prev, [id]: { kind: "download", jobId: job_id } }));
-    } catch (e) {
-      setError(e.message);
-    }
-  };
+  useEffect(() => () => { audioRef.current?.pause(); }, []);
 
-  const startSeparate = async (id) => {
+  const startJob = async (id, kind, fn) => {
     try {
-      const { job_id } = await api.startSeparate(id);
-      setJobs((prev) => ({ ...prev, [id]: { kind: "separate", jobId: job_id } }));
-    } catch (e) {
-      setError(e.message);
-    }
-  };
-
-  const startAnalyze = async (id) => {
-    try {
-      const { job_id } = await api.startAnalyze(id);
-      setJobs((prev) => ({ ...prev, [id]: { kind: "analyze", jobId: job_id } }));
-    } catch (e) {
-      setError(e.message);
-    }
-  };
-
-  const startStructure = async (id) => {
-    try {
-      const { job_id } = await api.startStructure(id);
-      setJobs((prev) => ({ ...prev, [id]: { kind: "structure", jobId: job_id } }));
+      const { job_id } = await fn(id);
+      setJobs((prev) => ({ ...prev, [id]: { kind, jobId: job_id } }));
     } catch (e) {
       setError(e.message);
     }
@@ -136,208 +147,220 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches }) {
     refresh();
   };
 
+  const togglePreview = (t) => {
+    if (playingId === t.id) {
+      audioRef.current?.pause();
+      setPlayingId(null);
+      return;
+    }
+    audioRef.current?.pause();
+    const a = new Audio(api.audioUrl(t.id, "full"));
+    a.onended = () => setPlayingId(null);
+    a.play().then(() => { audioRef.current = a; setPlayingId(t.id); }).catch(() => {
+      toast("Couldn't play preview — is the track downloaded?");
+    });
+  };
+
+  // ── filter + sort ──────────────────────────────────────────────────────
+  const filtered = useMemo(() => {
+    let out = tracks.filter((x) => {
+      if (readyOnly && !isAnalysed(x)) return false;
+      if (genre !== "All" && (x.genre || "").toLowerCase() !== genre.toLowerCase()) return false;
+      if (search) {
+        const q = search.toLowerCase();
+        if (!`${x.title} ${x.artist || ""} ${x.genre || ""}`.toLowerCase().includes(q)) return false;
+      }
+      return true;
+    });
+    const bpmOf = (x) => x.features?.full?.bpm ?? Infinity;
+    const enOf = (x) => x.features?.full?.energy ?? -1;
+    if (sort === "Popularity") out = [...out].sort((a, b) => (b.plays || 0) - (a.plays || 0));
+    else if (sort === "BPM") out = [...out].sort((a, b) => bpmOf(a) - bpmOf(b));
+    else if (sort === "Title") out = [...out].sort((a, b) => a.title.localeCompare(b.title));
+    else if (sort === "Energy") out = [...out].sort((a, b) => enOf(b) - enOf(a));
+    return out;
+  }, [tracks, readyOnly, genre, search, sort]);
+
+  const readyCount = useMemo(() => tracks.filter(isAnalysed).length, [tracks]);
+
+  useEffect(() => {
+    onStatus?.({ text: `${filtered.length} of ${tracks.length} tracks · ${readyCount} ready` });
+  }, [filtered.length, tracks.length, readyCount, onStatus]);
+
+  const cycle = (arr, cur, setter) => setter(arr[(arr.indexOf(cur) + 1) % arr.length]);
+
+  // ── run-step availability (preserves existing pipeline gating) ─────────
+  const gating = (t) => {
+    const job = jobs[t.id];
+    return {
+      job,
+      canDownload: !job && (t.status === "queued" || t.status?.startsWith("error")),
+      canSeparate: !job && t.stems.full && (!t.stems.vocals || !t.stems.instrumental),
+      canAnalyze: !job && t.stems.full,
+      canStructure: !job && t.stems.full,
+      analysed: isAnalysed(t),
+    };
+  };
+
+  const RunActions = ({ t }) => {
+    const g = gating(t);
+    if (g.job) return <JobBadge jobId={g.job.jobId} onComplete={() => onJobDone(t.id)} />;
+    return (
+      <div className="mini-actions">
+        <button className="mini-btn" disabled={!g.canDownload}
+          onClick={() => startJob(t.id, "download", api.startDownload)}>Download</button>
+        <button className="mini-btn" disabled={!g.canSeparate}
+          onClick={() => startJob(t.id, "separate", api.startSeparate)}>Separate</button>
+        <button className="mini-btn" disabled={!g.canAnalyze}
+          onClick={() => startJob(t.id, "analyze", api.startAnalyze)}>Analyze</button>
+        <button className="mini-btn" disabled={!g.canStructure}
+          onClick={() => startJob(t.id, "structure", api.startStructure)}>Structure</button>
+        <button className="mini-btn" disabled={!g.analysed}
+          title={g.analysed ? "Find scored beds for this vocal" : "Analyze first"}
+          onClick={() => onFindMatches?.(t.id, "vocal")}>Find beds</button>
+        {g.analysed && (
+          <button className="mini-btn" onClick={() => setEditing(editing === t.id ? null : t.id)}>
+            {editing === t.id ? "Close" : "Edit"}
+          </button>
+        )}
+      </div>
+    );
+  };
+
   return (
-    <div className="panel">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ margin: 0 }}>Library</h2>
-        <button className="secondary" onClick={refresh} disabled={loading}>
-          {loading ? "Refreshing…" : "Refresh"}
-        </button>
+    <div className="page">
+      <div className="screen-head">
+        <h1>Library</h1>
+        <span className="sub">{loading ? "refreshing…" : `${readyCount} ready to mash`}</span>
       </div>
 
-      {error && <div className="error-text" style={{ marginTop: 8 }}>{error}</div>}
+      {/* filter toolbar */}
+      <div className="toolbar">
+        <div className="search-box">
+          <span className="ico">⌕</span>
+          <input placeholder="Search title, artist, genre…" value={search}
+            onChange={(e) => setSearch(e.target.value)} />
+        </div>
+        <div className="chip" onClick={() => cycle(GENRES, genre, setGenre)}>
+          <span className="k">Genre</span><span>{genre}</span><span className="caret">▾</span>
+        </div>
+        <div className={`chip toggle${readyOnly ? " on" : ""}`} onClick={() => setReadyOnly((v) => !v)}>
+          <span style={{ width: 9, height: 9, borderRadius: 3, background: "var(--green)", display: "inline-block" }} />
+          Ready to mash
+        </div>
+        <div className="spacer" />
+        <div className="chip" onClick={() => cycle(SORTS, sort, setSort)}>
+          <span className="k">Sort</span><span>{sort}</span><span className="caret">▾</span>
+        </div>
+        <div className="seg">
+          <button className={view === "cards" ? "active" : ""} onClick={() => setView("cards")}>▦ Cards</button>
+          <button className={view === "table" ? "active" : ""} onClick={() => setView("table")}>≣ Table</button>
+        </div>
+      </div>
 
-      {tracks.length === 0 && !loading ? (
-        <p className="muted">No tracks yet. Import a SoundCloud URL on the Import tab.</p>
-      ) : (
-        <table style={{ marginTop: 12 }}>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Title / Artist</th>
-              <th>Status</th>
-              <th>Length</th>
-              <th>Features</th>
-              <th>Metrics</th>
-              <th>Actions</th>
-              <th>Mashup</th>
-              <th>Audio</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tracks.map((t) => {
-              const job = jobs[t.id];
-              const canDownload =
-                !job && (t.status === "queued" || t.status === "error" || t.status === "error_download");
-              const canSeparate =
-                !job && t.stems.full && (!t.stems.vocals || !t.stems.instrumental);
-              const canAnalyze =
-                !job && t.stems.full;
-              const canDetectStructure =
-                !job && t.stems.full;
-              const feats = t.features?.full;
-              const analysed = !!feats;
+      {error && <div className="error-text" style={{ marginBottom: 10 }}>{error}</div>}
 
-              return (
-                <tr key={t.id}>
-                  <td>{t.id}</td>
-                  <td>
-                    <div>
-                      {t.title}
-                      {t.metadata_partial ? (
-                        <span
-                          className="badge metadata-partial"
-                          title="Full track metadata couldn't be fetched. Some fields may be blank until you re-import."
-                          style={{ marginLeft: 6 }}
-                        >
-                          metadata incomplete
+      {filtered.length === 0 && !loading ? (
+        <p className="empty">No tracks match. Import a SoundCloud URL on the Import tab.</p>
+      ) : view === "cards" ? (
+        <div className="card-grid">
+          {filtered.map((t) => {
+            const f = t.features?.full || {};
+            const g = gating(t);
+            return (
+              <div key={t.id} className="card">
+                <div className="card-top">
+                  <div className="card-art" style={{ background: t.thumbnail ? `url(${t.thumbnail})` : artGradient(t.id) }}>
+                    {t.thumbnail ? "" : "♪"}
+                  </div>
+                  <div className="card-id">
+                    <div className="card-title" title={t.title}>{t.title}</div>
+                    <div className="card-artist">{t.artist || "—"}</div>
+                    <div className="card-statusrow">
+                      <StatusTag status={t.status} />
+                      <span className="card-dur">{t.duration_str || fmtDur(t.duration_secs)}</span>
+                      {t.metadata_partial && (
+                        <span className="badge metadata-partial" title="Full metadata couldn't be fetched.">
+                          partial
                         </span>
-                      ) : null}
+                      )}
                     </div>
-                    <div className="muted" style={{ fontSize: "0.75rem" }}>{t.artist || "—"}</div>
-                  </td>
-                  <td>
-                    {job ? (
-                      <JobBadge jobId={job.jobId} onComplete={() => onJobDone(t.id)} />
-                    ) : (
-                      <span className={`badge ${t.status}`}>{t.status}</span>
-                    )}
-                  </td>
-                  <td>{t.duration_str || "—"}</td>
-                  <td style={{ fontSize: "0.75rem" }}>
-                    {editing === t.id ? (
-                      <FeatureEditor
-                        track={t}
-                        onSaved={() => { setEditing(null); refresh(); }}
-                        onCancel={() => setEditing(null)}
-                      />
-                    ) : feats ? (
-                      <>
-                        <div><span className="muted">BPM:</span> {feats.bpm != null ? feats.bpm.toFixed(1) : "—"}</div>
-                        <div><span className="muted">Key:</span> {feats.key || "—"} {feats.mode || ""} {feats.camelot ? `(${feats.camelot})` : ""}</div>
-                        <div><span className="muted">Energy:</span> {feats.energy != null ? feats.energy.toFixed(2) : "—"}</div>
-                        {(t.features?.vocals || t.features?.instrumental) && (
-                          <div className="muted" style={{ marginTop: 3, fontSize: "0.68rem", lineHeight: 1.4 }}>
-                            {t.features?.vocals && (
-                              <div>
-                                vocals: {t.features.vocals.bpm != null ? `${t.features.vocals.bpm.toFixed(1)} BPM` : "—"}
-                                {" "}{t.features.vocals.camelot ? `(${t.features.vocals.camelot})` : ""}
-                              </div>
-                            )}
-                            {t.features?.instrumental && (
-                              <div>
-                                inst: {t.features.instrumental.bpm != null ? `${t.features.instrumental.bpm.toFixed(1)} BPM` : "—"}
-                                {" "}{t.features.instrumental.camelot ? `(${t.features.instrumental.camelot})` : ""}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        <button
-                          className="secondary"
-                          style={{ marginTop: 4 }}
-                          onClick={() => setEditing(t.id)}
-                          title="Manually correct BPM / key (fixes wrong auto-detection)"
-                        >
-                          Edit
-                        </button>
-                      </>
-                    ) : (
-                      <span className="muted">—</span>
-                    )}
-                  </td>
-                  <td>
-                    <MetricGrid
-                      stems={t.stems}
-                      features={t.features}
-                      sectionCount={t.section_count}
-                    />
-                  </td>
-                  <td>
-                    <div className="actions">
-                      <button
-                        onClick={() => startDownload(t.id)}
-                        disabled={!canDownload}
-                        title={canDownload ? "" : "Already downloaded or in progress"}
-                      >
-                        Download
-                      </button>
-                      <button
-                        onClick={() => startSeparate(t.id)}
-                        disabled={!canSeparate}
-                        title={canSeparate ? "" : "Needs a downloaded file with no stems yet"}
-                      >
-                        Separate
-                      </button>
-                      <button
-                        onClick={() => startAnalyze(t.id)}
-                        disabled={!canAnalyze}
-                        title={canAnalyze ? "" : "Needs a downloaded file"}
-                      >
-                        Analyze
-                      </button>
-                      <button
-                        className="secondary"
-                        onClick={() => startStructure(t.id)}
-                        disabled={!canDetectStructure}
-                        title={canDetectStructure ? "Detect intro/verse/chorus/drop sections" : "Needs a downloaded file"}
-                      >
-                        Detect structure
-                      </button>
-                    </div>
-                  </td>
-                  <td>
-                    <div className="actions">
-                      <button
-                        className="secondary"
-                        disabled={!analysed || !t.stems.vocals}
-                        title={analysed && t.stems.vocals ? "Send to Audition as the vocal" : "Needs analysed vocal stem"}
-                        onClick={() => onSendToAudition?.({ vocalId: t.id })}
-                      >
-                        ♪ as vocal
-                      </button>
-                      <button
-                        className="secondary"
-                        disabled={!analysed || !t.stems.instrumental}
-                        title={analysed && t.stems.instrumental ? "Send to Audition as the instrumental bed" : "Needs analysed instrumental stem"}
-                        onClick={() => onSendToAudition?.({ instId: t.id })}
-                      >
-                        ♪ as bed
-                      </button>
-                      <button
-                        className="secondary"
-                        disabled={!analysed}
-                        title={analysed ? "Find scored beds for this vocal" : "Analyze first"}
-                        onClick={() => onFindMatches?.(t.id, "vocal")}
-                      >
-                        Find beds
-                      </button>
-                    </div>
-                  </td>
-                  <td>
-                    {t.stems.full && (
-                      <div className="audio-row">
-                        <label>full</label>
-                        <audio controls preload="none" src={api.audioUrl(t.id, "full")} />
-                      </div>
-                    )}
-                    {t.stems.vocals && (
-                      <div className="audio-row">
-                        <label>vocals</label>
-                        <audio controls preload="none" src={api.audioUrl(t.id, "vocals")} />
-                      </div>
-                    )}
-                    {t.stems.instrumental && (
-                      <div className="audio-row">
-                        <label>instrumental</label>
-                        <audio controls preload="none" src={api.audioUrl(t.id, "instrumental")} />
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                  </div>
+                </div>
+
+                <div className="metrics-row">
+                  <div className="bpm-chip"><span className="u">BPM </span>{f.bpm != null ? f.bpm.toFixed(1) : "—"}</div>
+                  <div className="key-chip" style={{ background: camelotColor(f.camelot) }}>
+                    {f.camelot || "—"}
+                  </div>
+                  <div className="energy-wrap">
+                    <div className="l">Energy</div>
+                    <div className="energy-bar"><span style={{ width: `${Math.round((f.energy || 0) * 100)}%` }} /></div>
+                  </div>
+                </div>
+
+                <div className="pipeline" style={{ justifyContent: "space-between" }}>
+                  <PipelineDots track={t} runningKind={g.job?.kind} />
+                  <span className="faint">{metaLine(t)}</span>
+                </div>
+
+                <div className="card-actions">
+                  <button className={`act${playingId === t.id ? " on" : ""}`} disabled={!t.stems.full}
+                    onClick={() => togglePreview(t)}>
+                    {playingId === t.id ? "❚❚ Playing" : "▶ Preview"}
+                  </button>
+                  <button className="act vocal" disabled={!g.analysed || !t.stems.vocals}
+                    title={g.analysed && t.stems.vocals ? "Load into Audition as the vocal" : "Needs analysed vocal stem"}
+                    onClick={() => onSendToAudition?.({ vocalId: t.id })}>♪ Vocal</button>
+                  <button className="act bed" disabled={!g.analysed || !t.stems.instrumental}
+                    title={g.analysed && t.stems.instrumental ? "Load into Audition as the bed" : "Needs analysed instrumental stem"}
+                    onClick={() => onSendToAudition?.({ instId: t.id })}>♪ Bed</button>
+                </div>
+
+                <RunActions t={t} />
+                {editing === t.id && (
+                  <FeatureEditor track={t}
+                    onSaved={() => { setEditing(null); refresh(); }}
+                    onCancel={() => setEditing(null)} />
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="data-table">
+          <div className="data-head" style={{ gridTemplateColumns: "40px 2fr 100px 70px 70px 1.4fr 1fr" }}>
+            <div>ID</div><div>TITLE / ARTIST</div><div>STATUS</div><div>BPM</div>
+            <div>KEY</div><div>PIPELINE</div><div style={{ textAlign: "right" }}>ACTIONS</div>
+          </div>
+          {filtered.map((t) => {
+            const f = t.features?.full || {};
+            const g = gating(t);
+            return (
+              <div key={t.id} className="data-row" style={{ gridTemplateColumns: "40px 2fr 100px 70px 70px 1.4fr 1fr" }}>
+                <div className="mono faint">{t.id}</div>
+                <div>
+                  <div className="t">{t.title}</div>
+                  <div className="a">{t.artist || "—"}</div>
+                </div>
+                <div><StatusTag status={t.status} /></div>
+                <div className="mono" style={{ color: "var(--text-2)" }}>{f.bpm != null ? f.bpm.toFixed(1) : "—"}</div>
+                <div>
+                  <span className="key-chip" style={{ background: camelotColor(f.camelot), fontSize: 12, padding: "3px 7px" }}>
+                    {f.camelot || "—"}
+                  </span>
+                </div>
+                <div><PipelineDots track={t} runningKind={g.job?.kind} /></div>
+                <div className="row-actions">
+                  <button className="row-act vocal" disabled={!g.analysed || !t.stems.vocals}
+                    onClick={() => onSendToAudition?.({ vocalId: t.id })}>Vocal</button>
+                  <button className="row-act bed" disabled={!g.analysed || !t.stems.instrumental}
+                    onClick={() => onSendToAudition?.({ instId: t.id })}>Bed</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

@@ -109,4 +109,11 @@ export const api = {
 
   exportAudioUrl: (vocalId, instId) =>
     `/api/mashups/export/audio?vocal_id=${vocalId}&inst_id=${instId}`,
+
+  // Read-only DB browser (debug view). Maps to the api/routes/database.py
+  // router mounted at /api/db.
+  getDbTables: () => jsonFetch("/api/db/tables"),
+
+  getDbTable: (table, limit = 100, offset = 0) =>
+    jsonFetch(`/api/db/tables/${table}?limit=${limit}&offset=${offset}`),
 };

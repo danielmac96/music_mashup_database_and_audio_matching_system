@@ -1,25 +1,34 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { api } from "../api";
+import { artGradient } from "../theme";
+import { toast } from "../toast";
+
+const PLAYLIST_RE = /\/sets\//;
 
 export function PlaylistImporter({ onIngested }) {
   const [url, setUrl] = useState("");
   const [tracks, setTracks] = useState([]);
-  const [isSingle, setIsSingle] = useState(null);
+  const [selected, setSelected] = useState({}); // index -> bool (absent = kept)
   const [previewing, setPreviewing] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
-  const [savedCount, setSavedCount] = useState(null);
 
-  const handlePreview = async (e) => {
-    e.preventDefault();
+  const isPlaylist = PLAYLIST_RE.test(url);
+
+  const keptCount = useMemo(
+    () => tracks.filter((_, i) => selected[i] !== false).length,
+    [tracks, selected]
+  );
+
+  const handlePreview = async () => {
+    if (!url.trim()) return;
     setError(null);
-    setSavedCount(null);
     setTracks([]);
+    setSelected({});
     setPreviewing(true);
     try {
       const data = await api.previewPlaylist(url.trim());
       setTracks(data.tracks);
-      setIsSingle(data.is_single);
       if (data.tracks.length === 0) {
         setError("No tracks returned. Check the URL and that yt-dlp is installed.");
       }
@@ -30,12 +39,25 @@ export function PlaylistImporter({ onIngested }) {
     }
   };
 
+  const toggleRow = (i) =>
+    setSelected((prev) => ({ ...prev, [i]: prev[i] === false ? true : false }));
+
+  const allSelected = keptCount === tracks.length && tracks.length > 0;
+  const toggleAll = () => {
+    if (allSelected) {
+      setSelected(Object.fromEntries(tracks.map((_, i) => [i, false])));
+    } else {
+      setSelected({});
+    }
+  };
+
   const handleIngest = async () => {
     setError(null);
     setIngesting(true);
     try {
-      const res = await api.ingestTracks(tracks);
-      setSavedCount(res.count);
+      const kept = tracks.filter((_, i) => selected[i] !== false);
+      const res = await api.ingestTracks(kept);
+      toast(`Queued ${res.count} for download → stems → analyze`);
       if (onIngested) onIngested();
     } catch (err) {
       setError(err.message);
@@ -45,63 +67,79 @@ export function PlaylistImporter({ onIngested }) {
   };
 
   return (
-    <div className="panel">
-      <h2 style={{ marginTop: 0 }}>1. Import from SoundCloud</h2>
-      <p className="muted">
-        Paste a SoundCloud single track or playlist URL (with <code>/sets/</code>).
-        Preview first, then save to the library.
-      </p>
+    <div className="page narrow">
+      <div className="screen-head" style={{ display: "block" }}>
+        <h1>Import from SoundCloud</h1>
+        <div className="hint" style={{ marginTop: 5 }}>
+          Paste a track or playlist link — we auto-detect which. Preview first, then
+          choose what to keep.
+        </div>
+      </div>
 
-      <form onSubmit={handlePreview} style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        <input
-          type="url"
-          placeholder="https://soundcloud.com/artist/track-or-set"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          required
-        />
-        <button type="submit" disabled={previewing || !url.trim()}>
+      <div className="import-input-row">
+        <div className="import-input">
+          <span className="faint">🔗</span>
+          <input
+            type="url"
+            placeholder="soundcloud.com/artist/track…"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handlePreview()}
+          />
+          {url.trim() && (
+            <span className="type-tag">{isPlaylist ? "PLAYLIST" : "SINGLE TRACK"}</span>
+          )}
+        </div>
+        <button className="btn" onClick={handlePreview} disabled={previewing || !url.trim()}>
           {previewing ? "Fetching…" : "Preview"}
         </button>
-      </form>
+      </div>
+      <div className="faint" style={{ fontSize: 11, marginBottom: 18 }}>
+        Playlists (…/sets/…) import every track at once.
+      </div>
 
-      {error && <div className="error-text" style={{ marginBottom: 8 }}>{error}</div>}
+      {error && <div className="error-text" style={{ marginBottom: 12 }}>{error}</div>}
 
       {tracks.length > 0 && (
         <>
-          <div style={{ marginBottom: 8 }}>
-            <strong>{tracks.length}</strong> track{tracks.length === 1 ? "" : "s"} found
-            {isSingle === false && " in playlist"}.
+          <div className="preview-panel">
+            <div className="preview-head">
+              <span
+                className={`preview-check ${allSelected ? "on" : "off"}`}
+                onClick={toggleAll}
+                style={{ cursor: "pointer" }}
+                title="Select all"
+              >
+                ✓
+              </span>
+              {tracks.length} track{tracks.length === 1 ? "" : "s"} found · {keptCount} selected
+              <span style={{ flex: 1 }} />
+              <span className="text-2" style={{ color: "var(--text-2)" }}>Title · Artist</span>
+            </div>
+            {tracks.map((t, i) => {
+              const on = selected[i] !== false;
+              return (
+                <div key={t.source_url || i} className="preview-row" onClick={() => toggleRow(i)}>
+                  <span className={`preview-check ${on ? "on" : "off"}`}>✓</span>
+                  <div className="art" style={{ background: t.thumbnail ? `url(${t.thumbnail})` : artGradient(i) }} />
+                  <div className="info">
+                    <div className="t">{t.title}</div>
+                    <div className="a">{t.artist || "—"}</div>
+                  </div>
+                  <span className="dur">{t.duration_str || "—"}</span>
+                  <span className="plays">{t.plays || 0} ▶</span>
+                  <span className="genre">{t.genre || "—"}</span>
+                </div>
+              );
+            })}
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Artist</th>
-                <th>Length</th>
-                <th>Plays</th>
-                <th>Genre</th>
-              </tr>
-            </thead>
-            <tbody>
-              {tracks.map((t, i) => (
-                <tr key={t.source_url || i}>
-                  <td>{t.title}</td>
-                  <td>{t.artist}</td>
-                  <td>{t.duration_str || "—"}</td>
-                  <td>{t.plays || 0}</td>
-                  <td>{t.genre || "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "center" }}>
-            <button onClick={handleIngest} disabled={ingesting}>
-              {ingesting ? "Saving…" : "Save to library"}
+          <div className="import-footer">
+            <button className="cancel" onClick={() => { setTracks([]); setSelected({}); }}>
+              Cancel
             </button>
-            {savedCount !== null && (
-              <span className="muted">Saved {savedCount} track{savedCount === 1 ? "" : "s"}.</span>
-            )}
+            <button className="save" onClick={handleIngest} disabled={ingesting || keptCount === 0}>
+              {ingesting ? "Saving…" : `＋ Save ${keptCount} to library & auto-process`}
+            </button>
           </div>
         </>
       )}

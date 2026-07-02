@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
+import { statusMeta } from "../theme";
 
 const PAGE_SIZE = 100;
 
@@ -7,8 +8,20 @@ function formatCell(value) {
   if (value === null || value === undefined) return "—";
   if (typeof value === "object") return JSON.stringify(value);
   const s = String(value);
-  // Keep long blobs (e.g. mfcc_json) from blowing out the layout.
-  return s.length > 120 ? s.slice(0, 120) + "…" : s;
+  return s.length > 80 ? s.slice(0, 80) + "…" : s;
+}
+
+// Colour-code cells the way the prototype does: ids faint, keys violet,
+// scores green, statuses by their status colour, everything else neutral.
+function cellColor(col, value) {
+  if (value === null || value === undefined) return "var(--faint)";
+  const c = col.toLowerCase();
+  if (c === "id" || c.endsWith("_id") || c === "idx") return "var(--faint)";
+  if (c === "status") return statusMeta(String(value)).color;
+  if (c.includes("key") || c === "camelot") return "var(--violet)";
+  if (c.includes("score")) return "var(--green)";
+  if (c === "label" || c === "title" || c === "stem" || c === "stem_type") return "var(--text-2)";
+  return "var(--muted)";
 }
 
 export function DatabaseBrowser() {
@@ -24,9 +37,7 @@ export function DatabaseBrowser() {
     try {
       const res = await api.getDbTables();
       setTables(res.tables);
-      if (!active && res.tables.length > 0) {
-        setActive(res.tables[0].name);
-      }
+      if (!active && res.tables.length > 0) setActive(res.tables[0].name);
     } catch (e) {
       setError(e.message);
     }
@@ -47,15 +58,10 @@ export function DatabaseBrowser() {
     }
   };
 
+  useEffect(() => { loadTables(); }, []);
   useEffect(() => {
-    loadTables();
-  }, []);
-
-  useEffect(() => {
-    if (active) {
-      setOffset(0);
-      loadRows(active, 0);
-    }
+    if (active) { setOffset(0); loadRows(active, 0); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active]);
 
   const changePage = (delta) => {
@@ -65,85 +71,63 @@ export function DatabaseBrowser() {
   };
 
   const total = data?.total ?? 0;
-  const showingFrom = total === 0 ? 0 : offset + 1;
-  const showingTo = Math.min(offset + PAGE_SIZE, total);
+  const cols = data?.columns ?? [];
+  const gridCols = `repeat(${Math.max(cols.length, 1)}, minmax(90px, 1fr))`;
 
   return (
-    <div className="panel">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h2 style={{ margin: 0 }}>Database</h2>
-        <button
-          className="secondary"
-          onClick={() => {
-            loadTables();
-            loadRows(active, offset);
-          }}
-          disabled={loading}
-        >
-          {loading ? "Loading…" : "Refresh"}
-        </button>
+    <div className="page mid">
+      <div className="screen-head">
+        <h1>Database</h1>
+        <span className="tag">read-only · debug view</span>
       </div>
 
-      <div className="tabs" style={{ marginTop: 12 }}>
+      <div className="db-tabs">
         {tables.map((t) => (
-          <button
-            key={t.name}
-            className={active === t.name ? "active" : ""}
-            onClick={() => setActive(t.name)}
-          >
-            {t.name} <span className="muted">({t.count})</span>
+          <button key={t.name} className={active === t.name ? "active" : ""} onClick={() => setActive(t.name)}>
+            {t.name} ({t.count})
           </button>
         ))}
       </div>
 
-      {error && <div className="error-text">{error}</div>}
+      {error && <div className="error-text" style={{ marginBottom: 10 }}>{error}</div>}
 
       {data && (
         <>
-          <div className="muted" style={{ fontSize: "0.75rem", margin: "8px 0" }}>
-            Showing {showingFrom}–{showingTo} of {total} rows
+          <div className="db-grid-wrap">
+            {data.rows.length === 0 ? (
+              <p className="empty" style={{ padding: 20 }}>This table is empty.</p>
+            ) : (
+              <div className="db-grid" style={{ gridTemplateColumns: gridCols }}>
+                {cols.map((c) => <div key={c} className="col">{c}</div>)}
+                {data.rows.map((row, i) =>
+                  cols.map((c) => (
+                    <div
+                      key={`${i}-${c}`}
+                      className="cell"
+                      style={{ color: cellColor(c, row[c]) }}
+                      title={row[c] == null ? "" : String(row[c])}
+                    >
+                      {formatCell(row[c])}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
           </div>
 
-          {data.rows.length === 0 ? (
-            <p className="muted">This table is empty.</p>
-          ) : (
-            <div style={{ overflowX: "auto" }}>
-              <table>
-                <thead>
-                  <tr>
-                    {data.columns.map((c) => (
-                      <th key={c} style={{ whiteSpace: "nowrap" }}>{c}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.rows.map((row, i) => (
-                    <tr key={row.id ?? i}>
-                      {data.columns.map((c) => (
-                        <td key={c} title={row[c] == null ? "" : String(row[c])}>
-                          {formatCell(row[c])}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {total > PAGE_SIZE && (
-            <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
-              <button onClick={() => changePage(-1)} disabled={offset === 0 || loading}>
-                ← Prev
-              </button>
-              <button
-                onClick={() => changePage(1)}
-                disabled={offset + PAGE_SIZE >= total || loading}
-              >
-                Next →
-              </button>
-            </div>
-          )}
+          <div className="db-foot">
+            <span className="mono">{total} rows</span>
+            {total > PAGE_SIZE && (
+              <>
+                <span style={{ flex: 1 }} />
+                <button className="db-page-btn" onClick={() => changePage(-1)} disabled={offset === 0 || loading}>← Prev</button>
+                <span className="mono">
+                  {total === 0 ? 0 : offset + 1}–{Math.min(offset + PAGE_SIZE, total)}
+                </span>
+                <button className="db-page-btn" onClick={() => changePage(1)} disabled={offset + PAGE_SIZE >= total || loading}>Next →</button>
+              </>
+            )}
+          </div>
         </>
       )}
     </div>

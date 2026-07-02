@@ -1,16 +1,12 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { JobBadge } from "./JobBadge";
+import {
+  artGradient, bpmTag, camelotColor, fmtTime, keyRel, pct, tierFor,
+} from "../theme";
+import { toast } from "../toast";
 
-function fmtTs(secs) {
-  const s = Math.round(secs || 0);
-  const m = Math.floor(s / 60);
-  return `${m}:${String(s % 60).padStart(2, "0")}`;
-}
-
-function pct(v) {
-  return v == null ? "—" : `${Math.round(v * 100)}%`;
-}
+const MIN_MATCHES = [50, 65, 75, 85];
 
 function PlanDetails({ vocalId, instId }) {
   const [plan, setPlan] = useState(null);
@@ -18,97 +14,64 @@ function PlanDetails({ vocalId, instId }) {
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .getMashupPlan(vocalId, instId)
+    api.getMashupPlan(vocalId, instId)
       .then((p) => !cancelled && setPlan(p))
       .catch((e) => !cancelled && setError(e.message));
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [vocalId, instId]);
 
-  if (error) return <div className="error-text">{error}</div>;
-  if (!plan) return <div className="muted">Loading plan…</div>;
+  if (error) return <div className="plan-detail error-text">{error}</div>;
+  if (!plan) return <div className="plan-detail muted">Loading plan…</div>;
 
   return (
-    <div style={{ fontSize: "0.8rem", padding: "8px 0" }}>
-      <div>
-        <strong>Recipe</strong>
-        <ol style={{ margin: "4px 0 8px 18px", padding: 0 }}>
-          {plan.steps.map((s, i) => (
-            <li key={i}>{s.replace(/^\d+\.\s*/, "")}</li>
+    <div className="plan-detail">
+      <strong>Recipe</strong>
+      <ol>
+        {plan.steps.map((s, i) => <li key={i}>{s.replace(/^\d+\.\s*/, "")}</li>)}
+      </ol>
+      {plan.pairings?.length > 0 && (
+        <div className="mono-grid" style={{ gridTemplateColumns: "1.2fr 1fr 1.2fr 1fr 1fr" }}>
+          <div className="muted">VOCAL SECTION</div>
+          <div className="muted">TIME</div>
+          <div className="muted">BED SECTION</div>
+          <div className="muted">TIME</div>
+          <div className="muted">DURATION FIT</div>
+          {plan.pairings.map((p, i) => (
+            <Fragment key={i}>
+              <div>{p.vocal_label}</div>
+              <div>{fmtTime(p.vocal_start)}–{fmtTime(p.vocal_end)}</div>
+              <div>{p.inst_label}</div>
+              <div>{fmtTime(p.inst_start)}–{fmtTime(p.inst_end)}</div>
+              <div>{p.vocal_duration}s / {p.inst_duration_stretched}s</div>
+            </Fragment>
           ))}
-        </ol>
-      </div>
-
-      {plan.pairings.length > 0 && (
-        <div>
-          <strong>Section pairings</strong>
-          <table style={{ marginTop: 4 }}>
-            <thead>
-              <tr>
-                <th>Vocal section</th>
-                <th>Timestamps</th>
-                <th>Instrumental section</th>
-                <th>Timestamps</th>
-                <th>Duration fit</th>
-              </tr>
-            </thead>
-            <tbody>
-              {plan.pairings.map((p, i) => (
-                <tr key={i}>
-                  <td>{p.vocal_label}</td>
-                  <td>
-                    {fmtTs(p.vocal_start)}–{fmtTs(p.vocal_end)}
-                  </td>
-                  <td>{p.inst_label}</td>
-                  <td>
-                    {fmtTs(p.inst_start)}–{fmtTs(p.inst_end)}
-                  </td>
-                  <td>
-                    {p.vocal_duration}s vs {p.inst_duration_stretched}s
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
         </div>
       )}
-
-      <div className="muted" style={{ marginTop: 6 }}>
-        Key relation: {plan.key_relation}
-        {plan.stretch_factor
-          ? ` · stretch instrumental ×${plan.stretch_factor}`
-          : ""}
+      <div className="muted mono" style={{ marginTop: 8, fontSize: 11.5 }}>
+        {plan.key_relation}
+        {plan.stretch_factor ? ` · stretch bed ×${plan.stretch_factor}` : ""}
         {plan.semitone_shift != null
-          ? ` · pitch instrumental ${plan.semitone_shift >= 0 ? "+" : ""}${plan.semitone_shift} st`
+          ? ` · pitch bed ${plan.semitone_shift >= 0 ? "+" : ""}${plan.semitone_shift} st`
           : ""}
       </div>
-      {(plan.files.vocals || plan.files.instrumental) && (
-        <div className="muted" style={{ marginTop: 4, wordBreak: "break-all" }}>
-          {plan.files.vocals && <div>Vocal stem: {plan.files.vocals}</div>}
-          {plan.files.instrumental && (
-            <div>Inst stem: {plan.files.instrumental}</div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
 
-export function MashupSuggestions({ seed, onClearSeed, onAudition }) {
+export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
   const [candidates, setCandidates] = useState([]);
   const [comboType, setComboType] = useState("vocal_over_instrumental");
+  const [minMatch, setMinMatch] = useState(50);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [scoreJobId, setScoreJobId] = useState(null);
-  const [expanded, setExpanded] = useState(null); // candidate id
+  const [expanded, setExpanded] = useState(null);
 
-  const refresh = async (type = comboType, activeSeed = seed) => {
+  const refresh = async (type = comboType, activeSeed = seed, min = minMatch) => {
     setLoading(true);
     setError(null);
     try {
-      const opts = { comboType: type, limit: 50 };
+      const opts = { comboType: type, minScore: min / 100, limit: 50 };
       if (activeSeed?.songId != null) {
         if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
         else opts.vocalSongId = activeSeed.songId;
@@ -122,182 +85,147 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition }) {
     }
   };
 
-  // Refetch whenever a directed-search seed arrives from the Library tab.
   useEffect(() => {
-    refresh(comboType, seed);
+    refresh(comboType, seed, minMatch);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed]);
+
+  useEffect(() => {
+    onStatus?.({ text: `${candidates.length} scored pair${candidates.length === 1 ? "" : "s"}` });
+  }, [candidates.length, onStatus]);
+
+  const seedTitle = useMemo(() => {
+    if (seed?.songId == null) return null;
+    const c = candidates[0];
+    if (!c) return `#${seed.songId}`;
+    return seed.role === "instrumental" ? c.inst_title : c.vocal_title;
+  }, [seed, candidates]);
 
   const startScoring = async () => {
     try {
       const { job_id } = await api.startScoring();
       setScoreJobId(job_id);
+      toast("Scoring library…");
     } catch (e) {
       setError(e.message);
     }
   };
 
-  const switchType = (type) => {
-    setComboType(type);
-    setExpanded(null);
-    refresh(type);
+  const switchType = (type) => { setComboType(type); setExpanded(null); refresh(type, seed, minMatch); };
+  const cycleMin = () => {
+    const next = MIN_MATCHES[(MIN_MATCHES.indexOf(minMatch) + 1) % MIN_MATCHES.length];
+    setMinMatch(next);
+    refresh(comboType, seed, next);
   };
 
   return (
-    <div className="panel">
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <h2 style={{ margin: 0 }}>Mashup Suggestions</h2>
-        <div className="actions">
-          {scoreJobId ? (
-            <JobBadge
-              jobId={scoreJobId}
-              onComplete={() => {
-                setScoreJobId(null);
-                refresh();
-              }}
-            />
-          ) : (
-            <button onClick={startScoring}>Score library</button>
-          )}
-          <button className="secondary" onClick={() => refresh()} disabled={loading}>
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
-        </div>
+    <div className="page">
+      <div className="screen-head">
+        <h1>Mashups</h1>
+        <span className="sub">Ranked best-first{seedTitle ? " · seed fixed" : ""}</span>
       </div>
 
-      <div className="tabs" style={{ marginTop: 8 }}>
-        <button
-          className={comboType === "vocal_over_instrumental" ? "active" : ""}
-          onClick={() => switchType("vocal_over_instrumental")}
-        >
-          Vocal / Instrumental
-        </button>
-        <button
-          className={
-            comboType === "instrumental_over_instrumental" ? "active" : ""
-          }
-          onClick={() => switchType("instrumental_over_instrumental")}
-        >
-          Instrumental / Instrumental
-        </button>
+      <div className="toolbar">
+        <div className="seg">
+          <button className={comboType === "vocal_over_instrumental" ? "active" : ""}
+            onClick={() => switchType("vocal_over_instrumental")}>Vocal / Instrumental</button>
+          <button className={comboType === "instrumental_over_instrumental" ? "active" : ""}
+            onClick={() => switchType("instrumental_over_instrumental")}>Instr. / Instr.</button>
+        </div>
+        <div className="chip" onClick={cycleMin}>
+          <span className="k">Min match</span><span className="mono">{minMatch}%</span><span className="caret">▾</span>
+        </div>
+        {seedTitle && (
+          <div className="chip seed">
+            Seeded: <b>{seedTitle}</b> as {seed.role === "instrumental" ? "bed" : "vocal"}
+            <span className="x" onClick={() => { onClearSeed?.(); refresh(comboType, null, minMatch); }}>✕</span>
+          </div>
+        )}
+        <div className="spacer" />
+        {scoreJobId ? (
+          <JobBadge jobId={scoreJobId} onComplete={() => { setScoreJobId(null); refresh(); }} />
+        ) : (
+          <button className="btn" onClick={startScoring}>↻ Score library</button>
+        )}
       </div>
 
-      {seed?.songId != null && (
-        <div className="muted" style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
-          Showing matches where track #{seed.songId} is the{" "}
-          {seed.role === "instrumental" ? "instrumental" : "vocal"}.
-          <button className="secondary" onClick={() => { onClearSeed?.(); refresh(comboType, null); }}>
-            Clear filter
-          </button>
-        </div>
-      )}
+      <div className="legend">
+        <span>Sub-scores:</span>
+        <span className="sw"><i style={{ background: "var(--cyan)" }} />BPM</span>
+        <span className="sw"><i style={{ background: "var(--violet)" }} />Key</span>
+        <span className="sw"><i style={{ background: "var(--amber)" }} />Energy</span>
+        <span className="sw"><i style={{ background: "var(--green)" }} />Timbre</span>
+        <span className="weights">Weighted: Key 30 · BPM 25 · Timbre 25 · Energy 20</span>
+      </div>
 
-      {error && (
-        <div className="error-text" style={{ marginTop: 8 }}>
-          {error}
-        </div>
-      )}
+      {error && <div className="error-text" style={{ marginBottom: 10 }}>{error}</div>}
 
       {candidates.length === 0 && !loading ? (
-        <p className="muted">
-          No scored pairs yet. Analyze your tracks (Library tab), then click
-          “Score library”.
+        <p className="empty">
+          No scored pairs yet. Analyze your tracks (Library tab), then click “Score library”.
         </p>
       ) : (
-        <table style={{ marginTop: 12 }}>
-          <thead>
-            <tr>
-              <th>#</th>
-              <th>Top (vocals)</th>
-              <th>Bed (instrumental)</th>
-              <th>Score</th>
-              <th>BPM / Key / Energy / Timbre</th>
-              <th>Genre · Year · Popularity</th>
-              <th>Plan</th>
-            </tr>
-          </thead>
-          <tbody>
-            {candidates.map((c, i) => (
+        <div className="pair-list">
+          {candidates.map((c, i) => {
+            const total = Math.round((c.score_total || 0) * 100);
+            const { tier, color, textColor } = tierFor(total);
+            const kr = keyRel(c.vocal_camelot, c.inst_camelot);
+            const w = (v) => `${Math.round((v || 0) * 100)}%`;
+            const isVI = comboType === "vocal_over_instrumental";
+            return (
               <Fragment key={c.id}>
-                <tr>
-                  <td>{i + 1}</td>
-                  <td>
-                    <div>{c.vocal_title}</div>
-                    <div className="muted" style={{ fontSize: "0.75rem" }}>
-                      {c.vocal_artist || "—"} · {c.vocal_bpm?.toFixed(1)} BPM ·{" "}
-                      {c.vocal_camelot}
+                <div className={`pair${i === 0 ? " top" : ""}`}>
+                  <div className="pair-rank">{i + 1}</div>
+                  <div className="pair-side">
+                    <div className="pair-art" style={{ background: artGradient(c.vocal_song_id) }}>♪</div>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="pair-role vocal">{isVI ? "VOCAL (TOP)" : "INSTR (TOP)"}</div>
+                      <div className="pair-title" title={c.vocal_title}>{c.vocal_title}</div>
+                      <div className="pair-meta">{c.vocal_artist || "—"} · {c.vocal_bpm?.toFixed(1)} · {c.vocal_camelot || "?"}</div>
                     </div>
-                  </td>
-                  <td>
-                    <div>{c.inst_title}</div>
-                    <div className="muted" style={{ fontSize: "0.75rem" }}>
-                      {c.inst_artist || "—"} · {c.inst_bpm?.toFixed(1)} BPM ·{" "}
-                      {c.inst_camelot}
+                  </div>
+                  <div className="score-cluster">
+                    <div className="score-hero">
+                      <span className="pctv" style={{ color }}>{total}%</span>
+                      <span className="tier-badge" style={{ color: textColor, background: color }}>{tier}</span>
                     </div>
-                  </td>
-                  <td>
-                    <strong>{c.score_total?.toFixed(3)}</strong>
-                  </td>
-                  <td style={{ fontSize: "0.75rem" }}>
-                    {c.score_bpm?.toFixed(2)} / {c.score_key?.toFixed(2)} /{" "}
-                    {c.score_energy?.toFixed(2)} / {c.score_timbre?.toFixed(2)}
-                  </td>
-                  <td style={{ fontSize: "0.75rem" }}>
-                    <div>
-                      {c.vocal_genre || "?"} · {c.vocal_year || "?"} ·{" "}
-                      {pct(c.vocal_popularity)}
+                    <div className="subscores">
+                      <div className="cell"><span style={{ width: w(c.score_bpm), background: "var(--cyan)" }} /></div>
+                      <div className="cell"><span style={{ width: w(c.score_key), background: "var(--violet)" }} /></div>
+                      <div className="cell"><span style={{ width: w(c.score_energy), background: "var(--amber)" }} /></div>
+                      <div className="cell"><span style={{ width: w(c.score_timbre), background: "var(--green)" }} /></div>
                     </div>
-                    <div className="muted">
-                      {c.inst_genre || "?"} · {c.inst_year || "?"} ·{" "}
-                      {pct(c.inst_popularity)}
+                    <div className="relation-chips">
+                      <span className="rel-chip" style={{ color: kr.tagColor, background: kr.tagBg }}>{kr.tag}</span>
+                      <span className="rel-chip bpm">{bpmTag(c.vocal_bpm, c.inst_bpm)}</span>
                     </div>
-                  </td>
-                  <td>
-                    <div className="actions">
-                      <button
-                        className="secondary"
-                        onClick={() =>
-                          setExpanded(expanded === c.id ? null : c.id)
-                        }
-                        title={
-                          c.vocal_section_count && c.inst_section_count
-                            ? "Section-level mashup plan"
-                            : "Plan available — analyze both tracks for section timestamps"
-                        }
-                      >
-                        {expanded === c.id ? "Hide" : "Plan"}
+                  </div>
+                  <div className="pair-side bed">
+                    <div style={{ minWidth: 0 }}>
+                      <div className="pair-role bed">BED (INST)</div>
+                      <div className="pair-title" title={c.inst_title}>{c.inst_title}</div>
+                      <div className="pair-meta">{c.inst_artist || "—"} · {c.inst_bpm?.toFixed(1)} · {c.inst_camelot || "?"}</div>
+                    </div>
+                    <div className="pair-art" style={{ background: artGradient(c.inst_song_id + 3) }}>♪</div>
+                  </div>
+                  <div className="pair-actions">
+                    <button className="plan" onClick={() => setExpanded(expanded === c.id ? null : c.id)}>
+                      {expanded === c.id ? "Hide ▴" : "Plan ▾"}
+                    </button>
+                    {isVI && (
+                      <button className="audition" onClick={() => onAudition?.(c.vocal_song_id, c.inst_song_id)}>
+                        ▶ Audition
                       </button>
-                      {comboType === "vocal_over_instrumental" && (
-                        <button
-                          onClick={() => onAudition?.(c.vocal_song_id, c.inst_song_id)}
-                          title="Render and hear this mashup in the Audition tab"
-                        >
-                          Audition
-                        </button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
+                    )}
+                  </div>
+                </div>
                 {expanded === c.id && (
-                  <tr>
-                    <td colSpan={7}>
-                      <PlanDetails
-                        vocalId={c.vocal_song_id}
-                        instId={c.inst_song_id}
-                      />
-                    </td>
-                  </tr>
+                  <PlanDetails vocalId={c.vocal_song_id} instId={c.inst_song_id} />
                 )}
               </Fragment>
-            ))}
-          </tbody>
-        </table>
+            );
+          })}
+        </div>
       )}
     </div>
   );
