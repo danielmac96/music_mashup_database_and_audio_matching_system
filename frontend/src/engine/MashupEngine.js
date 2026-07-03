@@ -15,7 +15,14 @@
 // individual stretch. A voice's content time = displayPos - voice.offsetSec,
 // and the raw sample read position = contentTime * voice.rate.
 import { SoundTouchNode } from "@soundtouchjs/audio-worklet";
-import processorUrl from "@soundtouchjs/audio-worklet/processor?url";
+
+// The SoundTouch AudioWorklet processor is vendored into /public so it loads
+// from a stable root URL in BOTH `vite dev` and the production build. Importing
+// it via "@soundtouchjs/audio-worklet/processor?url" resolves to the package's
+// file inside a dot-prefixed ".dist" directory, which the dev server refuses to
+// serve to audioWorklet.addModule() ("Unable to load a worklet's module"). The
+// copy in public/ is kept in sync with the installed package version.
+const processorUrl = "/soundtouch-processor.js";
 
 export class MashupEngine {
   constructor() {

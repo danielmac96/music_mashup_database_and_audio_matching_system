@@ -311,8 +311,16 @@ export function AuditionStudio({ seed, onStatus }) {
 
   const vocalDisplayFactor = anchor === "vocal" ? 1 / appliedStretch : 1;
   const instDisplayFactor = anchor === "instrumental" ? 1 / appliedStretch : 1;
-  const vocalDisplayDuration = (vocalTrack?.duration_secs ?? 0) * vocalDisplayFactor;
-  const instDisplayDuration = (instTrack?.duration_secs ?? 0) * instDisplayFactor;
+  // Lay out the timeline against the ACTUAL decoded stem length, not the song's
+  // metadata duration_secs — those can disagree badly (e.g. a SoundCloud 30s
+  // preview value on a full ~3min stem), which would compact the waveform into
+  // a sliver while the audio plays on for minutes. The playhead follows the
+  // buffer, so basing the layout on buffer.duration keeps waveform, section
+  // ribbon and playhead aligned. Fall back to metadata until the buffer decodes.
+  const vocalAudioSecs = vocalBuffer?.duration ?? vocalTrack?.duration_secs ?? 0;
+  const instAudioSecs = instBuffer?.duration ?? instTrack?.duration_secs ?? 0;
+  const vocalDisplayDuration = vocalAudioSecs * vocalDisplayFactor;
+  const instDisplayDuration = instAudioSecs * instDisplayFactor;
 
   const pps = useMemo(() => {
     const maxDur = Math.max(vocalDisplayDuration, instDisplayDuration, 1);

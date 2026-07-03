@@ -192,13 +192,18 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
   // ── run-step availability (preserves existing pipeline gating) ─────────
   const gating = (t) => {
     const job = jobs[t.id];
+    const analysed = isAnalysed(t);
+    const hasStructure = (t.section_count || 0) > 0;
     return {
       job,
       canDownload: !job && (t.status === "queued" || t.status?.startsWith("error")),
       canSeparate: !job && t.stems.full && (!t.stems.vocals || !t.stems.instrumental),
-      canAnalyze: !job && t.stems.full,
-      canStructure: !job && t.stems.full,
-      analysed: isAnalysed(t),
+      // Already-analysed / already-structured tracks stay disabled — the data is
+      // in the DB, so re-running is just wasted work (re-run via Edit if needed).
+      canAnalyze: !job && t.stems.full && !analysed,
+      canStructure: !job && t.stems.full && !hasStructure,
+      analysed,
+      hasStructure,
     };
   };
 
@@ -212,8 +217,10 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
         <button className="mini-btn" disabled={!g.canSeparate}
           onClick={() => startJob(t.id, "separate", api.startSeparate)}>Separate</button>
         <button className="mini-btn" disabled={!g.canAnalyze}
+          title={g.analysed ? "Already analysed" : !t.stems.full ? "Download first" : "Extract tempo/key/waveform"}
           onClick={() => startJob(t.id, "analyze", api.startAnalyze)}>Analyze</button>
         <button className="mini-btn" disabled={!g.canStructure}
+          title={g.hasStructure ? "Structure already detected" : !t.stems.full ? "Download first" : "Detect intro/verse/chorus/drop"}
           onClick={() => startJob(t.id, "structure", api.startStructure)}>Structure</button>
         <button className="mini-btn" disabled={!g.analysed}
           title={g.analysed ? "Find scored beds for this vocal" : "Analyze first"}

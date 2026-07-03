@@ -37,7 +37,14 @@
       "Bash(curl -s \"http://localhost:5174/node_modules/@soundtouchjs/audio-worklet/.dist/soundtouch-processor.js?url\")",
       "Bash(curl -s -o /dev/null -w \"%{http_code} %{content_type}\\\\n\" \"http://localhost:5174/node_modules/@soundtouchjs/audio-worklet/.dist/soundtouch-processor.js\")",
       "Bash(curl -s \"http://localhost:5174/node_modules/@soundtouchjs/audio-worklet/.dist/soundtouch-processor.js\")",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(ls node_modules/@soundtouchjs/audio-worklet/)",
+      "Bash(cat node_modules/@soundtouchjs/audio-worklet/package.json)",
+      "Bash(\"/c/Users/danie/Documents/PythonProject/music_mashup_database_and_audio_matching_system/.venv/Scripts/python.exe\" -c \"print\\('py ok'\\)\")",
+      "Bash(mkdir -p public)",
+      "Bash(cp node_modules/@soundtouchjs/audio-worklet/.dist/soundtouch-processor.js public/soundtouch-processor.js)",
+      "Bash(/c/Users/danie/Documents/PythonProject/music_mashup_database_and_audio_matching_system/.venv/Scripts/python.exe *)",
+      "Bash(PYTHONPATH=\"/c/Users/danie/Documents/PythonProject/music_mashup_database_and_audio_matching_system\" /c/Users/danie/Documents/PythonProject/music_mashup_database_and_audio_matching_system/.venv/Scripts/python.exe *)"
     ]
   }
 }
