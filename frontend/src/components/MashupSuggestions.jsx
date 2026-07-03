@@ -122,7 +122,9 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
     <div className="page">
       <div className="screen-head">
         <h1>Mashups</h1>
-        <span className="sub">Ranked best-first{seedTitle ? " · seed fixed" : ""}</span>
+        <span className="sub">
+          {loading ? "loading…" : `Ranked best-first${seedTitle ? " · seed fixed" : ""}`}
+        </span>
       </div>
 
       <div className="toolbar">
@@ -162,7 +164,9 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
 
       {candidates.length === 0 && !loading ? (
         <p className="empty">
-          No scored pairs yet. Analyze your tracks (Library tab), then click “Score library”.
+          {minMatch > MIN_MATCHES[0]
+            ? `No pairs score ${minMatch}% or better — click "Min match" to lower the bar, or re-score after analyzing more tracks.`
+            : "No scored pairs yet. Analyze your tracks (Library tab), then click “Score library”."}
         </p>
       ) : (
         <div className="pair-list">

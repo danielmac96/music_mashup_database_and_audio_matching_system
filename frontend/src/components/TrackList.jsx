@@ -286,7 +286,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                     <div className="card-statusrow">
                       <StatusTag status={t.status} />
                       <span className="card-dur">{t.duration_str || fmtDur(t.duration_secs)}</span>
-                      {t.metadata_partial && (
+                      {!!t.metadata_partial && (
                         <span className="badge metadata-partial" title="Full metadata couldn't be fetched.">
                           partial
                         </span>

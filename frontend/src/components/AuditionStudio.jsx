@@ -82,11 +82,13 @@ function snapOffsetToBeats(rawOffsetSecs, ownBeats, otherBeats, otherOffsetSecs,
   return bestAbsDiff <= snapSecs ? rawOffsetSecs + bestDelta : rawOffsetSecs;
 }
 
+// One semitone up moves a key 7 positions around the Camelot wheel
+// (7 semitones = 1 position, and 7 × 7 ≡ 1 mod 12).
 function shiftCamelot(camelot, semitones) {
   if (!camelot) return "—";
   const n = parseInt(camelot, 10) || 1;
   const letter = camelot.slice(-1);
-  const num = ((n - 1 + Math.round(semitones / 7)) % 12 + 12) % 12 + 1;
+  const num = ((n - 1 + 7 * semitones) % 12 + 12) % 12 + 1;
   return `${num}${letter}`;
 }
 
@@ -98,7 +100,7 @@ function trackLabel(t) {
 function Lane({
   sections, durationSecs, role, pps, offsetSecs, onOffsetChange,
   waveform = [], beatTimes = [], onPlay, isPlaying, playheadPos,
-  otherBeatTimes = [], otherOffsetSecs = 0, snapMode = "beats",
+  otherBeatTimes = [], otherOffsetSecs = 0, snapMode = "beats", beatSecs = 0,
 }) {
   const [dragging, setDragging] = useState(false);
   const [snapped, setSnapped] = useState(false);
@@ -192,6 +194,18 @@ function Lane({
           <span className="name">{isVocal ? "Vocal" : "Bed"}</span>
         </div>
         <div className="offset">offset {offsetSecs >= 0 ? "+" : ""}{offsetSecs.toFixed(2)}s</div>
+        {onOffsetChange && (
+          <div className="nudge-row">
+            <button className="nudge-btn" title={`Nudge back one beat${beatSecs ? ` (${(beatSecs * 1000).toFixed(0)} ms)` : ""}`}
+              onClick={() => onOffsetChange(offsetSecs - (beatSecs || 0.1))}>«</button>
+            <button className="nudge-btn" title="Nudge back 10 ms"
+              onClick={() => onOffsetChange(offsetSecs - 0.01)}>‹</button>
+            <button className="nudge-btn" title="Nudge forward 10 ms"
+              onClick={() => onOffsetChange(offsetSecs + 0.01)}>›</button>
+            <button className="nudge-btn" title={`Nudge forward one beat${beatSecs ? ` (${(beatSecs * 1000).toFixed(0)} ms)` : ""}`}
+              onClick={() => onOffsetChange(offsetSecs + (beatSecs || 0.1))}>»</button>
+          </div>
+        )}
       </div>
       <div
         className={`lane-track${dragging ? " dragging" : ""}${snapped ? " snapped" : ""}`}
@@ -472,22 +486,24 @@ export function AuditionStudio({ seed, onStatus }) {
   // ── Beat-lock / status readout ────────────────────────────────────────────
   const effBedBpm = instBpm != null ? instBpm * (anchor === "instrumental" ? appliedStretch : 1) : null;
   const effVocalBpm = vocalBpm != null ? vocalBpm * (anchor === "vocal" ? appliedStretch : 1) : null;
+  // Grids count as locked at any of the supported beat ratios (1:1, 2:1, …),
+  // not just an exact BPM match — locking half/double-time is a valid mix.
   const matched = (() => {
-    if (!vocalBpm || !instBpm) return false;
-    const a = anchor === "instrumental" ? effBedBpm : effVocalBpm;
-    const b = anchor === "instrumental" ? vocalBpm : instBpm;
-    return Math.abs(a - b) / b < 0.02;
+    if (!effVocalBpm || !effBedBpm) return false;
+    return BEAT_LOCK_RATIOS.some(
+      ({ value }) => Math.abs(effBedBpm * value - effVocalBpm) / effVocalBpm < 0.02
+    );
   })();
 
   useEffect(() => {
     if (vocalBpm && instBpm) {
       onStatus?.(matched
-        ? { locked: true, text: `BEAT-LOCKED · ${vocalBpm.toFixed(1)} BPM · ${vocalCamelot || "?"}` }
-        : { text: `Match tempo to lock · ${vocalBpm.toFixed(1)} vs ${instBpm.toFixed(1)}` });
+        ? { locked: true, text: `BEAT-LOCKED · ${(effVocalBpm ?? vocalBpm).toFixed(1)} BPM · ${vocalCamelot || "?"}` }
+        : { text: `Match tempo to lock · ${(effVocalBpm ?? vocalBpm).toFixed(1)} vs ${(effBedBpm ?? instBpm).toFixed(1)}` });
     } else {
       onStatus?.({ text: "Load a vocal + a bed" });
     }
-  }, [matched, vocalBpm, instBpm, vocalCamelot, onStatus]);
+  }, [matched, vocalBpm, instBpm, effVocalBpm, effBedBpm, vocalCamelot, onStatus]);
 
   // ── Transport handlers ────────────────────────────────────────────────────
   const startPlayback = async (solo) => {
@@ -558,11 +574,17 @@ export function AuditionStudio({ seed, onStatus }) {
   };
 
   // ── KEY helpers ───────────────────────────────────────────────────────────
+  // Suggestion comes from the original (unshifted) keys; kr.suggest is the
+  // shift for the BED, so flip its sign when the vocal is the anchored side.
   const kr = keyRel(vocalCamelot, instCamelot);
-  const bedShiftedKey = shiftCamelot(instCamelot, appliedShift);
   const suggestShift = plan?.semitone_shift != null
     ? (anchor === "instrumental" ? plan.semitone_shift : -plan.semitone_shift)
-    : kr.suggest;
+    : (anchor === "instrumental" ? kr.suggest : -kr.suggest);
+  // The key map shows the keys as they currently SOUND: whichever side is
+  // anchored carries the pitch shift, so the relation updates live.
+  const vocalShownKey = anchor === "vocal" ? shiftCamelot(vocalCamelot, appliedShift) : vocalCamelot;
+  const bedShownKey = anchor === "instrumental" ? shiftCamelot(instCamelot, appliedShift) : instCamelot;
+  const liveRel = keyRel(vocalShownKey, bedShownKey);
   const applySuggestedPitch = () => {
     setShiftInput(suggestShift);
     toast(suggestShift === 0 ? "Keys already match" : `Pitch ${suggestShift > 0 ? "+" : ""}${suggestShift} st applied`);
@@ -578,6 +600,50 @@ export function AuditionStudio({ seed, onStatus }) {
     setLoop({ start, end: start + 8 * barSecs });
     setLoop8(true);
   };
+
+  // ── Alignment helpers ─────────────────────────────────────────────────────
+  // Display-seconds length of one beat per lane (used for beat-sized nudges).
+  const vocalBeatSecs = vocalBpm ? (60 / vocalBpm) * vocalDisplayFactor : 0;
+  const instBeatSecs = instBpm ? (60 / instBpm) * instDisplayFactor : 0;
+
+  // One click: move the vocal so its nearest downbeat lands on the bed's
+  // nearest downbeat (relative to the playhead), instead of hand-dragging.
+  const alignDownbeats = () => {
+    const vDown = vocalDisplayBeatTimes.filter((_, i) => i % 4 === 0);
+    const iDown = instDisplayBeatTimes.filter((_, i) => i % 4 === 0);
+    if (vDown.length === 0 || iDown.length === 0) {
+      toast("Beat data missing — analyze both tracks first");
+      return;
+    }
+    const nearest = (arr, target) =>
+      arr.reduce((best, t) => (Math.abs(t - target) < Math.abs(best - target) ? t : best));
+    const vAt = nearest(vDown.map((t) => t + vocalOffset), playPos);
+    const iAt = nearest(iDown.map((t) => t + instOffset), playPos);
+    setVocalOffset(vocalOffset + (iAt - vAt));
+    toast("Vocal downbeat aligned to bed");
+  };
+
+  // ── Keyboard shortcuts (space, L, arrows) ─────────────────────────────────
+  // Re-attached each render so the handlers always see fresh state.
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = e.target?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (vocalBuffer && instBuffer) handlePlayMashup();
+      } else if (e.key === "l" || e.key === "L") {
+        toggleLoop8();
+      } else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        e.preventDefault();
+        const dir = e.key === "ArrowLeft" ? -1 : 1;
+        const step = e.shiftKey ? 0.01 : (vocalBeatSecs || 0.1);
+        setVocalOffset((o) => o + dir * step);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   const resetAll = () => {
     engineRef.current?.stop();
@@ -656,6 +722,7 @@ export function AuditionStudio({ seed, onStatus }) {
         <Selector role="bed" track={instTrack} bpm={instBpm}
           onOpen={() => { setMenu(menu === "bed" ? null : "bed"); setPickerSearch(""); }} />
 
+        {menu && <div className="picker-overlay" onClick={() => setMenu(null)} />}
         {menu && (
           <div className="picker-menu" style={{ left: menu === "vocal" ? 0 : "auto", right: menu === "bed" ? 0 : "auto" }}>
             <div className="search-box" style={{ width: "auto", margin: "2px 4px 6px" }}>
@@ -701,6 +768,13 @@ export function AuditionStudio({ seed, onStatus }) {
       {vocalOptions.length === 0 && (
         <p className="empty">No tracks with separated + analysed vocals yet. Separate and analyze tracks in the Library tab first.</p>
       )}
+      {vocalOptions.length > 0 && !bothLoaded && (
+        <div className="aud-empty">
+          <div className="step"><span className="n">1</span> Pick a <b className="v">vocal</b> and a <b className="b">bed</b> above — or hit <b>Audition</b> on a pair in the Mashups tab.</div>
+          <div className="step"><span className="n">2</span> Press <span className="kbd">space</span> to hear them together; drag a waveform (or use <span className="kbd">←</span><span className="kbd">→</span>) to line up the beats.</div>
+          <div className="step"><span className="n">3</span> Use <b>Auto-match tempo</b> and <b>Apply suggested pitch</b>, balance the mix, then export your mashup as WAV.</div>
+        </div>
+      )}
       {samePair && <div className="error-text" style={{ marginBottom: 8 }}>Pick two different tracks.</div>}
       {audioLoading && <p className="hint" style={{ marginBottom: 8 }}>Decoding stems for playback…</p>}
 
@@ -712,7 +786,15 @@ export function AuditionStudio({ seed, onStatus }) {
               {["verse", "chorus", "drop", "breakdown"].map((l) => (
                 <span key={l} className="sw"><i style={{ background: SECTION_COLORS[l] }} />{l}</span>
               ))}
-              <span className="hint">Drag a lane to nudge · click ruler to move playhead · shift-drag = loop</span>
+              <button className="align-btn" onClick={alignDownbeats}
+                title="Snap the vocal's nearest downbeat to the bed's nearest downbeat">
+                ⇥ Align downbeats
+              </button>
+              <span className="hint">
+                Drag a lane to nudge · <span className="kbd">space</span> play ·{" "}
+                <span className="kbd">←</span><span className="kbd">→</span> nudge vocal (shift = fine) ·{" "}
+                <span className="kbd">L</span> loop 8 · shift-drag ruler = loop
+              </span>
             </div>
 
             <div className="ruler" onMouseDown={(e) => handleScrub(e, e.currentTarget)}
@@ -733,6 +815,7 @@ export function AuditionStudio({ seed, onStatus }) {
               onPlay={vocalBuffer ? () => handleSolo("vocal") : null}
               isPlaying={isPlaying && soloRole === "vocal"} playheadPos={playPos}
               otherBeatTimes={instDisplayBeatTimes} otherOffsetSecs={instOffset} snapMode={snapMode}
+              beatSecs={vocalBeatSecs}
             />
             <Lane
               role="bed" sections={instDisplaySections} durationSecs={instDisplayDuration}
@@ -741,6 +824,7 @@ export function AuditionStudio({ seed, onStatus }) {
               onPlay={instBuffer ? () => handleSolo("inst") : null}
               isPlaying={isPlaying && soloRole === "inst"} playheadPos={playPos}
               otherBeatTimes={vocalDisplayBeatTimes} otherOffsetSecs={vocalOffset} snapMode={snapMode}
+              beatSecs={instBeatSecs}
             />
 
             <div className="wave-readout">
@@ -792,9 +876,9 @@ export function AuditionStudio({ seed, onStatus }) {
                 <span className="val">{appliedShift > 0 ? "+" : ""}{appliedShift}<span className="u"> st</span></span>
               </div>
               <div className="key-map">
-                <span className="key-chip" style={{ background: camelotColor(vocalCamelot), padding: "5px 10px" }}>{vocalCamelot || "?"}</span>
-                <span className="arrow" style={{ color: kr.color }}>{kr.arrow}</span>
-                <span className="key-chip" style={{ background: camelotColor(bedShiftedKey), padding: "5px 10px" }}>{bedShiftedKey}</span>
+                <span className="key-chip" style={{ background: camelotColor(vocalShownKey), padding: "5px 10px" }}>{vocalShownKey || "?"}</span>
+                <span className="arrow" style={{ color: liveRel.color }}>{liveRel.arrow}</span>
+                <span className="key-chip" style={{ background: camelotColor(bedShownKey), padding: "5px 10px" }}>{bedShownKey || "?"}</span>
               </div>
               <div className="slider-row">
                 <button className="step-btn" onClick={() => setShiftInput(Math.max(-24, appliedShift - 1))}>−</button>
@@ -803,9 +887,11 @@ export function AuditionStudio({ seed, onStatus }) {
                 </div>
                 <button className="step-btn" onClick={() => setShiftInput(Math.min(24, appliedShift + 1))}>+</button>
               </div>
-              <div className="key-rel-text">{kr.text}</div>
+              <div className="key-rel-text">{liveRel.text}</div>
               <div className="module-cta ghost" onClick={applySuggestedPitch}>
-                {suggestShift === 0 ? "Keys match — no shift" : `Apply suggested pitch (${suggestShift > 0 ? "+" : ""}${suggestShift} st)`}
+                {suggestShift === 0 && appliedShift === 0 ? "Keys match — no shift"
+                  : appliedShift === suggestShift ? "✓ Suggested pitch applied"
+                  : `Apply suggested pitch (${suggestShift > 0 ? "+" : ""}${suggestShift} st)`}
               </div>
             </div>
 

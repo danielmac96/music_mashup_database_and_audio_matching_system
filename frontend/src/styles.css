@@ -658,6 +658,7 @@ input, select { font-family: inherit; }
 }
 .swap-btn:hover { color: var(--text); }
 
+.picker-overlay { position: fixed; inset: 0; z-index: 45; }
 .picker-menu {
   position: absolute;
   top: 64px;
@@ -715,6 +716,43 @@ input, select { font-family: inherit; }
 .wave-legend .sw { display: flex; align-items: center; gap: 4px; }
 .wave-legend .sw i { width: 9px; height: 9px; border-radius: 2px; }
 .wave-legend .hint { margin-left: auto; }
+
+.align-btn {
+  cursor: pointer; font-size: 10px; padding: 3px 9px; border-radius: 5px;
+  background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.4);
+  color: var(--cyan-light);
+}
+.align-btn:hover { filter: brightness(1.2); }
+
+.kbd {
+  font-family: var(--font-mono); font-size: 9px; color: var(--text-2);
+  background: var(--inset-2); border: 1px solid var(--border-ctrl);
+  border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; margin: 0 1px;
+}
+
+.nudge-row { display: flex; gap: 3px; }
+.nudge-btn {
+  cursor: pointer; width: 19px; height: 17px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; line-height: 1; border-radius: 4px;
+  background: var(--inset-2); border: 1px solid var(--border-ctrl); color: var(--muted);
+}
+.nudge-btn:hover { color: var(--text); border-color: var(--faint); }
+
+.aud-empty {
+  display: flex; flex-direction: column; gap: 12px;
+  background: var(--panel); border: 1px dashed var(--border-ctrl); border-radius: 11px;
+  padding: 22px 24px; margin-bottom: 16px; font-size: 13.5px; color: var(--text-2);
+}
+.aud-empty .step { display: flex; align-items: baseline; gap: 11px; line-height: 1.55; }
+.aud-empty .n {
+  flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: 11px;
+  background: var(--accent-tint); color: var(--accent-light); border: 1px solid var(--border-accent);
+}
+.aud-empty .v { color: var(--cyan-light); }
+.aud-empty .b { color: var(--amber-light); }
 
 .ruler {
   cursor: pointer;
