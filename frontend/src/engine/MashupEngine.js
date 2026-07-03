@@ -46,12 +46,19 @@ export class MashupEngine {
     if (this._initPromise) return this._initPromise;
     this._initPromise = (async () => {
       const Ctx = window.AudioContext || window.webkitAudioContext;
-      this.ctx = new Ctx();
-      await SoundTouchNode.register(this.ctx, processorUrl);
+      const ctx = new Ctx();
+      this.ctx = ctx;
+      await SoundTouchNode.register(ctx, processorUrl);
+      // dispose() ran while the worklet was loading (e.g. React StrictMode's
+      // dev-mode mount/unmount double-invoke) — bail out quietly.
+      if (this.ctx !== ctx) {
+        if (ctx.state !== "closed") await ctx.close();
+        return;
+      }
       this._registered = true;
-      this.master = this.ctx.createGain();
+      this.master = ctx.createGain();
       this.master.gain.value = 1;
-      this.master.connect(this.ctx.destination);
+      this.master.connect(ctx.destination);
     })();
     return this._initPromise;
   }
