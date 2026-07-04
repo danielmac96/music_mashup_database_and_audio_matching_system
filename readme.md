@@ -232,6 +232,12 @@ The **Mashups** tab in the web app drives the suggestion workflow:
   instrumental stretch factor (halftime/doubletime aware), the semitone shift
   to align keys, and which vocal chorus/verse to lay over which instrumental
   drop/chorus — with timestamps and duration fit after stretching.
+- **Audition** opens the pair in the real-time Studio. **✨ Good start**
+  one-clicks a playable mashup — matches tempo, applies the suggested pitch, and
+  aligns the best vocal/bed section pair under the playhead — then you tweak by
+  ear. Out-of-range tempos are flagged so you nudge rather than trust them.
+  **Export mashup WAV** renders exactly what you hear, including the live
+  mix-bus levels (vocal/bed faders, mutes, crossfade).
 
 API endpoints: `POST /api/mashups/score`, `GET /api/mashups`,
 `GET /api/mashups/plan?vocal_id=&inst_id=`, `GET /api/tracks/{id}/sections`.

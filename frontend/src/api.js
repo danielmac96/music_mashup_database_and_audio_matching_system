@@ -124,12 +124,15 @@ export const api = {
   adjustedAudioUrl: (vocalId, instId, anchor) =>
     `/api/mashups/adjust/audio?vocal_id=${vocalId}&inst_id=${instId}&anchor=${anchor}`,
 
-  startExport: (vocalId, instId, anchor, stretch, shift, vocalOffset, instOffset) => {
+  startExport: (vocalId, instId, anchor, stretch, shift, vocalOffset, instOffset,
+                vocalGain = null, instGain = null) => {
     const params = new URLSearchParams({ vocal_id: vocalId, inst_id: instId, anchor });
     if (stretch != null) params.set("stretch", String(stretch));
     if (shift != null) params.set("shift", String(shift));
     if (vocalOffset != null) params.set("vocal_offset", vocalOffset.toFixed(3));
     if (instOffset != null) params.set("inst_offset", instOffset.toFixed(3));
+    if (vocalGain != null) params.set("vocal_gain", vocalGain.toFixed(3));
+    if (instGain != null) params.set("inst_gain", instGain.toFixed(3));
     return jsonFetch(`/api/mashups/export?${params}`, { method: "POST" });
   },
 

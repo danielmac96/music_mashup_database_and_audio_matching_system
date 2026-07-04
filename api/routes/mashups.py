@@ -117,16 +117,19 @@ def queue_adjust(vocal_id: int, inst_id: int, anchor: str,
 def queue_export(vocal_id: int, inst_id: int, anchor: str,
                  background: BackgroundTasks,
                  stretch: float = 1.0, shift: int = 0,
-                 vocal_offset: float = 0.0, inst_offset: float = 0.0) -> dict:
+                 vocal_offset: float = 0.0, inst_offset: float = 0.0,
+                 vocal_gain: float = 0.95, inst_gain: float = 0.8) -> dict:
     """Render the full Audition Studio mashup to a WAV: anchor stem stretched +
-    pitched (decoupled), both stems laid out at their drag offsets, then mixed.
-    This is the only step that writes audio — source stems stay untouched."""
+    pitched (decoupled), both stems laid out at their drag offsets, mixed at the
+    live mix-bus levels (vocal_gain/inst_gain). This is the only step that writes
+    audio — source stems stay untouched."""
     if anchor not in ("vocal", "instrumental"):
         raise HTTPException(status_code=400,
                             detail="anchor must be 'vocal' or 'instrumental'")
     job_id = jobs.new_job(kind="export", message="Queued for mashup export")
     background.add_task(export_worker.run, job_id, vocal_id, inst_id, anchor,
-                        stretch, shift, vocal_offset, inst_offset)
+                        stretch, shift, vocal_offset, inst_offset,
+                        vocal_gain, inst_gain)
     return {"job_id": job_id}
 
 

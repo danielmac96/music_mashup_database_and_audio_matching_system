@@ -13,7 +13,8 @@ log = logging.getLogger(__name__)
 
 def run(job_id: str, vocal_id: int, inst_id: int, anchor: str,
         stretch: float, shift: int,
-        vocal_offset: float, inst_offset: float) -> None:
+        vocal_offset: float, inst_offset: float,
+        vocal_gain: float = 0.95, inst_gain: float = 0.8) -> None:
     jobs.update(job_id, status="running", message="Rendering mashup export…")
 
     def _on_progress(pct, msg: str) -> None:
@@ -25,7 +26,8 @@ def run(job_id: str, vocal_id: int, inst_id: int, anchor: str,
     try:
         out = build_mashup_export(vocal_id, inst_id, anchor, stretch, shift,
                                   vocal_offset, inst_offset,
-                                  on_progress=_on_progress, force=True)
+                                  on_progress=_on_progress, force=True,
+                                  vocal_gain=vocal_gain, inst_gain=inst_gain)
     except Exception as exc:  # noqa: BLE001
         log.exception("build_mashup_export raised")
         jobs.fail(job_id, f"Export error: {type(exc).__name__}: {exc}")

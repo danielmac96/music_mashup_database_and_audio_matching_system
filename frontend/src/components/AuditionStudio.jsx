@@ -590,6 +590,34 @@ export function AuditionStudio({ seed, onStatus }) {
     toast(suggestShift === 0 ? "Keys already match" : `Pitch ${suggestShift > 0 ? "+" : ""}${suggestShift} st applied`);
   };
 
+  // One-click "good start": match tempo, apply the suggested pitch, and align
+  // the plan's best vocal/bed section pairing under the playhead — so the user
+  // lands on a playable mashup immediately and tweaks from there.
+  const applyGoodStart = () => {
+    if (!vocalBpm || !instBpm) { toast("Analyze both tracks first"); return; }
+    const raw = anchor === "instrumental" ? vocalBpm / instBpm : instBpm / vocalBpm;
+    const s = Math.max(0.5, Math.min(2, raw));
+    setStretchInput(s.toFixed(4));
+    setShiftInput(suggestShift);
+
+    const p = plan?.pairings?.[0];
+    if (p) {
+      // Lay the vocal section start over the bed section start on the global
+      // timeline (bed anchored at 0), then move the playhead to that hook.
+      const vFactor = anchor === "vocal" ? 1 / s : 1;
+      const iFactor = anchor === "instrumental" ? 1 / s : 1;
+      const iStartDisp = p.inst_start * iFactor;
+      const vStartDisp = p.vocal_start * vFactor;
+      setInstOffset(0);
+      setVocalOffset(iStartDisp - vStartDisp);
+      setPosition(iStartDisp);
+      engineRef.current?.seek(iStartDisp);
+      toast("Good start — tempo + key matched, hook aligned");
+    } else {
+      toast("Tempo + key matched — run Structure on both tracks for hook alignment");
+    }
+  };
+
   // ── Loop 8 bars ───────────────────────────────────────────────────────────
   const toggleLoop8 = () => {
     if (loop8) { setLoop8(false); setLoop(null); return; }
@@ -662,7 +690,9 @@ export function AuditionStudio({ seed, onStatus }) {
     setError(null);
     if (vocalId == null || instId == null || vocalId === instId) return;
     try {
-      const { job_id } = await api.startExport(vocalId, instId, anchor, appliedStretch, appliedShift, vocalOffset, instOffset);
+      // Pass the live mix-bus gains so the exported WAV matches what's heard.
+      const { v, i } = gainsFor(null);
+      const { job_id } = await api.startExport(vocalId, instId, anchor, appliedStretch, appliedShift, vocalOffset, instOffset, v, i);
       setExportReady(null); setExportJobId(job_id);
       toast("Rendering mashup WAV…");
     } catch (e) { setError(e.message); }
@@ -699,7 +729,16 @@ export function AuditionStudio({ seed, onStatus }) {
         <div className="t">{track ? track.title : role === "vocal" ? "— select vocal —" : "— select bed —"}</div>
         <div className="a">{track?.artist || ""}</div>
       </div>
-      {bpm != null && <div className="bpm">{bpm.toFixed(1)} BPM</div>}
+      {bpm != null && (
+        <div className="bpm">
+          {bpm.toFixed(1)} BPM
+          {(bpm < 80 || bpm > 170) && (
+            <span className="bpm-warn" title="Unusual tempo — likely a half/double-time detection error. Nudge tempo below, or fix the BPM in the Library.">
+              {" ⚠"}
+            </span>
+          )}
+        </div>
+      )}
       {track?.features?.full?.camelot && (
         <div className="key-chip" style={{ background: camelotColor(track.features.full.camelot), padding: "4px 9px" }}>
           {track.features.full.camelot}
@@ -786,6 +825,10 @@ export function AuditionStudio({ seed, onStatus }) {
               {["verse", "chorus", "drop", "breakdown"].map((l) => (
                 <span key={l} className="sw"><i style={{ background: SECTION_COLORS[l] }} />{l}</span>
               ))}
+              <button className="goodstart-btn" onClick={applyGoodStart}
+                title="Match tempo + key and align the best sections in one click">
+                ✨ Good start
+              </button>
               <button className="align-btn" onClick={alignDownbeats}
                 title="Snap the vocal's nearest downbeat to the bed's nearest downbeat">
                 ⇥ Align downbeats
