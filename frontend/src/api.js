@@ -77,7 +77,13 @@ export const api = {
 
   getWaveform: (id, stem) => jsonFetch(`/api/tracks/${id}/waveform?stem=${stem}`),
 
-  startScoring: () => jsonFetch("/api/mashups/score", { method: "POST" }),
+  startScoring: ({ bpmMaxDiff = null, keyMinScore = null } = {}) => {
+    const params = new URLSearchParams();
+    if (bpmMaxDiff != null) params.set("bpm_max_diff", String(bpmMaxDiff));
+    if (keyMinScore != null) params.set("key_min_score", String(keyMinScore));
+    const qs = params.toString();
+    return jsonFetch(`/api/mashups/score${qs ? `?${qs}` : ""}`, { method: "POST" });
+  },
 
   getMashups: ({
     comboType = "",

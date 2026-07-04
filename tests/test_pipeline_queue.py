@@ -169,6 +169,33 @@ def test_reverify_keeps_full_file_without_redownload(tmp_path, monkeypatch):
     assert calls["n"] == 0  # no re-download when the file is already full
 
 
+def _song_with_feats(models, title, url, full_bpm, camelot):
+    sid = models.upsert_song(title=title, artist="A", source_url=url, status="analysed")
+    for stem in ("full", "vocals", "instrumental"):
+        models.upsert_features(sid, stem, {
+            "bpm": full_bpm, "camelot": camelot, "key": "A", "mode": "minor",
+            "energy": 0.5, "loudness_rms": 0.5,
+        })
+    return sid
+
+
+def test_score_filter_width_and_deterministic_clear(env):
+    models = env
+    from matcher.match import score_all_pairs
+
+    _song_with_feats(models, "A", "http://x/a", 120.0, "8A")
+    _song_with_feats(models, "B", "http://x/b", 132.0, "9A")  # 12 BPM apart, adjacent key
+
+    # Wide pre-filter: the 12-BPM gap qualifies → 2 vocal/inst + 1 inst/inst.
+    score_all_pairs(bpm_max_diff=16, key_min_score=0.4)
+    assert len(models.get_candidates(limit=100)) == 3
+
+    # Tighter pre-filter: 12 > 10 BPM, so nothing qualifies AND the prior
+    # (now stale) pairs are cleared — re-score is deterministic.
+    score_all_pairs(bpm_max_diff=10, key_min_score=0.55)
+    assert len(models.get_candidates(limit=100)) == 0
+
+
 def test_ingest_enqueues_one_job_per_track(env, monkeypatch):
     # Don't actually run the pipeline: record enqueue calls instead.
     import api.queue_runner as queue_runner

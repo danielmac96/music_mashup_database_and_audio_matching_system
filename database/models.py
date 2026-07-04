@@ -644,6 +644,15 @@ def upsert_candidate(vocal: dict, inst: dict, scores: dict,
     conn.close()
 
 
+def clear_candidates(db_path: Path = DB_PATH) -> None:
+    """Wipe all scored pairs so a re-score reflects exactly the current features
+    and pre-filter thresholds (no stale pairs left over from a looser run)."""
+    conn = get_conn(db_path)
+    conn.execute("DELETE FROM mashup_candidates")
+    conn.commit()
+    conn.close()
+
+
 def get_candidates(min_score: float = 0.0, limit: int = 100,
                    db_path: Path = DB_PATH) -> List[Dict]:
     """Return all scored mashup candidates ordered by total score descending."""

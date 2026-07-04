@@ -218,7 +218,13 @@ The **Mashups** tab in the web app drives the suggestion workflow:
 
 - **Score library** — scores every qualifying vocal+instrumental and
   instrumental+instrumental pair (BPM/key pre-filter, then the weighted
-  composite score) into `mashup_candidates`.
+  composite score) into `mashup_candidates`. The **Match width** control
+  (Tight / Balanced / Wide) tunes the pre-filter thresholds before scoring, and
+  **Sort** flips the ranked list between best-score and library popularity. A
+  full re-score is deterministic — the candidates table is cleared first, so no
+  stale pairs survive a tighter filter. Tracks with an out-of-range tempo get a
+  ⚠ in the Library so you can fix a half/double-time error (via **Edit**) before
+  it skews every match.
 - The ranked table shows the score breakdown plus genre, release year, and a
   0–1 popularity percentile (plays + 2×likes rank within your library) for
   both sides of each pair.

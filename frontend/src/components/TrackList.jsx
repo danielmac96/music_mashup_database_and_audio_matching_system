@@ -17,6 +17,12 @@ const STAGE_KIND = {
 };
 const JOB_ACTIVE = new Set(["queued", "running"]);
 
+// A detected tempo outside this range is very often a half/double-time octave
+// error — the single most common way auto-analysis silently poisons matches.
+// (bpm_confidence from librosa is a beats/frame density, not a 0-1 quality, so
+// an out-of-range BPM is the honest signal to flag for a manual sanity-check.)
+const bpmLooksOff = (f) => f?.bpm != null && (f.bpm < 80 || f.bpm > 170);
+
 function FeatureEditor({ track, onSaved, onCancel }) {
   const feats = track.features?.full || {};
   const [bpm, setBpm] = useState(feats.bpm != null ? String(feats.bpm) : "");
@@ -413,6 +419,12 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
 
                 <div className="metrics-row">
                   <div className="bpm-chip"><span className="u">BPM </span>{f.bpm != null ? f.bpm.toFixed(1) : "—"}</div>
+                  {bpmLooksOff(f) && (
+                    <span className="bpm-warn"
+                      title={`Unusual tempo (${f.bpm.toFixed(1)} BPM) — often a half/double-time detection error. Verify with Edit; a wrong BPM skews every match.`}>
+                      ⚠
+                    </span>
+                  )}
                   <div className="key-chip" style={{ background: camelotColor(f.camelot) }}>
                     {f.camelot || "—"}
                   </div>

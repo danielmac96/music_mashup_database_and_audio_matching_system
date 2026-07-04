@@ -20,10 +20,19 @@ _COMBO_TYPES = {"vocal_over_instrumental", "instrumental_over_instrumental"}
 
 
 @router.post("/score")
-def queue_score(background: BackgroundTasks) -> dict:
-    """Score every qualifying pair in the library into mashup_candidates."""
+def queue_score(background: BackgroundTasks,
+                bpm_max_diff: Optional[float] = None,
+                key_min_score: Optional[float] = None) -> dict:
+    """Score every qualifying pair in the library into mashup_candidates.
+
+    bpm_max_diff / key_min_score override the config pre-filter thresholds so the
+    user can widen (more candidates) or narrow (only tight matches) the set."""
+    if bpm_max_diff is not None and not (0 < bpm_max_diff <= 60):
+        raise HTTPException(status_code=400, detail="bpm_max_diff must be in (0, 60]")
+    if key_min_score is not None and not (0 <= key_min_score <= 1):
+        raise HTTPException(status_code=400, detail="key_min_score must be in [0, 1]")
     job_id = jobs.new_job(kind="match", message="Queued for pair scoring")
-    background.add_task(match_worker.run, job_id)
+    background.add_task(match_worker.run, job_id, bpm_max_diff, key_min_score)
     return {"job_id": job_id}
 
 
