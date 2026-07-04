@@ -24,8 +24,8 @@ from typing import Callable, Optional
 
 from config import BEAT_TRIM_SECS
 from database.models import (
-    get_conn, replace_sections, update_song_duration, update_song_status,
-    upsert_features, upsert_stem,
+    get_conn, replace_sections, update_song_duration, update_song_error,
+    update_song_status, upsert_features, upsert_stem,
 )
 
 log = logging.getLogger(__name__)
@@ -77,8 +77,9 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("download_track raised")
-        update_song_status(song_id, "error_download")
-        raise StageError(f"Download error: {type(exc).__name__}: {exc}", _tb(exc))
+        msg = f"Download error: {type(exc).__name__}: {exc}"
+        update_song_error(song_id, "error_download", msg)
+        raise StageError(msg, _tb(exc))
 
     if result and result.path.exists():
         update_song_status(song_id, "downloaded", raw_path=str(result.path))
@@ -86,7 +87,9 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
             update_song_duration(song_id, result.duration_secs)
         return {"path": str(result.path)}
 
-    update_song_status(song_id, "error_download")
+    update_song_error(song_id, "error_download",
+                      "Download failed — no full-length audio found (SoundCloud "
+                      "Go+ preview with no YouTube fallback match?)")
     raise StageError("Download failed")
 
 
@@ -105,8 +108,9 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
 
     raw_path = Path(row["raw_path"]) if row["raw_path"] else None
     if not raw_path or not raw_path.exists():
-        update_song_status(song_id, "error_stems")
-        raise StageError("No downloaded audio for this track. Download it first.")
+        msg = "No downloaded audio for this track. Download it first."
+        update_song_error(song_id, "error_stems", msg)
+        raise StageError(msg)
 
     try:
         stems = separate(
@@ -115,11 +119,12 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("separate raised")
-        update_song_status(song_id, "error_stems")
-        raise StageError(f"Separation error: {type(exc).__name__}: {exc}", _tb(exc))
+        msg = f"Separation error: {type(exc).__name__}: {exc}"
+        update_song_error(song_id, "error_stems", msg)
+        raise StageError(msg, _tb(exc))
 
     if not stems:
-        update_song_status(song_id, "error_stems")
+        update_song_error(song_id, "error_stems", "Separation failed (Demucs produced no stems)")
         raise StageError("Separation failed")
 
     upsert_stem(song_id, "vocals", str(stems["vocals"]))
@@ -146,8 +151,9 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
     if "full" not in stem_paths and row["raw_path"]:
         stem_paths["full"] = row["raw_path"]
     if not stem_paths:
-        update_song_status(song_id, "error_analysis")
-        raise StageError("No audio for this track. Download (and separate) it first.")
+        msg = "No audio for this track. Download (and separate) it first."
+        update_song_error(song_id, "error_analysis", msg)
+        raise StageError(msg)
 
     analysed: list[str] = []
     failed: list[str] = []
@@ -172,7 +178,7 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         analysed.append(stem_type)
 
     if not analysed:
-        update_song_status(song_id, "error_analysis")
+        update_song_error(song_id, "error_analysis", "Analysis failed for every stem")
         raise StageError("Analysis failed for every stem")
 
     update_song_status(song_id, "analysed")

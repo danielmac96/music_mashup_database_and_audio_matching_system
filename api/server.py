@@ -53,3 +53,36 @@ app.include_router(database_routes.router, prefix="/api/db", tags=["database"])
 @app.get("/api/health")
 def health() -> dict:
     return {"ok": True}
+
+
+@app.get("/api/health/deps")
+def health_deps() -> dict:
+    """Report whether the external tools the pipeline needs are available, so a
+    first user learns about a missing ffmpeg/demucs BEFORE kicking off a big
+    import rather than watching every track fail."""
+    import shutil
+    import importlib.util
+
+    def _on_path(binary: str) -> bool:
+        return shutil.which(binary) is not None
+
+    def _importable(mod: str) -> bool:
+        try:
+            return importlib.util.find_spec(mod) is not None
+        except Exception:  # noqa: BLE001 — a broken install shouldn't 500 the check
+            return False
+
+    deps = [
+        {"name": "ffmpeg", "ok": _on_path("ffmpeg"),
+         "detail": "audio extraction/decoding (required)", "required": True},
+        {"name": "ffprobe", "ok": _on_path("ffprobe"),
+         "detail": "duration checks (required)", "required": True},
+        {"name": "yt-dlp", "ok": _importable("yt_dlp"),
+         "detail": "SoundCloud/YouTube metadata + download (required)", "required": True},
+        {"name": "demucs", "ok": _importable("demucs"),
+         "detail": "stem separation (required to split vocals/instrumental)", "required": True},
+        {"name": "librosa", "ok": _importable("librosa"),
+         "detail": "audio feature analysis (required for BPM/key/structure)", "required": True},
+    ]
+    missing = [d["name"] for d in deps if d["required"] and not d["ok"]]
+    return {"ok": not missing, "missing": missing, "deps": deps}

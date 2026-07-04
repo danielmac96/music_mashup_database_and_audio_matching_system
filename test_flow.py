@@ -68,6 +68,9 @@ def parse_args():
                    help="Which stem to compare candidates against (default: instrumental)")
     p.add_argument("--reset", action="store_true",
                    help="Delete the database before running")
+    p.add_argument("--reverify", action="store_true",
+                   help="Re-check downloaded tracks for stale ~30s SoundCloud Go+ "
+                        "previews; re-download full versions and re-stem/analyse them.")
     p.add_argument("--db-report", action="store_true",
                    help="Print a summary of the current database and exit")
     p.add_argument("--audio-root", metavar="DIR", default=None,
@@ -219,7 +222,16 @@ def main():
     init_db()
     log.info("Database initialised")
 
-    from pipeline import run_ingest, run_download, run_stems, run_analysis, run_match
+    from pipeline import (run_ingest, run_download, run_stems, run_analysis,
+                          run_match, run_reverify)
+
+    # ── Re-verify mode: fix stale previews, then reprocess any swapped tracks ──
+    if args.reverify:
+        run_reverify()
+        run_stems()
+        run_analysis()
+        print_db_report()
+        sys.exit(_exit_code_from_db())
 
     if stages is None or "ingest" in stages:
         if not args.url:

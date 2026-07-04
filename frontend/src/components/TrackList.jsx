@@ -292,6 +292,8 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
       canAnalyze: !busy && t.stems.full && !analysed,
       canStructure: !busy && t.stems.full && !hasStructure,
       canRetry: !busy && !!t.status?.startsWith("error"),
+      // A downloaded track still ~30s long is likely a SoundCloud Go+ preview.
+      canReverify: !busy && t.stems.full && t.duration_secs > 0 && t.duration_secs <= 40,
       analysed,
       hasStructure,
     };
@@ -313,6 +315,11 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
     if (g.job) return <JobBadge jobId={g.job.jobId} onComplete={() => onJobDone(t.id)} />;
     return (
       <div className="mini-actions">
+        {g.canRetry && t.last_error && (
+          <div className="track-error" style={{ flexBasis: "100%" }} title={t.last_error}>
+            ⚠ {t.last_error}
+          </div>
+        )}
         {g.canRetry && (
           <button className="mini-btn" title="Re-run the pipeline from where it failed"
             onClick={() => retryTrack(t.id)}>↻ Retry</button>
@@ -327,6 +334,10 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
         <button className="mini-btn" disabled={!g.canStructure}
           title={g.hasStructure ? "Structure already detected" : !t.stems.full ? "Download first" : "Detect intro/verse/chorus/drop"}
           onClick={() => startJob(t.id, "structure", api.startStructure)}>Structure</button>
+        {g.canReverify && (
+          <button className="mini-btn" title="Looks like a 30s preview — re-download the full track"
+            onClick={() => startJob(t.id, "reverify", api.reverifyTrack)}>⟳ Fix preview</button>
+        )}
         <button className="mini-btn" disabled={!g.analysed}
           title={g.analysed ? "Find scored beds for this vocal" : "Analyze first"}
           onClick={() => onFindMatches?.(t.id, "vocal")}>Find beds</button>

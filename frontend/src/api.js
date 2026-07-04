@@ -47,6 +47,10 @@ export const api = {
   processTrack: (id) =>
     jsonFetch(`/api/tracks/${id}/process`, { method: "POST" }),
 
+  // Re-check a track for a stale ~30s Go+ preview and re-download full if needed.
+  reverifyTrack: (id) =>
+    jsonFetch(`/api/tracks/${id}/reverify`, { method: "POST" }),
+
   // All pipeline jobs (newest first) — drives live per-track progress + the
   // Library batch banner. activeOnly drops finished jobs.
   getJobs: ({ kind = "pipeline", activeOnly = false } = {}) => {
@@ -63,6 +67,9 @@ export const api = {
     }),
 
   getJob: (jobId) => jsonFetch(`/api/jobs/${jobId}`),
+
+  // Whether ffmpeg/ffprobe/yt-dlp/demucs/librosa are available on the server.
+  getDeps: () => jsonFetch("/api/health/deps"),
 
   audioUrl: (id, stemType) => `/api/tracks/${id}/audio/${stemType}`,
 

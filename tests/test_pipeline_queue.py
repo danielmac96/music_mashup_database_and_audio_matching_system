@@ -122,6 +122,53 @@ def test_structure_failure_is_non_fatal(env, monkeypatch):
     assert jobs.get(jid)["status"] == "completed"           # job succeeds
 
 
+def test_error_records_last_error_and_progress_clears_it(env):
+    models = env
+    import api.workers.stages as stages
+
+    # A queued song with no downloaded file: do_stems must fail and record why.
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/1", status="queued")
+    with pytest.raises(stages.StageError):
+        stages.do_stems(sid)
+    song = models.get_song(sid)
+    assert song["status"] == "error_stems"
+    assert song["last_error"] and "Download it first" in song["last_error"]
+
+    # Advancing to a non-error status clears the stale reason.
+    models.update_song_status(sid, "downloaded", raw_path="/f/1.mp3")
+    assert models.get_song(sid)["last_error"] is None
+
+
+def test_reverify_replaces_stale_preview(tmp_path, monkeypatch):
+    import downloader.download as dl
+    monkeypatch.setattr(dl, "RAW_DIR", tmp_path)
+    out = tmp_path / f"{dl._safe('Song')}_{dl._safe('Artist')}.mp3"
+    out.write_bytes(b"preview")
+    monkeypatch.setattr(dl, "_get_duration", lambda p: 30.0)  # on-disk file is a preview
+    monkeypatch.setattr(dl, "download_track",
+                        lambda *a, **k: dl.DownloadResult(out, 180.0))  # YT fallback full
+
+    res = dl.reverify_track(1, "Song", "http://x", artist="Artist")
+    assert res.replaced is True
+    assert res.duration_secs == 180.0
+
+
+def test_reverify_keeps_full_file_without_redownload(tmp_path, monkeypatch):
+    import downloader.download as dl
+    monkeypatch.setattr(dl, "RAW_DIR", tmp_path)
+    out = tmp_path / f"{dl._safe('Song')}_{dl._safe('Artist')}.mp3"
+    out.write_bytes(b"full")
+    monkeypatch.setattr(dl, "_get_duration", lambda p: 200.0)  # already full-length
+    calls = {"n": 0}
+    monkeypatch.setattr(dl, "download_track",
+                        lambda *a, **k: (calls.__setitem__("n", calls["n"] + 1), None)[1])
+
+    res = dl.reverify_track(1, "Song", "http://x", artist="Artist")
+    assert res.replaced is False
+    assert res.duration_secs == 200.0
+    assert calls["n"] == 0  # no re-download when the file is already full
+
+
 def test_ingest_enqueues_one_job_per_track(env, monkeypatch):
     # Don't actually run the pipeline: record enqueue calls instead.
     import api.queue_runner as queue_runner

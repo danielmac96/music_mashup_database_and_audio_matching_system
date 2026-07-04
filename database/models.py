@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS songs (
     metadata_partial INTEGER DEFAULT 0,  -- 1 = full per-track enrichment failed; row was seeded from flat playlist data only
     tags            TEXT,                 -- JSON array of SoundCloud tags
     release_year    INTEGER DEFAULT 0,    -- derived from upload_date (YYYY)
+    last_error      TEXT,                 -- reason the last pipeline stage failed (cleared on progress)
     created_at      TEXT DEFAULT (datetime('now')),
     updated_at      TEXT DEFAULT (datetime('now'))
 );
@@ -155,6 +156,7 @@ _SONGS_OPTIONAL_COLUMNS = (
     ("metadata_partial", "INTEGER DEFAULT 0"),
     ("tags", "TEXT"),
     ("release_year", "INTEGER DEFAULT 0"),
+    ("last_error", "TEXT"),
 )
 
 
@@ -284,17 +286,37 @@ def upsert_song(
 
 def update_song_status(song_id: int, status: str, raw_path: str = "",
                        db_path: Path = DB_PATH):
+    # A non-error status means the track advanced (or was retried) — clear any
+    # stale failure reason so the UI stops showing it. Error statuses are set via
+    # update_song_error(), which records the reason.
+    clear_error = not str(status).startswith("error")
     conn = get_conn(db_path)
     if raw_path:
         conn.execute(
-            "UPDATE songs SET status=?, raw_path=?, updated_at=datetime('now') WHERE id=?",
+            "UPDATE songs SET status=?, raw_path=?, updated_at=datetime('now')"
+            + (", last_error=NULL" if clear_error else "") + " WHERE id=?",
             (status, raw_path, song_id)
         )
     else:
         conn.execute(
-            "UPDATE songs SET status=?, updated_at=datetime('now') WHERE id=?",
+            "UPDATE songs SET status=?, updated_at=datetime('now')"
+            + (", last_error=NULL" if clear_error else "") + " WHERE id=?",
             (status, song_id)
         )
+    conn.commit()
+    conn.close()
+
+
+def update_song_error(song_id: int, status: str, message: str = "",
+                      db_path: Path = DB_PATH):
+    """Mark a track failed at a stage and record why, so the Library can show
+    the reason and offer a one-click Retry (survives a server restart, unlike
+    the in-memory job registry)."""
+    conn = get_conn(db_path)
+    conn.execute(
+        "UPDATE songs SET status=?, last_error=?, updated_at=datetime('now') WHERE id=?",
+        (status, (message or "")[:500], song_id),
+    )
     conn.commit()
     conn.close()
 

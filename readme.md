@@ -16,6 +16,48 @@ SoundCloud playlist
 
 ---
 
+## First run (web app)
+
+The web app is the primary way to use the engine: paste a SoundCloud link and
+every track **auto-processes** through download → stems → analyze → structure on
+its own — no per-track clicking.
+
+**Prerequisites**
+
+```bash
+# 1. ffmpeg + ffprobe on PATH (audio extraction + duration checks)
+#    macOS: brew install ffmpeg   ·   Debian/Ubuntu: sudo apt install ffmpeg
+
+# 2. Python deps (Demucs pulls a ~400MB model on first stem separation)
+pip install -r requirements.txt
+
+# 3. Frontend deps
+cd frontend && npm install && cd ..
+```
+
+The Import tab shows a warning banner if ffmpeg/yt-dlp/demucs/librosa are missing
+on the server, so you find out before starting a big import.
+
+**Run the two servers**
+
+```bash
+# Terminal 1 — API (http://localhost:8000)
+uvicorn api.server:app --reload
+
+# Terminal 2 — web UI (http://localhost:5173)
+cd frontend && npm run dev
+```
+
+Then open http://localhost:5173 → **Import** tab → paste a SoundCloud playlist or
+track link → **Preview** → **Save to library**. Switch to **Library** and watch
+each track walk the pipeline live (per-track progress + an overall batch banner).
+Processing is bounded (`MASHUP_PIPELINE_WORKERS`, default 1) so a big playlist
+won't thrash the machine, and it **resumes** unfinished tracks if you restart the
+server mid-import. A failed track shows the reason and a one-click **Retry**;
+suspected 30s Go+ previews get a **Fix preview** action.
+
+---
+
 ## MVP: one-command pipeline
 
 Install once:

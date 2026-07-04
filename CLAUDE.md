@@ -1,8 +1,11 @@
 # CLAUDE.md — AI Assistant Guide
 
-current goal: Finalize initial song ingestion and stem separation and storage. Work through the workflow in a simple 
-easily explained way. Goal is to have a web app to interact and run through these steps. Right now focus on
-ingest and downloader folders. 
+current goal: The onboarding flow is built and working. Importing a SoundCloud link in the
+web app now auto-processes every track through download → stems → analyze → structure via a
+bounded, resumable job queue (Import + Library tabs; see readme "First run"). Current focus:
+robustness (error surfacing + retry, stale-preview re-verify, dependency health check) and
+improving **pairwise** mashup quality (matching + the Audition Studio playground). Staying
+local (FastAPI + Vite + SQLite); no cloud and no multi-song "Big Bootie" set builder yet.
 
 ---
 
