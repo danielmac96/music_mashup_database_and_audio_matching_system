@@ -21,9 +21,16 @@ from api.routes import playlists as playlist_routes  # noqa: E402
 from api.routes import tracks as track_routes  # noqa: E402
 
 
+from api import queue_runner  # noqa: E402
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Start the bounded pipeline worker pool, then re-enqueue any track that was
+    # mid-pipeline when the server last stopped (status-derived resume).
+    queue_runner.start()
+    queue_runner.resume_pending()
     yield
 
 

@@ -43,6 +43,19 @@ export const api = {
   startStructure: (id) =>
     jsonFetch(`/api/tracks/${id}/structure`, { method: "POST" }),
 
+  // Run (or resume/retry) the full auto-chain pipeline for one track.
+  processTrack: (id) =>
+    jsonFetch(`/api/tracks/${id}/process`, { method: "POST" }),
+
+  // All pipeline jobs (newest first) — drives live per-track progress + the
+  // Library batch banner. activeOnly drops finished jobs.
+  getJobs: ({ kind = "pipeline", activeOnly = false } = {}) => {
+    const params = new URLSearchParams();
+    if (kind) params.set("kind", kind);
+    if (activeOnly) params.set("active_only", "true");
+    return jsonFetch(`/api/jobs?${params}`);
+  },
+
   correctFeatures: (id, { bpm, key, mode } = {}) =>
     jsonFetch(`/api/tracks/${id}/features`, {
       method: "PATCH",

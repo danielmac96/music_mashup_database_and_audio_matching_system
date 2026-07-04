@@ -13,7 +13,7 @@ from database.models import (
     get_sections, update_features_manual,
 )
 
-from api import jobs
+from api import jobs, queue_runner
 from api.workers import analysis_worker, download_worker, stems_worker, structure_worker
 
 router = APIRouter()
@@ -116,6 +116,21 @@ def list_tracks() -> dict:
             "section_count": section_counts.get(sid, 0),
         })
     return {"count": len(rows), "tracks": rows}
+
+
+@router.post("/{song_id}/process")
+def queue_process(song_id: int) -> dict:
+    """Run (or resume) the full download → stems → analyse → structure pipeline
+    for one track through the bounded queue. Also the Retry action for a track
+    stuck at an error_* status — the pipeline picks up from the failed stage."""
+    conn = get_conn()
+    row = conn.execute("SELECT id FROM songs WHERE id=?", (song_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="song not found")
+
+    job_id = queue_runner.enqueue_song(song_id)
+    return {"job_id": job_id}
 
 
 @router.post("/{song_id}/download")

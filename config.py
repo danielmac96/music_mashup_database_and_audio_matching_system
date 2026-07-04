@@ -80,5 +80,11 @@ KEY_MIN_SCORE  = 0.55   # allows perfect + adjacent + relative major/minor match
 # Used when you pass a playlist URL rather than a local file list
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "")   # optional, for higher rate limits
 
+# ── Background processing ─────────────────────────────────────────────────────
+# Number of worker threads that drain the ingest→download→stems→analysis→structure
+# pipeline queue. Default 1: stem separation (Demucs) is CPU/GPU heavy, so running
+# several tracks at once thrashes the machine. Raise on a beefy box via env.
+PIPELINE_WORKERS = max(1, int(os.getenv("MASHUP_PIPELINE_WORKERS", "1")))
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = "INFO"

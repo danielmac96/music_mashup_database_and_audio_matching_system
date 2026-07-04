@@ -14,12 +14,15 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def new_job(kind: str, message: str = "Queued") -> str:
+def new_job(kind: str, message: str = "Queued",
+            song_id: Optional[int] = None, stage: Optional[str] = None) -> str:
     job_id = uuid.uuid4().hex
     with _LOCK:
         JOBS[job_id] = {
             "id": job_id,
             "kind": kind,
+            "song_id": song_id,   # track this job belongs to (None = library-wide)
+            "stage": stage,       # current pipeline stage for a chained job
             "status": "queued",
             "progress": 0,
             "message": message,
@@ -56,3 +59,16 @@ def get(job_id: str) -> Optional[dict]:
     with _LOCK:
         job = JOBS.get(job_id)
         return dict(job) if job else None
+
+
+def list_jobs(active_only: bool = False, kind: Optional[str] = None) -> list[dict]:
+    """Snapshot of jobs, newest first. ``active_only`` drops completed/failed
+    terminal jobs; ``kind`` filters by job kind (e.g. 'pipeline')."""
+    with _LOCK:
+        jobs = [dict(j) for j in JOBS.values()]
+    if kind:
+        jobs = [j for j in jobs if j.get("kind") == kind]
+    if active_only:
+        jobs = [j for j in jobs if j.get("status") in ("queued", "running")]
+    jobs.sort(key=lambda j: j.get("created_at") or "", reverse=True)
+    return jobs

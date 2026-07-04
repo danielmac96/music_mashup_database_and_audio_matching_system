@@ -57,7 +57,7 @@ export function PlaylistImporter({ onIngested }) {
     try {
       const kept = tracks.filter((_, i) => selected[i] !== false);
       const res = await api.ingestTracks(kept);
-      toast(`Queued ${res.count} for download → stems → analyze`);
+      toast(`Auto-processing ${res.count} track${res.count === 1 ? "" : "s"}: download → stems → analyze → structure`);
       if (onIngested) onIngested();
     } catch (err) {
       setError(err.message);

@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from api import queue_runner
 from database.models import upsert_song
 from ingest.soundcloud import enrich_track, fetch_playlist_flat, fetch_single
 
@@ -85,8 +86,17 @@ def ingest(req: IngestRequest) -> dict:
         )
         inserted_ids.append(sid)
 
+    # Auto-process: queue every saved track through the full
+    # download → stems → analyse → structure pipeline. This is what makes the
+    # importer's "auto-process" promise real. The bounded queue (config
+    # PIPELINE_WORKERS) caps concurrency so a big playlist doesn't thrash the box.
+    job_ids: dict[int, str] = {}
+    for sid in inserted_ids:
+        job_ids[sid] = queue_runner.enqueue_song(sid)
+
     return {
         "inserted_ids": inserted_ids,
         "count": len(inserted_ids),
         "partial_count": partial_count,
+        "job_ids": job_ids,
     }
