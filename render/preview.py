@@ -128,11 +128,15 @@ def build_mashup_export(vocal_song_id: int, inst_song_id: int, anchor: str,
                         stretch: float, shift: int,
                         vocal_offset: float, inst_offset: float,
                         db_path=None, on_progress: ProgressCb = None,
-                        force: bool = True) -> Optional[Path]:
+                        force: bool = True,
+                        vocal_gain: float = 0.95, inst_gain: float = 0.8) -> Optional[Path]:
     """Render the full mashup exactly as aligned in the Audition Studio:
     the anchor stem is time-stretched (×stretch) and pitch-shifted (shift st)
     with the two effects decoupled, then both stems are laid on one timeline at
     their drag offsets (in display-seconds) and mixed.
+
+    vocal_gain / inst_gain are the per-voice linear levels from the Studio's mix
+    bus, so the exported WAV matches what the producer heard live (mute = 0).
 
     This is the non-destructive boundary: the source stems are never modified;
     only this mixed WAV is written, and only when the user clicks Export."""
@@ -205,12 +209,14 @@ def build_mashup_export(vocal_song_id: int, inst_song_id: int, anchor: str,
         return None
 
     mix = np.zeros(total, dtype="float32")
+    v_gain = max(0.0, float(vocal_gain))
+    i_gain = max(0.0, float(inst_gain))
     v_end = min(total, v_at + len(v_y))
     if v_at < total and v_end > v_at:
-        mix[v_at:v_end] += v_y[: v_end - v_at] * 0.95
+        mix[v_at:v_end] += v_y[: v_end - v_at] * v_gain
     i_end = min(total, i_at + len(i_y))
     if i_at < total and i_end > i_at:
-        mix[i_at:i_end] += i_y[: i_end - i_at] * 0.8
+        mix[i_at:i_end] += i_y[: i_end - i_at] * i_gain
 
     peak = float(np.max(np.abs(mix))) or 1.0
     if peak > 1.0:

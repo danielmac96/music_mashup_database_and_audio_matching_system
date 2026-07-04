@@ -10,6 +10,19 @@ const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "
 const GENRES = ["All", "Pop", "Hip Hop", "Rap", "EDM"];
 const SORTS = ["Popularity", "BPM", "Title", "Energy"];
 
+// Auto-chain pipeline stage → the "kind" the PipelineDots component lights up.
+const STAGE_KIND = {
+  download: "download", stems: "separate",
+  analyze: "analyze", structure: "structure",
+};
+const JOB_ACTIVE = new Set(["queued", "running"]);
+
+// A detected tempo outside this range is very often a half/double-time octave
+// error — the single most common way auto-analysis silently poisons matches.
+// (bpm_confidence from librosa is a beats/frame density, not a 0-1 quality, so
+// an out-of-range BPM is the honest signal to flag for a manual sanity-check.)
+const bpmLooksOff = (f) => f?.bpm != null && (f.bpm < 80 || f.bpm > 170);
+
 function FeatureEditor({ track, onSaved, onCancel }) {
   const feats = track.features?.full || {};
   const [bpm, setBpm] = useState(feats.bpm != null ? String(feats.bpm) : "");
@@ -75,6 +88,32 @@ function PipelineDots({ track, runningKind }) {
   );
 }
 
+const STAGE_LABEL = {
+  download: "Downloading", stems: "Separating stems",
+  analyze: "Analysing", structure: "Detecting structure",
+};
+
+// Live progress for a track being auto-processed by the pipeline queue.
+function PipelineProgress({ job }) {
+  const running = job.status === "running";
+  const pct = Math.max(0, Math.min(100, Number(job.progress) || 0));
+  const label = running ? (STAGE_LABEL[job.stage] || "Processing") : "Queued";
+  return (
+    <div className="pipe-progress">
+      <div className="row" style={{ justifyContent: "space-between", fontSize: 12 }}>
+        <span>{label}{running ? "…" : ""}</span>
+        {running && <span className="mono faint">{pct}%</span>}
+      </div>
+      <div className="progress-bar" aria-label={`progress ${pct}%`}>
+        <div className="fill" style={{ width: `${running ? pct : 0}%` }} />
+      </div>
+      {job.message && (
+        <div className="muted" style={{ fontSize: 11, marginTop: 3 }}>{job.message}</div>
+      )}
+    </div>
+  );
+}
+
 function StatusTag({ status }) {
   const m = statusMeta(status);
   return (
@@ -98,7 +137,8 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
   const [tracks, setTracks] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [jobs, setJobs] = useState({}); // trackId -> { kind, jobId }
+  const [jobs, setJobs] = useState({}); // trackId -> { kind, jobId }  (manual single-stage)
+  const [pipeJobs, setPipeJobs] = useState([]); // live auto-chain pipeline jobs
   const [editing, setEditing] = useState(null);
 
   // filters
@@ -112,8 +152,8 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
   const audioRef = useRef(null);
   const [playingId, setPlayingId] = useState(null);
 
-  const refresh = async () => {
-    setLoading(true);
+  const refresh = async (silent = false) => {
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const data = await api.getTracks();
@@ -121,11 +161,38 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
     } catch (e) {
       setError(e.message);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   };
 
   useEffect(() => { refresh(); }, [refreshKey]);
+
+  // Poll the auto-chain pipeline jobs so imported tracks show live DL→Stems→
+  // Analyse→Structure progress without the user clicking anything. While work
+  // is active we also silently re-pull the track list so statuses/dots advance.
+  const prevActiveRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+    const poll = async () => {
+      try {
+        const { jobs: pj } = await api.getJobs({ kind: "pipeline" });
+        if (cancelled) return;
+        setPipeJobs(pj);
+        const anyActive = pj.some((j) => JOB_ACTIVE.has(j.status));
+        // Refresh while work runs, and once more on the falling edge so the
+        // final 'analysed' state / dots land after the last job completes.
+        if (anyActive || prevActiveRef.current) await refresh(true);
+        prevActiveRef.current = anyActive;
+        timer = setTimeout(poll, anyActive ? 1500 : 5000);
+      } catch {
+        if (!cancelled) timer = setTimeout(poll, 5000);
+      }
+    };
+    poll();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
 
   useEffect(() => () => { audioRef.current?.pause(); }, []);
 
@@ -183,35 +250,86 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
 
   const readyCount = useMemo(() => tracks.filter(isAnalysed).length, [tracks]);
 
+  // Most-recent pipeline job per song (pipeJobs is newest-first) + batch tally.
+  const pipeBySong = useMemo(() => {
+    const m = {};
+    for (const j of pipeJobs) {
+      if (j.song_id != null && !(j.song_id in m)) m[j.song_id] = j;
+    }
+    return m;
+  }, [pipeJobs]);
+
+  const batch = useMemo(() => {
+    const active = pipeJobs.filter((j) => JOB_ACTIVE.has(j.status));
+    return {
+      active: active.length,
+      running: active.filter((j) => j.status === "running").length,
+      queued: active.filter((j) => j.status === "queued").length,
+    };
+  }, [pipeJobs]);
+
   useEffect(() => {
-    onStatus?.({ text: `${filtered.length} of ${tracks.length} tracks · ${readyCount} ready` });
-  }, [filtered.length, tracks.length, readyCount, onStatus]);
+    if (batch.active > 0) {
+      onStatus?.({
+        locked: true,
+        text: `Processing ${batch.active} track${batch.active === 1 ? "" : "s"} · ${batch.running} running · ${batch.queued} queued`,
+      });
+    } else {
+      onStatus?.({ text: `${filtered.length} of ${tracks.length} tracks · ${readyCount} ready` });
+    }
+  }, [batch, filtered.length, tracks.length, readyCount, onStatus]);
 
   const cycle = (arr, cur, setter) => setter(arr[(arr.indexOf(cur) + 1) % arr.length]);
 
   // ── run-step availability (preserves existing pipeline gating) ─────────
   const gating = (t) => {
     const job = jobs[t.id];
+    const pipe = pipeBySong[t.id];
+    const pipelining = !!pipe && JOB_ACTIVE.has(pipe.status);
     const analysed = isAnalysed(t);
     const hasStructure = (t.section_count || 0) > 0;
+    const busy = !!job || pipelining;
     return {
-      job,
-      canDownload: !job && (t.status === "queued" || t.status?.startsWith("error")),
-      canSeparate: !job && t.stems.full && (!t.stems.vocals || !t.stems.instrumental),
+      job, pipe, pipelining,
+      canDownload: !busy && (t.status === "queued" || t.status?.startsWith("error")),
+      canSeparate: !busy && t.stems.full && (!t.stems.vocals || !t.stems.instrumental),
       // Already-analysed / already-structured tracks stay disabled — the data is
       // in the DB, so re-running is just wasted work (re-run via Edit if needed).
-      canAnalyze: !job && t.stems.full && !analysed,
-      canStructure: !job && t.stems.full && !hasStructure,
+      canAnalyze: !busy && t.stems.full && !analysed,
+      canStructure: !busy && t.stems.full && !hasStructure,
+      canRetry: !busy && !!t.status?.startsWith("error"),
+      // A downloaded track still ~30s long is likely a SoundCloud Go+ preview.
+      canReverify: !busy && t.stems.full && t.duration_secs > 0 && t.duration_secs <= 40,
       analysed,
       hasStructure,
     };
   };
 
+  const retryTrack = async (id) => {
+    try {
+      await api.processTrack(id);
+      toast("Re-processing from the failed stage…");
+      refresh(true);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const RunActions = ({ t }) => {
     const g = gating(t);
+    if (g.pipelining) return <PipelineProgress job={g.pipe} />;
     if (g.job) return <JobBadge jobId={g.job.jobId} onComplete={() => onJobDone(t.id)} />;
     return (
       <div className="mini-actions">
+        {g.canRetry && t.last_error && (
+          <div className="track-error" style={{ flexBasis: "100%" }} title={t.last_error}>
+            ⚠ {t.last_error}
+          </div>
+        )}
+        {g.canRetry && (
+          <button className="mini-btn" title="Re-run the pipeline from where it failed"
+            onClick={() => retryTrack(t.id)}>↻ Retry</button>
+        )}
         <button className="mini-btn" disabled={!g.canDownload}
           onClick={() => startJob(t.id, "download", api.startDownload)}>Download</button>
         <button className="mini-btn" disabled={!g.canSeparate}
@@ -222,6 +340,10 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
         <button className="mini-btn" disabled={!g.canStructure}
           title={g.hasStructure ? "Structure already detected" : !t.stems.full ? "Download first" : "Detect intro/verse/chorus/drop"}
           onClick={() => startJob(t.id, "structure", api.startStructure)}>Structure</button>
+        {g.canReverify && (
+          <button className="mini-btn" title="Looks like a 30s preview — re-download the full track"
+            onClick={() => startJob(t.id, "reverify", api.reverifyTrack)}>⟳ Fix preview</button>
+        )}
         <button className="mini-btn" disabled={!g.analysed}
           title={g.analysed ? "Find scored beds for this vocal" : "Analyze first"}
           onClick={() => onFindMatches?.(t.id, "vocal")}>Find beds</button>
@@ -297,6 +419,12 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
 
                 <div className="metrics-row">
                   <div className="bpm-chip"><span className="u">BPM </span>{f.bpm != null ? f.bpm.toFixed(1) : "—"}</div>
+                  {bpmLooksOff(f) && (
+                    <span className="bpm-warn"
+                      title={`Unusual tempo (${f.bpm.toFixed(1)} BPM) — often a half/double-time detection error. Verify with Edit; a wrong BPM skews every match.`}>
+                      ⚠
+                    </span>
+                  )}
                   <div className="key-chip" style={{ background: camelotColor(f.camelot) }}>
                     {f.camelot || "—"}
                   </div>
@@ -307,7 +435,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                 </div>
 
                 <div className="pipeline" style={{ justifyContent: "space-between" }}>
-                  <PipelineDots track={t} runningKind={g.job?.kind} />
+                  <PipelineDots track={t} runningKind={g.job?.kind || (g.pipelining ? STAGE_KIND[g.pipe?.stage] : undefined)} />
                   <span className="faint">{metaLine(t)}</span>
                 </div>
 

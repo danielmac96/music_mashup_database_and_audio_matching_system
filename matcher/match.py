@@ -204,22 +204,34 @@ def _with_full_bpm(feat: dict, full_by_song: Dict[int, dict]) -> dict:
     return out
 
 
-def score_all_pairs(db_path=None) -> dict:
+def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
+                    key_min_score: Optional[float] = None) -> dict:
     """
     Score every unique cross-song pair that passes the BPM + key filter.
     Handles two combo types:
       - vocal_over_instrumental
       - instrumental_over_instrumental
 
+    bpm_max_diff / key_min_score override the config defaults (BPM_MAX_DIFF /
+    KEY_MIN_SCORE) so the Mashups UI can widen or narrow the candidate set.
+
+    The candidates table is cleared first so the result reflects exactly the
+    current features and thresholds — no stale pairs from a looser prior run.
+
     Returns { 'vocal_over_instrumental': [...], 'instrumental_over_instrumental': [...] }
     Each list is sorted by total score descending.
     """
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from database.models import get_all_features, upsert_candidate, DB_PATH
+    from database.models import (
+        clear_candidates, get_all_features, upsert_candidate, DB_PATH,
+    )
     from config import BPM_MAX_DIFF, KEY_MIN_SCORE
 
     db = db_path or DB_PATH
+    bpm_max = float(bpm_max_diff) if bpm_max_diff is not None else BPM_MAX_DIFF
+    key_min = float(key_min_score) if key_min_score is not None else KEY_MIN_SCORE
+    clear_candidates(db_path=db)
 
     vocals      = get_all_features(stem_type="vocals",        db_path=db)
     inst        = get_all_features(stem_type="instrumental",  db_path=db)
@@ -246,7 +258,7 @@ def score_all_pairs(db_path=None) -> dict:
         for i in inst:
             if v["song_id"] == i["song_id"]:
                 continue
-            if not _passes_filter(v, i, BPM_MAX_DIFF, KEY_MIN_SCORE):
+            if not _passes_filter(v, i, bpm_max, key_min):
                 skipped += 1
                 continue
 
@@ -264,7 +276,7 @@ def score_all_pairs(db_path=None) -> dict:
             # Avoid duplicate A/B + B/A pairs — only score lower id over higher
             if i_a["song_id"] >= i_b["song_id"]:
                 continue
-            if not _passes_filter(i_a, i_b, BPM_MAX_DIFF, KEY_MIN_SCORE):
+            if not _passes_filter(i_a, i_b, bpm_max, key_min):
                 skipped += 1
                 continue
 
@@ -279,7 +291,8 @@ def score_all_pairs(db_path=None) -> dict:
     for key in results:
         results[key].sort(key=lambda x: x["total"], reverse=True)
 
-    log.info(f"  Pairs scored: {scored}  |  Skipped (BPM/key filter): {skipped}")
+    log.info(f"  Pairs scored: {scored}  |  Skipped (BPM/key filter): {skipped}  "
+             f"|  filter: bpm_max_diff={bpm_max} key_min_score={key_min}")
     return results
 
 

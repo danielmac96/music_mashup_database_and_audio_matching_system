@@ -112,6 +112,46 @@ def download_track(song_id: int, title: str, source_url: str,
     return None
 
 
+class ReverifyResult(NamedTuple):
+    """reverify_track return value.
+    path/duration_secs: the current (possibly freshly re-downloaded) full file.
+    replaced: True when a stale <=35s preview was swapped for a full-length file,
+              so callers should re-run stems/analysis on the new audio."""
+    path: Optional[Path]
+    duration_secs: Optional[float]
+    replaced: bool
+
+
+def reverify_track(song_id: int, title: str, source_url: str,
+                   artist: str = "",
+                   on_progress: ProgressCb = None) -> ReverifyResult:
+    """Re-check a previously-downloaded track (WORKFLOW_AUDIT ISSUE-1).
+
+    If the file on disk is already full-length, just report its true duration so
+    a stale DB `duration_secs` (e.g. a 30s value seeded from a SoundCloud Go+
+    preview during ingest) can be corrected. If the file is missing or still a
+    ~30s preview, re-run the normal download — which unlinks the preview and
+    fires the YouTube full-track fallback — and flag the swap via `replaced`."""
+    out_path = RAW_DIR / f"{_safe(title)}_{_safe(artist)}.mp3"
+    disk_dur = _get_duration(out_path) if out_path.exists() else None
+
+    if disk_dur and disk_dur > PREVIEW_MAX_SECS:
+        # Full file already present — no re-download, just surface true duration.
+        return ReverifyResult(out_path, disk_dur, replaced=False)
+
+    was_preview = disk_dur is not None and disk_dur <= PREVIEW_MAX_SECS
+    result = download_track(song_id, title, source_url, artist=artist,
+                            on_progress=on_progress)
+    if not result or not result.path.exists():
+        return ReverifyResult(None, None, replaced=False)
+
+    new_dur = result.duration_secs
+    if new_dur is None:
+        new_dur = _get_duration(result.path)
+    replaced = bool(new_dur and new_dur > PREVIEW_MAX_SECS) and (was_preview or disk_dur is None)
+    return ReverifyResult(result.path, new_dur, replaced=replaced)
+
+
 # ── yt-dlp download ───────────────────────────────────────────────────────────
 
 

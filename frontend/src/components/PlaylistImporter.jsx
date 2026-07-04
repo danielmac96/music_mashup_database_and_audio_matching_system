@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { artGradient } from "../theme";
 import { toast } from "../toast";
@@ -12,8 +12,14 @@ export function PlaylistImporter({ onIngested }) {
   const [previewing, setPreviewing] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
+  const [deps, setDeps] = useState(null); // { ok, missing[], deps[] }
 
   const isPlaylist = PLAYLIST_RE.test(url);
+
+  // One-time dependency check so a missing ffmpeg/demucs is visible before a run.
+  useEffect(() => {
+    api.getDeps().then(setDeps).catch(() => setDeps(null));
+  }, []);
 
   const keptCount = useMemo(
     () => tracks.filter((_, i) => selected[i] !== false).length,
@@ -57,7 +63,7 @@ export function PlaylistImporter({ onIngested }) {
     try {
       const kept = tracks.filter((_, i) => selected[i] !== false);
       const res = await api.ingestTracks(kept);
-      toast(`Queued ${res.count} for download → stems → analyze`);
+      toast(`Auto-processing ${res.count} track${res.count === 1 ? "" : "s"}: download → stems → analyze → structure`);
       if (onIngested) onIngested();
     } catch (err) {
       setError(err.message);
@@ -72,9 +78,16 @@ export function PlaylistImporter({ onIngested }) {
         <h1>Import from SoundCloud</h1>
         <div className="hint" style={{ marginTop: 5 }}>
           Paste a track or playlist link — we auto-detect which. Preview first, then
-          choose what to keep.
+          choose what to keep. Saved tracks auto-process: download → stems → analyze → structure.
         </div>
       </div>
+
+      {deps && !deps.ok && (
+        <div className="dep-warn" title={deps.deps.filter((d) => !d.ok).map((d) => `${d.name}: ${d.detail}`).join("\n")}>
+          ⚠ Missing on the server: <b>{deps.missing.join(", ")}</b>. Processing will fail
+          until these are installed (see readme “First run”).
+        </div>
+      )}
 
       <div className="import-input-row">
         <div className="import-input">

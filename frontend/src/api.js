@@ -43,6 +43,23 @@ export const api = {
   startStructure: (id) =>
     jsonFetch(`/api/tracks/${id}/structure`, { method: "POST" }),
 
+  // Run (or resume/retry) the full auto-chain pipeline for one track.
+  processTrack: (id) =>
+    jsonFetch(`/api/tracks/${id}/process`, { method: "POST" }),
+
+  // Re-check a track for a stale ~30s Go+ preview and re-download full if needed.
+  reverifyTrack: (id) =>
+    jsonFetch(`/api/tracks/${id}/reverify`, { method: "POST" }),
+
+  // All pipeline jobs (newest first) — drives live per-track progress + the
+  // Library batch banner. activeOnly drops finished jobs.
+  getJobs: ({ kind = "pipeline", activeOnly = false } = {}) => {
+    const params = new URLSearchParams();
+    if (kind) params.set("kind", kind);
+    if (activeOnly) params.set("active_only", "true");
+    return jsonFetch(`/api/jobs?${params}`);
+  },
+
   correctFeatures: (id, { bpm, key, mode } = {}) =>
     jsonFetch(`/api/tracks/${id}/features`, {
       method: "PATCH",
@@ -51,13 +68,22 @@ export const api = {
 
   getJob: (jobId) => jsonFetch(`/api/jobs/${jobId}`),
 
+  // Whether ffmpeg/ffprobe/yt-dlp/demucs/librosa are available on the server.
+  getDeps: () => jsonFetch("/api/health/deps"),
+
   audioUrl: (id, stemType) => `/api/tracks/${id}/audio/${stemType}`,
 
   getSections: (id) => jsonFetch(`/api/tracks/${id}/sections`),
 
   getWaveform: (id, stem) => jsonFetch(`/api/tracks/${id}/waveform?stem=${stem}`),
 
-  startScoring: () => jsonFetch("/api/mashups/score", { method: "POST" }),
+  startScoring: ({ bpmMaxDiff = null, keyMinScore = null } = {}) => {
+    const params = new URLSearchParams();
+    if (bpmMaxDiff != null) params.set("bpm_max_diff", String(bpmMaxDiff));
+    if (keyMinScore != null) params.set("key_min_score", String(keyMinScore));
+    const qs = params.toString();
+    return jsonFetch(`/api/mashups/score${qs ? `?${qs}` : ""}`, { method: "POST" });
+  },
 
   getMashups: ({
     comboType = "",
@@ -98,12 +124,15 @@ export const api = {
   adjustedAudioUrl: (vocalId, instId, anchor) =>
     `/api/mashups/adjust/audio?vocal_id=${vocalId}&inst_id=${instId}&anchor=${anchor}`,
 
-  startExport: (vocalId, instId, anchor, stretch, shift, vocalOffset, instOffset) => {
+  startExport: (vocalId, instId, anchor, stretch, shift, vocalOffset, instOffset,
+                vocalGain = null, instGain = null) => {
     const params = new URLSearchParams({ vocal_id: vocalId, inst_id: instId, anchor });
     if (stretch != null) params.set("stretch", String(stretch));
     if (shift != null) params.set("shift", String(shift));
     if (vocalOffset != null) params.set("vocal_offset", vocalOffset.toFixed(3));
     if (instOffset != null) params.set("inst_offset", instOffset.toFixed(3));
+    if (vocalGain != null) params.set("vocal_gain", vocalGain.toFixed(3));
+    if (instGain != null) params.set("inst_gain", instGain.toFixed(3));
     return jsonFetch(`/api/mashups/export?${params}`, { method: "POST" });
   },
 

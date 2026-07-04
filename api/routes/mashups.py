@@ -20,10 +20,19 @@ _COMBO_TYPES = {"vocal_over_instrumental", "instrumental_over_instrumental"}
 
 
 @router.post("/score")
-def queue_score(background: BackgroundTasks) -> dict:
-    """Score every qualifying pair in the library into mashup_candidates."""
+def queue_score(background: BackgroundTasks,
+                bpm_max_diff: Optional[float] = None,
+                key_min_score: Optional[float] = None) -> dict:
+    """Score every qualifying pair in the library into mashup_candidates.
+
+    bpm_max_diff / key_min_score override the config pre-filter thresholds so the
+    user can widen (more candidates) or narrow (only tight matches) the set."""
+    if bpm_max_diff is not None and not (0 < bpm_max_diff <= 60):
+        raise HTTPException(status_code=400, detail="bpm_max_diff must be in (0, 60]")
+    if key_min_score is not None and not (0 <= key_min_score <= 1):
+        raise HTTPException(status_code=400, detail="key_min_score must be in [0, 1]")
     job_id = jobs.new_job(kind="match", message="Queued for pair scoring")
-    background.add_task(match_worker.run, job_id)
+    background.add_task(match_worker.run, job_id, bpm_max_diff, key_min_score)
     return {"job_id": job_id}
 
 
@@ -108,16 +117,19 @@ def queue_adjust(vocal_id: int, inst_id: int, anchor: str,
 def queue_export(vocal_id: int, inst_id: int, anchor: str,
                  background: BackgroundTasks,
                  stretch: float = 1.0, shift: int = 0,
-                 vocal_offset: float = 0.0, inst_offset: float = 0.0) -> dict:
+                 vocal_offset: float = 0.0, inst_offset: float = 0.0,
+                 vocal_gain: float = 0.95, inst_gain: float = 0.8) -> dict:
     """Render the full Audition Studio mashup to a WAV: anchor stem stretched +
-    pitched (decoupled), both stems laid out at their drag offsets, then mixed.
-    This is the only step that writes audio — source stems stay untouched."""
+    pitched (decoupled), both stems laid out at their drag offsets, mixed at the
+    live mix-bus levels (vocal_gain/inst_gain). This is the only step that writes
+    audio — source stems stay untouched."""
     if anchor not in ("vocal", "instrumental"):
         raise HTTPException(status_code=400,
                             detail="anchor must be 'vocal' or 'instrumental'")
     job_id = jobs.new_job(kind="export", message="Queued for mashup export")
     background.add_task(export_worker.run, job_id, vocal_id, inst_id, anchor,
-                        stretch, shift, vocal_offset, inst_offset)
+                        stretch, shift, vocal_offset, inst_offset,
+                        vocal_gain, inst_gain)
     return {"job_id": job_id}
 
 

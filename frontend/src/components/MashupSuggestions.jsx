@@ -8,6 +8,16 @@ import { toast } from "../toast";
 
 const MIN_MATCHES = [50, 65, 75, 85];
 
+// Pre-filter width presets passed to "Score library" (bpm = max BPM diff,
+// key = min Camelot score). Tight = only clean matches; Wide = more candidates.
+const MATCH_PRESETS = [
+  { label: "Tight", bpm: 6, key: 0.75 },
+  { label: "Balanced", bpm: 10, key: 0.55 },
+  { label: "Wide", bpm: 16, key: 0.4 },
+];
+const SORTS = ["Score", "Popularity"];
+const popOf = (c) => (c.vocal_popularity || 0) + (c.inst_popularity || 0);
+
 function PlanDetails({ vocalId, instId }) {
   const [plan, setPlan] = useState(null);
   const [error, setError] = useState(null);
@@ -62,6 +72,8 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
   const [candidates, setCandidates] = useState([]);
   const [comboType, setComboType] = useState("vocal_over_instrumental");
   const [minMatch, setMinMatch] = useState(50);
+  const [presetIdx, setPresetIdx] = useState(1); // Balanced
+  const [sortMode, setSortMode] = useState("Score");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [scoreJobId, setScoreJobId] = useState(null);
@@ -103,13 +115,21 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
 
   const startScoring = async () => {
     try {
-      const { job_id } = await api.startScoring();
+      const p = MATCH_PRESETS[presetIdx];
+      const { job_id } = await api.startScoring({ bpmMaxDiff: p.bpm, keyMinScore: p.key });
       setScoreJobId(job_id);
-      toast("Scoring library…");
+      toast(`Scoring library (${p.label} match)…`);
     } catch (e) {
       setError(e.message);
     }
   };
+
+  const sortedCandidates = useMemo(() => {
+    if (sortMode === "Popularity") {
+      return [...candidates].sort((a, b) => popOf(b) - popOf(a));
+    }
+    return candidates; // server already returns score-descending
+  }, [candidates, sortMode]);
 
   const switchType = (type) => { setComboType(type); setExpanded(null); refresh(type, seed, minMatch); };
   const cycleMin = () => {
@@ -137,6 +157,13 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
         <div className="chip" onClick={cycleMin}>
           <span className="k">Min match</span><span className="mono">{minMatch}%</span><span className="caret">▾</span>
         </div>
+        <div className="chip" onClick={() => setPresetIdx((presetIdx + 1) % MATCH_PRESETS.length)}
+          title="Pre-filter width used by 'Score library' — re-score to apply">
+          <span className="k">Match width</span><span>{MATCH_PRESETS[presetIdx].label}</span><span className="caret">▾</span>
+        </div>
+        <div className="chip" onClick={() => setSortMode(SORTS[(SORTS.indexOf(sortMode) + 1) % SORTS.length])}>
+          <span className="k">Sort</span><span>{sortMode}</span><span className="caret">▾</span>
+        </div>
         {seedTitle && (
           <div className="chip seed">
             Seeded: <b>{seedTitle}</b> as {seed.role === "instrumental" ? "bed" : "vocal"}
@@ -162,7 +189,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
 
       {error && <div className="error-text" style={{ marginBottom: 10 }}>{error}</div>}
 
-      {candidates.length === 0 && !loading ? (
+      {sortedCandidates.length === 0 && !loading ? (
         <p className="empty">
           {minMatch > MIN_MATCHES[0]
             ? `No pairs score ${minMatch}% or better — click "Min match" to lower the bar, or re-score after analyzing more tracks.`
@@ -170,7 +197,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
         </p>
       ) : (
         <div className="pair-list">
-          {candidates.map((c, i) => {
+          {sortedCandidates.map((c, i) => {
             const total = Math.round((c.score_total || 0) * 100);
             const { tier, color, textColor } = tierFor(total);
             const kr = keyRel(c.vocal_camelot, c.inst_camelot);
@@ -185,7 +212,14 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
                     <div style={{ minWidth: 0 }}>
                       <div className="pair-role vocal">{isVI ? "VOCAL (TOP)" : "INSTR (TOP)"}</div>
                       <div className="pair-title" title={c.vocal_title}>{c.vocal_title}</div>
-                      <div className="pair-meta">{c.vocal_artist || "—"} · {c.vocal_bpm?.toFixed(1)} · {c.vocal_camelot || "?"}</div>
+                      <div className="pair-meta">
+                        {c.vocal_artist || "—"} · {c.vocal_bpm?.toFixed(1)} · {c.vocal_camelot || "?"}
+                        {c.vocal_popularity != null && (
+                          <span className="pop" title="Popularity percentile in your library">
+                            {" · ★"}{Math.round(c.vocal_popularity * 100)}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                   <div className="score-cluster">
@@ -208,7 +242,14 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
                     <div style={{ minWidth: 0 }}>
                       <div className="pair-role bed">BED (INST)</div>
                       <div className="pair-title" title={c.inst_title}>{c.inst_title}</div>
-                      <div className="pair-meta">{c.inst_artist || "—"} · {c.inst_bpm?.toFixed(1)} · {c.inst_camelot || "?"}</div>
+                      <div className="pair-meta">
+                        {c.inst_artist || "—"} · {c.inst_bpm?.toFixed(1)} · {c.inst_camelot || "?"}
+                        {c.inst_popularity != null && (
+                          <span className="pop" title="Popularity percentile in your library">
+                            {" · ★"}{Math.round(c.inst_popularity * 100)}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="pair-art" style={{ background: artGradient(c.inst_song_id + 3) }}>♪</div>
                   </div>

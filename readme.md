@@ -16,6 +16,48 @@ SoundCloud playlist
 
 ---
 
+## First run (web app)
+
+The web app is the primary way to use the engine: paste a SoundCloud link and
+every track **auto-processes** through download → stems → analyze → structure on
+its own — no per-track clicking.
+
+**Prerequisites**
+
+```bash
+# 1. ffmpeg + ffprobe on PATH (audio extraction + duration checks)
+#    macOS: brew install ffmpeg   ·   Debian/Ubuntu: sudo apt install ffmpeg
+
+# 2. Python deps (Demucs pulls a ~400MB model on first stem separation)
+pip install -r requirements.txt
+
+# 3. Frontend deps
+cd frontend && npm install && cd ..
+```
+
+The Import tab shows a warning banner if ffmpeg/yt-dlp/demucs/librosa are missing
+on the server, so you find out before starting a big import.
+
+**Run the two servers**
+
+```bash
+# Terminal 1 — API (http://localhost:8000)
+uvicorn api.server:app --reload
+
+# Terminal 2 — web UI (http://localhost:5173)
+cd frontend && npm run dev
+```
+
+Then open http://localhost:5173 → **Import** tab → paste a SoundCloud playlist or
+track link → **Preview** → **Save to library**. Switch to **Library** and watch
+each track walk the pipeline live (per-track progress + an overall batch banner).
+Processing is bounded (`MASHUP_PIPELINE_WORKERS`, default 1) so a big playlist
+won't thrash the machine, and it **resumes** unfinished tracks if you restart the
+server mid-import. A failed track shows the reason and a one-click **Retry**;
+suspected 30s Go+ previews get a **Fix preview** action.
+
+---
+
 ## MVP: one-command pipeline
 
 Install once:
@@ -176,7 +218,13 @@ The **Mashups** tab in the web app drives the suggestion workflow:
 
 - **Score library** — scores every qualifying vocal+instrumental and
   instrumental+instrumental pair (BPM/key pre-filter, then the weighted
-  composite score) into `mashup_candidates`.
+  composite score) into `mashup_candidates`. The **Match width** control
+  (Tight / Balanced / Wide) tunes the pre-filter thresholds before scoring, and
+  **Sort** flips the ranked list between best-score and library popularity. A
+  full re-score is deterministic — the candidates table is cleared first, so no
+  stale pairs survive a tighter filter. Tracks with an out-of-range tempo get a
+  ⚠ in the Library so you can fix a half/double-time error (via **Edit**) before
+  it skews every match.
 - The ranked table shows the score breakdown plus genre, release year, and a
   0–1 popularity percentile (plays + 2×likes rank within your library) for
   both sides of each pair.
@@ -184,6 +232,12 @@ The **Mashups** tab in the web app drives the suggestion workflow:
   instrumental stretch factor (halftime/doubletime aware), the semitone shift
   to align keys, and which vocal chorus/verse to lay over which instrumental
   drop/chorus — with timestamps and duration fit after stretching.
+- **Audition** opens the pair in the real-time Studio. **✨ Good start**
+  one-clicks a playable mashup — matches tempo, applies the suggested pitch, and
+  aligns the best vocal/bed section pair under the playhead — then you tweak by
+  ear. Out-of-range tempos are flagged so you nudge rather than trust them.
+  **Export mashup WAV** renders exactly what you hear, including the live
+  mix-bus levels (vocal/bed faders, mutes, crossfade).
 
 API endpoints: `POST /api/mashups/score`, `GET /api/mashups`,
 `GET /api/mashups/plan?vocal_id=&inst_id=`, `GET /api/tracks/{id}/sections`.

@@ -300,6 +300,52 @@ def run_analysis() -> dict:
     return results
 
 
+def run_reverify() -> dict:
+    """Re-check every already-downloaded track for stale ~30s SoundCloud Go+
+    previews (WORKFLOW_AUDIT ISSUE-1). Refreshes DB duration from the real file,
+    and when a preview is swapped for a full-length track, resets that song to
+    'downloaded' so a following stems/analysis run reprocesses the new audio."""
+    from downloader.download import reverify_track
+
+    _stage_header(0, "Re-verify cached downloads")
+    songs = get_all_songs()
+    counters = {"checked": 0, "duration refreshed": 0,
+                "replaced (full re-download)": 0, "error": 0}
+
+    for idx, song in enumerate(songs, 1):
+        sid = song["id"]
+        if song["status"] in ("queued", "error_download"):
+            continue  # nothing downloaded yet — normal download stage handles it
+        counters["checked"] += 1
+        _track_header(idx, len(songs), song, "Re-verifying")
+        try:
+            res = reverify_track(sid, song["title"], song["source_url"],
+                                 artist=song.get("artist") or "")
+        except Exception:
+            log.warning(f"         Exception during re-verify:\n{traceback.format_exc()}")
+            counters["error"] += 1
+            continue
+
+        if not res.path:
+            _track_note("No full-length version available")
+            counters["error"] += 1
+            continue
+
+        if res.duration_secs:
+            update_song_duration(sid, res.duration_secs)
+            counters["duration refreshed"] += 1
+        if res.replaced:
+            update_song_status(sid, "downloaded")
+            counters["replaced (full re-download)"] += 1
+            _track_note(f"Preview replaced with full track "
+                        f"({_fmt_secs(res.duration_secs)}) — reset to re-stem/analyse")
+        else:
+            _track_note(f"OK ({_fmt_secs(res.duration_secs)})")
+
+    _stage_summary(0, counters)
+    return counters
+
+
 def run_match(seed_song_id: int = 1,
               seed_stem: str = "vocals",
               candidate_stem: str = "instrumental") -> dict:
