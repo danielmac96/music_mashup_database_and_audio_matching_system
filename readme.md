@@ -43,6 +43,7 @@ on the server, so you find out before starting a big import.
 
 ```bash
 # Terminal 1 — API (http://localhost:8000)
+.\.venv\Scripts\Activate.ps1                                                                                                                                                                                                      
 uvicorn api.server:app --reload
 
 # Terminal 2 — web UI (http://localhost:5173)
