@@ -1,9 +1,6 @@
 // theme.js — shared visual + music-theory helpers for the Mashup Engine UI.
 // Everything here is pure (no React) so components can import freely.
 
-// Dev-annotation flag; keep false so design notes don't render in the app.
-export const SHOW_NOTES = false;
-
 /* ── formatting ──────────────────────────────────────────────────────────── */
 
 export function fmtTime(secs) {
@@ -15,10 +12,6 @@ export function fmtTime(secs) {
 export function fmtDur(secs) {
   if (secs == null || !Number.isFinite(secs) || secs <= 0) return "—";
   return fmtTime(secs);
-}
-
-export function pct(x) {
-  return `${Math.round((x || 0) * 100)}%`;
 }
 
 /* ── artwork placeholder ─────────────────────────────────────────────────── */

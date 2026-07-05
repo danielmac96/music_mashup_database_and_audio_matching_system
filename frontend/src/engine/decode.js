@@ -19,7 +19,3 @@ export function decodeStem(ctx, url) {
   cache.set(url, p);
   return p;
 }
-
-export function clearDecodeCache() {
-  cache.clear();
-}

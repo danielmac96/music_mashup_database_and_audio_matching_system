@@ -38,7 +38,8 @@ cd frontend && npm install && cd ..
 The Import tab shows a warning banner if ffmpeg/yt-dlp/demucs/librosa are missing
 on the server, so you find out before starting a big import.
 
-**Run the two servers**
+**Run the two servers** (both must be running — the frontend proxies every
+`/api/*` call to the backend on port `8000`)
 
 ```bash
 # Terminal 1 — API (http://localhost:8000)
@@ -48,6 +49,9 @@ uvicorn api.server:app --reload
 cd frontend && npm run dev
 ```
 
+Verify the backend is up: open http://localhost:8000/api/health — you should
+see `{"ok": true}`.
+
 Then open http://localhost:5173 → **Import** tab → paste a SoundCloud playlist or
 track link → **Preview** → **Save to library**. Switch to **Library** and watch
 each track walk the pipeline live (per-track progress + an overall batch banner).
@@ -55,6 +59,16 @@ Processing is bounded (`MASHUP_PIPELINE_WORKERS`, default 1) so a big playlist
 won't thrash the machine, and it **resumes** unfinished tracks if you restart the
 server mid-import. A failed track shows the reason and a one-click **Retry**;
 suspected 30s Go+ previews get a **Fix preview** action.
+
+**Troubleshooting**
+
+| Symptom | Fix |
+|---|---|
+| Frontend loads but data calls fail | The backend isn't running on port `8000` — start it (Terminal 1 above). |
+| `uvicorn` not found | The virtual environment isn't activated, or `pip install -r requirements.txt` hasn't been run. |
+| Port already in use | Change the port (`--port 8001` for uvicorn) and update the proxy target in `frontend/vite.config.js`, or stop the process using the port. |
+| CORS errors in the browser console | The backend only allows origins `http://localhost:5173` / `http://127.0.0.1:5173` (see `api/server.py`). Use one of those URLs for the frontend. |
+| Database tab is empty or errors | Its endpoints live at `/api/db/tables` (registered in `api/server.py`); confirm the backend restarted after pulling changes. |
 
 ---
 

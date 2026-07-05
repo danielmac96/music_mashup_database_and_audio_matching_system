@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { artGradient } from "../theme";
+import { TrackArt } from "./TrackArt";
 import { toast } from "../toast";
 
 const PLAYLIST_RE = /\/sets\//;
@@ -134,7 +134,7 @@ export function PlaylistImporter({ onIngested }) {
               return (
                 <div key={t.source_url || i} className="preview-row" onClick={() => toggleRow(i)}>
                   <span className={`preview-check ${on ? "on" : "off"}`}>✓</span>
-                  <div className="art" style={{ background: t.thumbnail ? `url(${t.thumbnail})` : artGradient(i) }} />
+                  <TrackArt id={i} thumbnail={t.thumbnail} className="art" />
                   <div className="info">
                     <div className="t">{t.title}</div>
                     <div className="a">{t.artist || "—"}</div>

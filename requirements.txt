@@ -12,7 +12,6 @@ yt-dlp>=2024.12.13         # SoundCloud/YouTube metadata + audio (keep upgraded)
 # ── Stem separation (Demucs + PyTorch) ────────────────────────────────────────
 torch==2.2.2
 torchaudio==2.2.2
-torchcodec==0.7.0
 demucs==4.0.1              # htdemucs; downloads ~400MB model weights on first run
 
 # ── Audio analysis ────────────────────────────────────────────────────────────
@@ -21,7 +20,6 @@ scipy==1.12.0
 soundfile==0.12.1
 librosa==0.10.1            # BPM, key, MFCC, spectral features, structure
 audioread>=3.0.0           # MP3 decode fallback for librosa
-ffmpeg-python==0.2.0
 tqdm==4.66.4
 
 # ── Web API ───────────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ CLI flags `--audio-root` / `--db-path` translate to these env vars before any
 project import runs, so config.py is the single source of truth for paths.
 """
 import os
+import re
 from pathlib import Path
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -88,3 +89,11 @@ PIPELINE_WORKERS = max(1, int(os.getenv("MASHUP_PIPELINE_WORKERS", "1")))
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = "INFO"
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────────
+
+def sanitize_filename_chars(name: str) -> str:
+    """Replace characters not safe for a filename/foldername with underscores.
+    Callers handle their own truncation/collapsing on top of this."""
+    return re.sub(r"[^\w]", "_", name or "")

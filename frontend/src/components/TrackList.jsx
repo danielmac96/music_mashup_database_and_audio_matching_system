@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { JobBadge } from "./JobBadge";
+import { KeyChip } from "./KeyChip";
+import { TrackArt } from "./TrackArt";
 import {
-  artGradient, camelotColor, fmtDur, isAnalysed, pipelineDots, statusMeta,
+  fmtDur, isAnalysed, pipelineDots, statusMeta,
 } from "../theme";
 import { toast } from "../toast";
 
@@ -399,9 +401,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
             return (
               <div key={t.id} className="card">
                 <div className="card-top">
-                  <div className="card-art" style={{ background: t.thumbnail ? `url(${t.thumbnail})` : artGradient(t.id) }}>
-                    {t.thumbnail ? "" : "♪"}
-                  </div>
+                  <TrackArt id={t.id} thumbnail={t.thumbnail} className="card-art">♪</TrackArt>
                   <div className="card-id">
                     <div className="card-title" title={t.title}>{t.title}</div>
                     <div className="card-artist">{t.artist || "—"}</div>
@@ -425,9 +425,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                       ⚠
                     </span>
                   )}
-                  <div className="key-chip" style={{ background: camelotColor(f.camelot) }}>
-                    {f.camelot || "—"}
-                  </div>
+                  <KeyChip camelot={f.camelot} />
                   <div className="energy-wrap">
                     <div className="l">Energy</div>
                     <div className="energy-bar"><span style={{ width: `${Math.round((f.energy || 0) * 100)}%` }} /></div>
@@ -481,9 +479,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                 <div><StatusTag status={t.status} /></div>
                 <div className="mono" style={{ color: "var(--text-2)" }}>{f.bpm != null ? f.bpm.toFixed(1) : "—"}</div>
                 <div>
-                  <span className="key-chip" style={{ background: camelotColor(f.camelot), fontSize: 12, padding: "3px 7px" }}>
-                    {f.camelot || "—"}
-                  </span>
+                  <KeyChip camelot={f.camelot} as="span" style={{ fontSize: 12, padding: "3px 7px" }} />
                 </div>
                 <div><PipelineDots track={t} runningKind={g.job?.kind} /></div>
                 <div className="row-actions">

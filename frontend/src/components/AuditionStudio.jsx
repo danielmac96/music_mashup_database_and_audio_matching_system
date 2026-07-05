@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { JobBadge } from "./JobBadge";
+import { KeyChip } from "./KeyChip";
+import { TrackArt } from "./TrackArt";
 import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
-import { artGradient, camelotColor, fmtTime, keyRel, SHOW_NOTES } from "../theme";
+import { usePlan } from "../hooks/usePlan";
+import { fmtTime, keyRel } from "../theme";
 import { toast } from "../toast";
 
 const SECTION_COLORS = {
@@ -240,7 +243,7 @@ export function AuditionStudio({ seed, onStatus }) {
   const [error, setError] = useState(null);
   const [vocalId, setVocalId] = useState(seed?.vocalId ?? null);
   const [instId, setInstId] = useState(seed?.instId ?? null);
-  const [plan, setPlan] = useState(null);
+  const { plan, error: planError } = usePlan(vocalId, instId);
   const [anchor, setAnchor] = useState("instrumental");
   const [stretchInput, setStretchInput] = useState(1);
   const [shiftInput, setShiftInput] = useState(0);
@@ -393,13 +396,7 @@ export function AuditionStudio({ seed, onStatus }) {
   }, [instId]);
 
   useEffect(() => {
-    setPlan(null); setExportJobId(null); setExportReady(null);
-    if (vocalId == null || instId == null || vocalId === instId) return;
-    let cancelled = false;
-    api.getMashupPlan(vocalId, instId)
-      .then((p) => !cancelled && setPlan(p))
-      .catch((e) => !cancelled && setError(e.message));
-    return () => { cancelled = true; };
+    setExportJobId(null); setExportReady(null);
   }, [vocalId, instId]);
 
   // Engine-suggested stretch/pitch defaults for the current anchor side.
@@ -740,9 +737,7 @@ export function AuditionStudio({ seed, onStatus }) {
         </div>
       )}
       {track?.features?.full?.camelot && (
-        <div className="key-chip" style={{ background: camelotColor(track.features.full.camelot), padding: "4px 9px" }}>
-          {track.features.full.camelot}
-        </div>
+        <KeyChip camelot={track.features.full.camelot} style={{ padding: "4px 9px" }} />
       )}
       <span className="caret">▾</span>
     </div>
@@ -750,7 +745,7 @@ export function AuditionStudio({ seed, onStatus }) {
 
   return (
     <div className="page audition">
-      {error && <div className="error-text" style={{ marginBottom: 8 }}>{error}</div>}
+      {(error || planError) && <div className="error-text" style={{ marginBottom: 8 }}>{error || planError}</div>}
       {audioError && <div className="error-text" style={{ marginBottom: 8 }}>{audioError}</div>}
 
       {/* track selectors */}
@@ -774,16 +769,14 @@ export function AuditionStudio({ seed, onStatus }) {
               return (
                 <div key={t.id} className={`picker-row${selected ? " selected" : ""}`}
                   onClick={() => { if (menu === "vocal") setVocalId(t.id); else setInstId(t.id); setMenu(null); }}>
-                  <div className="art" style={{ background: t.thumbnail ? `url(${t.thumbnail})` : artGradient(t.id) }} />
+                  <TrackArt id={t.id} thumbnail={t.thumbnail} className="art" />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="t">{t.title}</div>
                     <div className="a">{t.artist || "—"}</div>
                   </div>
                   <div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>{t.features?.full?.bpm?.toFixed(1)}</div>
                   {t.features?.full?.camelot && (
-                    <div className="key-chip" style={{ background: camelotColor(t.features.full.camelot), fontSize: 11, padding: "2px 6px" }}>
-                      {t.features.full.camelot}
-                    </div>
+                    <KeyChip camelot={t.features.full.camelot} style={{ fontSize: 11, padding: "2px 6px" }} />
                   )}
                 </div>
               );
@@ -919,9 +912,9 @@ export function AuditionStudio({ seed, onStatus }) {
                 <span className="val">{appliedShift > 0 ? "+" : ""}{appliedShift}<span className="u"> st</span></span>
               </div>
               <div className="key-map">
-                <span className="key-chip" style={{ background: camelotColor(vocalShownKey), padding: "5px 10px" }}>{vocalShownKey || "?"}</span>
+                <KeyChip camelot={vocalShownKey} as="span" fallback="?" style={{ padding: "5px 10px" }} />
                 <span className="arrow" style={{ color: liveRel.color }}>{liveRel.arrow}</span>
-                <span className="key-chip" style={{ background: camelotColor(bedShownKey), padding: "5px 10px" }}>{bedShownKey || "?"}</span>
+                <KeyChip camelot={bedShownKey} as="span" fallback="?" style={{ padding: "5px 10px" }} />
               </div>
               <div className="slider-row">
                 <button className="step-btn" onClick={() => setShiftInput(Math.max(-24, appliedShift - 1))}>−</button>
@@ -942,7 +935,6 @@ export function AuditionStudio({ seed, onStatus }) {
             <div className="module mix">
               <div className="module-head">
                 <span className="micro-label">MIX</span>
-                {SHOW_NOTES && <span className="needs-bus">NEEDS MIX BUS</span>}
               </div>
               <div className="mix-row">
                 <span className="lab v">♪V</span>

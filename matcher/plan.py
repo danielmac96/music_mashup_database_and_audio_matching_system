@@ -17,7 +17,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from matcher.match import camelot_score, compute_semitone_shift
+from matcher.match import (
+    camelot_score, compute_semitone_shift, compute_stretch_factor, effective_bpm,
+)
 
 # Section label priority when choosing what to mash.
 _VOCAL_LABEL_PRIORITY = {"chorus": 0, "verse": 1, "bridge": 2, "drop": 3,
@@ -30,15 +32,6 @@ def _fmt_ts(secs: float) -> str:
     s = int(round(secs or 0))
     m, sec = divmod(s, 60)
     return f"{m}:{sec:02d}"
-
-
-def _effective_inst_bpm(vocal_bpm: float, inst_bpm: float) -> float:
-    """Instrumental BPM interpreted at half/normal/double time, whichever
-    lands closest to the vocal BPM."""
-    if not vocal_bpm or not inst_bpm:
-        return inst_bpm or 0.0
-    options = (inst_bpm, inst_bpm / 2, inst_bpm * 2)
-    return min(options, key=lambda b: abs(vocal_bpm - b))
 
 
 def _key_relation(camelot_a: str, camelot_b: str) -> str:
@@ -130,8 +123,8 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
 
     v_bpm = v_feat.get("bpm") or 0.0
     i_bpm = i_feat.get("bpm") or 0.0
-    i_bpm_eff = _effective_inst_bpm(v_bpm, i_bpm)
-    stretch = round(v_bpm / i_bpm_eff, 4) if v_bpm and i_bpm_eff else None
+    i_bpm_eff = effective_bpm(v_bpm, i_bpm)
+    stretch = compute_stretch_factor(v_bpm, i_bpm)
     shift = compute_semitone_shift(v_feat.get("key") or "", i_feat.get("key") or "")
 
     v_sections = get_sections(vocal_song_id, db_path=db)

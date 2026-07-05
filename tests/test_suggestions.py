@@ -133,10 +133,10 @@ def test_label_segments_guarantees_a_chorus_with_vocals():
 
 
 def test_effective_inst_bpm_handles_doubletime():
-    from matcher.plan import _effective_inst_bpm
-    assert _effective_inst_bpm(95.0, 190.0) == 95.0
-    assert _effective_inst_bpm(150.0, 75.0) == 150.0
-    assert _effective_inst_bpm(120.0, 122.0) == 122.0
+    from matcher.match import effective_bpm
+    assert effective_bpm(95.0, 190.0) == 95.0
+    assert effective_bpm(150.0, 75.0) == 150.0
+    assert effective_bpm(120.0, 122.0) == 122.0
 
 
 def test_build_mashup_plan(seeded):

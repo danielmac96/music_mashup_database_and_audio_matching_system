@@ -12,9 +12,8 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from re import sub
 
-from config import VOCALS_DIR, INSTRUMENTALS_DIR, DEMUCS_MODEL
+from config import VOCALS_DIR, INSTRUMENTALS_DIR, DEMUCS_MODEL, sanitize_filename_chars
 
 log = logging.getLogger(__name__)
 
@@ -26,8 +25,8 @@ ProgressCb = Optional[Callable[[Optional[int], str], None]]
 def separate(song_id: int, title: str, audio_path: Path,
              artist: str = "",
              on_progress: ProgressCb = None) -> Optional[Dict[str, Path]]:
-    safe_title  = sub(r'[^\w]', '_', title)[:40]
-    safe_artist = sub(r'[^\w]', '_', artist)[:30]
+    safe_title  = sanitize_filename_chars(title)[:40]
+    safe_artist = sanitize_filename_chars(artist)[:30]
     safe_name   = f"{safe_title}_{safe_artist}"
 
     vocals_path       = VOCALS_DIR        / f"{safe_name}_vocals.wav"

@@ -52,7 +52,8 @@ def compute_semitone_shift(vocal_key: str, inst_key: str) -> Optional[int]:
 
 
 def _sanitize_folder_name(s: str, max_len: int = 40) -> str:
-    s = re.sub(r"[^\w]", "_", s or "")
+    from config import sanitize_filename_chars
+    s = sanitize_filename_chars(s)
     s = re.sub(r"_+", "_", s).strip("_")
     return s[:max_len] or "unknown"
 
@@ -97,13 +98,29 @@ def camelot_score(c1: str, c2: str) -> float:
 
 # ── BPM compatibility ─────────────────────────────────────────────────────────
 
+def effective_bpm(target_bpm: float, other_bpm: float) -> float:
+    """other_bpm interpreted at half/normal/double time, whichever lands
+    closest to target_bpm."""
+    if not target_bpm or not other_bpm:
+        return other_bpm or 0.0
+    options = (other_bpm, other_bpm / 2, other_bpm * 2)
+    return min(options, key=lambda b: abs(target_bpm - b))
+
+
+def compute_stretch_factor(vocal_bpm: float, inst_bpm: float) -> Optional[float]:
+    """Ratio to stretch the instrumental (at whichever of half/normal/double
+    time is closest to the vocal) to reach the vocal's tempo."""
+    if not vocal_bpm or not inst_bpm:
+        return None
+    inst_eff = effective_bpm(vocal_bpm, inst_bpm)
+    return round(vocal_bpm / inst_eff, 4) if inst_eff else None
+
+
 def _bpm_min_diff(bpm1: float, bpm2: float) -> float:
     """Smallest BPM difference accounting for halftime and doubletime."""
     if bpm1 <= 0 or bpm2 <= 0:
         return 999.0
-    return min(abs(bpm1 - bpm2),
-               abs(bpm1 - bpm2 / 2),
-               abs(bpm1 - bpm2 * 2))
+    return abs(bpm1 - effective_bpm(bpm1, bpm2))
 
 
 def bpm_score(bpm1: float, bpm2: float) -> float:
@@ -445,7 +462,7 @@ def export_mashup_report(db_path=None, output_path: str = "mashup_report",
             r = dict(row)
             v_bpm = r.get("vocal_bpm") or 0.0
             i_bpm = r.get("inst_bpm") or 0.0
-            stretch = round(i_bpm / v_bpm, 4) if v_bpm else None
+            stretch = compute_stretch_factor(v_bpm, i_bpm)
             shift   = compute_semitone_shift(
                 r.get("vocal_key") or "", r.get("inst_key") or ""
             )
@@ -582,7 +599,7 @@ def prep_fl_session(db_path=None, output_dir: str = "fl_session",
 
         v_bpm   = r.get("vocal_bpm") or 0.0
         i_bpm   = r.get("inst_bpm") or 0.0
-        stretch = round(i_bpm / v_bpm, 4) if v_bpm else None
+        stretch = compute_stretch_factor(v_bpm, i_bpm)
         shift   = compute_semitone_shift(
             r.get("vocal_key") or "", r.get("inst_key") or ""
         )

@@ -1,8 +1,10 @@
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { JobBadge } from "./JobBadge";
+import { TrackArt } from "./TrackArt";
+import { usePlan } from "../hooks/usePlan";
 import {
-  artGradient, bpmTag, camelotColor, fmtTime, keyRel, pct, tierFor,
+  bpmTag, fmtTime, keyRel, tierFor,
 } from "../theme";
 import { toast } from "../toast";
 
@@ -19,16 +21,7 @@ const SORTS = ["Score", "Popularity"];
 const popOf = (c) => (c.vocal_popularity || 0) + (c.inst_popularity || 0);
 
 function PlanDetails({ vocalId, instId }) {
-  const [plan, setPlan] = useState(null);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    api.getMashupPlan(vocalId, instId)
-      .then((p) => !cancelled && setPlan(p))
-      .catch((e) => !cancelled && setError(e.message));
-    return () => { cancelled = true; };
-  }, [vocalId, instId]);
+  const { plan, error } = usePlan(vocalId, instId);
 
   if (error) return <div className="plan-detail error-text">{error}</div>;
   if (!plan) return <div className="plan-detail muted">Loading plan…</div>;
@@ -208,7 +201,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
                 <div className={`pair${i === 0 ? " top" : ""}`}>
                   <div className="pair-rank">{i + 1}</div>
                   <div className="pair-side">
-                    <div className="pair-art" style={{ background: artGradient(c.vocal_song_id) }}>♪</div>
+                    <TrackArt id={c.vocal_song_id} className="pair-art">♪</TrackArt>
                     <div style={{ minWidth: 0 }}>
                       <div className="pair-role vocal">{isVI ? "VOCAL (TOP)" : "INSTR (TOP)"}</div>
                       <div className="pair-title" title={c.vocal_title}>{c.vocal_title}</div>
@@ -251,7 +244,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
                         )}
                       </div>
                     </div>
-                    <div className="pair-art" style={{ background: artGradient(c.inst_song_id + 3) }}>♪</div>
+                    <TrackArt id={c.inst_song_id + 3} className="pair-art">♪</TrackArt>
                   </div>
                   <div className="pair-actions">
                     <button className="plan" onClick={() => setExpanded(expanded === c.id ? null : c.id)}>
