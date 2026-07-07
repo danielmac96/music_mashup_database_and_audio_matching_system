@@ -71,6 +71,25 @@ export const api = {
   // Whether ffmpeg/ffprobe/yt-dlp/demucs/librosa are available on the server.
   getDeps: () => jsonFetch("/api/health/deps"),
 
+  // Settings / first-run wizard.
+  getSettings: () => jsonFetch("/api/settings"),
+
+  validatePath: (path) =>
+    jsonFetch("/api/settings/validate-path", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
+
+  saveSettings: ({ audioRoot = null, dbPath = null, pipelineWorkers = null } = {}) =>
+    jsonFetch("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({
+        audio_root: audioRoot,
+        db_path: dbPath,
+        pipeline_workers: pipelineWorkers,
+      }),
+    }),
+
   audioUrl: (id, stemType) => `/api/tracks/${id}/audio/${stemType}`,
 
   getSections: (id) => jsonFetch(`/api/tracks/${id}/sections`),
@@ -138,6 +157,49 @@ export const api = {
 
   exportAudioUrl: (vocalId, instId) =>
     `/api/mashups/export/audio?vocal_id=${vocalId}&inst_id=${instId}`,
+
+  // ── Mixes (1001tracklists ingestion) ──────────────────────────────────────
+  importMix: (url) =>
+    jsonFetch("/api/mixes/import", { method: "POST", body: JSON.stringify({ url }) }),
+
+  importMixPaste: (content, url = "") =>
+    jsonFetch("/api/mixes/import-paste", {
+      method: "POST",
+      body: JSON.stringify({ content, url }),
+    }),
+
+  getMixes: () => jsonFetch("/api/mixes"),
+
+  getMix: (id) => jsonFetch(`/api/mixes/${id}`),
+
+  resolveMixTrack: (trackId, url) =>
+    jsonFetch(`/api/mixes/tracks/${trackId}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+
+  ingestMix: (id) => jsonFetch(`/api/mixes/${id}/ingest`, { method: "POST" }),
+
+  // ── Training data + learned model ─────────────────────────────────────────
+  getDatasets: () => jsonFetch("/api/datasets"),
+
+  buildDataset: ({ name = "bbm", negRatio = 5, seed = 42 } = {}) =>
+    jsonFetch("/api/datasets/build", {
+      method: "POST",
+      body: JSON.stringify({ name, neg_ratio: negRatio, seed }),
+    }),
+
+  getModels: () => jsonFetch("/api/models"),
+
+  trainModel: (datasetId) =>
+    jsonFetch("/api/models/train", {
+      method: "POST",
+      body: JSON.stringify({ dataset_id: datasetId }),
+    }),
+
+  activateModel: (id) => jsonFetch(`/api/models/${id}/activate`, { method: "POST" }),
+
+  getScorerStatus: () => jsonFetch("/api/mashups/scorer-status"),
 
   // Read-only DB browser (debug view). Maps to the api/routes/database.py
   // router mounted at /api/db.

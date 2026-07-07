@@ -1,34 +1,152 @@
 """
 config.py — Central configuration for the mashup engine.
-Edit this file to change paths, models, and thresholds.
 
-Path overrides at runtime:
-    MASHUP_AUDIO_ROOT  — relocate the audio library root (default: <repo>/audio)
-    MASHUP_DB_PATH     — relocate the SQLite database file (default: <repo>/mashup.db)
+Path/setting resolution order (highest priority first):
+    1. Environment variable   — set by Docker / CLI wrappers
+    2. settings.json          — written by the first-run Setup Wizard
+    3. Built-in default       — <repo>/audio, <repo>/mashup.db, 1 worker
 
-CLI flags `--audio-root` / `--db-path` translate to these env vars before any
-project import runs, so config.py is the single source of truth for paths.
+Env overrides (unchanged names, so existing CLI wrappers keep working):
+    MASHUP_AUDIO_ROOT        — relocate the audio library root
+    MASHUP_DB_PATH           — relocate the SQLite database file
+    MASHUP_PIPELINE_WORKERS  — pipeline worker thread count
+    MASHUP_DATA_DIR          — where engine artifacts (snapshots/datasets/models) live
+    MASHUP_SETTINGS_DIR      — override the settings.json directory (tests/Docker)
+
+The settings layer must be read BEFORE the module-level constants bind, because
+the whole codebase does `from config import RAW_DIR` (etc.) at import time. So
+`_load_settings()` runs first, then constants resolve, then dirs are created.
 """
+import json
 import os
 import re
+import sys
 from pathlib import Path
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 
-AUDIO_DIR        = Path(os.environ.get("MASHUP_AUDIO_ROOT", BASE_DIR / "audio"))
-RAW_DIR          = AUDIO_DIR / "full_song"
-VOCALS_DIR       = AUDIO_DIR / "vocals"
+
+# ── Settings file (env > settings.json > default) ─────────────────────────────
+
+def _settings_dir() -> Path:
+    """Platform-appropriate directory for settings.json.
+
+    Windows: %APPDATA%\\mashup-engine
+    macOS:   ~/Library/Application Support/mashup-engine
+    Linux:   $XDG_CONFIG_HOME/mashup-engine (or ~/.config/mashup-engine)
+    Override with MASHUP_SETTINGS_DIR (used by Docker + tests)."""
+    override = os.environ.get("MASHUP_SETTINGS_DIR")
+    if override:
+        return Path(override)
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(base) / "mashup-engine"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "mashup-engine"
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "mashup-engine"
+
+
+def settings_path() -> Path:
+    """Absolute path to settings.json (may not exist yet)."""
+    return _settings_dir() / "settings.json"
+
+
+def _load_settings() -> dict:
+    """Read settings.json, tolerating a missing or corrupt file."""
+    p = settings_path()
+    try:
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        pass
+    return {}
+
+
+_SETTINGS = _load_settings()
+
+
+def _resolve(env_key: str, settings_key: str, default):
+    """Return (value, source) where source is 'env' | 'settings' | 'default'."""
+    env_val = os.environ.get(env_key)
+    if env_val not in (None, ""):
+        return env_val, "env"
+    file_val = _SETTINGS.get(settings_key)
+    if file_val not in (None, ""):
+        return file_val, "settings"
+    return default, "default"
+
+
+_audio_val, AUDIO_ROOT_SOURCE = _resolve(
+    "MASHUP_AUDIO_ROOT", "audio_root", str(BASE_DIR / "audio"))
+AUDIO_DIR         = Path(_audio_val)
+RAW_DIR           = AUDIO_DIR / "full_song"
+VOCALS_DIR        = AUDIO_DIR / "vocals"
 INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
-PREVIEWS_DIR     = AUDIO_DIR / "previews"   # rendered audition mashup previews
+PREVIEWS_DIR      = AUDIO_DIR / "previews"   # rendered audition mashup previews
 
 # SQLite file path — must not be BASE_DIR / "database" (that is the Python package directory).
-DB_PATH = Path(os.environ.get("MASHUP_DB_PATH", BASE_DIR / "mashup.db"))
+_db_val, DB_PATH_SOURCE = _resolve(
+    "MASHUP_DB_PATH", "db_path", str(BASE_DIR / "mashup.db"))
+DB_PATH = Path(_db_val)
 
-# Create dirs if missing
-for d in [RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR, PREVIEWS_DIR]:
-    d.mkdir(parents=True, exist_ok=True)
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+# Engine artifacts (page snapshots, training datasets, learned models) live next
+# to the database by default, so a single volume mount persists everything.
+_data_val, _ = _resolve("MASHUP_DATA_DIR", "data_dir", str(DB_PATH.parent))
+DATA_DIR      = Path(_data_val)
+SNAPSHOTS_DIR = DATA_DIR / "snapshots"   # saved 1001tracklists HTML (Phase 3)
+DATASETS_DIR  = DATA_DIR / "datasets"    # exported training sets (Phase 4)
+MODELS_DIR    = DATA_DIR / "models"      # learned pairwise models (Phase 5)
+
+# `configured` is True once the user has explicitly chosen an audio library
+# location (via env or the wizard). When False, App.jsx shows the Setup Wizard.
+CONFIGURED = AUDIO_ROOT_SOURCE in ("env", "settings")
+
+
+def ensure_dirs() -> None:
+    """Create all working directories. Called at import (best-effort) and again
+    after the wizard saves settings, so a freshly-chosen library folder exists."""
+    for d in (RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR, PREVIEWS_DIR,
+              SNAPSHOTS_DIR, DATASETS_DIR, MODELS_DIR):
+        d.mkdir(parents=True, exist_ok=True)
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+# Best-effort at import: a wizard-chosen path on an unmounted volume shouldn't
+# crash `import config`; get_conn() and the workers mkdir lazily on real use.
+try:
+    ensure_dirs()
+except OSError:
+    pass
+
+
+def save_settings(new: dict) -> Path:
+    """Merge `new` into settings.json and write it. Empty/None values are
+    ignored so a partial save (e.g. just audio_root) doesn't clobber other keys.
+    Returns the settings.json path. Caller should treat changes as needing a
+    process restart (constants are bound at import)."""
+    p = settings_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    current = _load_settings()
+    for k, v in new.items():
+        if v not in (None, ""):
+            current[k] = v
+    p.write_text(json.dumps(current, indent=2), encoding="utf-8")
+    return p
+
+
+def settings_provenance() -> dict:
+    """Report each resolved setting's value and where it came from, so the
+    Settings UI can show 'set by environment' vs 'editable'."""
+    return {
+        "audio_root": {"value": str(AUDIO_DIR), "source": AUDIO_ROOT_SOURCE},
+        "db_path":    {"value": str(DB_PATH),   "source": DB_PATH_SOURCE},
+        "pipeline_workers": {"value": PIPELINE_WORKERS, "source": PIPELINE_WORKERS_SOURCE},
+        "configured": CONFIGURED,
+        "settings_path": str(settings_path()),
+    }
+
 
 # ── Download ─────────────────────────────────────────────────────────────────
 # yt-dlp format string — prefers best dedicated audio, else combined (then ffmpeg extracts mp3)
@@ -84,8 +202,13 @@ SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "")   # optional, for higher rate limit
 # ── Background processing ─────────────────────────────────────────────────────
 # Number of worker threads that drain the ingest→download→stems→analysis→structure
 # pipeline queue. Default 1: stem separation (Demucs) is CPU/GPU heavy, so running
-# several tracks at once thrashes the machine. Raise on a beefy box via env.
-PIPELINE_WORKERS = max(1, int(os.getenv("MASHUP_PIPELINE_WORKERS", "1")))
+# several tracks at once thrashes the machine. Raise on a beefy box via env/settings.
+_workers_val, PIPELINE_WORKERS_SOURCE = _resolve(
+    "MASHUP_PIPELINE_WORKERS", "pipeline_workers", "1")
+try:
+    PIPELINE_WORKERS = max(1, int(_workers_val))
+except (TypeError, ValueError):
+    PIPELINE_WORKERS = 1
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = "INFO"

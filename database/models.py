@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS songs (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     title           TEXT NOT NULL,
     artist          TEXT,
-    source_url      TEXT UNIQUE,          -- SoundCloud track webpage_url
+    source_url      TEXT UNIQUE,          -- SoundCloud/YouTube track webpage_url
+    source          TEXT DEFAULT '',      -- 'soundcloud' | 'youtube' | '' (classify_url)
     duration_secs   REAL,
     genre           TEXT,
     raw_path        TEXT,
@@ -124,6 +125,76 @@ CREATE INDEX IF NOT EXISTS idx_candidates_score  ON mashup_candidates(score_tota
 CREATE INDEX IF NOT EXISTS idx_candidates_type   ON mashup_candidates(combo_type);
 CREATE INDEX IF NOT EXISTS idx_candidates_vocal  ON mashup_candidates(vocal_song_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_inst   ON mashup_candidates(inst_song_id);
+
+-- ── Documented mixes (1001tracklists ingestion, Phase 3) ─────────────────────
+CREATE TABLE IF NOT EXISTS mixes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    title           TEXT,
+    source_url      TEXT UNIQUE,
+    dj              TEXT,
+    import_method   TEXT,                 -- 'scrape' | 'paste'
+    raw_snapshot_path TEXT,               -- saved HTML for re-parsing
+    imported_at     TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS mix_tracks (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    mix_id          INTEGER NOT NULL,
+    entry_index     INTEGER,              -- printed number for beds; NULL for 'w/' overlays
+    position        INTEGER NOT NULL,     -- 0-based order within the mix
+    is_overlay      INTEGER DEFAULT 0,    -- 1 = vocal overlay ('w/' entry)
+    artist          TEXT,
+    title           TEXT,
+    cue_secs        REAL,
+    link_url        TEXT,
+    link_platform   TEXT,                 -- 'soundcloud' | 'youtube' | ''
+    resolve_status  TEXT DEFAULT 'unresolved', -- unresolved | resolved | manual | failed
+    song_id         INTEGER,              -- FK into songs once ingested
+    UNIQUE(mix_id, entry_index, position)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mixtracks_mix ON mix_tracks(mix_id);
+
+CREATE TABLE IF NOT EXISTS mashup_pairs (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    mix_id             INTEGER NOT NULL,
+    inst_mix_track_id  INTEGER NOT NULL,  -- bed
+    vocal_mix_track_id INTEGER NOT NULL,  -- overlay
+    cue_secs           REAL,
+    UNIQUE(inst_mix_track_id, vocal_mix_track_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mashuppairs_mix ON mashup_pairs(mix_id);
+
+-- ── Training datasets (Phase 4) ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS datasets (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    name               TEXT NOT NULL,
+    version            INTEGER NOT NULL,
+    n_pos              INTEGER,
+    n_neg              INTEGER,
+    neg_strategy       TEXT,
+    config_json        TEXT,
+    feature_names_json TEXT,
+    file_path          TEXT,
+    created_at         TEXT DEFAULT (datetime('now')),
+    UNIQUE(name, version)
+);
+
+-- ── Learned pairwise models (Phase 5) ────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS models (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    name               TEXT NOT NULL,
+    version            INTEGER NOT NULL,
+    dataset_id         INTEGER,
+    algo               TEXT,
+    metrics_json       TEXT,
+    feature_names_json TEXT,
+    file_path          TEXT,
+    active             INTEGER DEFAULT 0,
+    created_at         TEXT DEFAULT (datetime('now')),
+    UNIQUE(name, version)
+);
 """
 
 
@@ -137,6 +208,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _migrate_songs_columns(conn)
     _migrate_features_columns(conn)
+    _migrate_candidates_columns(conn)
     conn.commit()
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
@@ -157,6 +229,7 @@ _SONGS_OPTIONAL_COLUMNS = (
     ("tags", "TEXT"),
     ("release_year", "INTEGER DEFAULT 0"),
     ("last_error", "TEXT"),
+    ("source", "TEXT DEFAULT ''"),
 )
 
 
@@ -164,6 +237,20 @@ _FEATURES_OPTIONAL_COLUMNS = (
     ("beat_times_json", "TEXT"),
     ("waveform_rms_json", "TEXT"),
 )
+
+
+_CANDIDATES_OPTIONAL_COLUMNS = (
+    ("scorer", "TEXT DEFAULT 'heuristic'"),  # 'heuristic' | 'model'
+    ("model_version", "TEXT"),               # e.g. 'pairwise_bbm_v1' when scorer='model'
+)
+
+
+def _migrate_candidates_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute(
+        "PRAGMA table_info(mashup_candidates)").fetchall()}
+    for col, decl in _CANDIDATES_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE mashup_candidates ADD COLUMN {col} {decl}")
 
 
 def _migrate_features_columns(conn: sqlite3.Connection) -> None:
@@ -217,6 +304,7 @@ def upsert_song(
     metadata_partial: int = 0,
     tags: str = "",
     release_year: int = 0,
+    source: str = "",
     db_path: Path = DB_PATH,
 ) -> int:
     """Insert or update a song row. Returns the song id.
@@ -228,15 +316,16 @@ def upsert_song(
     conn = get_conn(db_path)
     cur = conn.execute(
         """INSERT INTO songs (
-               title, artist, source_url, duration_secs, genre, raw_path, status,
+               title, artist, source_url, source, duration_secs, genre, raw_path, status,
                artist_id, track_id, duration_str, upload_date,
                likes, reposts, comments, plays, thumbnail, metadata_partial,
                tags, release_year
            )
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(source_url) DO UPDATE SET
                title=excluded.title,
                artist=excluded.artist,
+               source=CASE WHEN excluded.source != '' THEN excluded.source ELSE source END,
                duration_secs=excluded.duration_secs,
                genre=excluded.genre,
                raw_path=CASE WHEN excluded.raw_path != '' THEN excluded.raw_path ELSE raw_path END,
@@ -259,6 +348,7 @@ def upsert_song(
             title,
             artist,
             source_url,
+            source,
             duration_secs,
             genre,
             raw_path,
@@ -591,10 +681,12 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
 
 def upsert_candidate(vocal: dict, inst: dict, scores: dict,
                      combo_type: str = "vocal_over_instrumental",
+                     scorer: str = "heuristic", model_version: Optional[str] = None,
                      db_path: Path = DB_PATH):
     """
     Insert or update a mashup_candidates row for a vocal+instrumental pair.
     combo_type: 'vocal_over_instrumental' | 'instrumental_over_instrumental'
+    scorer:     'heuristic' | 'model'  (which scorer produced score_total)
     """
     conn = get_conn(db_path)
     conn.execute(
@@ -607,14 +699,16 @@ def upsert_candidate(vocal: dict, inst: dict, scores: dict,
                inst_bpm, inst_key, inst_mode, inst_camelot,
                inst_loudness_rms, inst_energy,
                score_total, score_bpm, score_key, score_energy, score_timbre,
-               scored_at
-           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+               scorer, model_version, scored_at
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
            ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
                score_total=excluded.score_total,
                score_bpm=excluded.score_bpm,
                score_key=excluded.score_key,
                score_energy=excluded.score_energy,
                score_timbre=excluded.score_timbre,
+               scorer=excluded.scorer,
+               model_version=excluded.model_version,
                vocal_bpm=excluded.vocal_bpm,
                vocal_key=excluded.vocal_key,
                vocal_mode=excluded.vocal_mode,
@@ -638,6 +732,7 @@ def upsert_candidate(vocal: dict, inst: dict, scores: dict,
             inst.get("loudness_rms"),  inst.get("energy"),
             scores["total"], scores["bpm_score"], scores["key_score"],
             scores["energy_score"], scores["timbre_score"],
+            scorer, model_version,
         )
     )
     conn.commit()

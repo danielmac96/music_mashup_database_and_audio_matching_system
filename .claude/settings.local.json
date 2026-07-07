@@ -44,7 +44,30 @@
       "Bash(mkdir -p public)",
       "Bash(cp node_modules/@soundtouchjs/audio-worklet/.dist/soundtouch-processor.js public/soundtouch-processor.js)",
       "Bash(/c/Users/danie/Documents/PythonProject/music_mashup_database_and_audio_matching_system/.venv/Scripts/python.exe *)",
-      "Bash(PYTHONPATH=\"/c/Users/danie/Documents/PythonProject/music_mashup_database_and_audio_matching_system\" /c/Users/danie/Documents/PythonProject/music_mashup_database_and_audio_matching_system/.venv/Scripts/python.exe *)"
+      "Bash(PYTHONPATH=\"/c/Users/danie/Documents/PythonProject/music_mashup_database_and_audio_matching_system\" /c/Users/danie/Documents/PythonProject/music_mashup_database_and_audio_matching_system/.venv/Scripts/python.exe *)",
+      "PowerShell(python -c \"import config; print\\('configured:', config.CONFIGURED\\); print\\('audio:', config.AUDIO_DIR\\); print\\('db:', config.DB_PATH\\); print\\('workers:', config.PIPELINE_WORKERS\\)\")",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -c \"import config; print\\('configured:', config.CONFIGURED\\); print\\('audio:', config.AUDIO_DIR\\); print\\('db:', config.DB_PATH\\); print\\('workers:', config.PIPELINE_WORKERS\\); print\\('data:', config.DATA_DIR\\)\")",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -c \"import api.server as s; print\\('server ok'\\); print\\([r.path for r in s.app.routes if 'settings' in r.path]\\)\")",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 25)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\danie\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-danie-Documents-PythonProject-music-mashup-database-and-audio-matching-system\\\\14ed1a97-c3d5-4d99-84bd-5d19fd7ac36b\\\\scratchpad\\\\wiztest.py\")",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/test_sources.py -q 2>&1 | Select-Object -Last 15)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\danie\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-danie-Documents-PythonProject-music-mashup-database-and-audio-matching-system\\\\14ed1a97-c3d5-4d99-84bd-5d19fd7ac36b\\\\scratchpad\\\\srctest.py\")",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 8)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/test_tracklists.py -q 2>&1 | Select-Object -Last 30)",
+      "Bash(./.venv/Scripts/python.exe -c ' *)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/test_tracklists.py -q 2>&1 | Select-Object -Last 20)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\danie\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-danie-Documents-PythonProject-music-mashup-database-and-audio-matching-system\\\\14ed1a97-c3d5-4d99-84bd-5d19fd7ac36b\\\\scratchpad\\\\mixtest.py\")",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 6)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -c \"import api.server as s; print\\('routes with mixes:', [r.path for r in s.app.routes if '/mixes' in getattr\\(r,'path',''\\)]\\)\"; & .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 4)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/test_suggestions.py -q 2>&1 | Select-Object -Last 6)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\danie\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-danie-Documents-PythonProject-music-mashup-database-and-audio-matching-system\\\\14ed1a97-c3d5-4d99-84bd-5d19fd7ac36b\\\\scratchpad\\\\dstest.py\")",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -c \"import api.server as s; print\\('datasets routes:', [r.path for r in s.app.routes if 'datasets' in getattr\\(r,'path',''\\)]\\)\"; & .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 6)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -c \"import sklearn, joblib; print\\('sklearn', sklearn.__version__, '| joblib', joblib.__version__\\)\")",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\danie\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--Users-danie-Documents-PythonProject-music-mashup-database-and-audio-matching-system\\\\14ed1a97-c3d5-4d99-84bd-5d19fd7ac36b\\\\scratchpad\\\\mltest.py\" 2>&1 | Select-Object -Last 25)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -c \"import api.server as s; print\\('models routes:', [r.path for r in s.app.routes if '/api/models' in getattr\\(r,'path',''\\)]\\); print\\('scorer-status:', any\\('scorer-status' in getattr\\(r,'path',''\\) for r in s.app.routes\\)\\)\"; & .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 6)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/test_model.py -q 2>&1 | Select-Object -Last 20)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 5)",
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -c \"import config, api.server, ingest.sources, ingest.tracklists, ingest.tracklists_scrape, database.mixes, database.mlmodels, dataset.build, ml.train, matcher.features, matcher.model_scorer; print\\('all Phase 1-5 modules import OK'\\)\")"
     ]
   }
 }

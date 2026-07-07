@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from api import queue_runner
 from database.models import upsert_song
 from ingest.soundcloud import enrich_track, fetch_playlist_flat, fetch_single
+from ingest.sources import classify_url
 
 log = logging.getLogger(__name__)
 
@@ -30,15 +31,24 @@ def preview(req: PreviewRequest) -> dict:
     if not url:
         raise HTTPException(status_code=400, detail="url is required")
 
-    is_single = "/sets/" not in url
+    source, kind = classify_url(url)
+    if source == "unknown":
+        raise HTTPException(
+            status_code=400,
+            detail="Unrecognised link. Paste a SoundCloud or YouTube track or playlist URL.",
+        )
+
+    is_single = kind == "track"
     if is_single:
         track = fetch_single(url)
         tracks = [track] if track else []
     else:
         # Flat enumerate so geo-restricted / Go+ / removed tracks still appear in the count.
+        # This is the fix for the old `/sets/`-only check, which silently ingested
+        # just the first track of a YouTube playlist (…?list=… with no v=).
         tracks = fetch_playlist_flat(url)
 
-    return {"is_single": is_single, "count": len(tracks), "tracks": tracks}
+    return {"is_single": is_single, "source": source, "count": len(tracks), "tracks": tracks}
 
 
 @router.post("/ingest")
@@ -65,6 +75,9 @@ def ingest(req: IngestRequest) -> dict:
             partial_count += 1
             log.warning("Saving partial metadata row for %s", source_url or merged.get("title"))
 
+        merged_url = merged.get("source_url", source_url) or source_url
+        source, _ = classify_url(merged_url)
+
         sid = upsert_song(
             title=merged.get("title", "Unknown"),
             artist=merged.get("artist", ""),
@@ -83,6 +96,7 @@ def ingest(req: IngestRequest) -> dict:
             metadata_partial=metadata_partial,
             tags=merged.get("tags", ""),
             release_year=int(merged.get("release_year") or 0),
+            source=source,
         )
         inserted_ids.append(sid)
 

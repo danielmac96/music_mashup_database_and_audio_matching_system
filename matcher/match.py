@@ -179,16 +179,11 @@ def _passes_filter(feat_a: dict, feat_b: dict,
 
 # ── Composite score ───────────────────────────────────────────────────────────
 
-def composite_score(feat_a: dict, feat_b: dict,
-                    weights: Optional[Dict] = None) -> dict:
-    try:
-        from config import MATCH_WEIGHTS
-        weights = weights or MATCH_WEIGHTS
-    except ImportError:
-        weights = {"bpm_score": 0.25, "key_score": 0.30,
-                   "energy_score": 0.20, "timbre_score": 0.25}
-
-    scores = {
+def sub_scores(feat_a: dict, feat_b: dict) -> dict:
+    """The four heuristic sub-scores for a (top, bed) pair. Extracted so the
+    learned pair-feature builder (matcher/features.py) and the heuristic
+    composite_score compute them identically — keeping train and serve aligned."""
+    return {
         "bpm_score":    bpm_score(feat_a.get("bpm", 0),
                                    feat_b.get("bpm", 0)),
         "key_score":    camelot_score(feat_a.get("camelot", ""),
@@ -199,6 +194,18 @@ def composite_score(feat_a: dict, feat_b: dict,
         "timbre_score": mfcc_cosine(feat_a.get("mfcc", []),
                                      feat_b.get("mfcc", [])),
     }
+
+
+def composite_score(feat_a: dict, feat_b: dict,
+                    weights: Optional[Dict] = None) -> dict:
+    try:
+        from config import MATCH_WEIGHTS
+        weights = weights or MATCH_WEIGHTS
+    except ImportError:
+        weights = {"bpm_score": 0.25, "key_score": 0.30,
+                   "energy_score": 0.20, "timbre_score": 0.25}
+
+    scores = sub_scores(feat_a, feat_b)
     scores["total"] = round(
         sum(scores[k] * weights.get(k, 0) for k in scores), 4
     )
@@ -222,15 +229,27 @@ def _with_full_bpm(feat: dict, full_by_song: Dict[int, dict]) -> dict:
 
 
 def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
-                    key_min_score: Optional[float] = None) -> dict:
+                    key_min_score: Optional[float] = None,
+                    scorer: str = "auto") -> dict:
     """
-    Score every unique cross-song pair that passes the BPM + key filter.
+    Score every unique cross-song pair that passes the pre-filter.
     Handles two combo types:
       - vocal_over_instrumental
       - instrumental_over_instrumental
 
     bpm_max_diff / key_min_score override the config defaults (BPM_MAX_DIFF /
     KEY_MIN_SCORE) so the Mashups UI can widen or narrow the candidate set.
+
+    scorer:
+      'auto'      — use the active learned model if one loads, else heuristic
+      'heuristic' — the hand-weighted composite score (byte-for-byte legacy path)
+      'model'     — force the learned model; silently falls back to heuristic if
+                    no active model can be loaded
+
+    Heuristic path pre-filters on BOTH the BPM and key gates. The model path uses
+    the BPM window ONLY (documented mashups sometimes break the key gate), still
+    computes the four heuristic sub-scores for display, and sets score_total to
+    the model's probability.
 
     The candidates table is cleared first so the result reflects exactly the
     current features and thresholds — no stale pairs from a looser prior run.
@@ -241,19 +260,62 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from database.models import (
-        clear_candidates, get_all_features, upsert_candidate, DB_PATH,
+        clear_candidates, get_all_features, get_sections, upsert_candidate, DB_PATH,
     )
     from config import BPM_MAX_DIFF, KEY_MIN_SCORE
 
     db = db_path or DB_PATH
     bpm_max = float(bpm_max_diff) if bpm_max_diff is not None else BPM_MAX_DIFF
     key_min = float(key_min_score) if key_min_score is not None else KEY_MIN_SCORE
+
+    # Resolve which scorer to use. 'auto'/'model' try to load the active model;
+    # both fall back to the heuristic when none is available.
+    bundle = None
+    if scorer in ("auto", "model"):
+        try:
+            from matcher.model_scorer import load_active_model
+            bundle = load_active_model(db_path=db)
+        except Exception:  # noqa: BLE001 — never let model loading break scoring
+            bundle = None
+    use_model = bundle is not None
+    active_scorer = "model" if use_model else "heuristic"
+    model_version = bundle.get("version") if use_model else None
+
     clear_candidates(db_path=db)
 
     vocals      = get_all_features(stem_type="vocals",        db_path=db)
     inst        = get_all_features(stem_type="instrumental",  db_path=db)
     full        = get_all_features(stem_type="full",          db_path=db)
     full_by_song = {f["song_id"]: f for f in full}
+
+    # Section lookups are only needed for the model's pair features.
+    _sections_cache: Dict[int, list] = {}
+
+    def _sections(song_id):
+        if song_id not in _sections_cache:
+            _sections_cache[song_id] = get_sections(song_id, db_path=db) if use_model else []
+        return _sections_cache[song_id]
+
+    def _passes(feat_a, feat_b):
+        # Model path: BPM window only. Heuristic path: BPM + key (unchanged).
+        if use_model:
+            return _bpm_min_diff(feat_a.get("bpm") or 0, feat_b.get("bpm") or 0) <= bpm_max
+        return _passes_filter(feat_a, feat_b, bpm_max, key_min)
+
+    def _score(feat_a, feat_b):
+        """Return a scores dict {bpm_score,key_score,energy_score,timbre_score,total}.
+        Heuristic: total = weighted composite. Model: total = model probability,
+        with the four heuristic sub-scores kept for display."""
+        if not use_model:
+            return composite_score(feat_a, feat_b)
+        from matcher.features import pair_features
+        from matcher.model_scorer import model_score
+        scores = sub_scores(feat_a, feat_b)
+        feats = pair_features(feat_a, feat_b,
+                              _sections(feat_a.get("song_id")),
+                              _sections(feat_b.get("song_id")))
+        scores["total"] = round(model_score(feats, bundle), 4)
+        return scores
 
     # Tempo compatibility is scored off the full-mix BPM (vocal-stem and even
     # instrumental-stem tempo tracking can drift octave/onset-detection errors
@@ -275,13 +337,13 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         for i in inst:
             if v["song_id"] == i["song_id"]:
                 continue
-            if not _passes_filter(v, i, bpm_max, key_min):
+            if not _passes(v, i):
                 skipped += 1
                 continue
 
-            scores = composite_score(v, i)
-            upsert_candidate(v, i, scores,
-                             combo_type="vocal_over_instrumental", db_path=db)
+            scores = _score(v, i)
+            upsert_candidate(v, i, scores, combo_type="vocal_over_instrumental",
+                             scorer=active_scorer, model_version=model_version, db_path=db)
             results["vocal_over_instrumental"].append(_build_row(v, i, scores))
             scored += 1
 
@@ -293,14 +355,14 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             # Avoid duplicate A/B + B/A pairs — only score lower id over higher
             if i_a["song_id"] >= i_b["song_id"]:
                 continue
-            if not _passes_filter(i_a, i_b, bpm_max, key_min):
+            if not _passes(i_a, i_b):
                 skipped += 1
                 continue
 
-            scores = composite_score(i_a, i_b)
+            scores = _score(i_a, i_b)
             # Reuse vocal/inst columns: vocal_* = the "top" layer, inst_* = the "bed"
-            upsert_candidate(i_a, i_b, scores,
-                             combo_type="instrumental_over_instrumental", db_path=db)
+            upsert_candidate(i_a, i_b, scores, combo_type="instrumental_over_instrumental",
+                             scorer=active_scorer, model_version=model_version, db_path=db)
             results["instrumental_over_instrumental"].append(
                 _build_row(i_a, i_b, scores))
             scored += 1
@@ -308,9 +370,11 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     for key in results:
         results[key].sort(key=lambda x: x["total"], reverse=True)
 
-    log.info(f"  Pairs scored: {scored}  |  Skipped (BPM/key filter): {skipped}  "
-             f"|  filter: bpm_max_diff={bpm_max} key_min_score={key_min}")
-    return results
+    log.info(f"  Pairs scored: {scored}  |  Skipped (pre-filter): {skipped}  "
+             f"|  scorer={active_scorer}"
+             + (f" ({model_version})" if model_version else "")
+             + f"  filter: bpm_max_diff={bpm_max} key_min_score={key_min}")
+    return {**results, "_scorer": active_scorer, "_model_version": model_version}
 
 
 def _build_row(feat_a: dict, feat_b: dict, scores: dict) -> dict:

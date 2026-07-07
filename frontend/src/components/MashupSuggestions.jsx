@@ -71,6 +71,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
   const [error, setError] = useState(null);
   const [scoreJobId, setScoreJobId] = useState(null);
   const [expanded, setExpanded] = useState(null);
+  const [scorer, setScorer] = useState(null); // { scorer, model_version, auc }
+
+  const refreshScorer = () => api.getScorerStatus().then(setScorer).catch(() => setScorer(null));
+  useEffect(() => { refreshScorer(); }, []);
 
   const refresh = async (type = comboType, activeSeed = seed, min = minMatch) => {
     setLoading(true);
@@ -138,6 +142,18 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
         <span className="sub">
           {loading ? "loading…" : `Ranked best-first${seedTitle ? " · seed fixed" : ""}`}
         </span>
+        <span style={{ flex: 1 }} />
+        {scorer && (
+          <span className="scorer-badge" title={
+            scorer.scorer === "model"
+              ? "Scored by the learned model. Presets set the BPM window; the key gate is dropped for the model."
+              : "Scored by the hand-weighted heuristic. Train + activate a model on the Database tab to switch."
+          }>
+            Scorer: {scorer.scorer === "model"
+              ? `Model ${scorer.model_version || ""}${scorer.auc != null ? ` (AUC ${scorer.auc})` : ""}`
+              : "Heuristic"}
+          </span>
+        )}
       </div>
 
       <div className="toolbar">

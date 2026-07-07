@@ -85,13 +85,18 @@ def download_track(song_id: int, title: str, source_url: str,
             log.warning(f"Existing file is a preview ({duration:.0f}s) — re-downloading")
             out_path.unlink()
 
-    if on_progress:
-        on_progress(0, "Downloading from SoundCloud…")
+    # A direct YouTube source routes through the retry ladder (see _download_ytdlp)
+    # and a short result is a genuine short video, not a SoundCloud Go+ preview —
+    # so we skip the preview→YouTube-search fallback for it.
+    is_yt_source = _is_youtube_like(source_url)
 
-    # Try SoundCloud URL first
+    if on_progress:
+        on_progress(0, "Downloading from YouTube…" if is_yt_source
+                    else "Downloading from SoundCloud…")
+
     path = _download_ytdlp(source_url, out_path, on_progress=on_progress)
 
-    if path and path.exists():
+    if path and path.exists() and not is_yt_source:
         duration = _get_duration(path)
         if duration and duration <= PREVIEW_MAX_SECS:
             log.warning(

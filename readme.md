@@ -16,34 +16,81 @@ SoundCloud playlist
 
 ---
 
-## First run (web app)
+## Quick start (Docker — recommended)
 
-The web app is the primary way to use the engine: paste a SoundCloud link and
-every track **auto-processes** through download → stems → analyze → structure on
-its own — no per-track clicking.
+One command builds the frontend, installs a CPU-only PyTorch + Demucs + librosa,
+and serves the whole app (UI + API) from a single process:
 
-**Prerequisites**
+```bash
+docker compose up --build
+```
+
+Then open **http://localhost:8000**. Everything the app writes — downloaded
+songs, stems, the SQLite DB, and the ~400 MB Demucs weights — persists in the
+`./data` folder next to `docker-compose.yml`, so rebuilds keep your library.
+Because Docker sets the path env vars, the first-run folder step is skipped.
+
+```bash
+docker compose up -d          # run in the background
+docker compose logs -f        # follow pipeline logs
+docker compose restart        # apply a settings change
+docker compose down           # stop (your ./data is preserved)
+```
+
+---
+
+## Run locally (single process)
+
+No Docker? Build the frontend once and serve it from the same uvicorn process:
 
 ```bash
 # 1. ffmpeg + ffprobe on PATH (audio extraction + duration checks)
 #    macOS: brew install ffmpeg   ·   Debian/Ubuntu: sudo apt install ffmpeg
+#    Windows: winget install Gyan.FFmpeg  (or download from ffmpeg.org)
 
 # 2. Python deps (Demucs pulls a ~400MB model on first stem separation)
 pip install -r requirements.txt
 
-# 3. Frontend deps
-cd frontend && npm install && cd ..
+# 3. Build the frontend into frontend/dist (served by FastAPI when present)
+cd frontend && npm install && npm run build && cd ..
+
+# 4. Serve UI + API together on http://localhost:8000
+uvicorn api.server:app
 ```
 
-The Import tab shows a warning banner if ffmpeg/yt-dlp/demucs/librosa are missing
-on the server, so you find out before starting a big import.
+Open **http://localhost:8000**. On first launch the **Setup Wizard** appears: it
+checks dependencies, then asks for a library folder for full-song downloads.
+Save, restart the process, and you're ready. (When `frontend/dist` is absent —
+e.g. during development — FastAPI serves API-only and the two-terminal dev flow
+below is unchanged.)
 
-**Run the two servers** (both must be running — the frontend proxies every
-`/api/*` call to the backend on port `8000`)
+---
+
+## First run (what to expect)
+
+The web app is the primary way to use the engine: paste a SoundCloud/YouTube link
+and every track **auto-processes** through download → stems → analyze → structure
+on its own — no per-track clicking. The Import tab shows a warning banner if
+ffmpeg/yt-dlp/demucs/librosa are missing, so you find out before a big import.
+
+Open the app → **Import** tab → paste a playlist or track link → **Preview** →
+**Save to library**. Switch to **Library** and watch each track walk the pipeline
+live (per-track progress + an overall batch banner). Processing is bounded
+(`MASHUP_PIPELINE_WORKERS`, default 1) so a big playlist won't thrash the machine,
+and it **resumes** unfinished tracks if you restart the server mid-import. A
+failed track shows the reason and a one-click **Retry**; suspected 30s Go+
+previews get a **Fix preview** action.
+
+---
+
+## Development mode (two terminals, hot reload)
+
+For frontend work, run Vite's dev server (hot reload) alongside the API. Vite
+proxies every `/api/*` call to the backend on port `8000`.
 
 ```bash
 # Terminal 1 — API (http://localhost:8000)
-.\.venv\Scripts\Activate.ps1                                                                                                                                                                                                      
+.\.venv\Scripts\Activate.ps1
 uvicorn api.server:app --reload
 
 # Terminal 2 — web UI (http://localhost:5173)
@@ -51,15 +98,29 @@ cd frontend && npm run dev
 ```
 
 Verify the backend is up: open http://localhost:8000/api/health — you should
-see `{"ok": true}`.
+see `{"ok": true}`. Then use the UI at http://localhost:5173.
 
-Then open http://localhost:5173 → **Import** tab → paste a SoundCloud playlist or
-track link → **Preview** → **Save to library**. Switch to **Library** and watch
-each track walk the pipeline live (per-track progress + an overall batch banner).
-Processing is bounded (`MASHUP_PIPELINE_WORKERS`, default 1) so a big playlist
-won't thrash the machine, and it **resumes** unfinished tracks if you restart the
-server mid-import. A failed track shows the reason and a one-click **Retry**;
-suspected 30s Go+ previews get a **Fix preview** action.
+---
+
+## Settings & configuration
+
+Settings resolve in this order — **environment variable > `settings.json` >
+built-in default**:
+
+| Setting | Env var | settings.json key | Default |
+|---|---|---|---|
+| Audio library root | `MASHUP_AUDIO_ROOT` | `audio_root` | `<repo>/audio` |
+| SQLite DB path | `MASHUP_DB_PATH` | `db_path` | `<repo>/mashup.db` |
+| Pipeline workers | `MASHUP_PIPELINE_WORKERS` | `pipeline_workers` | `1` |
+| Engine data dir | `MASHUP_DATA_DIR` | `data_dir` | folder holding the DB |
+
+`settings.json` is written by the Setup Wizard (and the `POST /api/settings`
+endpoint) to a platform folder — `%APPDATA%\mashup-engine` on Windows,
+`~/Library/Application Support/mashup-engine` on macOS, `~/.config/mashup-engine`
+on Linux. Override its location with `MASHUP_SETTINGS_DIR`. Path constants bind
+at startup, so **saving settings requires a server restart** to take effect (the
+API returns `restart_required: true`). In Docker the env vars win, so the wizard
+skips the folder step.
 
 **Troubleshooting**
 
@@ -138,7 +199,7 @@ Each stage filters by status, so re-running the pipeline only touches tracks tha
 
 | Module | File | Purpose |
 |---|---|---|
-| Config | `config.py` | All paths, model names, weights. `MASHUP_AUDIO_ROOT` and `MASHUP_DB_PATH` env vars override paths. |
+| Config | `config.py` | All paths, model names, weights, plus the settings layer (env > `settings.json` > default). See **Settings & configuration**. |
 | Database | `database/models.py` | SQLite schema + CRUD helpers |
 | Ingest | `ingest/soundcloud.py` | Fetch playlist metadata via `yt-dlp` |
 | Download | `downloader/download.py` | yt-dlp wrapper, with YouTube fallback for SoundCloud Go+ previews |
@@ -256,6 +317,51 @@ The **Mashups** tab in the web app drives the suggestion workflow:
 
 API endpoints: `POST /api/mashups/score`, `GET /api/mashups`,
 `GET /api/mashups/plan?vocal_id=&inst_id=`, `GET /api/tracks/{id}/sections`.
+
+---
+
+## Documented mixes → training data → learned matcher
+
+Beyond the hand-weighted heuristic, the engine can **learn** what makes a good
+pairing from real, documented mashups.
+
+**1. Import a mix (Mixes tab).** Paste a Two Friends “Big Bootie Mix” page from
+1001tracklists — either by URL (needs the optional Playwright scraper) or by
+pasting the page HTML/text (the guaranteed path, since the site Cloudflare-blocks
+bots). Numbered entries are parsed as instrumental **beds**; `w/` entries are
+**vocal overlays** paired to the nearest preceding bed. Resolve any missing
+SoundCloud/YouTube links inline, then **Ingest** — resolved tracks flow through
+the same download → stems → analyze pipeline.
+
+```bash
+pip install -r requirements-scrape.txt && playwright install chromium   # optional
+```
+
+**2. Build a dataset (Database tab → Training data).** Positives are the
+documented `mashup_pairs` (vocal-stem features over instrumental-stem features);
+negatives are sampled non-pairs (half random, half “hard” — inside the BPM/key
+gate but never used by a DJ), grouped by mix for leakage-safe CV.
+
+```bash
+python -m dataset.build --name bbm --neg-ratio 5 --seed 42
+```
+
+**3. Train + activate a model.** A `HistGradientBoostingClassifier` (with a
+logistic-regression baseline) is cross-validated with GroupKFold by mix, then fit
+on all rows and saved to `MODELS_DIR`.
+
+```bash
+python -m ml.train --dataset-id 1
+```
+
+Once a model is **active**, the Mashups tab’s “Score library” uses it
+automatically (the badge reads “Scorer: Model vN”), pre-filtering on the BPM
+window only while still showing the heuristic sub-scores. Deactivate or delete
+the model and scoring silently falls back to the heuristic. Force either scorer
+with `POST /api/mashups/score?scorer=heuristic|model`.
+
+Shared feature function `matcher/features.py:pair_features` is used by **both**
+training and inference, so train/serve feature distributions can’t drift.
 
 ---
 

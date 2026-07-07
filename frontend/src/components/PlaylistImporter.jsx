@@ -1,20 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { TrackArt } from "./TrackArt";
+import { SourceBadge } from "./SourceBadge";
+import { classifyUrl, cleanYouTubeTitle } from "../sources";
 import { toast } from "../toast";
-
-const PLAYLIST_RE = /\/sets\//;
 
 export function PlaylistImporter({ onIngested }) {
   const [url, setUrl] = useState("");
   const [tracks, setTracks] = useState([]);
+  const [source, setSource] = useState("");   // from preview() response
   const [selected, setSelected] = useState({}); // index -> bool (absent = kept)
   const [previewing, setPreviewing] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
   const [deps, setDeps] = useState(null); // { ok, missing[], deps[] }
 
-  const isPlaylist = PLAYLIST_RE.test(url);
+  const { source: urlSource, kind: urlKind } = classifyUrl(url);
+  const isPlaylist = urlKind === "playlist";
 
   // One-time dependency check so a missing ffmpeg/demucs is visible before a run.
   useEffect(() => {
@@ -34,8 +36,15 @@ export function PlaylistImporter({ onIngested }) {
     setPreviewing(true);
     try {
       const data = await api.previewPlaylist(url.trim());
-      setTracks(data.tracks);
-      if (data.tracks.length === 0) {
+      const src = data.source || urlSource;
+      setSource(src);
+      // YouTube titles are noisy ("… (Official Video)", "ARTISTVEVO"); tidy them
+      // for display + ingest. Non-destructive: falls back to the original.
+      const cleaned = src === "youtube"
+        ? data.tracks.map((t) => ({ ...t, ...cleanYouTubeTitle(t.title, t.artist) }))
+        : data.tracks;
+      setTracks(cleaned);
+      if (cleaned.length === 0) {
         setError("No tracks returned. Check the URL and that yt-dlp is installed.");
       }
     } catch (err) {
@@ -75,10 +84,11 @@ export function PlaylistImporter({ onIngested }) {
   return (
     <div className="page narrow">
       <div className="screen-head" style={{ display: "block" }}>
-        <h1>Import from SoundCloud</h1>
+        <h1>Import from SoundCloud or YouTube</h1>
         <div className="hint" style={{ marginTop: 5 }}>
-          Paste a track or playlist link — we auto-detect which. Preview first, then
-          choose what to keep. Saved tracks auto-process: download → stems → analyze → structure.
+          Paste a track or playlist link — we auto-detect the source and which it is.
+          Preview first, then choose what to keep. Saved tracks auto-process:
+          download → stems → analyze → structure.
         </div>
       </div>
 
@@ -94,13 +104,15 @@ export function PlaylistImporter({ onIngested }) {
           <span className="faint">🔗</span>
           <input
             type="url"
-            placeholder="soundcloud.com/artist/track…"
+            placeholder="soundcloud.com/artist/track  ·  youtube.com/watch?v=…"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handlePreview()}
           />
-          {url.trim() && (
-            <span className="type-tag">{isPlaylist ? "PLAYLIST" : "SINGLE TRACK"}</span>
+          {url.trim() && urlSource !== "unknown" && (
+            <span className="type-tag">
+              {urlSource === "youtube" ? "YouTube" : "SoundCloud"} · {isPlaylist ? "PLAYLIST" : "SINGLE TRACK"}
+            </span>
           )}
         </div>
         <button className="btn" onClick={handlePreview} disabled={previewing || !url.trim()}>
@@ -108,7 +120,7 @@ export function PlaylistImporter({ onIngested }) {
         </button>
       </div>
       <div className="faint" style={{ fontSize: 11, marginBottom: 18 }}>
-        Playlists (…/sets/…) import every track at once.
+        Playlists (SoundCloud …/sets/… or a YouTube …?list=… link) import every track at once.
       </div>
 
       {error && <div className="error-text" style={{ marginBottom: 12 }}>{error}</div>}
@@ -136,7 +148,9 @@ export function PlaylistImporter({ onIngested }) {
                   <span className={`preview-check ${on ? "on" : "off"}`}>✓</span>
                   <TrackArt id={i} thumbnail={t.thumbnail} className="art" />
                   <div className="info">
-                    <div className="t">{t.title}</div>
+                    <div className="t">
+                      <SourceBadge source={source} /> {t.title}
+                    </div>
                     <div className="a">{t.artist || "—"}</div>
                   </div>
                   <span className="dur">{t.duration_str || "—"}</span>

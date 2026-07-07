@@ -5,8 +5,10 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -15,9 +17,13 @@ if str(ROOT) not in sys.path:
 from database.models import init_db  # noqa: E402
 
 from api.routes import database as database_routes  # noqa: E402
+from api.routes import datasets as dataset_routes  # noqa: E402
 from api.routes import jobs as jobs_routes  # noqa: E402
 from api.routes import mashups as mashup_routes  # noqa: E402
+from api.routes import mixes as mix_routes  # noqa: E402
+from api.routes import models as model_routes  # noqa: E402
 from api.routes import playlists as playlist_routes  # noqa: E402
+from api.routes import settings as settings_routes  # noqa: E402
 from api.routes import tracks as track_routes  # noqa: E402
 
 
@@ -48,6 +54,10 @@ app.include_router(track_routes.router, prefix="/api/tracks", tags=["tracks"])
 app.include_router(jobs_routes.router, prefix="/api/jobs", tags=["jobs"])
 app.include_router(mashup_routes.router, prefix="/api/mashups", tags=["mashups"])
 app.include_router(database_routes.router, prefix="/api/db", tags=["database"])
+app.include_router(settings_routes.router, prefix="/api/settings", tags=["settings"])
+app.include_router(mix_routes.router, prefix="/api/mixes", tags=["mixes"])
+app.include_router(dataset_routes.router, prefix="/api/datasets", tags=["datasets"])
+app.include_router(model_routes.router, prefix="/api/models", tags=["models"])
 
 
 @app.get("/api/health")
@@ -83,6 +93,30 @@ def health_deps() -> dict:
          "detail": "stem separation (required to split vocals/instrumental)", "required": True},
         {"name": "librosa", "ok": _importable("librosa"),
          "detail": "audio feature analysis (required for BPM/key/structure)", "required": True},
+        {"name": "playwright", "ok": _importable("playwright"),
+         "detail": "optional — 1001tracklists scraping (paste-HTML works without it)",
+         "required": False},
     ]
     missing = [d["name"] for d in deps if d["required"] and not d["ok"]]
     return {"ok": not missing, "missing": missing, "deps": deps}
+
+
+# ── Serve the built frontend (production / Docker) ────────────────────────────
+# Only mounts when frontend/dist exists, so the two-terminal dev flow (Vite on
+# :5173 proxying to :8000) is untouched. All /api/* routes are registered above
+# and take precedence; the catch-all below returns index.html for client routes.
+_DIST = ROOT / "frontend" / "dist"
+if _DIST.exists():
+    _ASSETS = _DIST / "assets"
+    if _ASSETS.exists():
+        app.mount("/assets", StaticFiles(directory=_ASSETS), name="assets")
+
+    @app.get("/{full_path:path}")
+    def spa_fallback(full_path: str) -> FileResponse:
+        # An unmatched /api path is a real 404 (a missing endpoint), not the SPA.
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        candidate = _DIST / full_path
+        if full_path and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_DIST / "index.html")

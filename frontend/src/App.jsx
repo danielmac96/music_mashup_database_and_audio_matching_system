@@ -1,13 +1,17 @@
 import { useEffect, useState } from "react";
 import { PlaylistImporter } from "./components/PlaylistImporter";
+import { MixImporter } from "./components/MixImporter";
 import { TrackList } from "./components/TrackList";
 import { MashupSuggestions } from "./components/MashupSuggestions";
 import { AuditionStudio } from "./components/AuditionStudio";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
+import { SetupWizard } from "./components/SetupWizard";
+import { api } from "./api";
 import { onToast } from "./toast";
 
 const TABS = [
   ["import", "Import"],
+  ["mixes", "Mixes"],
   ["library", "Library"],
   ["mashups", "Mashups"],
   ["audition", "Audition"],
@@ -37,12 +41,23 @@ function Toast() {
 export default function App() {
   const [tab, setTabState] = useState("import");
   const [refreshKey, setRefreshKey] = useState(0);
+  // null = still loading, true/false = configured flag from GET /api/settings.
+  const [configured, setConfigured] = useState(null);
   // Seed passed into the Audition tab when sent from Library/Mashups.
   const [auditionSeed, setAuditionSeed] = useState({ vocalId: null, instId: null });
   // Seed passed into the Mashups tab for a directed "find matches" search.
   const [mashupSeed, setMashupSeed] = useState(null); // { songId, role }
   // Right-side header status readout — each screen reports its own.
   const [headerStatus, setHeaderStatus] = useState(null); // { locked, text }
+
+  // On load, check whether the app has been configured (first-run wizard gate).
+  // If /api/settings is unreachable, assume configured so a transient error
+  // doesn't wall off the whole UI.
+  useEffect(() => {
+    api.getSettings()
+      .then((s) => setConfigured(Boolean(s.configured)))
+      .catch(() => setConfigured(true));
+  }, []);
 
   const setTab = (next) => {
     setHeaderStatus(null);
@@ -63,6 +78,19 @@ export default function App() {
     setMashupSeed({ songId, role });
     setTab("mashups");
   };
+
+  if (configured === false) {
+    return (
+      <div className="app-shell">
+        <header className="topbar">
+          <div className="brand">
+            <span className="diamond">◈</span> Mashup Engine
+          </div>
+        </header>
+        <SetupWizard onConfigured={() => window.location.reload()} />
+      </div>
+    );
+  }
 
   return (
     <div className="app-shell">
@@ -93,6 +121,7 @@ export default function App() {
       </header>
 
       {tab === "import" && <PlaylistImporter onIngested={handleIngested} />}
+      {tab === "mixes" && <MixImporter />}
       {tab === "library" && (
         <TrackList
           refreshKey={refreshKey}

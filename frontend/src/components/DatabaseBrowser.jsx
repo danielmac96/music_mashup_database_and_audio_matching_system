@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { statusMeta } from "../theme";
+import { MlPanel } from "./MlPanel";
 
 const PAGE_SIZE = 100;
 
@@ -80,6 +81,8 @@ export function DatabaseBrowser() {
         <h1>Database</h1>
         <span className="tag">read-only · debug view</span>
       </div>
+
+      <MlPanel />
 
       <div className="db-tabs">
         {tables.map((t) => (

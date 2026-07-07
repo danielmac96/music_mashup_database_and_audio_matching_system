@@ -3,6 +3,7 @@ import { api } from "../api";
 import { JobBadge } from "./JobBadge";
 import { KeyChip } from "./KeyChip";
 import { TrackArt } from "./TrackArt";
+import { SourceBadge } from "./SourceBadge";
 import {
   fmtDur, isAnalysed, pipelineDots, statusMeta,
 } from "../theme";
@@ -407,6 +408,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                     <div className="card-artist">{t.artist || "—"}</div>
                     <div className="card-statusrow">
                       <StatusTag status={t.status} />
+                      <SourceBadge source={t.source} />
                       <span className="card-dur">{t.duration_str || fmtDur(t.duration_secs)}</span>
                       {!!t.metadata_partial && (
                         <span className="badge metadata-partial" title="Full metadata couldn't be fetched.">
