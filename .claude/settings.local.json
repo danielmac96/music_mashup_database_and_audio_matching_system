@@ -67,7 +67,21 @@
       "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -c \"import api.server as s; print\\('models routes:', [r.path for r in s.app.routes if '/api/models' in getattr\\(r,'path',''\\)]\\); print\\('scorer-status:', any\\('scorer-status' in getattr\\(r,'path',''\\) for r in s.app.routes\\)\\)\"; & .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 6)",
       "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/test_model.py -q 2>&1 | Select-Object -Last 20)",
       "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 5)",
-      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -c \"import config, api.server, ingest.sources, ingest.tracklists, ingest.tracklists_scrape, database.mixes, database.mlmodels, dataset.build, ml.train, matcher.features, matcher.model_scorer; print\\('all Phase 1-5 modules import OK'\\)\")"
+      "PowerShell(& .\\\\.venv\\\\Scripts\\\\python.exe -c \"import config, api.server, ingest.sources, ingest.tracklists, ingest.tracklists_scrape, database.mixes, database.mlmodels, dataset.build, ml.train, matcher.features, matcher.model_scorer; print\\('all Phase 1-5 modules import OK'\\)\")",
+      "Bash(npm --version)",
+      "Bash(docker --version)",
+      "Bash(where python *)",
+      "Bash(docker compose *)",
+      "Bash(tee /c/Users/danie/AppData/Local/Temp/claude/C--Users-danie-Documents-PythonProject-music-mashup-database-and-audio-matching-system/854cc7da-6b79-4064-8296-bf0b9772db85/scratchpad/docker-build.log)",
+      "Bash(docker rm *)",
+      "Bash(docker run *)",
+      "Bash(curl -s -o /dev/null -w \"root: %{http_code}\\\\n\" http://localhost:8123/)",
+      "Bash(curl -s -o /dev/null -w \"settings API: %{http_code}\\\\n\" http://localhost:8123/api/settings)",
+      "Bash(git check-ignore *)",
+      "Bash(ls frontend/dist)",
+      "Bash(ls .venv/Scripts/python.exe)",
+      "Bash(./.venv/Scripts/python.exe -c \"import uvicorn, fastapi; print\\('uvicorn', uvicorn.__version__\\); import api.server; print\\('app imports OK'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -c \"import importlib.util as u; [print\\(m, bool\\(u.find_spec\\(m\\)\\)\\) for m in ['yt_dlp','demucs','librosa','playwright']]\")"
     ]
   }
 }

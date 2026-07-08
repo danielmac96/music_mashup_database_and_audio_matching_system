@@ -16,6 +16,52 @@ SoundCloud playlist
 
 ---
 
+## ▶ Start the app (TL;DR)
+
+Three ways to launch, fastest first. Pick one — you do **not** need all of them.
+All three open the same app at a URL you paste a SoundCloud link into.
+
+| I want to… | Do this | Open |
+|---|---|---|
+| **Just use it** | `docker compose up --build` | http://localhost:8000 |
+| **Run it locally** (no Docker) | build once, then serve — see below | http://localhost:8000 |
+| **Work on the UI** (hot reload) | run API + Vite in two terminals — see below | http://localhost:5173 |
+
+**Prerequisites** (local, non-Docker): **ffmpeg + ffprobe on PATH**, **Python 3.9+**, and
+**Node 18+** (only if you build/serve the frontend yourself).
+
+**Local — single process (Windows / PowerShell):**
+
+```powershell
+# one-time setup
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+cd frontend; npm install; npm run build; cd ..
+
+# start (serves UI + API together)
+.\.venv\Scripts\python.exe -m uvicorn api.server:app
+```
+
+> **Windows note:** there is no bare `python`/`pip`/`uvicorn` on PATH here — always call
+> the venv interpreter as `.\.venv\Scripts\python.exe -m <tool>`. On macOS/Linux activate
+> first (`source .venv/bin/activate`) and the plain `python`/`uvicorn` commands work.
+
+**Dev — hot reload (two terminals):**
+
+```powershell
+# Terminal 1 — API
+.\.venv\Scripts\python.exe -m uvicorn api.server:app --reload
+# Terminal 2 — UI  (proxies /api/* to :8000)
+cd frontend; npm run dev
+```
+
+Sanity check the backend any time: open http://localhost:8000/api/health → `{"ok": true}`.
+The Import tab also shows a live dependency check (`/api/health/deps`) so you learn about a
+missing ffmpeg/yt-dlp/demucs **before** starting a big import.
+
+The sections below expand each path with what to expect on first run.
+
+---
+
 ## Quick start (Docker — recommended)
 
 One command builds the frontend, installs a CPU-only PyTorch + Demucs + librosa,
@@ -49,14 +95,22 @@ No Docker? Build the frontend once and serve it from the same uvicorn process:
 #    Windows: winget install Gyan.FFmpeg  (or download from ffmpeg.org)
 
 # 2. Python deps (Demucs pulls a ~400MB model on first stem separation)
+#    Windows:      .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+#    macOS/Linux:  source .venv/bin/activate && pip install -r requirements.txt
 pip install -r requirements.txt
 
 # 3. Build the frontend into frontend/dist (served by FastAPI when present)
+#    First build downloads npm deps + bundles — expect a couple of minutes.
 cd frontend && npm install && npm run build && cd ..
 
 # 4. Serve UI + API together on http://localhost:8000
+#    Windows:      .\.venv\Scripts\python.exe -m uvicorn api.server:app
+#    macOS/Linux:  uvicorn api.server:app   (venv activated)
 uvicorn api.server:app
 ```
+
+> **Windows:** there is no bare `python`/`pip`/`uvicorn` on PATH — use the
+> `.\.venv\Scripts\python.exe -m <tool>` form shown in the comments above.
 
 Open **http://localhost:8000**. On first launch the **Setup Wizard** appears: it
 checks dependencies, then asks for a library folder for full-song downloads.
@@ -134,13 +188,19 @@ skips the folder step.
 
 ---
 
-## MVP: one-command pipeline
+## Advanced: scripted CLI pipeline (optional)
 
-Install once:
+> **Most users don't need this.** The web app above is the primary way to use the
+> engine — paste a link and every track auto-processes. This CLI exists for
+> automation, headless/server runs, and scripted re-processing. It shares the same
+> database and pipeline as the web app.
+
+Install once (already covered by `requirements.txt` if you set up the app above):
 
 ```bash
 pip install yt-dlp demucs librosa soundfile
 # ffmpeg must also be on PATH (used by yt-dlp + librosa)
+# Windows: prefix python with the venv, e.g. .\.venv\Scripts\python.exe test_flow.py ...
 ```
 
 Then point the engine at a SoundCloud playlist:
