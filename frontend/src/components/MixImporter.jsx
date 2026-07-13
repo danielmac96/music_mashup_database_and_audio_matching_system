@@ -1,0 +1,247 @@
+import { useEffect, useState } from "react";
+import { api } from "../api";
+import { classifyUrl } from "../sources";
+import { toast } from "../toast";
+
+// Mixes tab: import a DJ-set tracklist (paste the text — URL scraping needs the
+// optional playwright stack), resolve each entry to a SoundCloud/YouTube link,
+// then ingest the resolved tracks through the normal pipeline.
+
+function ResolveInput({ track, onResolved }) {
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    const u = url.trim();
+    if (!u) return;
+    if (classifyUrl(u).source === "unknown") {
+      toast("Paste a SoundCloud or YouTube track link");
+      return;
+    }
+    setBusy(true);
+    try {
+      const updated = await api.resolveMixTrack(track.id, u);
+      onResolved(updated);
+      setUrl("");
+    } catch (e) {
+      toast(`Resolve failed: ${e.message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mix-resolve">
+      <input
+        placeholder="paste track link…"
+        value={url}
+        onChange={(e) => setUrl(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && submit()}
+      />
+      <button className="mini-btn" onClick={submit} disabled={busy || !url.trim()}>
+        {busy ? "…" : "link"}
+      </button>
+    </div>
+  );
+}
+
+export function MixImporter() {
+  const [mixes, setMixes] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [url, setUrl] = useState("");
+  const [paste, setPaste] = useState("");
+  const [showPaste, setShowPaste] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const loadMixes = () =>
+    api.getMixes().then((d) => setMixes(d.mixes)).catch((e) => setError(e.message));
+
+  useEffect(() => { loadMixes(); }, []);
+
+  useEffect(() => {
+    setDetail(null);
+    if (activeId == null) return;
+    api.getMix(activeId).then(setDetail).catch((e) => setError(e.message));
+  }, [activeId]);
+
+  const importUrl = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const mix = await api.importMix(url.trim());
+      toast(`Imported “${mix.title}” (${mix.track_count} tracks)`);
+      setUrl("");
+      await loadMixes();
+      setActiveId(mix.id);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const importPaste = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      const mix = await api.importMixPaste(paste, url.trim());
+      toast(`Parsed ${mix.track_count} tracks from paste`);
+      setPaste("");
+      await loadMixes();
+      setActiveId(mix.id);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const ingest = async () => {
+    if (!detail) return;
+    setIngesting(true);
+    setError(null);
+    try {
+      const res = await api.ingestMix(detail.id);
+      toast(`Auto-processing ${res.count} track${res.count === 1 ? "" : "s"} from this mix`);
+      const d = await api.getMix(detail.id);
+      setDetail(d);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setIngesting(false);
+    }
+  };
+
+  const onTrackResolved = (updated) => {
+    setDetail((d) => d && {
+      ...d,
+      resolved_count: d.tracks.filter((t) => (t.id === updated.id ? updated.resolved_url : t.resolved_url)).length,
+      tracks: d.tracks.map((t) => (t.id === updated.id ? updated : t)),
+    });
+  };
+
+  return (
+    <div className="page mid">
+      <div className="screen-head" style={{ display: "block" }}>
+        <h1>Mixes — learn from real DJ sets</h1>
+        <div className="hint" style={{ marginTop: 5 }}>
+          Import a set's tracklist (Big Bootie, festival sets, 1001tracklists…),
+          link each entry to a playable track, then ingest them into the library.
+        </div>
+      </div>
+
+      {error && <div className="error-text" style={{ marginBottom: 10 }}>{error}</div>}
+
+      <div className="import-input-row">
+        <div className="import-input">
+          <span className="faint">🔗</span>
+          <input
+            type="url"
+            placeholder="tracklist URL (optional — used as the mix's source link)"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+          />
+        </div>
+        <button className="btn" onClick={importUrl} disabled={busy || !url.trim()}>
+          {busy ? "…" : "Scrape URL"}
+        </button>
+      </div>
+      <div className="faint" style={{ fontSize: 11, margin: "4px 0 10px" }}>
+        URL scraping needs the optional playwright stack —{" "}
+        <button className="linklike" onClick={() => setShowPaste((s) => !s)}>
+          pasting the tracklist text
+        </button>{" "}
+        always works.
+      </div>
+
+      {showPaste && (
+        <div className="paste-panel">
+          <textarea
+            rows={7}
+            placeholder={"Paste the tracklist here, e.g.\n\nTwo Friends Big Bootie Mix 20\n1. Artist - Title\n2. [12:34] Artist - Title\n…"}
+            value={paste}
+            onChange={(e) => setPaste(e.target.value)}
+          />
+          <div style={{ marginTop: 6, display: "flex", justifyContent: "flex-end" }}>
+            <button className="btn" onClick={importPaste} disabled={busy || !paste.trim()}>
+              {busy ? "Parsing…" : "Parse pasted tracklist"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="mix-layout">
+        <div className="mix-list">
+          <div className="mix-list-head">Imported mixes ({mixes.length})</div>
+          {mixes.length === 0 && <div className="empty" style={{ padding: 14 }}>None yet.</div>}
+          {mixes.map((m) => (
+            <div
+              key={m.id}
+              className={`mix-list-item${m.id === activeId ? " active" : ""}`}
+              onClick={() => setActiveId(m.id)}
+            >
+              <div className="mix-list-title">{m.title}</div>
+              <div className="faint" style={{ fontSize: 11 }}>
+                {m.track_count} tracks · {m.resolved_count} linked
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="mix-detail">
+          {!detail ? (
+            <p className="empty">Select a mix to see its tracklist.</p>
+          ) : (
+            <>
+              <div className="mix-detail-head">
+                <div>
+                  <div style={{ fontWeight: 600 }}>{detail.title}</div>
+                  <div className="faint" style={{ fontSize: 11 }}>
+                    {detail.track_count} tracks · {detail.resolved_count} linked
+                    {detail.source_url ? <> · <a href={detail.source_url} target="_blank" rel="noreferrer">source</a></> : null}
+                  </div>
+                </div>
+                <button
+                  className="btn"
+                  onClick={ingest}
+                  disabled={ingesting || detail.resolved_count === 0}
+                  title="Save every linked track to the library and auto-process it"
+                >
+                  {ingesting ? "Ingesting…" : `⇣ Ingest ${detail.resolved_count} linked`}
+                </button>
+              </div>
+              <div className="mix-rows">
+                {detail.tracks.map((t) => (
+                  <div key={t.id} className="mix-row">
+                    <span className="mix-num">{t.idx + 1}</span>
+                    <span className="mix-cue" />
+                    <div className="mix-info">
+                      <span className="mix-title">
+                        {t.artist ? `${t.artist} — ` : ""}{t.title}
+                      </span>
+                      <span className="mix-tags">
+                        {t.song_id ? <span className="mix-flag ok">in library #{t.song_id}</span>
+                          : t.resolved_url ? <span className="mix-flag ok">linked</span>
+                          : <span className="mix-flag failed">needs link</span>}
+                        {t.resolved_url && (
+                          <a className="faint" href={t.resolved_url} target="_blank" rel="noreferrer"
+                            style={{ fontSize: 10, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {t.resolved_url}
+                          </a>
+                        )}
+                      </span>
+                    </div>
+                    {!t.song_id && <ResolveInput track={t} onResolved={onTrackResolved} />}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

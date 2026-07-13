@@ -4,6 +4,7 @@ import { MixImporter } from "./components/MixImporter";
 import { TrackList } from "./components/TrackList";
 import { MashupSuggestions } from "./components/MashupSuggestions";
 import { AuditionStudio } from "./components/AuditionStudio";
+import { MixStudio } from "./components/MixStudio";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { SetupWizard } from "./components/SetupWizard";
 import { api } from "./api";
@@ -15,6 +16,7 @@ const TABS = [
   ["library", "Library"],
   ["mashups", "Mashups"],
   ["audition", "Audition"],
+  ["studio", "Studio"],
   ["database", "Database"],
 ];
 
@@ -141,6 +143,7 @@ export default function App() {
       {tab === "audition" && (
         <AuditionStudio seed={auditionSeed} onStatus={setHeaderStatus} />
       )}
+      {tab === "studio" && <MixStudio onStatus={setHeaderStatus} />}
       {tab === "database" && <DatabaseBrowser />}
 
       <Toast />
