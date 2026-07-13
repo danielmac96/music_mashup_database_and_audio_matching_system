@@ -24,6 +24,7 @@ from api.routes import mixes as mix_routes  # noqa: E402
 from api.routes import models as model_routes  # noqa: E402
 from api.routes import playlists as playlist_routes  # noqa: E402
 from api.routes import settings as settings_routes  # noqa: E402
+from api.routes import studio as studio_routes  # noqa: E402
 from api.routes import tracks as track_routes  # noqa: E402
 
 
@@ -58,6 +59,7 @@ app.include_router(settings_routes.router, prefix="/api/settings", tags=["settin
 app.include_router(mix_routes.router, prefix="/api/mixes", tags=["mixes"])
 app.include_router(dataset_routes.router, prefix="/api/datasets", tags=["datasets"])
 app.include_router(model_routes.router, prefix="/api/models", tags=["models"])
+app.include_router(studio_routes.router, prefix="/api/studio", tags=["studio"])
 
 
 @app.get("/api/health")

@@ -158,6 +158,17 @@ export const api = {
   exportAudioUrl: (vocalId, instId) =>
     `/api/mashups/export/audio?vocal_id=${vocalId}&inst_id=${instId}`,
 
+  // ── Studio (DAW tab) ───────────────────────────────────────────────────────
+  // Render the arrangement server-side (decoupled stretch/pitch per clip) to a
+  // WAV. clips: [{ song_id, stem, offset_sec, rate, semitones, gain }]
+  startMixdown: (clips) =>
+    jsonFetch("/api/studio/mixdown", {
+      method: "POST",
+      body: JSON.stringify({ clips }),
+    }),
+
+  mixdownAudioUrl: (token) => `/api/studio/mixdown/${token}/audio`,
+
   // ── Mixes (1001tracklists ingestion) ──────────────────────────────────────
   importMix: (url) =>
     jsonFetch("/api/mixes/import", { method: "POST", body: JSON.stringify({ url }) }),

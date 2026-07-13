@@ -137,6 +137,33 @@ previews get a **Fix preview** action.
 
 ---
 
+## Studio tab (multi-track mashup DAW)
+
+**Audition** is the fast two-stem playground; **Studio** is the arrangement view
+for building a full Two Friends-style mashup out of *any number* of stems on one
+timeline:
+
+- **＋ Add track** puts any library stem (vocals / instrumental / full) on its own
+  lane. The same song can appear on several lanes.
+- Every lane shows its waveform, its own beat grid, and the detected structure
+  ribbon (verse/chorus/drop), plus a live key chip that follows the pitch shift.
+- **SYNC** conforms a lane to the project BPM with a decoupled time-stretch
+  (half/double-time aware — a 75 BPM vocal syncs to a 150 BPM project at ×1, not
+  ×2). Change the project BPM and every synced lane follows.
+- Drag a clip to move it — with snap set to `bar`/`beat`, the clip's downbeats
+  click onto the project grid. `←`/`→` nudge the selected lane by a beat
+  (shift = 10 ms), `space` plays, `L` loops 8 bars, shift-drag the ruler for a
+  custom loop, wheel pans and ctrl+wheel zooms.
+- Per lane: gain, mute, solo, pitch ±12 st (live, no restart). Playback runs all
+  lanes sample-locked to one clock through the same SoundTouch worklet engine as
+  Audition, so tempo and pitch stay decoupled in real time.
+- The arrangement auto-saves locally and restores when you come back.
+- **Export WAV** renders the arrangement server-side (`POST /api/studio/mixdown`,
+  librosa phase-vocoder per clip — same math, offline quality) and hands back a
+  download.
+
+---
+
 ## Development mode (two terminals, hot reload)
 
 For frontend work, run Vite's dev server (hot reload) alongside the API. Vite
