@@ -15,14 +15,9 @@ def run(job_id: str, vocal_id: int, inst_id: int,
         inst_start: float | None = None) -> None:
     jobs.update(job_id, status="running", message="Rendering mashup preview…")
 
-    def _on_progress(pct, msg: str) -> None:
-        fields: dict = {"message": msg}
-        if pct is not None:
-            fields["progress"] = pct
-        jobs.update(job_id, **fields)
-
     try:
-        out = build_preview(vocal_id, inst_id, on_progress=_on_progress,
+        out = build_preview(vocal_id, inst_id,
+                            on_progress=jobs.progress_updater(job_id),
                             vocal_start=vocal_start, inst_start=inst_start,
                             force=True)
     except Exception as exc:  # noqa: BLE001

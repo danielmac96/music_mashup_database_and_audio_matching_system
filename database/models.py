@@ -6,7 +6,7 @@ from typing import Optional, List, Dict
 import sqlite3
 import json
 from pathlib import Path
-from config import DB_PATH
+from config import DB_PATH, format_duration
 
 
 # ── Schema ───────────────────────────────────────────────────────────────────
@@ -200,16 +200,28 @@ CREATE TABLE IF NOT EXISTS models (
 
 # ── Connection helper ─────────────────────────────────────────────────────────
 
+# Paths whose schema/migrations have already run this process. get_conn is
+# called for every query, so re-running the full DDL + three migration scans
+# on each open is wasted work; skip it once a path is known-initialized.
+# (A deleted DB file — e.g. cli --reset — re-initializes because the file
+# existence check below fails.)
+_INITIALIZED_PATHS: set = set()
+
+
 def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
     """Open the DB, creating the file and tables if they do not exist yet."""
+    key = str(db_path)
+    needs_init = key not in _INITIALIZED_PATHS or not db_path.exists()
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
-    _migrate_songs_columns(conn)
-    _migrate_features_columns(conn)
-    _migrate_candidates_columns(conn)
-    conn.commit()
+    if needs_init:
+        conn.executescript(SCHEMA)
+        _migrate_songs_columns(conn)
+        _migrate_features_columns(conn)
+        _migrate_candidates_columns(conn)
+        conn.commit()
+        _INITIALIZED_PATHS.add(key)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -411,24 +423,13 @@ def update_song_error(song_id: int, status: str, message: str = "",
     conn.close()
 
 
-def _format_duration_str_from_secs(secs: float) -> str:
-    if not secs or secs <= 0:
-        return ""
-    s = int(round(secs))
-    m, sec = divmod(s, 60)
-    h, m = divmod(m, 60)
-    if h:
-        return f"{h}:{m:02d}:{sec:02d}"
-    return f"{m}:{sec:02d}"
-
-
 def update_song_duration(song_id: int, duration_secs: float,
                          db_path: Path = DB_PATH):
     conn = get_conn(db_path)
     conn.execute(
         """UPDATE songs SET duration_secs=?, duration_str=?,
                updated_at=datetime('now') WHERE id=?""",
-        (duration_secs, _format_duration_str_from_secs(duration_secs), song_id),
+        (duration_secs, format_duration(duration_secs), song_id),
     )
     conn.commit()
     conn.close()

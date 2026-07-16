@@ -16,15 +16,10 @@ def run(job_id: str, vocal_id: int, inst_id: int, anchor: str,
         stretch: float | None = None, shift: int | None = None) -> None:
     jobs.update(job_id, status="running", message="Adjusting stem…")
 
-    def _on_progress(pct, msg: str) -> None:
-        fields: dict = {"message": msg}
-        if pct is not None:
-            fields["progress"] = pct
-        jobs.update(job_id, **fields)
-
     try:
         out = build_adjusted_stem(vocal_id, inst_id, anchor,
-                                  on_progress=_on_progress, force=True,
+                                  on_progress=jobs.progress_updater(job_id),
+                                  force=True,
                                   stretch_override=stretch, shift_override=shift)
     except Exception as exc:  # noqa: BLE001
         log.exception("build_adjusted_stem raised")

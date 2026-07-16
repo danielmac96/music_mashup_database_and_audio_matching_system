@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
-from config import BEAT_TRIM_SECS, TOP_K_RESULTS
+from config import BEAT_TRIM_SECS, TOP_K_RESULTS, format_duration
 from database.models import (
     init_db, upsert_song, update_song_status, update_song_duration,
     upsert_stem, upsert_features, get_all_songs, get_songs_by_status,
@@ -35,9 +35,12 @@ from downloader.download import download_track
 from stems.separate      import separate
 from analysis.analyze    import analyze_file
 from analysis.structure  import detect_sections
-from matcher.match       import find_matches, format_results
 
 log = logging.getLogger(__name__)
+
+
+def _fmt_secs(secs: float) -> str:
+    return format_duration(secs) or "0:00"
 
 
 # ── Logging helpers ──────────────────────────────────────────────────────────
@@ -380,14 +383,3 @@ def run_match(seed_song_id: int = 1,
     return all_pairs
 
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-def _fmt_secs(secs: float) -> str:
-    if not secs or secs <= 0:
-        return "0:00"
-    s = int(round(secs))
-    m, sec = divmod(s, 60)
-    h, m = divmod(m, 60)
-    if h:
-        return f"{h}:{m:02d}:{sec:02d}"
-    return f"{m}:{sec:02d}"

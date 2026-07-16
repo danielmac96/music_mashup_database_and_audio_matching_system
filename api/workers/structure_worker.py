@@ -17,14 +17,8 @@ def run(job_id: str, song_id: int) -> None:
     jobs.update(job_id, status="running", song_id=song_id,
                 message="Detecting song structure (chorus/verse/drop)…")
 
-    def _on_progress(pct, msg: str) -> None:
-        fields: dict = {"message": msg}
-        if pct is not None:
-            fields["progress"] = pct
-        jobs.update(job_id, **fields)
-
     try:
-        result = stages.do_structure(song_id, _on_progress)
+        result = stages.do_structure(song_id, jobs.progress_updater(job_id))
     except stages.StageError as exc:
         jobs.fail(job_id, str(exc), exc.traceback_text)
         return

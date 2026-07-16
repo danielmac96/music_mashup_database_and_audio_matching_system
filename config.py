@@ -220,3 +220,15 @@ def sanitize_filename_chars(name: str) -> str:
     """Replace characters not safe for a filename/foldername with underscores.
     Callers handle their own truncation/collapsing on top of this."""
     return re.sub(r"[^\w]", "_", name or "")
+
+
+def format_duration(secs) -> str:
+    """Seconds → 'm:ss' (or 'h:mm:ss'). Empty string for missing/zero."""
+    if not secs or secs <= 0:
+        return ""
+    s = int(round(secs))
+    m, sec = divmod(s, 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}:{m:02d}:{sec:02d}"
+    return f"{m}:{sec:02d}"

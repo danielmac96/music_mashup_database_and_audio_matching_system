@@ -30,15 +30,10 @@ def run(job_id: str, song_id: int) -> None:
         jobs.fail(job_id, f"Song {song_id} not found")
         return
 
-    def _on_progress(pct, msg: str) -> None:
-        fields: dict = {"message": msg}
-        if pct is not None:
-            fields["progress"] = pct
-        jobs.update(job_id, **fields)
-
     try:
         res = reverify_track(row["id"], row["title"], row["source_url"],
-                             artist=row["artist"] or "", on_progress=_on_progress)
+                             artist=row["artist"] or "",
+                             on_progress=jobs.progress_updater(job_id))
     except Exception as exc:  # noqa: BLE001
         log.exception("reverify_track raised")
         tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))

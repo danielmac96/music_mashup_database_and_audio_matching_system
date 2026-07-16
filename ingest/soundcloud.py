@@ -7,6 +7,8 @@ import sys
 import logging
 from typing import Any, Optional
 
+from config import format_duration
+
 log = logging.getLogger(__name__)
 
 
@@ -180,15 +182,6 @@ def _int_or_zero(val: Any) -> int:
         return 0
 
 
-def _format_duration_str(seconds: float) -> str:
-    if not seconds or seconds <= 0:
-        return ""
-    s = int(round(seconds))
-    m, sec = divmod(s, 60)
-    h, m = divmod(m, 60)
-    if h:
-        return f"{h}:{m:02d}:{sec:02d}"
-    return f"{m}:{sec:02d}"
 
 
 def _thumbnail_url(info: dict) -> str:
@@ -217,7 +210,7 @@ def _normalise_flat(info: dict) -> dict:
         "artist_id": _str_or_empty(info.get("uploader_id")),
         "track_id": _str_or_empty(info.get("id")),
         "duration_secs": duration_f,
-        "duration_str": _format_duration_str(duration_f),
+        "duration_str": format_duration(duration_f),
         "source_url": info.get("url") or info.get("webpage_url") or "",
         "upload_date": "",
         "likes": 0,
@@ -248,7 +241,7 @@ def _normalise(info: dict) -> dict:
         "artist_id": _str_or_empty(info.get("uploader_id")),
         "track_id": _str_or_empty(info.get("id")),
         "duration_secs": duration_f,
-        "duration_str": _format_duration_str(duration_f),
+        "duration_str": format_duration(duration_f),
         "source_url": webpage,
         "upload_date": _str_or_empty(info.get("upload_date")),
         "likes": _int_or_zero(info.get("like_count")),

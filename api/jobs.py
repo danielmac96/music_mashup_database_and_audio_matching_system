@@ -4,20 +4,36 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 JOBS: dict[str, dict] = {}
 _LOCK = Lock()
+
+# Cap on finished (completed/failed) jobs kept for the UI's history views.
+# Oldest terminal jobs are dropped first; active jobs are never pruned.
+MAX_TERMINAL_JOBS = 500
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _prune_terminal_locked() -> None:
+    """Drop the oldest finished jobs beyond MAX_TERMINAL_JOBS (caller holds _LOCK)."""
+    terminal = [j for j in JOBS.values() if j.get("status") in ("completed", "failed")]
+    excess = len(terminal) - MAX_TERMINAL_JOBS
+    if excess <= 0:
+        return
+    terminal.sort(key=lambda j: j.get("created_at") or "")
+    for job in terminal[:excess]:
+        JOBS.pop(job["id"], None)
+
+
 def new_job(kind: str, message: str = "Queued",
             song_id: Optional[int] = None, stage: Optional[str] = None) -> str:
     job_id = uuid.uuid4().hex
     with _LOCK:
+        _prune_terminal_locked()
         JOBS[job_id] = {
             "id": job_id,
             "kind": kind,
@@ -42,6 +58,22 @@ def update(job_id: str, **fields: Any) -> None:
             return
         job.update(fields)
         job["updated_at"] = _now()
+
+
+def progress_updater(job_id: str, stage: Optional[str] = None) -> Callable:
+    """Standard (pct|None, message) callback the pipeline stages expect.
+
+    Every worker used to define this same closure inline; keep it in one place.
+    With `stage`, messages are prefixed 'stage: …' and the job's stage field is
+    kept current (used by the auto-chain pipeline worker)."""
+    def _on_progress(pct: Optional[int], msg: str) -> None:
+        fields: dict[str, Any] = {"message": f"{stage}: {msg}" if stage else msg}
+        if stage:
+            fields["stage"] = stage
+        if pct is not None:
+            fields["progress"] = pct
+        update(job_id, **fields)
+    return _on_progress
 
 
 def done(job_id: str, result: Optional[dict] = None) -> None:

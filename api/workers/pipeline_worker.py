@@ -47,15 +47,6 @@ def _section_count(song_id: int) -> int:
     return row["n"] if row else 0
 
 
-def _cb(job_id: str, stage: str):
-    def _on_progress(pct, msg: str) -> None:
-        fields: dict = {"message": f"{stage}: {msg}", "stage": stage}
-        if pct is not None:
-            fields["progress"] = pct
-        jobs.update(job_id, **fields)
-    return _on_progress
-
-
 def run(job_id: str, song_id: int) -> None:
     song = get_song(song_id)
     if not song:
