@@ -7,12 +7,33 @@
 # are missing — see the "First run" section in readme.md.
 
 # ── Download + ingest ─────────────────────────────────────────────────────────
-yt-dlp>=2024.12.13         # SoundCloud/YouTube metadata + audio (keep upgraded)
+yt-dlp>=2026.7.4           # SoundCloud/YouTube metadata + audio. SoundCloud
+                           # changes its API often — stale yt-dlp breaks downloads
+                           # (the Import tab warns and offers one-click update).
 
 # ── Stem separation (Demucs + PyTorch) ────────────────────────────────────────
-torch==2.2.2
-torchaudio==2.2.2
+torch==2.5.1
+torchaudio==2.5.1
+torchvision==0.20.1        # must match torch minor version (pulled by onnx2torch)
 demucs==4.0.1              # htdemucs; downloads ~400MB model weights on first run
+
+# ── Fast stem separation (UVR MDX-Net via ONNX) — the "Fast" toggle ──────────
+# audio-separator itself is NOT listed here because no release resolves against
+# this file's pins (new releases need numpy>=2, which breaks librosa; 0.30.0 —
+# the last numpy<2 release — pins torch<2.5). Install it dep-less on top:
+#   pip install audio-separator==0.30.0 --no-deps
+# Its actual runtime deps are declared below so `pip install -r` provides them.
+onnxruntime==1.19.2        # MDX-Net inference (CPU); numpy<2 compatible
+onnx>=1.16,<1.18
+onnx2torch>=1.5
+resampy>=0.4
+samplerate==0.1.0
+ml_collections
+diffq-fixed>=0.2 ; sys_platform == "win32"
+diffq>=0.2 ; sys_platform != "win32"
+rotary-embedding-torch>=0.6.1,<0.7.0
+beartype>=0.18.5
+pydub>=0.25
 
 # ── Audio analysis ────────────────────────────────────────────────────────────
 numpy==1.26.4              # pinned <2 for librosa

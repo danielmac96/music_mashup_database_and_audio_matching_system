@@ -67,6 +67,25 @@ def health() -> dict:
     return {"ok": True}
 
 
+def _ytdlp_version_info() -> tuple[str | None, bool]:
+    """Installed yt-dlp version and whether it looks stale (>90 days old).
+    yt-dlp versions are dates (YYYY.M.D) and SoundCloud/YouTube change their
+    APIs often enough that a stale build is the #1 cause of failed downloads.
+    Offline check only — no network call."""
+    from datetime import date, datetime
+
+    try:
+        from importlib.metadata import version
+        ver = version("yt-dlp")
+    except Exception:  # noqa: BLE001
+        return None, False
+    try:
+        released = datetime.strptime(ver.split(".post")[0], "%Y.%m.%d").date()
+        return ver, (date.today() - released).days > 90
+    except ValueError:
+        return ver, False
+
+
 @app.get("/api/health/deps")
 def health_deps() -> dict:
     """Report whether the external tools the pipeline needs are available, so a
@@ -84,13 +103,16 @@ def health_deps() -> dict:
         except Exception:  # noqa: BLE001 — a broken install shouldn't 500 the check
             return False
 
+    ytdlp_version, ytdlp_stale = _ytdlp_version_info()
+
     deps = [
         {"name": "ffmpeg", "ok": _on_path("ffmpeg"),
          "detail": "audio extraction/decoding (required)", "required": True},
         {"name": "ffprobe", "ok": _on_path("ffprobe"),
          "detail": "duration checks (required)", "required": True},
         {"name": "yt-dlp", "ok": _importable("yt_dlp"),
-         "detail": "SoundCloud/YouTube metadata + download (required)", "required": True},
+         "detail": "SoundCloud/YouTube metadata + download (required)", "required": True,
+         "version": ytdlp_version, "stale": ytdlp_stale},
         {"name": "demucs", "ok": _importable("demucs"),
          "detail": "stem separation (required to split vocals/instrumental)", "required": True},
         {"name": "librosa", "ok": _importable("librosa"),
@@ -100,7 +122,48 @@ def health_deps() -> dict:
          "required": False},
     ]
     missing = [d["name"] for d in deps if d["required"] and not d["ok"]]
-    return {"ok": not missing, "missing": missing, "deps": deps}
+    stale = [d["name"] for d in deps if d.get("stale")]
+    return {"ok": not missing, "missing": missing, "stale": stale, "deps": deps}
+
+
+@app.post("/api/health/update-ytdlp")
+def update_ytdlp() -> dict:
+    """Upgrade yt-dlp in the server's environment (pip install -U yt-dlp).
+    SoundCloud API changes are the top cause of download failures, so the
+    Import tab offers this as a one-click fix when the version looks stale."""
+    import subprocess
+    from importlib.metadata import version
+
+    old_version, _ = _ytdlp_version_info()
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"],
+            capture_output=True, text=True, timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="pip install timed out after 180s")
+
+    output_tail = (result.stdout or "")[-1000:]
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"pip install failed: {(result.stderr or output_tail)[-500:]}",
+        )
+
+    # yt-dlp runs as a subprocess (fresh interpreter), so the new version takes
+    # effect immediately — no server restart needed. importlib.metadata caches
+    # per-lookup, not per-process, so re-reading gives the new version.
+    try:
+        new_version = version("yt-dlp")
+    except Exception:  # noqa: BLE001
+        new_version = None
+    try:
+        from downloader.download import _ytdlp_version
+        _ytdlp_version.cache_clear()
+    except Exception:  # noqa: BLE001
+        pass
+    return {"ok": True, "old_version": old_version, "new_version": new_version,
+            "output_tail": output_tail}
 
 
 # ── Serve the built frontend (production / Docker) ────────────────────────────

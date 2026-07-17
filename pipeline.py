@@ -190,8 +190,9 @@ def run_stems() -> dict:
             stems = None
 
         if stems:
-            upsert_stem(sid, "vocals",        str(stems["vocals"]))
-            upsert_stem(sid, "instrumental",  str(stems["instrumental"]))
+            sep_tag = stems.get("separator")  # None when existing files reused
+            upsert_stem(sid, "vocals",        str(stems["vocals"]), separator=sep_tag)
+            upsert_stem(sid, "instrumental",  str(stems["instrumental"]), separator=sep_tag)
             upsert_stem(sid, "full",          str(path))
             update_song_status(sid, "stemmed")
             results[sid] = stems

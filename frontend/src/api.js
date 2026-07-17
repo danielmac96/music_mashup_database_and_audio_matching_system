@@ -23,10 +23,14 @@ export const api = {
       body: JSON.stringify({ url }),
     }),
 
-  ingestTracks: (tracks) =>
+  // Poll progressive metadata hydration for a playlist preview session.
+  getPreviewStatus: (previewId) =>
+    jsonFetch(`/api/playlists/preview/${previewId}`),
+
+  ingestTracks: (tracks, previewId = null) =>
     jsonFetch("/api/playlists/ingest", {
       method: "POST",
-      body: JSON.stringify({ tracks }),
+      body: JSON.stringify({ tracks, preview_id: previewId }),
     }),
 
   getTracks: () => jsonFetch("/api/tracks"),
@@ -71,6 +75,9 @@ export const api = {
   // Whether ffmpeg/ffprobe/yt-dlp/demucs/librosa are available on the server.
   getDeps: () => jsonFetch("/api/health/deps"),
 
+  // pip install -U yt-dlp on the server (stale yt-dlp breaks SoundCloud).
+  updateYtdlp: () => jsonFetch("/api/health/update-ytdlp", { method: "POST" }),
+
   // Settings / first-run wizard.
   getSettings: () => jsonFetch("/api/settings"),
 
@@ -80,13 +87,15 @@ export const api = {
       body: JSON.stringify({ path }),
     }),
 
-  saveSettings: ({ audioRoot = null, dbPath = null, pipelineWorkers = null } = {}) =>
+  saveSettings: ({ audioRoot = null, dbPath = null, pipelineWorkers = null,
+                   stemSeparator = null } = {}) =>
     jsonFetch("/api/settings", {
       method: "POST",
       body: JSON.stringify({
         audio_root: audioRoot,
         db_path: dbPath,
         pipeline_workers: pipelineWorkers,
+        stem_separator: stemSeparator,
       }),
     }),
 

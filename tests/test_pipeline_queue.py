@@ -122,6 +122,49 @@ def test_structure_failure_is_non_fatal(env, monkeypatch):
     assert jobs.get(jid)["status"] == "completed"           # job succeeds
 
 
+def test_stage_queues_route_track_through_pipeline(env, monkeypatch):
+    """A queued track hops download → stems → analysis queues and completes.
+    Queues are drained synchronously here (no worker threads) so the routing
+    logic is tested without daemon-thread/monkeypatch lifetime hazards."""
+    models = env
+    _mock_stages(monkeypatch)
+    import api.queue_runner as queue_runner
+    importlib.reload(queue_runner)  # rebind the reloaded api.jobs from env
+    import api.workers.pipeline_worker as pw
+    import api.jobs as jobs
+
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/1", status="queued")
+    jid = queue_runner.enqueue_song(sid)
+
+    for expected in ("download", "stems", "analysis"):
+        job_id, song_id = queue_runner._QUEUES[expected].get_nowait()
+        assert song_id == sid
+        outcome = pw.run_stage(job_id, song_id, expected)
+        if outcome == "next":
+            queue_runner._dispatch(job_id, song_id)
+
+    assert outcome == "done"
+    assert models.get_song(sid)["status"] == "analysed"
+    assert len(models.get_sections(sid)) == 1
+    assert jobs.get(jid)["status"] == "completed"
+    assert queue_runner.queued_count() == 0
+
+
+def test_dispatch_resumes_mid_pipeline_track_at_right_stage(env, monkeypatch):
+    """A 'downloaded' track (server restarted mid-pipeline) enters at stems,
+    not download — the status-derived resume contract."""
+    models = env
+    _mock_stages(monkeypatch)
+    import api.queue_runner as queue_runner
+    importlib.reload(queue_runner)
+
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/2",
+                             status="downloaded")
+    queue_runner.enqueue_song(sid)
+    assert queue_runner._QUEUES["download"].qsize() == 0
+    assert queue_runner._QUEUES["stems"].qsize() == 1
+
+
 def test_error_records_last_error_and_progress_clears_it(env):
     models = env
     import api.workers.stages as stages

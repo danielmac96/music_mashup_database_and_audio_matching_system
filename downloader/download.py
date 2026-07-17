@@ -9,6 +9,7 @@ Output: MP3 in config.RAW_DIR / "{title}_{artist}.mp3"
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Callable, NamedTuple, Optional, Tuple
 import subprocess
 import sys
@@ -19,6 +20,67 @@ from pathlib import Path
 from config import RAW_DIR, YTDLP_FORMAT, YTDLP_FORMAT_FALLBACK, YTDLP_POSTARGS
 
 log = logging.getLogger(__name__)
+
+
+class DownloadError(RuntimeError):
+    """Download failed with a known reason. ``kind`` is a machine-readable
+    category: drm / premium / geo / private / removed / network / outdated /
+    unknown. The message is user-facing and lands in ``songs.last_error``."""
+
+    def __init__(self, message: str, kind: str = "unknown"):
+        super().__init__(message)
+        self.kind = kind
+
+
+@lru_cache(maxsize=1)
+def _ytdlp_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("yt-dlp")
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _extract_ytdlp_errors(output: str) -> list[str]:
+    """Pull yt-dlp ERROR lines out of the merged stdout/stderr stream."""
+    return [ln.strip() for ln in output.splitlines() if ln.strip().startswith("ERROR")]
+
+
+# (regex, kind, user-facing message) — first match on the joined lowercased
+# ERROR lines wins, so order encodes priority. {ver} = installed yt-dlp version.
+_ERROR_CLASSES: tuple[tuple[str, str, str], ...] = (
+    (r"drm.protected", "drm",
+     "SoundCloud serves this track DRM-protected — it cannot be downloaded directly."),
+    (r"go\+|premium|subscribers", "premium",
+     "This track is for SoundCloud Go+ subscribers only."),
+    (r"not available in your country|geo.?restrict", "geo",
+     "This track is geo-blocked in your region."),
+    (r"private|sign in|log ?in|authentication", "private",
+     "This track is private or requires a SoundCloud login."),
+    (r"unable to download json metadata.{0,80}404", "outdated",
+     "SoundCloud rejected the request (HTTP 404). The track may have been removed, "
+     "or yt-dlp {ver} is outdated — use the Update yt-dlp button on the Import tab."),
+    (r"http error 404|not found|no longer available|has been removed", "removed",
+     "Track not found — it may have been removed from SoundCloud."),
+    (r"getaddrinfo|timed out|connection|temporary failure|unable to download webpage",
+     "network",
+     "Network error while downloading — check your connection and retry."),
+)
+
+# Failure kinds where SoundCloud has the track but won't serve it — a
+# title/artist YouTube search is a legitimate way to get the same song.
+_GATED_KINDS = frozenset({"drm", "premium", "geo"})
+
+
+def classify_download_error(error_lines: list[str]) -> tuple[str, str]:
+    """Map raw yt-dlp ERROR lines to (kind, user-facing message)."""
+    joined = " ".join(error_lines).lower()
+    if joined:
+        for pattern, kind, template in _ERROR_CLASSES:
+            if re.search(pattern, joined):
+                return kind, template.format(ver=_ytdlp_version())
+        return "unknown", error_lines[0][:400]
+    return "unknown", "Download failed — yt-dlp gave no error detail (see server logs)."
 
 # Files shorter than this are considered previews and trigger the YT fallback
 PREVIEW_MAX_SECS = 35
@@ -69,7 +131,9 @@ def _youtube_attempts() -> tuple[_YtAttempt, ...]:
 
 def download_track(song_id: int, title: str, source_url: str,
                    artist: str = "",
-                   on_progress: ProgressCb = None) -> Optional[DownloadResult]:
+                   on_progress: ProgressCb = None) -> DownloadResult:
+    """Download a track's audio. Returns a DownloadResult on success; raises
+    DownloadError with a user-facing reason on failure (never returns None)."""
     out_path = RAW_DIR / f"{_safe(title)}_{_safe(artist)}.mp3"
 
     if out_path.exists():
@@ -94,7 +158,8 @@ def download_track(song_id: int, title: str, source_url: str,
         on_progress(0, "Downloading from YouTube…" if is_yt_source
                     else "Downloading from SoundCloud…")
 
-    path = _download_ytdlp(source_url, out_path, on_progress=on_progress)
+    dl = _download_ytdlp(source_url, out_path, on_progress=on_progress)
+    path = dl.path
 
     if path and path.exists() and not is_yt_source:
         duration = _get_duration(path)
@@ -110,11 +175,28 @@ def download_track(song_id: int, title: str, source_url: str,
             if fb:
                 yt_path, yt_secs = fb
                 return DownloadResult(yt_path, yt_secs)
-            return None
+            raise DownloadError(
+                "SoundCloud served only a Go+ 30s preview and no full-length "
+                "YouTube match was found.", kind="premium")
 
     if path and path.exists():
         return DownloadResult(path, _get_duration(path))
-    return None
+
+    kind, msg = classify_download_error(dl.error_lines)
+
+    # SoundCloud has the track but won't serve it (DRM / Go+ / geo) — the same
+    # YouTube title search used for Go+ previews can still get the full song.
+    if not is_yt_source and kind in _GATED_KINDS:
+        log.warning(f"SoundCloud blocked this track ({kind}) — trying YouTube fallback")
+        if on_progress:
+            on_progress(None, "SoundCloud blocked this track — searching YouTube…")
+        fb = _fallback_youtube(title, artist, out_path, on_progress=on_progress)
+        if fb:
+            yt_path, yt_secs = fb
+            return DownloadResult(yt_path, yt_secs)
+        msg += " No full-length YouTube match was found either."
+
+    raise DownloadError(msg, kind=kind)
 
 
 class ReverifyResult(NamedTuple):
@@ -145,9 +227,13 @@ def reverify_track(song_id: int, title: str, source_url: str,
         return ReverifyResult(out_path, disk_dur, replaced=False)
 
     was_preview = disk_dur is not None and disk_dur <= PREVIEW_MAX_SECS
-    result = download_track(song_id, title, source_url, artist=artist,
-                            on_progress=on_progress)
-    if not result or not result.path.exists():
+    try:
+        result = download_track(song_id, title, source_url, artist=artist,
+                                on_progress=on_progress)
+    except DownloadError as exc:
+        log.warning(f"Reverify re-download failed: {exc}")
+        return ReverifyResult(None, None, replaced=False)
+    if not result.path.exists():
         return ReverifyResult(None, None, replaced=False)
 
     new_dur = result.duration_secs
@@ -180,6 +266,11 @@ def _cleanup_stem_outputs(out_path: Path) -> None:
             pass
 
 
+class _RunOutcome(NamedTuple):
+    ok: bool
+    error_lines: list
+
+
 def _run_ytdlp(
     url: str,
     out_path: Path,
@@ -189,9 +280,10 @@ def _run_ytdlp(
     use_cookies: bool,
     playlist_item: Optional[int] = None,
     on_progress: ProgressCb = None,
-) -> bool:
+) -> _RunOutcome:
     """
-    Run yt-dlp once. Returns True if process exited 0 and an output file exists.
+    Run yt-dlp once. ok=True means it exited 0 and an output file exists;
+    on failure error_lines carries the raw yt-dlp ERROR lines for classification.
     """
     from api.workers._progress import parse_ytdlp, stream_subprocess
 
@@ -229,24 +321,34 @@ def _run_ytdlp(
         result = stream_subprocess(cmd, _on_line, timeout=300)
     except FileNotFoundError:
         log.error("Python or yt-dlp not found. Install with: pip install yt-dlp")
-        return False
+        return _RunOutcome(False, ["ERROR: yt-dlp is not installed on the server "
+                                   "(pip install yt-dlp)"])
     except subprocess.TimeoutExpired:
         log.error(f"Download timed out: {url}")
-        return False
+        return _RunOutcome(False, ["ERROR: download timed out after 300s"])
 
     if result.returncode != 0:
-        log.warning(f"yt-dlp attempt failed [{result.returncode}]: {result.stdout[-400:]}")
-        return False
+        errors = _extract_ytdlp_errors(result.stdout)
+        log.warning(
+            f"yt-dlp attempt failed [{result.returncode}]: "
+            f"{' | '.join(errors) if errors else result.stdout[-400:]}"
+        )
+        return _RunOutcome(False, errors)
 
     if out_path.exists():
-        return True
+        return _RunOutcome(True, [])
 
     for candidate in out_path.parent.glob(f"{out_path.stem}.*"):
         candidate.rename(out_path)
-        return True
+        return _RunOutcome(True, [])
 
     log.warning("yt-dlp exited 0 but output file not found")
-    return False
+    return _RunOutcome(False, ["ERROR: yt-dlp exited 0 but produced no output file"])
+
+
+class _DlOutcome(NamedTuple):
+    path: Optional[Path]
+    error_lines: list
 
 
 def _download_ytdlp(
@@ -255,15 +357,16 @@ def _download_ytdlp(
     *,
     playlist_item: Optional[int] = None,
     on_progress: ProgressCb = None,
-) -> Optional[Path]:
+) -> _DlOutcome:
     """
     Download with yt-dlp. YouTube / ytsearch URLs use a retry ladder;
     other sites (e.g. SoundCloud) use a single plain invocation.
+    On failure error_lines carries the yt-dlp ERROR lines (last attempt's).
     """
     _cleanup_stem_outputs(out_path)
 
     if not _is_youtube_like(url):
-        ok = _run_ytdlp(
+        run = _run_ytdlp(
             url,
             out_path,
             YTDLP_FORMAT,
@@ -272,17 +375,18 @@ def _download_ytdlp(
             playlist_item=playlist_item,
             on_progress=on_progress,
         )
-        if ok and out_path.exists():
+        if run.ok and out_path.exists():
             log.info(f"Downloaded: {out_path.name}")
-            return out_path
+            return _DlOutcome(out_path, [])
         log.error("yt-dlp failed for non-YouTube URL after 1 attempt")
-        return None
+        return _DlOutcome(None, run.error_lines)
 
+    last_errors: list = []
     for att in _youtube_attempts():
         _cleanup_stem_outputs(out_path)
         if on_progress:
             on_progress(None, f"YouTube attempt: {att.label}")
-        ok = _run_ytdlp(
+        run = _run_ytdlp(
             url,
             out_path,
             att.format_str,
@@ -291,12 +395,14 @@ def _download_ytdlp(
             playlist_item=playlist_item,
             on_progress=on_progress,
         )
-        if ok and out_path.exists():
+        if run.ok and out_path.exists():
             log.info(f"Downloaded ({att.label}): {out_path.name}")
-            return out_path
+            return _DlOutcome(out_path, [])
+        if run.error_lines:
+            last_errors = run.error_lines
 
     log.error(f"yt-dlp failed for URL after all YouTube retries: {url[:120]}")
-    return None
+    return _DlOutcome(None, last_errors)
 
 
 # ── YouTube fallback ──────────────────────────────────────────────────────────
@@ -322,7 +428,8 @@ def _fallback_youtube(title: str, artist: str, out_path: Path,
             log.info(f"YouTube search: {query}  [trying result #{rank}]")
             if on_progress:
                 on_progress(None, f"YT search #{rank}: {clean_title[:40]}")
-            path = _download_ytdlp(query, out_path, playlist_item=rank, on_progress=on_progress)
+            path = _download_ytdlp(query, out_path, playlist_item=rank,
+                                   on_progress=on_progress).path
             if path and path.exists():
                 duration = _get_duration(path)
                 if duration and duration > PREVIEW_MAX_SECS:

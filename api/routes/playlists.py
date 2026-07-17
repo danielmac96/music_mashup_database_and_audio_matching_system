@@ -1,13 +1,16 @@
-"""Playlist endpoints: preview metadata, ingest into DB."""
+"""Playlist endpoints: preview metadata (with progressive hydration), ingest into DB."""
 from __future__ import annotations
 
 import logging
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from api import queue_runner
+from config import ENRICH_WORKERS
+
+from api import preview_hydrator, queue_runner
 from database.models import upsert_song
 from ingest.soundcloud import enrich_track, fetch_playlist_flat, fetch_single
 from ingest.sources import classify_url
@@ -23,6 +26,7 @@ class PreviewRequest(BaseModel):
 
 class IngestRequest(BaseModel):
     tracks: list[dict[str, Any]]
+    preview_id: Optional[str] = None
 
 
 @router.post("/preview")
@@ -41,14 +45,52 @@ def preview(req: PreviewRequest) -> dict:
     is_single = kind == "track"
     if is_single:
         track = fetch_single(url)
-        tracks = [track] if track else []
-    else:
-        # Flat enumerate so geo-restricted / Go+ / removed tracks still appear in the count.
-        # This is the fix for the old `/sets/`-only check, which silently ingested
-        # just the first track of a YouTube playlist (…?list=… with no v=).
-        tracks = fetch_playlist_flat(url)
+        tracks = [dict(track, hydrated=True)] if track else []
+        if track and track.get("source_url"):
+            preview_hydrator.cache_put(track["source_url"], track)
+        return {"is_single": True, "source": source, "count": len(tracks),
+                "tracks": tracks, "preview_id": None}
 
-    return {"is_single": is_single, "source": source, "count": len(tracks), "tracks": tracks}
+    # Flat enumerate so geo-restricted / Go+ / removed tracks still appear in the count.
+    # This is the fix for the old `/sets/`-only check, which silently ingested
+    # just the first track of a YouTube playlist (…?list=… with no v=).
+    # Flat rows are metadata-sparse; the hydrator back-fills title/artist/etc.
+    # in the background and the frontend polls GET /preview/{id} to merge them.
+    tracks = fetch_playlist_flat(url)
+    preview_id = preview_hydrator.start(tracks) if tracks else None
+    session = preview_hydrator.get(preview_id) if preview_id else None
+    rows = session["tracks"] if session else []
+    return {"is_single": False, "source": source, "count": len(rows),
+            "tracks": rows, "preview_id": preview_id}
+
+
+@router.get("/preview/{preview_id}")
+def preview_status(preview_id: str) -> dict:
+    session = preview_hydrator.get(preview_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Unknown or expired preview session")
+    return session
+
+
+def _resolve_metadata(flat: dict) -> tuple[dict, bool]:
+    """Full metadata for one ingest row: already-hydrated row → as-is; else the
+    preview cache; else a live enrich_track fetch. Returns (merged, is_rich)."""
+    source_url = (flat.get("source_url") or "").strip()
+    if flat.get("hydrated"):
+        return flat, True
+    if source_url:
+        cached = preview_hydrator.cache_get(source_url)
+        if cached:
+            return cached, True
+        try:
+            rich = enrich_track(source_url)
+        except Exception:  # noqa: BLE001
+            log.exception("enrich_track raised for %s", source_url)
+            rich = None
+        if rich:
+            preview_hydrator.cache_put(source_url, rich)
+            return rich, True
+    return flat, False
 
 
 @router.post("/ingest")
@@ -56,32 +98,27 @@ def ingest(req: IngestRequest) -> dict:
     if not req.tracks:
         raise HTTPException(status_code=400, detail="tracks list is empty")
 
+    # Metadata resolution runs in parallel (hydrated/cached rows return
+    # instantly; only genuinely unfetched tracks hit the network). The DB
+    # upserts + queueing below stay serial: fast writes, deterministic order.
+    with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as pool:
+        resolved = list(pool.map(_resolve_metadata, [dict(t) for t in req.tracks]))
+
     inserted_ids: list[int] = []
     partial_count = 0
-    for t in req.tracks:
-        flat = dict(t)
-        rich: dict[str, Any] | None = None
-        source_url = (flat.get("source_url") or "").strip()
-        if source_url:
-            try:
-                rich = enrich_track(source_url)
-            except Exception:  # noqa: BLE001
-                log.exception("enrich_track raised for %s", source_url)
-                rich = None
-
-        merged = rich if rich else flat
-        metadata_partial = 0 if rich else 1
-        if not rich:
+    for merged, is_rich in resolved:
+        if not is_rich:
             partial_count += 1
-            log.warning("Saving partial metadata row for %s", source_url or merged.get("title"))
+            log.warning("Saving partial metadata row for %s",
+                        merged.get("source_url") or merged.get("title"))
 
-        merged_url = merged.get("source_url", source_url) or source_url
-        source, _ = classify_url(merged_url)
+        source_url = (merged.get("source_url") or "").strip()
+        source, _ = classify_url(source_url)
 
         sid = upsert_song(
             title=merged.get("title", "Unknown"),
             artist=merged.get("artist", ""),
-            source_url=merged.get("source_url", source_url),
+            source_url=source_url,
             duration_secs=float(merged.get("duration_secs") or 0),
             genre=merged.get("genre", ""),
             artist_id=merged.get("artist_id", ""),
@@ -93,7 +130,7 @@ def ingest(req: IngestRequest) -> dict:
             comments=int(merged.get("comments") or 0),
             plays=int(merged.get("plays") or 0),
             thumbnail=merged.get("thumbnail", ""),
-            metadata_partial=metadata_partial,
+            metadata_partial=0 if is_rich else 1,
             tags=merged.get("tags", ""),
             release_year=int(merged.get("release_year") or 0),
             source=source,
@@ -102,8 +139,9 @@ def ingest(req: IngestRequest) -> dict:
 
     # Auto-process: queue every saved track through the full
     # download → stems → analyse → structure pipeline. This is what makes the
-    # importer's "auto-process" promise real. The bounded queue (config
-    # PIPELINE_WORKERS) caps concurrency so a big playlist doesn't thrash the box.
+    # importer's "auto-process" promise real. The per-stage queues (config
+    # DOWNLOAD/STEM/ANALYSIS_WORKERS) cap concurrency so a big playlist
+    # doesn't thrash the box.
     job_ids: dict[int, str] = {}
     for sid in inserted_ids:
         job_ids[sid] = queue_runner.enqueue_song(sid)

@@ -85,14 +85,19 @@ class SaveSettingsRequest(BaseModel):
     audio_root: Optional[str] = None
     db_path: Optional[str] = None
     pipeline_workers: Optional[int] = None
+    stem_separator: Optional[str] = None  # "demucs" (quality) | "mdx" (fast)
 
 
 @router.post("")
 def save_settings(req: SaveSettingsRequest) -> dict:
-    if req.audio_root is None and req.db_path is None and req.pipeline_workers is None:
+    if (req.audio_root is None and req.db_path is None
+            and req.pipeline_workers is None and req.stem_separator is None):
         raise HTTPException(status_code=400, detail="nothing to save")
     if req.pipeline_workers is not None and req.pipeline_workers < 1:
         raise HTTPException(status_code=400, detail="pipeline_workers must be >= 1")
+    if req.stem_separator is not None and req.stem_separator not in ("demucs", "mdx"):
+        raise HTTPException(status_code=400,
+                            detail="stem_separator must be 'demucs' or 'mdx'")
 
     new: dict = {}
     if req.audio_root:
@@ -101,6 +106,8 @@ def save_settings(req: SaveSettingsRequest) -> dict:
         new["db_path"] = str(Path(os.path.expanduser(req.db_path)))
     if req.pipeline_workers is not None:
         new["pipeline_workers"] = str(req.pipeline_workers)
+    if req.stem_separator is not None:
+        new["stem_separator"] = req.stem_separator
 
     path = config.save_settings(new)
 
@@ -117,6 +124,9 @@ def save_settings(req: SaveSettingsRequest) -> dict:
     return {
         "saved": True,
         "settings_path": str(path),
-        "restart_required": True,
+        # stem_separator is re-read on every separation, so it applies live;
+        # paths/worker counts bind at import and need a restart.
+        "restart_required": any(
+            k in new for k in ("audio_root", "db_path", "pipeline_workers")),
         "settings": _provenance_live(),
     }

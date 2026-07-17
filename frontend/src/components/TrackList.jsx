@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { JobBadge } from "./JobBadge";
 import { KeyChip } from "./KeyChip";
+import { PlayerBar } from "./PlayerBar";
 import { TrackArt } from "./TrackArt";
 import { SourceBadge } from "./SourceBadge";
 import {
@@ -81,10 +82,12 @@ function FeatureEditor({ track, onSaved, onCancel }) {
 
 function PipelineDots({ track, runningKind }) {
   const p = pipelineDots(track, runningKind);
+  const sepTag = track.stems?.separator;
   return (
     <div className="pipeline">
       <span className="dot" style={{ color: p.dl }}>●</span>DL
-      <span className="dot" style={{ color: p.stems }}>●</span>Stems
+      <span className="dot" style={{ color: p.stems }}>●</span>
+      <span title={sepTag ? `Separated by ${sepTag}` : undefined}>Stems</span>
       <span className="dot" style={{ color: p.analyse }}>●</span>Analyse
       <span className="dot" style={{ color: p.structure }}>●</span>Structure
     </div>
@@ -151,9 +154,8 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
   const [sort, setSort] = useState("Popularity");
   const [view, setView] = useState("cards");
 
-  // preview playback (full mix), single shared audio element
-  const audioRef = useRef(null);
-  const [playingId, setPlayingId] = useState(null);
+  // Bottom player bar: which track + stem is loaded (null = bar hidden).
+  const [player, setPlayer] = useState(null); // { trackId, stem }
 
   const refresh = async (silent = false) => {
     if (!silent) setLoading(true);
@@ -197,8 +199,6 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshKey]);
 
-  useEffect(() => () => { audioRef.current?.pause(); }, []);
-
   const startJob = async (id, kind, fn) => {
     try {
       const { job_id } = await fn(id);
@@ -217,18 +217,14 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
     refresh();
   };
 
-  const togglePreview = (t) => {
-    if (playingId === t.id) {
-      audioRef.current?.pause();
-      setPlayingId(null);
+  const playTrack = (t, stem = "full") => {
+    if (!t.stems?.[stem]) {
+      toast(stem === "full"
+        ? "Couldn't play — is the track downloaded?"
+        : "That stem isn't separated yet");
       return;
     }
-    audioRef.current?.pause();
-    const a = new Audio(api.audioUrl(t.id, "full"));
-    a.onended = () => setPlayingId(null);
-    a.play().then(() => { audioRef.current = a; setPlayingId(t.id); }).catch(() => {
-      toast("Couldn't play preview — is the track downloaded?");
-    });
+    setPlayer({ trackId: t.id, stem });
   };
 
   // ── filter + sort ──────────────────────────────────────────────────────
@@ -360,7 +356,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
   };
 
   return (
-    <div className="page">
+    <div className="page" style={{ paddingBottom: player ? 92 : undefined }}>
       <div className="screen-head">
         <h1>Library</h1>
         <span className="sub">{loading ? "refreshing…" : `${readyCount} ready to mash`}</span>
@@ -428,9 +424,8 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                     </span>
                   )}
                   <KeyChip camelot={f.camelot} />
-                  <div className="energy-wrap">
-                    <div className="l">Energy</div>
-                    <div className="energy-bar"><span style={{ width: `${Math.round((f.energy || 0) * 100)}%` }} /></div>
+                  <div className="bpm-chip" title="Energy (0–100)">
+                    <span className="u">EN </span>{f.energy != null ? Math.round(f.energy * 100) : "—"}
                   </div>
                 </div>
 
@@ -440,13 +435,20 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                 </div>
 
                 <div className="card-actions">
-                  <button className={`act${playingId === t.id ? " on" : ""}`} disabled={!t.stems.full}
-                    onClick={() => togglePreview(t)}>
-                    {playingId === t.id ? "❚❚ Playing" : "▶ Preview"}
+                  <button className={`act${player?.trackId === t.id && player.stem === "full" ? " on" : ""}`}
+                    disabled={!t.stems.full}
+                    onClick={() => playTrack(t, "full")}>
+                    ▶ Preview
                   </button>
+                  <button className={`act icon${player?.trackId === t.id && player.stem === "vocals" ? " on" : ""}`}
+                    disabled={!t.stems.vocals} title="Play the vocal stem"
+                    onClick={() => playTrack(t, "vocals")}>▶</button>
                   <button className="act vocal" disabled={!g.analysed || !t.stems.vocals}
                     title={g.analysed && t.stems.vocals ? "Load into Audition as the vocal" : "Needs analysed vocal stem"}
                     onClick={() => onSendToAudition?.({ vocalId: t.id })}>♪ Vocal</button>
+                  <button className={`act icon${player?.trackId === t.id && player.stem === "instrumental" ? " on" : ""}`}
+                    disabled={!t.stems.instrumental} title="Play the instrumental stem"
+                    onClick={() => playTrack(t, "instrumental")}>▶</button>
                   <button className="act bed" disabled={!g.analysed || !t.stems.instrumental}
                     title={g.analysed && t.stems.instrumental ? "Load into Audition as the bed" : "Needs analysed instrumental stem"}
                     onClick={() => onSendToAudition?.({ instId: t.id })}>♪ Bed</button>
@@ -464,15 +466,21 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
         </div>
       ) : (
         <div className="data-table">
-          <div className="data-head" style={{ gridTemplateColumns: "40px 2fr 100px 70px 70px 1.4fr 1fr" }}>
+          <div className="data-head" style={{ gridTemplateColumns: "34px 40px 2fr 100px 70px 70px 54px 1.4fr 1fr" }}>
+            <div />
             <div>ID</div><div>TITLE / ARTIST</div><div>STATUS</div><div>BPM</div>
-            <div>KEY</div><div>PIPELINE</div><div style={{ textAlign: "right" }}>ACTIONS</div>
+            <div>KEY</div><div>EN</div><div>PIPELINE</div><div style={{ textAlign: "right" }}>ACTIONS</div>
           </div>
           {filtered.map((t) => {
             const f = t.features?.full || {};
             const g = gating(t);
             return (
-              <div key={t.id} className="data-row" style={{ gridTemplateColumns: "40px 2fr 100px 70px 70px 1.4fr 1fr" }}>
+              <div key={t.id} className="data-row" style={{ gridTemplateColumns: "34px 40px 2fr 100px 70px 70px 54px 1.4fr 1fr" }}>
+                <div>
+                  <button className={`row-act play${player?.trackId === t.id ? " vocal" : ""}`}
+                    disabled={!t.stems.full} title="Play in the bottom player"
+                    onClick={() => playTrack(t, "full")}>▶</button>
+                </div>
                 <div className="mono faint">{t.id}</div>
                 <div>
                   <div className="t">{t.title}</div>
@@ -482,6 +490,9 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                 <div className="mono" style={{ color: "var(--text-2)" }}>{f.bpm != null ? f.bpm.toFixed(1) : "—"}</div>
                 <div>
                   <KeyChip camelot={f.camelot} as="span" style={{ fontSize: 12, padding: "3px 7px" }} />
+                </div>
+                <div className="mono" style={{ color: "var(--text-2)" }} title="Energy (0–100)">
+                  {f.energy != null ? Math.round(f.energy * 100) : "—"}
                 </div>
                 <div><PipelineDots track={t} runningKind={g.job?.kind} /></div>
                 <div className="row-actions">
@@ -494,6 +505,16 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
             );
           })}
         </div>
+      )}
+
+      {player && (
+        <PlayerBar
+          track={filtered.find((x) => x.id === player.trackId)
+            || tracks.find((x) => x.id === player.trackId)}
+          stem={player.stem}
+          onStemChange={(stem) => setPlayer((p) => ({ ...p, stem }))}
+          onClose={() => setPlayer(null)}
+        />
       )}
     </div>
   );

@@ -143,6 +143,9 @@ def settings_provenance() -> dict:
         "audio_root": {"value": str(AUDIO_DIR), "source": AUDIO_ROOT_SOURCE},
         "db_path":    {"value": str(DB_PATH),   "source": DB_PATH_SOURCE},
         "pipeline_workers": {"value": PIPELINE_WORKERS, "source": PIPELINE_WORKERS_SOURCE},
+        # Live-read: the stem-separator toggle applies without a restart.
+        "stem_separator": {"value": current_stem_separator(),
+                           "source": STEM_SEPARATOR_SOURCE},
         "configured": CONFIGURED,
         "settings_path": str(settings_path()),
     }
@@ -164,6 +167,28 @@ YTDLP_POSTARGS = [
 # "mdx_extra" = MDX-Net extra (faster, slightly lower quality)
 DEMUCS_MODEL = "htdemucs"
 STEMS_TO_KEEP = ["vocals", "no_vocals"]   # no_vocals = instrumental
+
+# Which separator new stem jobs use: "demucs" (quality, slower) or "mdx"
+# (audio-separator / UVR MDX-Net ONNX — ~2-4x faster on CPU, slightly lower
+# quality). Every stems row is tagged with the separator that produced it.
+MDX_MODEL = "UVR-MDX-NET-Inst_HQ_3.onnx"
+_SEPARATORS = ("demucs", "mdx")
+_sep_val, STEM_SEPARATOR_SOURCE = _resolve(
+    "MASHUP_STEM_SEPARATOR", "stem_separator", "demucs")
+STEM_SEPARATOR = str(_sep_val).lower() if str(_sep_val).lower() in _SEPARATORS else "demucs"
+
+
+def current_stem_separator() -> str:
+    """The separator to use RIGHT NOW. Unlike the import-time constant, this
+    re-reads settings.json so the UI toggle applies to the next separation
+    without a server restart. Env var still wins (Docker/CI pinning)."""
+    env = os.environ.get("MASHUP_STEM_SEPARATOR")
+    if env and env.lower() in _SEPARATORS:
+        return env.lower()
+    saved = str(_load_settings().get("stem_separator") or "").lower()
+    if saved in _SEPARATORS:
+        return saved
+    return "demucs"
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 SAMPLE_RATE      = 22050
@@ -209,6 +234,24 @@ try:
     PIPELINE_WORKERS = max(1, int(_workers_val))
 except (TypeError, ValueError):
     PIPELINE_WORKERS = 1
+
+
+def _resolve_int(env_key: str, settings_key: str, default: int) -> int:
+    val, _ = _resolve(env_key, settings_key, str(default))
+    try:
+        return max(1, int(val))
+    except (TypeError, ValueError):
+        return default
+
+
+# Per-stage concurrency for the pipeline queue. Downloads are network-bound
+# (cheap to parallelise); Demucs is CPU-heavy (stays at PIPELINE_WORKERS, i.e. 1
+# by default); librosa analysis sits in between. ENRICH_WORKERS bounds the
+# parallel per-track metadata fetches during playlist preview/ingest.
+DOWNLOAD_WORKERS = _resolve_int("MASHUP_DOWNLOAD_WORKERS", "download_workers", 4)
+STEM_WORKERS     = _resolve_int("MASHUP_STEM_WORKERS", "stem_workers", PIPELINE_WORKERS)
+ANALYSIS_WORKERS = _resolve_int("MASHUP_ANALYSIS_WORKERS", "analysis_workers", 2)
+ENRICH_WORKERS   = _resolve_int("MASHUP_ENRICH_WORKERS", "enrich_workers", 5)
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 LOG_LEVEL = "INFO"

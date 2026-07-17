@@ -220,9 +220,13 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
         _migrate_songs_columns(conn)
         _migrate_features_columns(conn)
         _migrate_candidates_columns(conn)
+        _migrate_stems_columns(conn)
         conn.commit()
         _INITIALIZED_PATHS.add(key)
     conn.execute("PRAGMA journal_mode=WAL")
+    # With parallel pipeline stages writing concurrently, a writer can briefly
+    # hold the lock; wait instead of raising 'database is locked' immediately.
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
@@ -249,6 +253,21 @@ _FEATURES_OPTIONAL_COLUMNS = (
     ("beat_times_json", "TEXT"),
     ("waveform_rms_json", "TEXT"),
 )
+
+
+# Which engine produced a stem file, e.g. "demucs:htdemucs" or
+# "mdx:UVR-MDX-NET-Inst_HQ_3". NULL for rows made before tagging existed and
+# for the "full" pseudo-stem (the original download, not a separation product).
+_STEMS_OPTIONAL_COLUMNS = (
+    ("separator", "TEXT"),
+)
+
+
+def _migrate_stems_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(stems)").fetchall()}
+    for col, decl in _STEMS_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE stems ADD COLUMN {col} {decl}")
 
 
 _CANDIDATES_OPTIONAL_COLUMNS = (
@@ -325,6 +344,11 @@ def upsert_song(
     full per-track enrichment failed. On re-upsert, the flag can only be cleared
     (partial → full), never re-raised, so an already-enriched row is not downgraded
     by a later flat-only save."""
+    # Derive release_year at insert time — the migration-time backfill only runs
+    # on the first open of a DB path per process, so rows inserted after that
+    # would otherwise sit at 0 until the next restart.
+    if not release_year and len(upload_date) >= 4 and upload_date[:4].isdigit():
+        release_year = int(upload_date[:4])
     conn = get_conn(db_path)
     cur = conn.execute(
         """INSERT INTO songs (
@@ -436,13 +460,16 @@ def update_song_duration(song_id: int, duration_secs: float,
 
 
 def upsert_stem(song_id: int, stem_type: str, file_path: str,
+                separator: Optional[str] = None,
                 db_path: Path = DB_PATH):
     conn = get_conn(db_path)
     conn.execute(
-        """INSERT INTO stems (song_id, stem_type, file_path)
-           VALUES (?, ?, ?)
-           ON CONFLICT(song_id, stem_type) DO UPDATE SET file_path=excluded.file_path""",
-        (song_id, stem_type, file_path)
+        """INSERT INTO stems (song_id, stem_type, file_path, separator)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(song_id, stem_type) DO UPDATE SET
+               file_path=excluded.file_path,
+               separator=COALESCE(excluded.separator, separator)""",
+        (song_id, stem_type, file_path, separator)
     )
     conn.commit()
     conn.close()

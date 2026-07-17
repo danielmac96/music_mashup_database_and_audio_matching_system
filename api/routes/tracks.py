@@ -56,11 +56,17 @@ VOCAL_BEAT_CONFIDENCE_MIN = 0.35
 
 def _stems_by_song() -> dict[int, dict[str, str]]:
     conn = get_conn()
-    rows = conn.execute("SELECT song_id, stem_type, file_path FROM stems").fetchall()
+    rows = conn.execute(
+        "SELECT song_id, stem_type, file_path, separator FROM stems").fetchall()
     conn.close()
     out: dict[int, dict[str, str]] = {}
+    separators: dict[int, str] = {}
     for r in rows:
         out.setdefault(r["song_id"], {})[r["stem_type"]] = r["file_path"]
+        if r["separator"] and r["stem_type"] in ("vocals", "instrumental"):
+            separators[r["song_id"]] = r["separator"]
+    for sid, tag in separators.items():
+        out[sid]["__separator__"] = tag
     return out
 
 
@@ -113,6 +119,8 @@ def list_tracks() -> dict:
                 "full": has_full,
                 "vocals": "vocals" in stem_paths,
                 "instrumental": "instrumental" in stem_paths,
+                # e.g. "demucs:htdemucs" / "mdx:UVR-MDX-NET-Inst_HQ_3"
+                "separator": stem_paths.get("__separator__"),
             },
             "features": feats or None,
             "section_count": section_counts.get(sid, 0),

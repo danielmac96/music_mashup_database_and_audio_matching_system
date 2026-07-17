@@ -18,11 +18,12 @@ raises ``StageError`` on failure so callers can decide whether that is fatal
 from __future__ import annotations
 
 import logging
+import threading
 import traceback
 from pathlib import Path
 from typing import Callable, Optional
 
-from config import BEAT_TRIM_SECS
+from config import ANALYSIS_WORKERS, BEAT_TRIM_SECS, DOWNLOAD_WORKERS, STEM_WORKERS
 from database.models import (
     get_conn, replace_sections, update_song_duration, update_song_error,
     update_song_status, upsert_features, upsert_stem,
@@ -33,6 +34,17 @@ log = logging.getLogger(__name__)
 ProgressCb = Optional[Callable[[Optional[int], str], None]]
 
 _ANALYSIS_STEM_ORDER = ("full", "vocals", "instrumental")
+
+# Global concurrency gates, sized to the pipeline worker pools. The pipeline
+# queues already bound their own threads, but the Library per-stage buttons run
+# on uncapped FastAPI BackgroundTasks — acquiring here bounds EVERY caller
+# (queues + buttons + CLI) uniformly, so clicking Separate on five tracks still
+# runs one Demucs at a time.
+_STAGE_GATES = {
+    "download": threading.Semaphore(DOWNLOAD_WORKERS),
+    "stems": threading.Semaphore(STEM_WORKERS),
+    "analysis": threading.Semaphore(ANALYSIS_WORKERS),
+}
 
 
 class StageError(RuntimeError):
@@ -60,7 +72,7 @@ def _stem_paths(song_id: int) -> dict[str, str]:
 # ── Download ──────────────────────────────────────────────────────────────────
 
 def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
-    from downloader.download import download_track
+    from downloader.download import DownloadError, download_track
 
     conn = get_conn()
     row = conn.execute(
@@ -71,10 +83,18 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
         raise StageError(f"Song {song_id} not found")
 
     try:
-        result = download_track(
-            song_id=row["id"], title=row["title"], source_url=row["source_url"],
-            artist=row["artist"] or "", on_progress=on_progress,
-        )
+        with _STAGE_GATES["download"]:
+            result = download_track(
+                song_id=row["id"], title=row["title"], source_url=row["source_url"],
+                artist=row["artist"] or "", on_progress=on_progress,
+            )
+    except DownloadError as exc:
+        # Classified failure (DRM / Go+ / geo / private / removed / network /
+        # outdated yt-dlp) — the message is already user-facing.
+        msg = str(exc)
+        log.warning("download failed for song %s: %s", song_id, msg)
+        update_song_error(song_id, "error_download", msg)
+        raise StageError(msg, _tb(exc))
     except Exception as exc:  # noqa: BLE001
         log.exception("download_track raised")
         msg = f"Download error: {type(exc).__name__}: {exc}"
@@ -88,20 +108,25 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
         return {"path": str(result.path)}
 
     update_song_error(song_id, "error_download",
-                      "Download failed — no full-length audio found (SoundCloud "
-                      "Go+ preview with no YouTube fallback match?)")
+                      "Download failed — no audio file was produced.")
     raise StageError("Download failed")
 
 
 # ── Stem separation ───────────────────────────────────────────────────────────
 
 def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
-    from stems.separate import separate
+    from config import current_stem_separator
+    from stems.separate import separate, separator_tag
 
     conn = get_conn()
     row = conn.execute(
         "SELECT id, title, artist, raw_path FROM songs WHERE id=?", (song_id,)
     ).fetchone()
+    existing_tags = {
+        r["stem_type"]: r["separator"] for r in conn.execute(
+            "SELECT stem_type, separator FROM stems WHERE song_id=?", (song_id,)
+        ).fetchall()
+    }
     conn.close()
     if not row:
         raise StageError(f"Song {song_id} not found")
@@ -112,11 +137,19 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
         update_song_error(song_id, "error_stems", msg)
         raise StageError(msg)
 
+    # If stems on disk were made by a DIFFERENT engine than the one now
+    # configured, re-separate rather than silently reusing the old files.
+    requested = current_stem_separator()
+    prior_tag = existing_tags.get("vocals") or existing_tags.get("instrumental")
+    force = bool(prior_tag) and not str(prior_tag).startswith(f"{requested}:")
+
     try:
-        stems = separate(
-            song_id=row["id"], title=row["title"], audio_path=raw_path,
-            artist=row["artist"] or "", on_progress=on_progress,
-        )
+        with _STAGE_GATES["stems"]:
+            stems = separate(
+                song_id=row["id"], title=row["title"], audio_path=raw_path,
+                artist=row["artist"] or "", on_progress=on_progress,
+                separator=requested, force=force,
+            )
     except Exception as exc:  # noqa: BLE001
         log.exception("separate raised")
         msg = f"Separation error: {type(exc).__name__}: {exc}"
@@ -124,14 +157,19 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
         raise StageError(msg, _tb(exc))
 
     if not stems:
-        update_song_error(song_id, "error_stems", "Separation failed (Demucs produced no stems)")
+        update_song_error(song_id, "error_stems",
+                          "Separation failed (the separator produced no stems)")
         raise StageError("Separation failed")
 
-    upsert_stem(song_id, "vocals", str(stems["vocals"]))
-    upsert_stem(song_id, "instrumental", str(stems["instrumental"]))
+    # separator=None means existing files were reused → keep the DB's tag.
+    # Untagged reused stems predate the MDX option, so they are Demucs-made.
+    tag = stems.get("separator") or prior_tag or separator_tag("demucs")
+    upsert_stem(song_id, "vocals", str(stems["vocals"]), separator=tag)
+    upsert_stem(song_id, "instrumental", str(stems["instrumental"]), separator=tag)
     upsert_stem(song_id, "full", str(raw_path))
     update_song_status(song_id, "stemmed")
-    return {"vocals": str(stems["vocals"]), "instrumental": str(stems["instrumental"])}
+    return {"vocals": str(stems["vocals"]), "instrumental": str(stems["instrumental"]),
+            "separator": tag}
 
 
 # ── Feature analysis ──────────────────────────────────────────────────────────
@@ -157,25 +195,26 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
 
     analysed: list[str] = []
     failed: list[str] = []
-    for stem_type in _ANALYSIS_STEM_ORDER:
-        fp = stem_paths.get(stem_type, "")
-        path = Path(fp) if fp else None
-        if not path or not path.exists():
-            continue
-        if on_progress:
-            on_progress(None, f"Analysing {stem_type} stem…")
-        try:
-            features = analyze_file(path, trim_secs=BEAT_TRIM_SECS,
-                                    on_progress=on_progress)
-        except Exception:  # noqa: BLE001
-            log.exception("analyze_file raised for %s/%s", song_id, stem_type)
-            failed.append(stem_type)
-            continue
-        if not features:
-            failed.append(stem_type)
-            continue
-        upsert_features(song_id, stem_type, features.copy())
-        analysed.append(stem_type)
+    with _STAGE_GATES["analysis"]:
+        for stem_type in _ANALYSIS_STEM_ORDER:
+            fp = stem_paths.get(stem_type, "")
+            path = Path(fp) if fp else None
+            if not path or not path.exists():
+                continue
+            if on_progress:
+                on_progress(None, f"Analysing {stem_type} stem…")
+            try:
+                features = analyze_file(path, trim_secs=BEAT_TRIM_SECS,
+                                        on_progress=on_progress)
+            except Exception:  # noqa: BLE001
+                log.exception("analyze_file raised for %s/%s", song_id, stem_type)
+                failed.append(stem_type)
+                continue
+            if not features:
+                failed.append(stem_type)
+                continue
+            upsert_features(song_id, stem_type, features.copy())
+            analysed.append(stem_type)
 
     if not analysed:
         update_song_error(song_id, "error_analysis", "Analysis failed for every stem")
@@ -203,10 +242,12 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
 
     vocals_fp = stem_paths.get("vocals", "")
     try:
-        sections = detect_sections(
-            Path(full_fp), Path(vocals_fp) if vocals_fp else None,
-            on_progress=on_progress,
-        )
+        # Shares the analysis gate — structure is the same librosa-bound work.
+        with _STAGE_GATES["analysis"]:
+            sections = detect_sections(
+                Path(full_fp), Path(vocals_fp) if vocals_fp else None,
+                on_progress=on_progress,
+            )
     except Exception as exc:  # noqa: BLE001
         log.exception("detect_sections raised")
         raise StageError(
