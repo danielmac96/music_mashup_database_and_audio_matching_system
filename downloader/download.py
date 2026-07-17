@@ -1,9 +1,18 @@
 """
 downloader/download.py — Download audio in best quality via yt-dlp.
 
-SoundCloud Go+ handling:
-  If the downloaded file is under PREVIEW_MAX_SECS (30s preview),
-  fall back to a YouTube search for the full song using the title + artist.
+SoundCloud-first policy:
+  We try SoundCloud before searching YouTube, because a title/artist YouTube
+  search can grab a different upload of the song. In order:
+    1. Anonymous SoundCloud download (no login — the request is never tied to a
+       personal account).
+    2. Only if SoundCloud won't serve it (auth-gated Go+/private/encrypted, or a
+       <35s Go+ preview) do we fall back to a YouTube search for the full song
+       via title + artist.
+
+  We deliberately stay anonymous: authenticating with browser cookies would
+  attach ToS-violating downloads to a real SoundCloud account. Gated tracks fall
+  through to the YouTube fallback instead.
 
 Output: MP3 in config.RAW_DIR / "{title}_{artist}.mp3"
 """
@@ -106,6 +115,10 @@ class _YtAttempt(NamedTuple):
 
 
 def _youtube_attempts() -> tuple[_YtAttempt, ...]:
+    # All attempts are anonymous by design — nothing in the downloader logs in
+    # with browser cookies, so downloads are never tied to a personal Google or
+    # SoundCloud account. A track that only a logged-in session could fetch just
+    # fails the ladder rather than authenticating as the user.
     return (
         _YtAttempt("ios+bestaudio", YTDLP_FORMAT, "youtube:player_client=ios", False),
         _YtAttempt(
@@ -119,12 +132,6 @@ def _youtube_attempts() -> tuple[_YtAttempt, ...]:
             YTDLP_FORMAT_FALLBACK,
             "youtube:player_client=android,web",
             False,
-        ),
-        _YtAttempt(
-            "cookies+android_web+ba/b",
-            YTDLP_FORMAT_FALLBACK,
-            "youtube:player_client=android,web",
-            True,
         ),
     )
 
@@ -351,6 +358,31 @@ class _DlOutcome(NamedTuple):
     error_lines: list
 
 
+def _download_soundcloud(
+    url: str,
+    out_path: Path,
+    *,
+    playlist_item: Optional[int] = None,
+    on_progress: ProgressCb = None,
+) -> _DlOutcome:
+    """Get the audio straight from SoundCloud with a single anonymous request.
+
+    We stay anonymous by design: authenticating with browser cookies would tie
+    ToS-violating downloads to a real SoundCloud account. So when a track is
+    auth-gated (Go+/private/encrypted → "no formats"), we let it fail here and
+    the caller falls back to a YouTube title search rather than logging in."""
+    run = _run_ytdlp(
+        url, out_path, YTDLP_FORMAT, extractor_args=None,
+        use_cookies=False, playlist_item=playlist_item, on_progress=on_progress,
+    )
+    if run.ok and out_path.exists():
+        log.info(f"Downloaded from SoundCloud: {out_path.name}")
+        return _DlOutcome(out_path, [])
+
+    log.error(f"SoundCloud download failed for {url[:120]}")
+    return _DlOutcome(None, run.error_lines)
+
+
 def _download_ytdlp(
     url: str,
     out_path: Path,
@@ -366,20 +398,8 @@ def _download_ytdlp(
     _cleanup_stem_outputs(out_path)
 
     if not _is_youtube_like(url):
-        run = _run_ytdlp(
-            url,
-            out_path,
-            YTDLP_FORMAT,
-            extractor_args=None,
-            use_cookies=False,
-            playlist_item=playlist_item,
-            on_progress=on_progress,
-        )
-        if run.ok and out_path.exists():
-            log.info(f"Downloaded: {out_path.name}")
-            return _DlOutcome(out_path, [])
-        log.error("yt-dlp failed for non-YouTube URL after 1 attempt")
-        return _DlOutcome(None, run.error_lines)
+        return _download_soundcloud(
+            url, out_path, playlist_item=playlist_item, on_progress=on_progress)
 
     last_errors: list = []
     for att in _youtube_attempts():
@@ -408,6 +428,16 @@ def _download_ytdlp(
 # ── YouTube fallback ──────────────────────────────────────────────────────────
 
 
+def _usable_search_terms(title: str, artist: str) -> bool:
+    """True when there's enough real metadata to run a meaningful YouTube
+    search. A missing/"Unknown" title with no artist would only return a
+    random unrelated video, so we treat that as unusable."""
+    t = (title or "").strip().lower()
+    if t in ("", "unknown"):
+        t = ""
+    return bool(t or (artist or "").strip())
+
+
 def _fallback_youtube(title: str, artist: str, out_path: Path,
                        on_progress: ProgressCb = None) -> Optional[Tuple[Path, float]]:
     """
@@ -415,6 +445,18 @@ def _fallback_youtube(title: str, artist: str, out_path: Path,
     Strips parenthetical suffixes from title for cleaner search results.
     Uses ytsearchN and walks top results so one bad hit does not sink the track.
     """
+    # Guard: a title-based YouTube search only makes sense with real search
+    # terms. If metadata extraction failed upstream we may have "Unknown"/""
+    # here — searching YouTube for that returns an arbitrary unrelated video
+    # (the exact "wrong audio" users hit). Bail out so the caller surfaces a
+    # clear error instead of ingesting a random track.
+    if not _usable_search_terms(title, artist):
+        log.error(
+            "Skipping YouTube fallback — no usable title/artist to search "
+            f"(title={title!r}, artist={artist!r})"
+        )
+        return None
+
     clean_title = re.sub(r'\s*[\(\[].*?[\)\]]', '', title).strip()
     n = YOUTUBE_SEARCH_MAX_RESULTS
     queries = [

@@ -16,6 +16,9 @@ mashup.db-shm
 # Downloaded audio (large binary files)
 audio/
 
+# Docker volume mount (downloaded songs, stems, DB, Demucs weights)
+data/
+
 # FL Studio exports (generated at runtime)
 mashup_report.csv
 mashup_report.txt

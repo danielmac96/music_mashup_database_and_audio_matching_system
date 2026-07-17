@@ -34,9 +34,10 @@ def fetch_playlist(url: str) -> list:
     artist_id, track_id, duration_str, upload_date, likes, reposts,
     comments, plays, thumbnail (when yt-dlp provides them).
 
-    Note: with `--ignore-errors`, tracks that can't be fully extracted
-    (Go+ requiring auth, geo-restricted, removed) are silently dropped.
-    Use `fetch_playlist_flat` when you need a guaranteed full count.
+    Note: DRM-protected / format-less tracks (SoundCloud serves many regular
+    tracks this way now) still return full metadata thanks to
+    `--ignore-no-formats-error`. Only truly unextractable tracks (removed,
+    auth-walled) are dropped; use `fetch_playlist_flat` for a guaranteed count.
     """
     log.info(f"Fetching playlist metadata: {url}")
     tracks = _fetch_via_ytdlp(url)
@@ -114,8 +115,19 @@ def _fetch_via_ytdlp(url: str) -> list:
     try:
         # --ignore-errors keeps yt-dlp going past per-track 404s so one flaky
         # SoundCloud entry doesn't sink the whole playlist.
+        #
+        # --ignore-no-formats-error is essential for metadata: SoundCloud now
+        # serves many *regular* (non-Go+) tracks with DRM/encrypted HLS streams
+        # that yt-dlp can't decode. Without this flag yt-dlp raises "This video
+        # is DRM protected" and prints NO JSON — even though the title, artist,
+        # artwork and duration were all extracted fine (only the audio *formats*
+        # are unavailable). That left the row as "Unknown" with no artist/link,
+        # which downstream turned into a blind YouTube search for the wrong song.
+        # The flag makes yt-dlp emit the metadata JSON anyway; the actual audio
+        # is fetched later by downloader/download.py (which has its own fallback).
         result = subprocess.run(
-            _ytdlp_cmd("--dump-json", "--ignore-errors", "--no-warnings", url),
+            _ytdlp_cmd("--dump-json", "--ignore-errors",
+                       "--ignore-no-formats-error", "--no-warnings", url),
             capture_output=True,
             text=True,
             timeout=120,
