@@ -198,6 +198,12 @@ export const api = {
       body: JSON.stringify({ url }),
     }),
 
+  autoResolveMix: (id, platform = "soundcloud") =>
+    jsonFetch(`/api/mixes/${id}/auto-resolve`, {
+      method: "POST",
+      body: JSON.stringify({ platform }),
+    }),
+
   ingestMix: (id) => jsonFetch(`/api/mixes/${id}/ingest`, { method: "POST" }),
 
   // ── Training data + learned model ─────────────────────────────────────────

@@ -20,13 +20,16 @@ from __future__ import annotations
 
 import logging
 import re
+import urllib.error
+import urllib.request
 from html import unescape
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
-from api import queue_runner
+from api import jobs, queue_runner
+from api.workers import mix_resolve_worker
 from database.models import get_conn, upsert_song
 from ingest.sources import classify_url
 
@@ -107,6 +110,65 @@ def _parse_tracklist(content: str) -> list[dict]:
     return rows
 
 
+# ── URL fetch (best-effort scrape) ────────────────────────────────────────────
+#
+# 1001tracklists sits behind a Cloudflare Turnstile CAPTCHA: a plain server-side
+# GET returns a "please wait, you will be forwarded" interstitial, never the
+# tracklist. We still *try* the fetch (many other tracklist/festival-set pages
+# are plain HTML and parse fine), but when we recognise the Turnstile wall we say
+# so precisely and point at paste import instead of failing mysteriously.
+
+_BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+_BLOCK_MARKERS = ("challenges.cloudflare.com", "you will be forwarded",
+                  "just a moment", "cf-challenge", "please wait, you will",
+                  "enable javascript and cookies to continue")
+_TURNSTILE_MSG = (
+    "This tracklist page is behind a Cloudflare Turnstile CAPTCHA "
+    "(1001tracklists uses one), so it can't be scraped server-side. Open the "
+    "page, copy the tracklist text, and use paste import instead — it parses "
+    "the same data, including the 'w/' mashup lines.")
+
+
+def _html_title(html: str) -> str:
+    for pat in (r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)',
+                r"<title[^>]*>(.*?)</title>", r"<h1[^>]*>(.*?)</h1>"):
+        m = re.search(pat, html, re.I | re.S)
+        if m:
+            t = unescape(_TAG_RE.sub("", m.group(1))).strip()
+            if t and "1001tracklists" not in t.lower():
+                return t[:120]
+    return ""
+
+
+def _fetch_tracklist_html(url: str) -> str:
+    """GET a tracklist URL as a browser would. Raises HTTPException(501) with an
+    accurate diagnosis when the page is a Cloudflare/Turnstile interstitial, or
+    (502) when the fetch itself fails."""
+    req = urllib.request.Request(url, headers=_BROWSER_HEADERS)
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            html = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 503):
+            raise HTTPException(status_code=501, detail=_TURNSTILE_MSG) from exc
+        raise HTTPException(status_code=502,
+                            detail=f"Could not fetch the page (HTTP {exc.code}). "
+                                   "Use paste import instead.") from exc
+    except (urllib.error.URLError, ValueError, TimeoutError) as exc:
+        raise HTTPException(status_code=502,
+                            detail=f"Could not reach the page ({exc}). "
+                                   "Use paste import instead.") from exc
+    low = html.lower()
+    if any(m in low for m in _BLOCK_MARKERS):
+        raise HTTPException(status_code=501, detail=_TURNSTILE_MSG)
+    return html
+
+
 # ── row shaping ───────────────────────────────────────────────────────────────
 
 _TRACK_SELECT = ("SELECT *, position AS idx, link_url AS resolved_url "
@@ -140,17 +202,102 @@ class ResolveRequest(BaseModel):
     url: str
 
 
+def _title_from_rows(content: str, rows: list[dict], url: str) -> tuple[str, list[dict]]:
+    """Derive a mix title from the first non-track line of pasted/flattened text,
+    else from the URL slug. Returns (title, rows) — rows may lose a leading line
+    that was actually the title. Raises 400 if only a title line was supplied."""
+    title = ""
+    first_line = next((ln.strip() for ln in (content or "").splitlines() if ln.strip()), "")
+    first_parsed = _parse_line(first_line)
+    if first_line and (not first_parsed or
+                       (first_parsed["entry_index"] is None and first_parsed["cue_secs"] is None
+                        and not first_parsed["artist"])):
+        title = first_line[:120]
+        if first_parsed and rows and rows[0]["title"] == first_parsed["title"]:
+            rows = rows[1:]
+        if not rows:
+            raise HTTPException(
+                status_code=400,
+                detail="Only a title line found — paste the tracklist body too.",
+            )
+    if not title and url:
+        title = url.rstrip("/").rsplit("/", 1)[-1].replace("-", " ").replace("_", " ")[:120]
+    return title, rows
+
+
+def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
+    """Upsert a mix + its tracks, rebuild documented 'w/' mashup pairs, return
+    the full detail. source_url is UNIQUE, so re-importing the same page replaces
+    that mix's tracks rather than duplicating it."""
+    conn = get_conn()
+    try:
+        existing = conn.execute("SELECT id FROM mixes WHERE source_url=?",
+                                (url,)).fetchone() if url else None
+        if existing:
+            mix_id = existing["id"]
+            conn.execute("DELETE FROM mix_tracks WHERE mix_id=?", (mix_id,))
+            conn.execute("DELETE FROM mashup_pairs WHERE mix_id=?", (mix_id,))
+            conn.execute("UPDATE mixes SET title=?, import_method=?, "
+                         "imported_at=datetime('now') WHERE id=?",
+                         (title, method, mix_id))
+        else:
+            cur = conn.execute(
+                "INSERT INTO mixes (title, source_url, import_method) VALUES (?,?,?)",
+                (title, url or None, method),
+            )
+            mix_id = cur.lastrowid
+
+        for pos, r in enumerate(rows):
+            conn.execute(
+                "INSERT INTO mix_tracks (mix_id, entry_index, position, is_overlay, "
+                "artist, title, cue_secs) VALUES (?,?,?,?,?,?,?)",
+                (mix_id, r["entry_index"], pos, int(r["is_overlay"]),
+                 r["artist"], r["title"], r["cue_secs"]),
+            )
+
+        # Documented pairings: each 'w/' overlay rides on the nearest preceding bed.
+        tracks = conn.execute(
+            "SELECT id, position, is_overlay, cue_secs FROM mix_tracks "
+            "WHERE mix_id=? ORDER BY position", (mix_id,)).fetchall()
+        last_bed = None
+        for t in tracks:
+            if not t["is_overlay"]:
+                last_bed = t
+            elif last_bed is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO mashup_pairs "
+                    "(mix_id, inst_mix_track_id, vocal_mix_track_id, cue_secs) "
+                    "VALUES (?,?,?,?)",
+                    (mix_id, last_bed["id"], t["id"], t["cue_secs"]))
+
+        conn.commit()
+        return _mix_detail(conn, mix_id)
+    finally:
+        conn.close()
+
+
 @router.post("/import")
 def import_mix(req: ImportRequest) -> dict:
-    if not (req.url or "").strip():
+    """Best-effort scrape of a tracklist URL. Works for plain-HTML tracklist/
+    festival-set pages; returns an accurate 501 for Cloudflare/Turnstile-walled
+    sites (1001tracklists) pointing at paste import."""
+    url = (req.url or "").strip()
+    if not url:
         raise HTTPException(status_code=400, detail="url is required")
-    raise HTTPException(
-        status_code=501,
-        detail="Scraping tracklist pages needs the optional playwright stack, "
-               "which isn't installed. Open the tracklist page, copy the "
-               "tracklist text, and use paste import instead — it parses the "
-               "same data.",
-    )
+    if classify_url(url)[0] != "unknown":
+        raise HTTPException(
+            status_code=400,
+            detail="That's a SoundCloud/YouTube track link — import mixes from a "
+                   "tracklist page (e.g. 1001tracklists), or paste the tracklist.")
+    html = _fetch_tracklist_html(url)
+    rows = _parse_tracklist(html)
+    if not rows:
+        raise HTTPException(
+            status_code=422,
+            detail="Fetched the page but found no 'Artist - Title' tracklist rows. "
+                   "Use paste import instead.")
+    title = _html_title(html) or _title_from_rows("", rows, url)[0] or "Imported tracklist"
+    return _persist_mix(title, url, rows, method="scrape")
 
 
 @router.post("/import-paste")
@@ -161,74 +308,11 @@ def import_mix_paste(req: ImportPasteRequest) -> dict:
             status_code=400,
             detail="Could not find any 'Artist - Title' lines in the pasted text.",
         )
-
-    # Title: the first non-empty line that did NOT parse as numbered/cued track
-    # data, else derive from the URL.
-    title = ""
-    first_line = next((ln.strip() for ln in (req.content or "").splitlines() if ln.strip()), "")
-    first_parsed = _parse_line(first_line)
-    if first_line and (not first_parsed or
-                       (first_parsed["entry_index"] is None and first_parsed["cue_secs"] is None
-                        and not first_parsed["artist"])):
-        title = first_line[:120]
-        # The title line itself may have parsed as a bare track row — drop it.
-        if first_parsed and rows and rows[0]["title"] == first_parsed["title"]:
-            rows = rows[1:]
-        if not rows:
-            raise HTTPException(
-                status_code=400,
-                detail="Only a title line found — paste the tracklist body too.",
-            )
     url = (req.url or "").strip()
-    if not title and url:
-        title = url.rstrip("/").rsplit("/", 1)[-1].replace("-", " ").replace("_", " ")[:120]
+    title, rows = _title_from_rows(req.content, rows, url)
     if not title:
         title = "Pasted tracklist"
-
-    conn = get_conn()
-    # source_url is UNIQUE: re-pasting the same page replaces that mix's tracks.
-    existing = conn.execute("SELECT id FROM mixes WHERE source_url=?",
-                            (url,)).fetchone() if url else None
-    if existing:
-        mix_id = existing["id"]
-        conn.execute("DELETE FROM mix_tracks WHERE mix_id=?", (mix_id,))
-        conn.execute("DELETE FROM mashup_pairs WHERE mix_id=?", (mix_id,))
-        conn.execute("UPDATE mixes SET title=?, import_method='paste', "
-                     "imported_at=datetime('now') WHERE id=?", (title, mix_id))
-    else:
-        cur = conn.execute(
-            "INSERT INTO mixes (title, source_url, import_method) VALUES (?,?,?)",
-            (title, url or None, "paste"),
-        )
-        mix_id = cur.lastrowid
-
-    for pos, r in enumerate(rows):
-        conn.execute(
-            "INSERT INTO mix_tracks (mix_id, entry_index, position, is_overlay, "
-            "artist, title, cue_secs) VALUES (?,?,?,?,?,?,?)",
-            (mix_id, r["entry_index"], pos, int(r["is_overlay"]),
-             r["artist"], r["title"], r["cue_secs"]),
-        )
-
-    # Documented pairings: each 'w/' overlay rides on the nearest preceding bed.
-    tracks = conn.execute(
-        "SELECT id, position, is_overlay, cue_secs FROM mix_tracks "
-        "WHERE mix_id=? ORDER BY position", (mix_id,)).fetchall()
-    last_bed = None
-    for t in tracks:
-        if not t["is_overlay"]:
-            last_bed = t
-        elif last_bed is not None:
-            conn.execute(
-                "INSERT OR IGNORE INTO mashup_pairs "
-                "(mix_id, inst_mix_track_id, vocal_mix_track_id, cue_secs) "
-                "VALUES (?,?,?,?)",
-                (mix_id, last_bed["id"], t["id"], t["cue_secs"]))
-
-    conn.commit()
-    detail = _mix_detail(conn, mix_id)
-    conn.close()
-    return detail
+    return _persist_mix(title, url, rows, method="paste")
 
 
 @router.get("")
@@ -280,6 +364,38 @@ def resolve_track(track_id: int, req: ResolveRequest) -> dict:
         (track_id,)).fetchone())
     conn.close()
     return out
+
+
+class AutoResolveRequest(BaseModel):
+    platform: str = "soundcloud"
+
+
+@router.post("/{mix_id}/auto-resolve")
+def auto_resolve_mix(mix_id: int, req: AutoResolveRequest,
+                     background: BackgroundTasks) -> dict:
+    """Queue a background search that links every still-unlinked, non-ID track of
+    this mix to its best SoundCloud/YouTube hit (resolve_status='auto'). Poll the
+    returned job_id; auto links can be reviewed/overridden before ingest."""
+    platform = (req.platform or "soundcloud").lower()
+    if platform not in ("soundcloud", "youtube"):
+        raise HTTPException(status_code=400,
+                            detail="platform must be 'soundcloud' or 'youtube'")
+    conn = get_conn()
+    try:
+        if not conn.execute("SELECT id FROM mixes WHERE id=?", (mix_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="mix not found")
+        pending = conn.execute(
+            "SELECT COUNT(*) AS n FROM mix_tracks WHERE mix_id=? "
+            "AND (link_url IS NULL OR link_url='')", (mix_id,)).fetchone()["n"]
+    finally:
+        conn.close()
+    if not pending:
+        raise HTTPException(status_code=400,
+                            detail="Every track is already linked.")
+    job_id = jobs.new_job(kind="mix_resolve",
+                          message=f"Queued auto-resolve on {platform}")
+    background.add_task(mix_resolve_worker.run, job_id, mix_id, platform)
+    return {"job_id": job_id, "queued": pending, "platform": platform}
 
 
 @router.post("/{mix_id}/ingest")

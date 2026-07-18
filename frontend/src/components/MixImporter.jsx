@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { classifyUrl } from "../sources";
 import { toast } from "../toast";
+import { useJobPolling } from "../hooks/useJobPolling";
 
 // Mixes tab: import a DJ-set tracklist (paste the text — URL scraping needs the
 // optional playwright stack), resolve each entry to a SoundCloud/YouTube link,
@@ -55,6 +56,9 @@ export function MixImporter() {
   const [busy, setBusy] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
+  const [platform, setPlatform] = useState("soundcloud");
+  const [resolveJobId, setResolveJobId] = useState(null);
+  const { job: resolveJob } = useJobPolling(resolveJobId);
 
   const loadMixes = () =>
     api.getMixes().then((d) => setMixes(d.mixes)).catch((e) => setError(e.message));
@@ -66,6 +70,22 @@ export function MixImporter() {
     if (activeId == null) return;
     api.getMix(activeId).then(setDetail).catch((e) => setError(e.message));
   }, [activeId]);
+
+  // When an auto-resolve job finishes, pull the freshly-linked tracks back in.
+  useEffect(() => {
+    if (!resolveJob || !detail) return;
+    if (resolveJob.status === "completed") {
+      const r = resolveJob.result || {};
+      toast(`Auto-linked ${r.resolved ?? 0} track${r.resolved === 1 ? "" : "s"} on ${r.platform || platform}` +
+            (r.failed ? ` · ${r.failed} not found` : ""));
+      api.getMix(detail.id).then(setDetail).catch((e) => setError(e.message));
+      loadMixes();
+      setResolveJobId(null);
+    } else if (resolveJob.status === "failed") {
+      setError(resolveJob.error || "Auto-resolve failed");
+      setResolveJobId(null);
+    }
+  }, [resolveJob]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const importUrl = async () => {
     setError(null);
@@ -98,6 +118,21 @@ export function MixImporter() {
       setBusy(false);
     }
   };
+
+  const autoResolve = async () => {
+    if (!detail) return;
+    setError(null);
+    try {
+      const res = await api.autoResolveMix(detail.id, platform);
+      setResolveJobId(res.job_id);
+      toast(`Searching ${res.platform} for ${res.queued} unlinked track${res.queued === 1 ? "" : "s"}…`);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const resolving = !!resolveJobId &&
+    (!resolveJob || resolveJob.status === "queued" || resolveJob.status === "running");
 
   const ingest = async () => {
     if (!detail) return;
@@ -204,15 +239,42 @@ export function MixImporter() {
                     {detail.source_url ? <> · <a href={detail.source_url} target="_blank" rel="noreferrer">source</a></> : null}
                   </div>
                 </div>
-                <button
-                  className="btn"
-                  onClick={ingest}
-                  disabled={ingesting || detail.resolved_count === 0}
-                  title="Save every linked track to the library and auto-process it"
-                >
-                  {ingesting ? "Ingesting…" : `⇣ Ingest ${detail.resolved_count} linked`}
-                </button>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <select
+                    className="mini-select"
+                    value={platform}
+                    onChange={(e) => setPlatform(e.target.value)}
+                    disabled={resolving}
+                    title="Which platform to search for links"
+                  >
+                    <option value="soundcloud">SoundCloud</option>
+                    <option value="youtube">YouTube</option>
+                  </select>
+                  <button
+                    className="btn ghost"
+                    onClick={autoResolve}
+                    disabled={resolving || detail.resolved_count === detail.track_count}
+                    title="Search the platform and auto-link every track that still needs one"
+                  >
+                    {resolving ? "Searching…" : "⚡ Auto-link all"}
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={ingest}
+                    disabled={ingesting || detail.resolved_count === 0}
+                    title="Save every linked track to the library and auto-process it"
+                  >
+                    {ingesting ? "Ingesting…" : `⇣ Ingest ${detail.resolved_count} linked`}
+                  </button>
+                </div>
               </div>
+              {resolving && (
+                <div className="hint" style={{ margin: "2px 0 8px" }}>
+                  <span className="spin-dot" /> {resolveJob?.message || "Queued…"}
+                  {typeof resolveJob?.progress === "number" && resolveJob.progress > 0
+                    ? ` (${resolveJob.progress}%)` : ""}
+                </div>
+              )}
               <div className="mix-rows">
                 {detail.tracks.map((t) => (
                   <div key={t.id} className="mix-row">
@@ -224,6 +286,8 @@ export function MixImporter() {
                       </span>
                       <span className="mix-tags">
                         {t.song_id ? <span className="mix-flag ok">in library #{t.song_id}</span>
+                          : t.resolved_url && t.resolve_status === "auto"
+                            ? <span className="mix-flag auto" title="Auto-found — verify it's the right track">auto-linked ⚠</span>
                           : t.resolved_url ? <span className="mix-flag ok">linked</span>
                           : <span className="mix-flag failed">needs link</span>}
                         {t.resolved_url && (

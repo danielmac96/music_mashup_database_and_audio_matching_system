@@ -1133,6 +1133,15 @@ input, select { font-family: inherit; }
 .mix-flag { font-size: 10px; padding: 1px 5px; border-radius: 4px; }
 .mix-flag.failed { color: var(--amber-light); background: rgba(245,166,35,0.12); }
 .mix-flag.ok { color: var(--green); background: rgba(60,200,120,0.1); }
+.mix-flag.auto { color: var(--amber); background: rgba(245,166,35,0.14); cursor: help; }
+.mini-select {
+  background: var(--panel); border: 1px solid var(--border-ctrl); border-radius: 6px;
+  color: var(--text); padding: 4px 6px; font-size: 12px;
+}
+.spin-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent); animation: procpulse 1.2s infinite; vertical-align: middle;
+}
 .mix-resolve { display: flex; gap: 4px; }
 .mix-resolve input {
   background: var(--panel); border: 1px solid var(--border-ctrl); border-radius: 6px;

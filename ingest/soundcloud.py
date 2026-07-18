@@ -2,9 +2,11 @@
 ingest/soundcloud.py — Pull track metadata from a SoundCloud playlist via yt-dlp.
 """
 import json
+import re
 import subprocess
 import sys
 import logging
+from difflib import SequenceMatcher
 from typing import Any, Optional
 
 from config import format_duration
@@ -109,6 +111,117 @@ def fetch_single(url: str) -> Optional[dict]:
     log.info(f"Fetching single track: {url}")
     tracks = _fetch_via_ytdlp(url)
     return tracks[0] if tracks else None
+
+
+# ── Search resolution (mix-track → playable link) ─────────────────────────────
+#
+# A 1001tracklists mix entry is just "Artist - Title" text. To auto-populate a
+# playable SoundCloud/YouTube link we search the platform and pick the best hit.
+# We use --flat-playlist search: it returns title, uploader AND duration for each
+# result in a single fast call (no per-track extraction), which is enough to rank.
+
+_PREVIEW_SECS = 45.0        # SoundCloud Go+ snippets are ~30s — never a real track
+_PARENS_RE = re.compile(r"[\(\[][^\)\]]*[\)\]]")
+_NONWORD_RE = re.compile(r"[^\w\s]")
+
+
+def _norm(s: str) -> str:
+    """Lowercase, drop punctuation, collapse whitespace — for fuzzy comparison."""
+    return _NONWORD_RE.sub(" ", (s or "").lower()).strip()
+
+
+def _search_score(artist: str, title: str, entry: dict) -> float:
+    """0–1-ish relevance of a search result to the wanted 'Artist - Title'.
+
+    Scores against both the full "artist title" and the bare title (search hits
+    frequently omit or reorder the artist), then applies a heavy penalty for
+    snippet-length results so a 30s Go+ preview never beats a full upload."""
+    e_title = entry.get("title") or ""
+    uploader = entry.get("uploader") or entry.get("channel") or ""
+    cand_full = _norm(f"{uploader} {e_title}")
+    cand_title = _norm(e_title)
+
+    want_full = _norm(f"{artist} {title}")
+    want_title = _norm(title)
+    # Compare with and without remix/edit parentheticals — a remix in the search
+    # hit shouldn't tank an otherwise perfect artist+title match.
+    want_bare = _norm(_PARENS_RE.sub("", title))
+
+    score = max(
+        SequenceMatcher(None, want_full, cand_full).ratio(),
+        SequenceMatcher(None, want_title, cand_title).ratio(),
+        SequenceMatcher(None, want_bare, cand_title).ratio(),
+    )
+    dur = entry.get("duration") or 0
+    if dur and dur < _PREVIEW_SECS:
+        score -= 0.4
+    return score
+
+
+def _best_search_match(artist: str, title: str,
+                       entries: list[dict]) -> Optional[dict]:
+    """Rank flat search entries and return the best as
+    {url, title, uploader, duration_secs, score}, or None if there are none.
+
+    SoundCloud flat entries expose the public page as ``webpage_url`` (the raw
+    ``url`` is an api.soundcloud.com endpoint); YouTube exposes the clean watch
+    link as ``url``. Prefer webpage_url, fall back to url."""
+    best: Optional[dict] = None
+    best_score = -2.0
+    for e in entries:
+        if not isinstance(e, dict):
+            continue
+        s = _search_score(artist, title, e)
+        if s > best_score:
+            best_score, best = s, e
+    if best is None:
+        return None
+    url = best.get("webpage_url") or best.get("url") or ""
+    if not url:
+        return None
+    return {
+        "url": url,
+        "title": best.get("title") or "",
+        "uploader": best.get("uploader") or best.get("channel") or "",
+        "duration_secs": float(best.get("duration") or 0),
+        "score": round(best_score, 3),
+    }
+
+
+def search_track(artist: str, title: str, platform: str = "soundcloud",
+                 limit: int = 6) -> Optional[dict]:
+    """Search SoundCloud/YouTube for a mix entry and return the best match dict
+    (see _best_search_match) or None. ``platform`` is 'soundcloud' | 'youtube'."""
+    query_text = " ".join(p for p in ((artist or "").strip(), (title or "").strip()) if p)
+    if not query_text:
+        return None
+    prefix = "ytsearch" if platform == "youtube" else "scsearch"
+    search = f"{prefix}{max(1, limit)}:{query_text}"
+    try:
+        result = subprocess.run(
+            _ytdlp_cmd("--dump-single-json", "--flat-playlist", "--no-warnings", search),
+            capture_output=True, text=True, timeout=60,
+        )
+    except FileNotFoundError:
+        log.error("Python or yt-dlp not found. Install with: pip install yt-dlp")
+        return None
+    except subprocess.TimeoutExpired:
+        log.warning("yt-dlp search timed out for %r", query_text)
+        return None
+
+    if not result.stdout.strip():
+        err = "; ".join((result.stderr or "").strip().splitlines()[:2])
+        log.warning("yt-dlp search returned nothing for %r (%s)", query_text, err[:200])
+        return None
+    try:
+        info = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        log.warning("yt-dlp search returned unparseable JSON (%s)", exc)
+        return None
+    entries = info.get("entries") if isinstance(info, dict) else None
+    if not entries:
+        return None
+    return _best_search_match(artist, title, entries)
 
 
 def _fetch_via_ytdlp(url: str) -> list:
