@@ -35,12 +35,17 @@ class BuildRequest(BaseModel):
 @router.post("/build")
 def build_dataset(req: BuildRequest) -> dict:
     try:
-        from matcher.features import build_dataset as _build  # type: ignore # noqa: F401
-    except Exception:  # noqa: BLE001 — stack absent: explain instead of a stack trace
+        from matcher.features import build_dataset as _build
+    except Exception as exc:  # noqa: BLE001 — stack absent: explain instead of a trace
         raise HTTPException(
             status_code=501,
             detail="Dataset building isn't available in this build — the learned-"
-                   "scorer feature stack (matcher/features.py) is not installed. "
-                   "Mashup scoring uses the heuristic scorer, which needs no dataset.",
+                   "scorer feature stack (matcher/features.py) failed to import "
+                   f"({type(exc).__name__}: {exc}). Mashup scoring uses the "
+                   "heuristic scorer, which needs no dataset.",
         )
-    raise HTTPException(status_code=501, detail="Dataset building is not wired up yet.")
+    try:
+        return _build(name=req.name, neg_ratio=req.neg_ratio, seed=req.seed)
+    except ValueError as exc:
+        # No trainable positives yet — an expected, actionable state.
+        raise HTTPException(status_code=400, detail=str(exc))

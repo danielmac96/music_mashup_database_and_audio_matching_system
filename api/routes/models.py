@@ -25,7 +25,8 @@ def _row_out(r) -> dict:
         metrics = json.loads(d.get("metrics_json") or "{}")
     except ValueError:
         metrics = {}
-    d["auc"] = metrics.get("auc")
+    # Trainer records ROC-AUC under 'roc_auc'; keep the legacy 'auc' as a fallback.
+    d["auc"] = metrics.get("roc_auc", metrics.get("auc"))
     d["active"] = bool(d.get("active"))
     return d
 
@@ -42,16 +43,25 @@ def list_models() -> dict:
 
 class TrainRequest(BaseModel):
     dataset_id: int
+    algo: str = "logreg"
 
 
 @router.post("/train")
 def train_model(req: TrainRequest) -> dict:
-    raise HTTPException(
-        status_code=501,
-        detail="Model training isn't available in this build — the learned-"
-               "scorer stack (matcher/model_scorer.py) is not installed. "
-               "Mashup scoring uses the built-in heuristic scorer.",
-    )
+    try:
+        from matcher.model_scorer import train as _train
+    except Exception as exc:  # noqa: BLE001 — stack absent: explain, don't trace
+        raise HTTPException(
+            status_code=501,
+            detail="Model training isn't available in this build — the learned-"
+                   f"scorer stack (matcher/model_scorer.py) failed to import "
+                   f"({type(exc).__name__}: {exc}). Mashup scoring uses the "
+                   "built-in heuristic scorer.",
+        )
+    try:
+        return _train(dataset_id=req.dataset_id, algo=req.algo)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @router.post("/{model_id}/activate")

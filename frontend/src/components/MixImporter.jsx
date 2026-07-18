@@ -3,6 +3,7 @@ import { api } from "../api";
 import { classifyUrl } from "../sources";
 import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
+import { MlPanel } from "./MlPanel";
 
 // Mixes tab: import a DJ-set tracklist (paste the text — URL scraping needs the
 // optional playwright stack), resolve each entry to a SoundCloud/YouTube link,
@@ -286,8 +287,10 @@ export function MixImporter() {
                       </span>
                       <span className="mix-tags">
                         {t.song_id ? <span className="mix-flag ok">in library #{t.song_id}</span>
+                          : t.resolved_url && t.resolve_status === "auto" && t.trusted
+                            ? <span className="mix-flag ok" title="Auto-found, high confidence — counts as training data">auto-linked ✓</span>
                           : t.resolved_url && t.resolve_status === "auto"
-                            ? <span className="mix-flag auto" title="Auto-found — verify it's the right track">auto-linked ⚠</span>
+                            ? <span className="mix-flag auto" title="Auto-found but low confidence — verify it's the right track, then Confirm">auto-linked ⚠ verify</span>
                           : t.resolved_url ? <span className="mix-flag ok">linked</span>
                           : <span className="mix-flag failed">needs link</span>}
                         {t.resolved_url && (
@@ -298,6 +301,22 @@ export function MixImporter() {
                         )}
                       </span>
                     </div>
+                    {!t.song_id && t.resolved_url && t.resolve_status === "auto" && !t.trusted && (
+                      <button
+                        className="mini-btn"
+                        title="Confirm this auto-found link is correct (promotes it to trusted)"
+                        onClick={async () => {
+                          try {
+                            const updated = await api.confirmMixTrack(t.id);
+                            onTrackResolved(updated);
+                          } catch (e) {
+                            toast(`Confirm failed: ${e.message}`);
+                          }
+                        }}
+                      >
+                        ✓ confirm
+                      </button>
+                    )}
                     {!t.song_id && <ResolveInput track={t} onResolved={onTrackResolved} />}
                   </div>
                 ))}
@@ -305,6 +324,18 @@ export function MixImporter() {
             </>
           )}
         </div>
+      </div>
+
+      <div className="mix-train-section" style={{ marginTop: 18 }}>
+        <div className="screen-head" style={{ display: "block", marginBottom: 8 }}>
+          <h2 style={{ margin: 0, fontSize: 15 }}>Train from these mixes</h2>
+          <div className="hint" style={{ marginTop: 4 }}>
+            The <code>w/</code> overlay lines in every imported mix are documented
+            vocal-over-instrumental mashups. Once their tracks are ingested and
+            analysed, build a dataset and train a model that scores new matches.
+          </div>
+        </div>
+        <MlPanel />
       </div>
     </div>
   );

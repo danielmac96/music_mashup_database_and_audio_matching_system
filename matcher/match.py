@@ -296,17 +296,19 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             _sections_cache[song_id] = get_sections(song_id, db_path=db) if use_model else []
         return _sections_cache[song_id]
 
-    def _passes(feat_a, feat_b):
-        # Model path: BPM window only. Heuristic path: BPM + key (unchanged).
-        if use_model:
+    def _passes(feat_a, feat_b, model_ok):
+        # Model path (vocal-over-instrumental only): BPM window only. Heuristic
+        # path: BPM + key (unchanged). The learned model is trained solely on
+        # vocal-over-bed pairs, so instrumental↔instrumental always stays heuristic.
+        if model_ok:
             return _bpm_min_diff(feat_a.get("bpm") or 0, feat_b.get("bpm") or 0) <= bpm_max
         return _passes_filter(feat_a, feat_b, bpm_max, key_min)
 
-    def _score(feat_a, feat_b):
+    def _score(feat_a, feat_b, model_ok):
         """Return a scores dict {bpm_score,key_score,energy_score,timbre_score,total}.
         Heuristic: total = weighted composite. Model: total = model probability,
         with the four heuristic sub-scores kept for display."""
-        if not use_model:
+        if not model_ok:
             return composite_score(feat_a, feat_b)
         from matcher.features import pair_features
         from matcher.model_scorer import model_score
@@ -333,21 +335,27 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     scored  = 0
 
     # ── vocal over instrumental ───────────────────────────────────────────────
+    # This is the only combo the learned model scores (it was trained on
+    # documented vocal-over-bed mashups).
+    voi_scorer = active_scorer
+    voi_version = model_version
     for v in vocals:
         for i in inst:
             if v["song_id"] == i["song_id"]:
                 continue
-            if not _passes(v, i):
+            if not _passes(v, i, use_model):
                 skipped += 1
                 continue
 
-            scores = _score(v, i)
+            scores = _score(v, i, use_model)
             upsert_candidate(v, i, scores, combo_type="vocal_over_instrumental",
-                             scorer=active_scorer, model_version=model_version, db_path=db)
+                             scorer=voi_scorer, model_version=voi_version, db_path=db)
             results["vocal_over_instrumental"].append(_build_row(v, i, scores))
             scored += 1
 
     # ── instrumental over instrumental ────────────────────────────────────────
+    # Always heuristic (BPM + key gate), even when a model is active — the model
+    # has no training signal for instrumental↔instrumental transitions.
     for i_a in inst:
         for i_b in inst:
             if i_a["song_id"] == i_b["song_id"]:
@@ -355,14 +363,14 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             # Avoid duplicate A/B + B/A pairs — only score lower id over higher
             if i_a["song_id"] >= i_b["song_id"]:
                 continue
-            if not _passes(i_a, i_b):
+            if not _passes(i_a, i_b, False):
                 skipped += 1
                 continue
 
-            scores = _score(i_a, i_b)
+            scores = _score(i_a, i_b, False)
             # Reuse vocal/inst columns: vocal_* = the "top" layer, inst_* = the "bed"
             upsert_candidate(i_a, i_b, scores, combo_type="instrumental_over_instrumental",
-                             scorer=active_scorer, model_version=model_version, db_path=db)
+                             scorer="heuristic", model_version=None, db_path=db)
             results["instrumental_over_instrumental"].append(
                 _build_row(i_a, i_b, scores))
             scored += 1

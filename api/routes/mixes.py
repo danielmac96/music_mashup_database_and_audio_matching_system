@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from api import jobs, queue_runner
 from api.workers import mix_resolve_worker
-from database.models import get_conn, upsert_song
+from database.models import get_conn, is_trusted_link, upsert_song
 from ingest.sources import classify_url
 
 log = logging.getLogger(__name__)
@@ -173,6 +173,18 @@ def _fetch_tracklist_html(url: str) -> str:
 
 _TRACK_SELECT = ("SELECT *, position AS idx, link_url AS resolved_url "
                  "FROM mix_tracks WHERE mix_id=? ORDER BY position")
+_ONE_TRACK_SELECT = ("SELECT *, position AS idx, link_url AS resolved_url "
+                     "FROM mix_tracks WHERE id=?")
+
+
+def _track_row(conn, track_id: int) -> dict:
+    """A single mix_track row shaped like the mix-detail rows, with the derived
+    'trusted' flag the UI uses to distinguish confident from low-confidence links."""
+    t = dict(conn.execute(_ONE_TRACK_SELECT, (track_id,)).fetchone())
+    t["trusted"] = bool(t["resolved_url"]) and is_trusted_link(
+        t.get("resolve_status"), t.get("resolve_score"),
+        t.get("resolve_duration_secs"))
+    return t
 
 
 def _mix_detail(conn, mix_id: int) -> dict:
@@ -181,9 +193,16 @@ def _mix_detail(conn, mix_id: int) -> dict:
         raise HTTPException(status_code=404, detail="mix not found")
     mix = dict(row)
     tracks = [dict(r) for r in conn.execute(_TRACK_SELECT, (mix_id,)).fetchall()]
+    for t in tracks:
+        # 'trusted' = link is confident enough to become training data. Drives
+        # the auto-linked ✓ vs ⚠ verify distinction in the Mixes tab.
+        t["trusted"] = bool(t["resolved_url"]) and is_trusted_link(
+            t.get("resolve_status"), t.get("resolve_score"),
+            t.get("resolve_duration_secs"))
     mix["tracks"] = tracks
     mix["track_count"] = len(tracks)
     mix["resolved_count"] = sum(1 for t in tracks if t["resolved_url"])
+    mix["trusted_count"] = sum(1 for t in tracks if t["trusted"])
     return mix
 
 
@@ -359,9 +378,31 @@ def resolve_track(track_id: int, req: ResolveRequest) -> dict:
         "UPDATE mix_tracks SET link_url=?, link_platform=?, resolve_status='manual' "
         "WHERE id=?", (url, source, track_id))
     conn.commit()
-    out = dict(conn.execute(
-        "SELECT *, position AS idx, link_url AS resolved_url FROM mix_tracks WHERE id=?",
-        (track_id,)).fetchone())
+    out = _track_row(conn, track_id)
+    conn.close()
+    return out
+
+
+@router.post("/tracks/{track_id}/confirm")
+def confirm_track(track_id: int) -> dict:
+    """Promote a low-confidence auto link to a trusted (manual) one without
+    re-pasting its URL — the one-click 'Confirm' on flagged rows. The user has
+    eyeballed the auto-found link and vouches it's the right track, so it now
+    counts toward training data."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT link_url FROM mix_tracks WHERE id=?", (track_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="mix track not found")
+    if not row["link_url"]:
+        conn.close()
+        raise HTTPException(status_code=400,
+                            detail="Track has no link to confirm — link it first.")
+    conn.execute("UPDATE mix_tracks SET resolve_status='manual' WHERE id=?",
+                 (track_id,))
+    conn.commit()
+    out = _track_row(conn, track_id)
     conn.close()
     return out
 

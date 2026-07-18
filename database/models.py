@@ -6,7 +6,9 @@ from typing import Optional, List, Dict
 import sqlite3
 import json
 from pathlib import Path
-from config import DB_PATH, format_duration
+from config import (
+    AUTO_LINK_MIN_DURATION, AUTO_LINK_MIN_SCORE, DB_PATH, format_duration,
+)
 
 
 # ── Schema ───────────────────────────────────────────────────────────────────
@@ -221,6 +223,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
         _migrate_features_columns(conn)
         _migrate_candidates_columns(conn)
         _migrate_stems_columns(conn)
+        _migrate_mixtracks_columns(conn)
         conn.commit()
         _INITIALIZED_PATHS.add(key)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -270,6 +273,23 @@ def _migrate_stems_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE stems ADD COLUMN {col} {decl}")
 
 
+# Confidence of an auto-resolved link, so the training-data gate can trust
+# high-confidence auto links and flag the rest (see is_trusted_link). NULL for
+# rows linked before these columns existed and for manual/ID entries.
+_MIXTRACKS_OPTIONAL_COLUMNS = (
+    ("resolve_score", "REAL"),           # fuzzy search score from _best_search_match
+    ("resolve_duration_secs", "REAL"),   # duration of the resolved upload (preview guard)
+)
+
+
+def _migrate_mixtracks_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute(
+        "PRAGMA table_info(mix_tracks)").fetchall()}
+    for col, decl in _MIXTRACKS_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE mix_tracks ADD COLUMN {col} {decl}")
+
+
 _CANDIDATES_OPTIONAL_COLUMNS = (
     ("scorer", "TEXT DEFAULT 'heuristic'"),  # 'heuristic' | 'model'
     ("model_version", "TEXT"),               # e.g. 'pairwise_bbm_v1' when scorer='model'
@@ -310,6 +330,28 @@ def init_db(db_path: Path = DB_PATH) -> Path:
     conn = get_conn(db_path)
     conn.close()
     return db_path
+
+
+def is_trusted_link(resolve_status: Optional[str],
+                    resolve_score: Optional[float],
+                    resolve_duration_secs: Optional[float]) -> bool:
+    """Whether a mix_track's link is trustworthy enough to become a training
+    positive.
+
+    Manual links and already-ingested tracks are trusted outright (a human chose
+    them, or they made it through ingest). An auto-linked track (yt-dlp search) is
+    trusted only when its fuzzy search score clears AUTO_LINK_MIN_SCORE *and* its
+    resolved upload is a full track, not a ~30s Go+ preview (AUTO_LINK_MIN_DURATION).
+    Everything else (unresolved, failed, low-confidence auto) is excluded from
+    training but stays usable for ingest."""
+    status = (resolve_status or "").lower()
+    if status in ("manual", "resolved"):
+        return True
+    if status == "auto":
+        score = resolve_score if resolve_score is not None else 0.0
+        dur = resolve_duration_secs if resolve_duration_secs is not None else 0.0
+        return score >= AUTO_LINK_MIN_SCORE and dur >= AUTO_LINK_MIN_DURATION
+    return False
 
 
 # ── CRUD helpers ──────────────────────────────────────────────────────────────

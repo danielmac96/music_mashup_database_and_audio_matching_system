@@ -220,6 +220,15 @@ BPM_MAX_DIFF   = 10.0   # e.g. 120 BPM pairs with anything 110–130 (or half/do
 # Key: minimum Camelot score to qualify (0.0–1.0)
 KEY_MIN_SCORE  = 0.55   # allows perfect + adjacent + relative major/minor matches
 
+# ── Mix training-data quality gate ────────────────────────────────────────────
+# A mix-track auto-linked by yt-dlp search (resolve_status='auto') only counts as
+# a trusted ground-truth link — i.e. eligible to become a training positive — when
+# its fuzzy search score clears this bar AND its resolved audio is a full track (not
+# a ~30s SoundCloud Go+ preview). Manual/ingested links are always trusted. Below
+# the bar the link is still usable for ingest; it's just flagged for quick review.
+AUTO_LINK_MIN_SCORE    = 0.72
+AUTO_LINK_MIN_DURATION = 60.0   # seconds; guards against preview-length mislinks
+
 # ── SoundCloud scrape ─────────────────────────────────────────────────────────
 # Used when you pass a playlist URL rather than a local file list
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "")   # optional, for higher rate limits

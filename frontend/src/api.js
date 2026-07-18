@@ -204,6 +204,9 @@ export const api = {
       body: JSON.stringify({ platform }),
     }),
 
+  confirmMixTrack: (trackId) =>
+    jsonFetch(`/api/mixes/tracks/${trackId}/confirm`, { method: "POST" }),
+
   ingestMix: (id) => jsonFetch(`/api/mixes/${id}/ingest`, { method: "POST" }),
 
   // ── Training data + learned model ─────────────────────────────────────────
