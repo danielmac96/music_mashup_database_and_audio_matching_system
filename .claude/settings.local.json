@@ -81,7 +81,9 @@
       "Bash(ls frontend/dist)",
       "Bash(ls .venv/Scripts/python.exe)",
       "Bash(./.venv/Scripts/python.exe -c \"import uvicorn, fastapi; print\\('uvicorn', uvicorn.__version__\\); import api.server; print\\('app imports OK'\\)\")",
-      "Bash(./.venv/Scripts/python.exe -c \"import importlib.util as u; [print\\(m, bool\\(u.find_spec\\(m\\)\\)\\) for m in ['yt_dlp','demucs','librosa','playwright']]\")"
+      "Bash(./.venv/Scripts/python.exe -c \"import importlib.util as u; [print\\(m, bool\\(u.find_spec\\(m\\)\\)\\) for m in ['yt_dlp','demucs','librosa','playwright']]\")",
+      "Bash(command -v uv)",
+      "Bash(C:/Users/danie/AppData/Local/graphify-venv/Scripts/python.exe -c 'import sys; open\\('\\\\''graphify-out/.graphify_python'\\\\'', '\\\\''w'\\\\'', encoding='\\\\''utf-8'\\\\''\\).write\\(sys.executable\\)')"
     ]
   }
 }
