@@ -1,0 +1,90 @@
+[
+ {
+  "entry_index": null,
+  "cue_secs": null,
+  "is_overlay": false,
+  "artist": "Daft Punk",
+  "title": "One More Time",
+  "raw_label": "Daft Punk - One More Time",
+  "artists": [
+   "Daft Punk"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": null,
+  "cue_secs": null,
+  "is_overlay": false,
+  "artist": "Justice",
+  "title": "D.A.N.C.E.",
+  "raw_label": "Justice - D.A.N.C.E.",
+  "artists": [
+   "Justice"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": null,
+  "cue_secs": null,
+  "is_overlay": false,
+  "artist": "Breakbot",
+  "title": "Baby I'm Yours",
+  "raw_label": "Breakbot - Baby I'm Yours",
+  "artists": [
+   "Breakbot"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": null,
+  "cue_secs": null,
+  "is_overlay": false,
+  "artist": "",
+  "title": "some stage banter happened here",
+  "raw_label": "some stage banter happened here",
+  "artists": [],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 0.5
+ },
+ {
+  "entry_index": null,
+  "cue_secs": null,
+  "is_overlay": false,
+  "artist": "MSTRKRFT",
+  "title": "Bounce",
+  "raw_label": "MSTRKRFT - Bounce",
+  "artists": [
+   "MSTRKRFT"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": null,
+  "cue_secs": null,
+  "is_overlay": false,
+  "artist": "Bonus: Cassius",
+  "title": "1999",
+  "raw_label": "Bonus: Cassius - 1999",
+  "artists": [
+   "Bonus: Cassius"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ }
+]

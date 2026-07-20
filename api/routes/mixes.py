@@ -18,11 +18,13 @@ download → stems → analyze → structure pipeline (POST /{id}/ingest).
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import urllib.error
 import urllib.request
 from html import unescape
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -30,84 +32,21 @@ from pydantic import BaseModel
 
 from api import jobs, queue_runner
 from api.workers import mix_resolve_worker
+from config import DATA_DIR
 from database.models import get_conn, is_trusted_link, upsert_song
 from ingest.sources import classify_url
+from ingest.tracklist_parse import parse_line, parse_tracklist
 
 log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-
-# ── tracklist text parsing ────────────────────────────────────────────────────
-
 _TAG_RE = re.compile(r"<[^>]+>")
-_SPLIT_RE = re.compile(r"\s+[-–—]\s+")
-# Optional pieces at the head of a line, in any of the common orders:
-#   "12." / "12)"  printed entry number
-#   "[1:23:45]" / "12:34"  cue timestamp
-#   "w/"  overlay marker (vocal laid over the previous bed)
-_NUM_RE = re.compile(r"^\s*(\d{1,3})[.)]\s+")
-_CUE_RE = re.compile(r"^\s*\[?(\d{1,2}):(\d{2})(?::(\d{2}))?\]?\s*")
-_OVERLAY_RE = re.compile(r"^\s*w/\s*", re.IGNORECASE)
 
-_SKIP_PREFIXES = ("tracklist", "genre:", "follow", "share", "http", "www.",
-                  "played by", "first played")
-
-
-def _parse_line(line: str) -> Optional[dict]:
-    """One tracklist line → {entry_index, cue_secs, is_overlay, artist, title},
-    or None for cruft. Handles number/cue/'w/' prefixes in any order."""
-    s = line.strip()
-    if not s or len(s) < 3:
-        return None
-    entry_index = None
-    cue_secs = None
-    is_overlay = False
-    for _ in range(4):  # prefixes appear in mixed order; peel until stable
-        m = _NUM_RE.match(s)
-        if m and entry_index is None:
-            entry_index = int(m.group(1)); s = s[m.end():]; continue
-        m = _CUE_RE.match(s)
-        if m and cue_secs is None:
-            h_or_m, mm, ss = m.groups()
-            cue_secs = (int(h_or_m) * 3600 + int(mm) * 60 + int(ss)) if ss \
-                else (int(h_or_m) * 60 + int(mm))
-            s = s[m.end():]; continue
-        if _OVERLAY_RE.match(s) and not is_overlay:
-            is_overlay = True; s = _OVERLAY_RE.sub("", s, count=1); continue
-        break
-    s = s.strip()
-    if not s or s.lower().startswith(_SKIP_PREFIXES):
-        return None
-    parts = _SPLIT_RE.split(s, maxsplit=1)
-    artist, title = (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else ("", s)
-    if not title:
-        return None
-    return {"entry_index": entry_index, "cue_secs": cue_secs,
-            "is_overlay": is_overlay, "artist": artist, "title": title}
-
-
-def _parse_tracklist(content: str) -> list[dict]:
-    """Pasted tracklist text (or page HTML, flattened first) → parsed rows.
-    Lines without an 'Artist - Title' split keep the whole line as the title
-    so nothing silently disappears; duplicates are dropped."""
-    text = content or ""
-    if "<" in text and ">" in text:
-        text = _TAG_RE.sub("\n", text)
-    text = unescape(text)
-
-    rows: list[dict] = []
-    seen: set[str] = set()
-    for line in text.splitlines():
-        row = _parse_line(line)
-        if not row:
-            continue
-        key = f"{row['artist']}|{row['title']}".lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        rows.append(row)
-    return rows
+# Parsing lives in ingest/tracklist_parse.py (pure, fixture-tested). These
+# aliases keep the module's historical private names importable.
+_parse_line = parse_line
+_parse_tracklist = parse_tracklist
 
 
 # ── URL fetch (best-effort scrape) ────────────────────────────────────────────
@@ -145,10 +84,27 @@ def _html_title(html: str) -> str:
     return ""
 
 
+# Raw fetched HTML, cached to disk keyed by URL. A URL already fetched is
+# never re-fetched — re-imports and parser iterations run entirely off cache,
+# which keeps us polite to tracklist sites and makes re-parsing free.
+_HTML_CACHE_DIR = DATA_DIR / "tracklist_cache"
+
+
+def _cache_path(url: str) -> Path:
+    return _HTML_CACHE_DIR / (hashlib.sha1(url.encode()).hexdigest() + ".html")
+
+
 def _fetch_tracklist_html(url: str) -> str:
-    """GET a tracklist URL as a browser would. Raises HTTPException(501) with an
-    accurate diagnosis when the page is a Cloudflare/Turnstile interstitial, or
-    (502) when the fetch itself fails."""
+    """GET a tracklist URL as a browser would, through a write-once disk cache.
+    Raises HTTPException(501) with an accurate diagnosis when the page is a
+    Cloudflare/Turnstile interstitial, or (502) when the fetch itself fails."""
+    cached = _cache_path(url)
+    if cached.exists():
+        html = cached.read_text(encoding="utf-8", errors="replace")
+        low = html.lower()
+        if not any(m in low for m in _BLOCK_MARKERS):
+            return html
+        # A cached challenge page is useless — fall through and retry live.
     req = urllib.request.Request(url, headers=_BROWSER_HEADERS)
     try:
         with urllib.request.urlopen(req, timeout=25) as resp:
@@ -166,6 +122,11 @@ def _fetch_tracklist_html(url: str) -> str:
     low = html.lower()
     if any(m in low for m in _BLOCK_MARKERS):
         raise HTTPException(status_code=501, detail=_TURNSTILE_MSG)
+    try:
+        _HTML_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        _cache_path(url).write_text(html, encoding="utf-8")
+    except OSError:  # cache is an optimisation, never a failure mode
+        log.warning("could not cache tracklist HTML for %s", url, exc_info=True)
     return html
 
 
