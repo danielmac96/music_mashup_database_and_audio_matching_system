@@ -45,8 +45,11 @@ def test_parse_tracklist_variants():
     rows = _parse_tracklist(text)
     assert [r["title"] for r in rows] == [
         "Stronger", "I Wanna Dance With Somebody", "Levels", "The Middle"]
-    assert rows[0] == {"entry_index": 1, "cue_secs": 0.0, "is_overlay": False,
-                       "artist": "Kanye West", "title": "Stronger"}
+    expected = {"entry_index": 1, "cue_secs": 0.0, "is_overlay": False,
+                "artist": "Kanye West", "title": "Stronger"}
+    # Parser output grew extra fields (raw_label, is_id, …) — the original
+    # contract keys must still hold exactly.
+    assert {k: rows[0][k] for k in expected} == expected
     assert rows[1]["is_overlay"] is True and rows[1]["cue_secs"] == 45
     assert rows[3]["cue_secs"] == 12 * 60 + 30
 

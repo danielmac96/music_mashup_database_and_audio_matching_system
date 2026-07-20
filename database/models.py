@@ -152,6 +152,13 @@ CREATE TABLE IF NOT EXISTS mix_tracks (
     link_platform   TEXT,                 -- 'soundcloud' | 'youtube' | ''
     resolve_status  TEXT DEFAULT 'unresolved', -- unresolved | resolved | manual | failed
     song_id         INTEGER,              -- FK into songs once ingested
+    raw_label       TEXT,                 -- untouched original tracklist line
+    is_id           INTEGER DEFAULT 0,    -- 1 = "ID - ID" unreleased/unknown entry
+    remixer         TEXT,                 -- "(X Remix)"-style credit
+    mashup_parts    TEXT,                 -- JSON array when one cue holds several works
+    parse_confidence REAL,                -- 1.0 clean split · 0.5 title-only · 0.2 ID
+    role            TEXT DEFAULT 'unassigned', -- manual matching: vocal|instrumental|unassigned
+    role_assigned_at TEXT,
     UNIQUE(mix_id, entry_index, position)
 );
 
@@ -163,10 +170,16 @@ CREATE TABLE IF NOT EXISTS mashup_pairs (
     inst_mix_track_id  INTEGER NOT NULL,  -- bed
     vocal_mix_track_id INTEGER NOT NULL,  -- overlay
     cue_secs           REAL,
+    origin             TEXT DEFAULT 'parsed', -- 'parsed' ('w/' line) | 'manual' (drag UI)
+    created_at         TEXT DEFAULT (datetime('now')),
     UNIQUE(inst_mix_track_id, vocal_mix_track_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_mashuppairs_mix ON mashup_pairs(mix_id);
+
+-- ux_mashuppairs_vocal (one bed per vocal) is created in
+-- _migrate_mashuppairs_columns, AFTER legacy double-assignments are deduped —
+-- creating it here would abort schema setup on a pre-upgrade DB.
 
 -- ── Training datasets (Phase 4) ──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS datasets (
@@ -224,6 +237,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
         _migrate_candidates_columns(conn)
         _migrate_stems_columns(conn)
         _migrate_mixtracks_columns(conn)
+        _migrate_mashuppairs_columns(conn)
         conn.commit()
         _INITIALIZED_PATHS.add(key)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -276,9 +290,17 @@ def _migrate_stems_columns(conn: sqlite3.Connection) -> None:
 # Confidence of an auto-resolved link, so the training-data gate can trust
 # high-confidence auto links and flag the rest (see is_trusted_link). NULL for
 # rows linked before these columns existed and for manual/ID entries.
+# raw_label…role_assigned_at: manual vocal/instrumental matching (Mixes tab).
 _MIXTRACKS_OPTIONAL_COLUMNS = (
     ("resolve_score", "REAL"),           # fuzzy search score from _best_search_match
     ("resolve_duration_secs", "REAL"),   # duration of the resolved upload (preview guard)
+    ("raw_label", "TEXT"),
+    ("is_id", "INTEGER DEFAULT 0"),
+    ("remixer", "TEXT"),
+    ("mashup_parts", "TEXT"),
+    ("parse_confidence", "REAL"),
+    ("role", "TEXT DEFAULT 'unassigned'"),
+    ("role_assigned_at", "TEXT"),
 )
 
 
@@ -288,6 +310,29 @@ def _migrate_mixtracks_columns(conn: sqlite3.Connection) -> None:
     for col, decl in _MIXTRACKS_OPTIONAL_COLUMNS:
         if col not in existing:
             conn.execute(f"ALTER TABLE mix_tracks ADD COLUMN {col} {decl}")
+
+
+_MASHUPPAIRS_OPTIONAL_COLUMNS = (
+    ("origin", "TEXT DEFAULT 'parsed'"),  # 'parsed' ('w/' line) | 'manual' (drag UI)
+    ("created_at", "TEXT"),
+)
+
+
+def _migrate_mashuppairs_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute(
+        "PRAGMA table_info(mashup_pairs)").fetchall()}
+    for col, decl in _MASHUPPAIRS_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE mashup_pairs ADD COLUMN {col} {decl}")
+    # One bed per vocal, enforced at the DB level. Pre-upgrade DBs can hold
+    # double-assigned vocals ('w/' derivation never made them, but nothing
+    # forbade them) — keep the earliest pair per vocal, then index.
+    conn.execute(
+        """DELETE FROM mashup_pairs WHERE id NOT IN (
+               SELECT MIN(id) FROM mashup_pairs GROUP BY vocal_mix_track_id)""")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_mashuppairs_vocal "
+        "ON mashup_pairs(vocal_mix_track_id)")
 
 
 _CANDIDATES_OPTIONAL_COLUMNS = (

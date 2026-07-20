@@ -1,0 +1,155 @@
+[
+ {
+  "entry_index": null,
+  "cue_secs": null,
+  "is_overlay": false,
+  "artist": "Two Friends",
+  "title": "Big Bootie Mix, Vol. 99",
+  "raw_label": "Two Friends - Big Bootie Mix, Vol. 99",
+  "artists": [
+   "Two Friends"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": 1,
+  "cue_secs": 0,
+  "is_overlay": false,
+  "artist": "Kanye West",
+  "title": "Stronger",
+  "raw_label": "1. [0:00] Kanye West - Stronger",
+  "artists": [
+   "Kanye West"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": null,
+  "cue_secs": 45,
+  "is_overlay": true,
+  "artist": "Whitney Houston",
+  "title": "I Wanna Dance With Somebody",
+  "raw_label": "w/ [0:45] Whitney Houston - I Wanna Dance With Somebody",
+  "artists": [
+   "Whitney Houston"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": 2,
+  "cue_secs": 130,
+  "is_overlay": false,
+  "artist": "Avicii",
+  "title": "Levels",
+  "raw_label": "2. [2:10] Avicii - Levels",
+  "artists": [
+   "Avicii"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": null,
+  "cue_secs": 160,
+  "is_overlay": true,
+  "artist": "Eminem feat. Rihanna",
+  "title": "Love The Way You Lie",
+  "raw_label": "w/ [2:40] Eminem feat. Rihanna - Love The Way You Lie",
+  "artists": [
+   "Eminem",
+   "Rihanna"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": 3,
+  "cue_secs": 245,
+  "is_overlay": false,
+  "artist": "Zedd & Grey",
+  "title": "The Middle (Dzeko Remix)",
+  "raw_label": "3. [4:05] Zedd & Grey - The Middle (Dzeko Remix)",
+  "artists": [
+   "Zedd",
+   "Grey"
+  ],
+  "remixer": "Dzeko",
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": null,
+  "cue_secs": 270,
+  "is_overlay": true,
+  "artist": "ID",
+  "title": "ID",
+  "raw_label": "w/ [4:30] ID - ID",
+  "artists": [
+   "ID"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": true,
+  "parse_confidence": 0.2
+ },
+ {
+  "entry_index": 4,
+  "cue_secs": 360,
+  "is_overlay": false,
+  "artist": "Martin Garrix x Tiesto",
+  "title": "The Only Way Is Up",
+  "raw_label": "4. [6:00] Martin Garrix x Tiesto - The Only Way Is Up",
+  "artists": [
+   "Martin Garrix",
+   "Tiesto"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": 5,
+  "cue_secs": 435,
+  "is_overlay": false,
+  "artist": "Fisher",
+  "title": "Losing It",
+  "raw_label": "5. [7:15] Fisher - Losing It",
+  "artists": [
+   "Fisher"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ },
+ {
+  "entry_index": null,
+  "cue_secs": 470,
+  "is_overlay": true,
+  "artist": "Nelly",
+  "title": "Hot In Herre",
+  "raw_label": "w/ [7:50] Nelly - Hot In Herre",
+  "artists": [
+   "Nelly"
+  ],
+  "remixer": null,
+  "mashup_parts": [],
+  "is_id": false,
+  "parse_confidence": 1.0
+ }
+]

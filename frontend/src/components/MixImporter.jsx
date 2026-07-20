@@ -4,6 +4,7 @@ import { classifyUrl } from "../sources";
 import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
 import { MlPanel } from "./MlPanel";
+import { MixMatchBoard } from "./MixMatchBoard";
 
 // Mixes tab: import a DJ-set tracklist (paste the text — URL scraping needs the
 // optional playwright stack), resolve each entry to a SoundCloud/YouTube link,
@@ -58,6 +59,8 @@ export function MixImporter() {
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
   const [platform, setPlatform] = useState("soundcloud");
+  const [viewMode, setViewMode] = useState("list"); // 'list' | 'match'
+  const [exporting, setExporting] = useState(false);
   const [resolveJobId, setResolveJobId] = useState(null);
   const { job: resolveJob } = useJobPolling(resolveJobId);
 
@@ -241,6 +244,43 @@ export function MixImporter() {
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <div className="seg-toggle" role="tablist" aria-label="Mix view">
+                    <button
+                      className={`seg${viewMode === "list" ? " active" : ""}`}
+                      role="tab" aria-selected={viewMode === "list"}
+                      onClick={() => setViewMode("list")}
+                    >
+                      Tracklist
+                    </button>
+                    <button
+                      className={`seg${viewMode === "match" ? " active" : ""}`}
+                      role="tab" aria-selected={viewMode === "match"}
+                      onClick={() => setViewMode("match")}
+                      title="Match vocals to the instrumentals they were mashed over"
+                    >
+                      Match {detail.match_count ? `(${detail.match_count})` : ""}
+                    </button>
+                  </div>
+                  {viewMode === "match" && (
+                    <button
+                      className="btn ghost"
+                      disabled={exporting || !detail.match_count}
+                      title="Write these matched pairs out as a training dataset"
+                      onClick={async () => {
+                        setExporting(true);
+                        try {
+                          const res = await api.exportMixTrainingSet(detail.id);
+                          toast(`Exported ${res.n_pos} pair${res.n_pos === 1 ? "" : "s"} → ${res.name} v${res.version}`);
+                        } catch (e) {
+                          toast(`Export failed: ${e.message}`);
+                        } finally {
+                          setExporting(false);
+                        }
+                      }}
+                    >
+                      {exporting ? "Exporting…" : "⇪ Export training set"}
+                    </button>
+                  )}
                   <select
                     className="mini-select"
                     value={platform}
@@ -276,7 +316,10 @@ export function MixImporter() {
                     ? ` (${resolveJob.progress}%)` : ""}
                 </div>
               )}
-              <div className="mix-rows">
+              {viewMode === "match" && (
+                <MixMatchBoard mix={detail} onMixUpdated={setDetail} />
+              )}
+              <div className="mix-rows" style={viewMode === "match" ? { display: "none" } : undefined}>
                 {detail.tracks.map((t) => (
                   <div key={t.id} className="mix-row">
                     <span className="mix-num">{t.idx + 1}</span>

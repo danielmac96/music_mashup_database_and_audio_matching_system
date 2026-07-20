@@ -1377,3 +1377,89 @@ input, select { font-family: inherit; }
   padding: 6px;
 }
 .pb-close:hover { color: var(--text); }
+
+/* ── Mixes: vocal/instrumental matching board ────────────────────────────── */
+
+.seg-toggle { display: inline-flex; border: 1px solid var(--border-ctrl); border-radius: 7px; overflow: hidden; }
+.seg-toggle .seg {
+  background: var(--inset); color: var(--muted); border: none;
+  font: inherit; font-size: 12px; padding: 5px 11px; cursor: pointer;
+}
+.seg-toggle .seg + .seg { border-left: 1px solid var(--border-ctrl); }
+.seg-toggle .seg.active { background: var(--accent-tint); color: var(--accent-light); }
+
+.match-board-wrap { margin-top: 4px; }
+.match-toolbar {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+  padding: 7px 9px; background: var(--inset-2); border: 1px solid var(--hair);
+  border-radius: 8px;
+}
+.match-filter {
+  background: var(--inset); color: var(--text); border: 1px solid var(--border-ctrl);
+  border-radius: 6px; font: inherit; font-size: 12px; padding: 5px 9px; width: 190px;
+}
+.match-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; cursor: pointer; }
+.match-save { font-size: 11px; }
+.match-save.saved { color: var(--green); }
+.match-save.saving { color: var(--muted); }
+.match-save.dirty { color: var(--amber-light); }
+.match-save.error { color: var(--red); }
+
+.match-board {
+  display: grid; grid-template-columns: 1fr 1.2fr 1fr; gap: 10px;
+  align-items: start;
+}
+@media (max-width: 980px) { .match-board { grid-template-columns: 1fr; } }
+
+.match-col {
+  background: var(--inset-2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 9px; min-height: 240px;
+  transition: border-color .12s, background .12s;
+}
+.match-col.over { border-color: var(--accent); background: var(--accent-tint); }
+.match-col-head { font-size: 12px; font-weight: 600; letter-spacing: .02em; }
+.match-col.c-inst .match-col-head { color: var(--amber-light); }
+.match-col.c-voc .match-col-head { color: var(--cyan-light); }
+.match-col-hint { font-size: 10.5px; margin: 2px 0 8px; }
+.match-col-body { display: flex; flex-direction: column; gap: 5px; }
+
+.match-pill-wrap { touch-action: none; }
+.match-pill-wrap.ghost { opacity: .35; }
+.match-pill {
+  display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+  background: var(--raised); border: 1px solid var(--border-ctrl);
+  border-radius: 999px; padding: 4px 11px 4px 6px; font-size: 12px;
+  cursor: grab; user-select: none;
+}
+.match-pill.dragging { box-shadow: 0 6px 18px rgba(0,0,0,.5); cursor: grabbing; }
+.match-pill.low { border-style: dashed; border-color: var(--amber); }
+.match-pill.matched { border-color: var(--cyan); }
+.match-pos {
+  font-family: var(--font-mono); font-size: 10px; color: var(--muted);
+  background: var(--inset); border-radius: 999px; padding: 2px 6px; flex: none;
+}
+.match-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.match-chip {
+  flex: none; font-size: 9px; font-weight: 700; letter-spacing: .06em;
+  border-radius: 4px; padding: 1px 5px;
+}
+.match-chip.id { background: rgba(245,166,35,.16); color: var(--amber-light); }
+.match-chip.wv { background: rgba(56,189,248,.14); color: var(--cyan-light); }
+.match-chip.origin.parsed { background: rgba(56,189,248,.14); color: var(--cyan-light); }
+.match-chip.origin.manual { background: rgba(46,204,113,.15); color: var(--green); }
+
+.inst-group {
+  border: 1px solid var(--border-accent); border-radius: 9px;
+  background: var(--panel); padding: 7px;
+  transition: border-color .12s, background .12s;
+}
+.inst-group.over { border-color: var(--amber); background: rgba(245,166,35,.07); }
+.inst-group-head { margin-bottom: 6px; }
+.inst-group-empty { font-size: 10.5px; padding: 4px 6px 2px; font-style: italic; }
+.inst-group-vocals {
+  display: flex; flex-direction: column; gap: 4px;
+  margin-left: 14px; padding-left: 9px; border-left: 2px solid var(--border-accent);
+}
+.inst-group-vocal { display: flex; align-items: center; gap: 6px; }
+.match-assigned-strip { margin-top: 9px; padding-top: 8px; border-top: 1px dashed var(--hair); }
+.assigned-dim { opacity: .45; }

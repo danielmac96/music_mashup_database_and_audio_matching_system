@@ -209,6 +209,20 @@ export const api = {
 
   ingestMix: (id) => jsonFetch(`/api/mixes/${id}/ingest`, { method: "POST" }),
 
+  // Bulk role + match save from the matching board. `roles` is
+  // [{track_id, role}], `matches` is [{vocal_track_id, inst_track_id|null}].
+  saveMixAssignments: (id, roles, matches) =>
+    jsonFetch(`/api/mixes/${id}/assignments`, {
+      method: "POST",
+      body: JSON.stringify({ roles, matches }),
+    }),
+
+  exportMixTrainingSet: (id, force = false) =>
+    jsonFetch(`/api/mixes/${id}/export`, {
+      method: "POST",
+      body: JSON.stringify({ force }),
+    }),
+
   // ── Training data + learned model ─────────────────────────────────────────
   getDatasets: () => jsonFetch("/api/datasets"),
 
