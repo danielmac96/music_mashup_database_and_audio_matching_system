@@ -334,6 +334,18 @@ def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
                     "VALUES (?,?,?,?, 'parsed')",
                     (mix_id, last_bed["id"], t["id"], t["cue_secs"]))
 
+        # Seed roles from the pairs so the matching board opens pre-populated:
+        # beds become instrumentals, overlays become vocals. Only rows still
+        # 'unassigned' — carried-over user roles always win.
+        conn.execute(
+            "UPDATE mix_tracks SET role='instrumental' WHERE role='unassigned' "
+            "AND id IN (SELECT inst_mix_track_id FROM mashup_pairs WHERE mix_id=?)",
+            (mix_id,))
+        conn.execute(
+            "UPDATE mix_tracks SET role='vocal' WHERE role='unassigned' "
+            "AND id IN (SELECT vocal_mix_track_id FROM mashup_pairs WHERE mix_id=?)",
+            (mix_id,))
+
         conn.commit()
         return _mix_detail(conn, mix_id)
     finally:
