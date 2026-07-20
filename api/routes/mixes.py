@@ -19,6 +19,7 @@ download → stems → analyze → structure pipeline (POST /{id}/ingest).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import urllib.error
@@ -205,16 +206,51 @@ def _title_from_rows(content: str, rows: list[dict], url: str) -> tuple[str, lis
     return title, rows
 
 
+def _track_key(raw_label: str, artist: str, title: str) -> str:
+    """Stable identity of a tracklist entry across re-imports: the original
+    line when we have it, else artist|title (rows saved before raw_label
+    existed)."""
+    base = (raw_label or "").strip() or f"{artist or ''}|{title or ''}"
+    return base.lower()
+
+
+# Per-track state a user (or the auto-resolver) creates after import. Re-import
+# must never lose it — losing manual matching work on a re-scrape is a bug.
+_CARRY_COLS = ("link_url", "link_platform", "resolve_status", "resolve_score",
+               "resolve_duration_secs", "song_id", "role", "role_assigned_at")
+
+
 def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
     """Upsert a mix + its tracks, rebuild documented 'w/' mashup pairs, return
     the full detail. source_url is UNIQUE, so re-importing the same page replaces
-    that mix's tracks rather than duplicating it."""
+    that mix's tracks rather than duplicating it — while carrying over resolved
+    links, roles, and manual matches for entries still present (matched on
+    raw_label + position, then raw_label alone so inserted lines don't orphan
+    everything below them)."""
     conn = get_conn()
     try:
         existing = conn.execute("SELECT id FROM mixes WHERE source_url=?",
                                 (url,)).fetchone() if url else None
+        old_tracks: list[dict] = []
+        old_manual_pairs: list[dict] = []
         if existing:
             mix_id = existing["id"]
+            old_tracks = [dict(r) for r in conn.execute(
+                "SELECT * FROM mix_tracks WHERE mix_id=?", (mix_id,)).fetchall()]
+            old_by_id = {t["id"]: t for t in old_tracks}
+            for p in conn.execute(
+                    "SELECT * FROM mashup_pairs WHERE mix_id=? AND origin='manual'",
+                    (mix_id,)).fetchall():
+                inst, voc = old_by_id.get(p["inst_mix_track_id"]), \
+                    old_by_id.get(p["vocal_mix_track_id"])
+                if inst and voc:
+                    old_manual_pairs.append({
+                        "inst_key": _track_key(inst.get("raw_label"),
+                                               inst["artist"], inst["title"]),
+                        "vocal_key": _track_key(voc.get("raw_label"),
+                                                voc["artist"], voc["title"]),
+                        "cue_secs": p["cue_secs"],
+                    })
             conn.execute("DELETE FROM mix_tracks WHERE mix_id=?", (mix_id,))
             conn.execute("DELETE FROM mashup_pairs WHERE mix_id=?", (mix_id,))
             conn.execute("UPDATE mixes SET title=?, import_method=?, "
@@ -227,15 +263,59 @@ def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
             )
             mix_id = cur.lastrowid
 
-        for pos, r in enumerate(rows):
-            conn.execute(
-                "INSERT INTO mix_tracks (mix_id, entry_index, position, is_overlay, "
-                "artist, title, cue_secs) VALUES (?,?,?,?,?,?,?)",
-                (mix_id, r["entry_index"], pos, int(r["is_overlay"]),
-                 r["artist"], r["title"], r["cue_secs"]),
-            )
+        # Old rows indexed for carry-over: exact (key, position) first, then
+        # key alone (consumed at most once so duplicates can't fan out).
+        old_exact = {(_track_key(t.get("raw_label"), t["artist"], t["title"]),
+                      t["position"]): t for t in old_tracks}
+        old_by_key: dict[str, list[dict]] = {}
+        for t in old_tracks:
+            old_by_key.setdefault(
+                _track_key(t.get("raw_label"), t["artist"], t["title"]), []).append(t)
 
-        # Documented pairings: each 'w/' overlay rides on the nearest preceding bed.
+        new_id_by_key: dict[str, int] = {}
+        for pos, r in enumerate(rows):
+            key = _track_key(r.get("raw_label"), r["artist"], r["title"])
+            old = old_exact.pop((key, pos), None)
+            if old is None:
+                bucket = old_by_key.get(key) or []
+                old = bucket.pop(0) if bucket else None
+            elif old in (old_by_key.get(key) or []):
+                old_by_key[key].remove(old)
+            carried = {c: old.get(c) for c in _CARRY_COLS} if old else {}
+            cur = conn.execute(
+                "INSERT INTO mix_tracks (mix_id, entry_index, position, is_overlay, "
+                "artist, title, cue_secs, raw_label, is_id, remixer, mashup_parts, "
+                "parse_confidence, link_url, link_platform, resolve_status, "
+                "resolve_score, resolve_duration_secs, song_id, role, role_assigned_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (mix_id, r["entry_index"], pos, int(r["is_overlay"]),
+                 r["artist"], r["title"], r["cue_secs"],
+                 r.get("raw_label"), int(r.get("is_id") or 0), r.get("remixer"),
+                 json.dumps(r["mashup_parts"]) if r.get("mashup_parts") else None,
+                 r.get("parse_confidence"),
+                 carried.get("link_url"), carried.get("link_platform"),
+                 carried.get("resolve_status") or "unresolved",
+                 carried.get("resolve_score"), carried.get("resolve_duration_secs"),
+                 carried.get("song_id"),
+                 carried.get("role") or "unassigned", carried.get("role_assigned_at")),
+            )
+            new_id_by_key.setdefault(key, cur.lastrowid)
+
+        # Manual matches are restored FIRST: a vocal the user re-homed must not
+        # be re-claimed by the parsed 'w/' derivation below (one bed per vocal,
+        # ux_mashuppairs_vocal). User intent always beats parsing.
+        for p in old_manual_pairs:
+            inst_id = new_id_by_key.get(p["inst_key"])
+            vocal_id = new_id_by_key.get(p["vocal_key"])
+            if inst_id and vocal_id:
+                conn.execute(
+                    "INSERT OR IGNORE INTO mashup_pairs "
+                    "(mix_id, inst_mix_track_id, vocal_mix_track_id, cue_secs, origin) "
+                    "VALUES (?,?,?,?, 'manual')",
+                    (mix_id, inst_id, vocal_id, p["cue_secs"]))
+
+        # Documented pairings: each 'w/' overlay rides on the nearest preceding
+        # bed — unless a restored manual match already owns that vocal.
         tracks = conn.execute(
             "SELECT id, position, is_overlay, cue_secs FROM mix_tracks "
             "WHERE mix_id=? ORDER BY position", (mix_id,)).fetchall()
@@ -246,8 +326,8 @@ def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
             elif last_bed is not None:
                 conn.execute(
                     "INSERT OR IGNORE INTO mashup_pairs "
-                    "(mix_id, inst_mix_track_id, vocal_mix_track_id, cue_secs) "
-                    "VALUES (?,?,?,?)",
+                    "(mix_id, inst_mix_track_id, vocal_mix_track_id, cue_secs, origin) "
+                    "VALUES (?,?,?,?, 'parsed')",
                     (mix_id, last_bed["id"], t["id"], t["cue_secs"]))
 
         conn.commit()
