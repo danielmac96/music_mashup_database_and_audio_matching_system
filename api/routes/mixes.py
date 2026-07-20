@@ -165,6 +165,10 @@ def _mix_detail(conn, mix_id: int) -> dict:
     mix["track_count"] = len(tracks)
     mix["resolved_count"] = sum(1 for t in tracks if t["resolved_url"])
     mix["trusted_count"] = sum(1 for t in tracks if t["trusted"])
+    mix["pairs"] = [dict(r) for r in conn.execute(
+        "SELECT id, inst_mix_track_id, vocal_mix_track_id, cue_secs, origin "
+        "FROM mashup_pairs WHERE mix_id=? ORDER BY id", (mix_id,)).fetchall()]
+    mix["match_count"] = len(mix["pairs"])
     return mix
 
 
@@ -398,6 +402,101 @@ def list_mixes() -> dict:
 def get_mix(mix_id: int) -> dict:
     conn = get_conn()
     try:
+        return _mix_detail(conn, mix_id)
+    finally:
+        conn.close()
+
+
+_VALID_ROLES = ("vocal", "instrumental", "unassigned")
+
+
+class RoleAssignment(BaseModel):
+    track_id: int
+    role: str
+
+
+class MatchAssignment(BaseModel):
+    vocal_track_id: int
+    inst_track_id: Optional[int] = None  # None = unmatch this vocal
+
+
+class AssignmentsRequest(BaseModel):
+    roles: list[RoleAssignment] = []
+    matches: list[MatchAssignment] = []
+
+
+@router.post("/{mix_id}/assignments")
+def save_assignments(mix_id: int, req: AssignmentsRequest) -> dict:
+    """Bulk upsert of role + match state from the matching UI (the UI batches;
+    this is not called per drag). Order of operations:
+
+      * roles are applied first; a track leaving 'vocal'/'instrumental' loses
+        the manual matches that depended on that role
+      * matches then re-home vocals: a vocal is moved (never duplicated) to its
+        new bed, `inst_track_id: null` unmatches it. Roles are forced
+        consistent (vocal/instrumental) on both ends of a new match.
+
+    Returns the full mix detail, so the UI can reconcile optimistic state."""
+    for r in req.roles:
+        if r.role not in _VALID_ROLES:
+            raise HTTPException(status_code=400,
+                                detail=f"role must be one of {_VALID_ROLES}")
+    conn = get_conn()
+    try:
+        if not conn.execute("SELECT id FROM mixes WHERE id=?",
+                            (mix_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="mix not found")
+        mix_track_ids = {r["id"] for r in conn.execute(
+            "SELECT id FROM mix_tracks WHERE mix_id=?", (mix_id,)).fetchall()}
+        referenced = {r.track_id for r in req.roles} | \
+            {m.vocal_track_id for m in req.matches} | \
+            {m.inst_track_id for m in req.matches if m.inst_track_id is not None}
+        unknown = referenced - mix_track_ids
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"track ids not in this mix: {sorted(unknown)}")
+
+        for r in req.roles:
+            conn.execute(
+                "UPDATE mix_tracks SET role=?, role_assigned_at=datetime('now') "
+                "WHERE id=? AND role != ?", (r.role, r.track_id, r.role))
+            if r.role != "vocal":
+                conn.execute(
+                    "DELETE FROM mashup_pairs WHERE vocal_mix_track_id=? "
+                    "AND origin='manual'", (r.track_id,))
+            if r.role != "instrumental":
+                conn.execute(
+                    "DELETE FROM mashup_pairs WHERE inst_mix_track_id=? "
+                    "AND origin='manual'", (r.track_id,))
+
+        for m in req.matches:
+            # Re-home, never duplicate: any prior claim on this vocal
+            # (manual or parsed) goes away first.
+            conn.execute("DELETE FROM mashup_pairs WHERE vocal_mix_track_id=?",
+                         (m.vocal_track_id,))
+            if m.inst_track_id is None:
+                continue
+            if m.inst_track_id == m.vocal_track_id:
+                raise HTTPException(status_code=400,
+                                    detail="a track cannot be matched to itself")
+            cue = conn.execute("SELECT cue_secs FROM mix_tracks WHERE id=?",
+                               (m.vocal_track_id,)).fetchone()
+            conn.execute(
+                "INSERT INTO mashup_pairs (mix_id, inst_mix_track_id, "
+                "vocal_mix_track_id, cue_secs, origin) VALUES (?,?,?,?,'manual')",
+                (mix_id, m.inst_track_id, m.vocal_track_id,
+                 cue["cue_secs"] if cue else None))
+            conn.execute(
+                "UPDATE mix_tracks SET role='vocal', "
+                "role_assigned_at=COALESCE(role_assigned_at, datetime('now')) "
+                "WHERE id=? AND role != 'vocal'", (m.vocal_track_id,))
+            conn.execute(
+                "UPDATE mix_tracks SET role='instrumental', "
+                "role_assigned_at=COALESCE(role_assigned_at, datetime('now')) "
+                "WHERE id=? AND role != 'instrumental'", (m.inst_track_id,))
+
+        conn.commit()
         return _mix_detail(conn, mix_id)
     finally:
         conn.close()

@@ -193,3 +193,77 @@ def test_vocal_uniqueness_enforced(env):
             (mix["id"], tracks["Levels"]["id"],
              tracks["I Wanna Dance With Somebody"]["id"]))
     conn.close()
+
+
+# ── assignments endpoint (Phase 3) ────────────────────────────────────────────
+
+def test_assignments_bulk_roles_and_matches(env):
+    mix = _import(env)
+    t = {x["title"]: x for x in mix["tracks"]}
+    res = env["client"].post(f"/api/mixes/{mix['id']}/assignments", json={
+        "roles": [
+            {"track_id": t["Levels"]["id"], "role": "instrumental"},
+            {"track_id": t["Stronger"]["id"], "role": "instrumental"},
+        ],
+        "matches": [
+            {"vocal_track_id": t["I Wanna Dance With Somebody"]["id"],
+             "inst_track_id": t["Levels"]["id"]},
+        ],
+    })
+    assert res.status_code == 200, res.text
+    out = res.json()
+    t2 = {x["title"]: x for x in out["tracks"]}
+    assert t2["Levels"]["role"] == "instrumental"
+    # match forced the vocal role on the dragged track
+    assert t2["I Wanna Dance With Somebody"]["role"] == "vocal"
+    # the vocal was re-homed: parsed pair (on Stronger) replaced by the manual one
+    manual = [p for p in out["pairs"] if p["origin"] == "manual"]
+    assert len(manual) == 1
+    assert manual[0]["inst_mix_track_id"] == t["Levels"]["id"]
+    assert all(p["vocal_mix_track_id"] != t["I Wanna Dance With Somebody"]["id"]
+               for p in out["pairs"] if p["origin"] == "parsed")
+
+
+def test_assignments_unmatch_and_validation(env):
+    mix = _import(env)
+    t = {x["title"]: x for x in mix["tracks"]}
+    whit = t["I Wanna Dance With Somebody"]["id"]
+
+    # unmatch: null bed clears the vocal's pair (parsed one included)
+    res = env["client"].post(f"/api/mixes/{mix['id']}/assignments", json={
+        "matches": [{"vocal_track_id": whit, "inst_track_id": None}]})
+    assert res.status_code == 200
+    assert all(p["vocal_mix_track_id"] != whit for p in res.json()["pairs"])
+
+    # foreign track id → 400, self-match → 400, bad role → 400
+    assert env["client"].post(f"/api/mixes/{mix['id']}/assignments", json={
+        "roles": [{"track_id": 99999, "role": "vocal"}]}).status_code == 400
+    assert env["client"].post(f"/api/mixes/{mix['id']}/assignments", json={
+        "matches": [{"vocal_track_id": whit, "inst_track_id": whit}]
+    }).status_code == 400
+    assert env["client"].post(f"/api/mixes/{mix['id']}/assignments", json={
+        "roles": [{"track_id": whit, "role": "lead-guitar"}]}).status_code == 400
+
+
+def test_role_change_away_drops_dependent_manual_matches(env):
+    mix = _import(env)
+    t = {x["title"]: x for x in mix["tracks"]}
+    whit, levels = t["I Wanna Dance With Somebody"]["id"], t["Levels"]["id"]
+    env["client"].post(f"/api/mixes/{mix['id']}/assignments", json={
+        "matches": [{"vocal_track_id": whit, "inst_track_id": levels}]})
+    # demote the bed to unassigned → its manual match must go
+    res = env["client"].post(f"/api/mixes/{mix['id']}/assignments", json={
+        "roles": [{"track_id": levels, "role": "unassigned"}]})
+    assert res.status_code == 200
+    assert all(p["origin"] != "manual" for p in res.json()["pairs"])
+
+
+def test_import_paste_idempotent_on_url(env):
+    one = _import(env)
+    two = _import(env)
+    assert one["id"] == two["id"]
+    assert one["track_count"] == two["track_count"]
+    conn = env["models"].get_conn()
+    n_mixes = conn.execute("SELECT COUNT(*) FROM mixes").fetchone()[0]
+    conn.close()
+    assert n_mixes == 1
