@@ -218,6 +218,31 @@ def _track_key(raw_label: str, artist: str, title: str) -> str:
     return base.lower()
 
 
+def _scraped_rows_to_persist_rows(scraped: list[dict]) -> list[dict]:
+    """Turn Firecrawl-scraped tracks into rows shaped like parse_tracklist output.
+
+    We rebuild the canonical tracklist line and re-parse it with parse_line, so
+    remixer/is_id/mashup_parts/parse_confidence come from the same tested parser
+    the paste path uses. Firecrawl's is_overlay wins the bed/overlay decision.
+    """
+    rows: list[dict] = []
+    bed_n = 0
+    for t in scraped:
+        artist, title = t.get("artist", ""), t.get("title", "")
+        body = f"{artist} - {title}".strip(" -") if artist else title
+        if t.get("is_overlay"):
+            line = f"w/ {body}"
+        else:
+            bed_n += 1
+            line = f"{bed_n}. {body}"
+        row = _parse_line(line) or {}
+        row["is_overlay"] = bool(t.get("is_overlay"))
+        row["raw_label"] = line
+        row["tl_track_url"] = (t.get("tl_track_url") or "").strip()
+        rows.append(row)
+    return rows
+
+
 # Per-track state a user (or the auto-resolver) creates after import. Re-import
 # must never lose it — losing manual matching work on a re-scrape is a bug.
 _CARRY_COLS = ("link_url", "link_platform", "resolve_status", "resolve_score",
