@@ -150,6 +150,7 @@ CREATE TABLE IF NOT EXISTS mix_tracks (
     cue_secs        REAL,
     link_url        TEXT,
     link_platform   TEXT,                 -- 'soundcloud' | 'youtube' | ''
+    tl_track_url    TEXT,                 -- 1001tracklists per-track detail page (for on-demand link scrape)
     resolve_status  TEXT DEFAULT 'unresolved', -- unresolved | resolved | manual | failed
     song_id         INTEGER,              -- FK into songs once ingested
     raw_label       TEXT,                 -- untouched original tracklist line
@@ -301,6 +302,7 @@ _MIXTRACKS_OPTIONAL_COLUMNS = (
     ("parse_confidence", "REAL"),
     ("role", "TEXT DEFAULT 'unassigned'"),
     ("role_assigned_at", "TEXT"),
+    ("tl_track_url", "TEXT"),
 )
 
 

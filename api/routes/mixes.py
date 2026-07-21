@@ -221,7 +221,8 @@ def _track_key(raw_label: str, artist: str, title: str) -> str:
 # Per-track state a user (or the auto-resolver) creates after import. Re-import
 # must never lose it — losing manual matching work on a re-scrape is a bug.
 _CARRY_COLS = ("link_url", "link_platform", "resolve_status", "resolve_score",
-               "resolve_duration_secs", "song_id", "role", "role_assigned_at")
+               "resolve_duration_secs", "song_id", "role", "role_assigned_at",
+               "tl_track_url")
 
 
 def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
@@ -289,15 +290,16 @@ def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
             cur = conn.execute(
                 "INSERT INTO mix_tracks (mix_id, entry_index, position, is_overlay, "
                 "artist, title, cue_secs, raw_label, is_id, remixer, mashup_parts, "
-                "parse_confidence, link_url, link_platform, resolve_status, "
+                "parse_confidence, link_url, link_platform, tl_track_url, resolve_status, "
                 "resolve_score, resolve_duration_secs, song_id, role, role_assigned_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (mix_id, r["entry_index"], pos, int(r["is_overlay"]),
                  r["artist"], r["title"], r["cue_secs"],
                  r.get("raw_label"), int(r.get("is_id") or 0), r.get("remixer"),
                  json.dumps(r["mashup_parts"]) if r.get("mashup_parts") else None,
                  r.get("parse_confidence"),
                  carried.get("link_url"), carried.get("link_platform"),
+                 r.get("tl_track_url") or carried.get("tl_track_url"),
                  carried.get("resolve_status") or "unresolved",
                  carried.get("resolve_score"), carried.get("resolve_duration_secs"),
                  carried.get("song_id"),
