@@ -233,6 +233,14 @@ AUTO_LINK_MIN_DURATION = 60.0   # seconds; guards against preview-length mislink
 # Used when you pass a playlist URL rather than a local file list
 SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "")   # optional, for higher rate limits
 
+# ── Firecrawl (1001tracklists structured scrape) ──────────────────────────────
+# Firecrawl's hosted stealth proxy renders + bypasses the Cloudflare Turnstile
+# that blocks a plain urllib GET of 1001tracklists. Needs an API key; ~9 credits
+# per page, so per-track link scraping is on-demand only (not a 216-page bulk).
+_fc_val, FIRECRAWL_KEY_SOURCE = _resolve("FIRECRAWL_API_KEY", "firecrawl_api_key", "")
+FIRECRAWL_API_KEY   = _fc_val
+FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
+
 # ── Background processing ─────────────────────────────────────────────────────
 # Number of worker threads that drain the ingest→download→stems→analysis→structure
 # pipeline queue. Default 1: stem separation (Demucs) is CPU/GPU heavy, so running
