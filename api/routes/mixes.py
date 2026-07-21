@@ -559,6 +559,37 @@ def save_assignments(mix_id: int, req: AssignmentsRequest) -> dict:
         conn.close()
 
 
+class ReorderRequest(BaseModel):
+    track_ids: list[int]
+
+
+@router.post("/{mix_id}/reorder")
+def reorder_tracks(mix_id: int, req: ReorderRequest) -> dict:
+    """Rewrite mix_tracks.position to the given id order (the user's approved final
+    sequence). mashup_pairs reference track ids, so pairings survive a reorder —
+    only the printed order changes. The id set must exactly match the mix."""
+    conn = get_conn()
+    try:
+        current = {r["id"] for r in conn.execute(
+            "SELECT id FROM mix_tracks WHERE mix_id=?", (mix_id,)).fetchall()}
+        if not current:
+            raise HTTPException(status_code=404, detail="mix not found or empty")
+        if set(req.track_ids) != current or len(req.track_ids) != len(current):
+            raise HTTPException(
+                status_code=400,
+                detail="track_ids must be exactly the mix's tracks, each once.")
+        # Two-pass to dodge the UNIQUE(mix_id, entry_index, position) index:
+        # park everything in a non-colliding range, then set final positions.
+        for tid in req.track_ids:
+            conn.execute("UPDATE mix_tracks SET position = position + 100000 WHERE id=?", (tid,))
+        for pos, tid in enumerate(req.track_ids):
+            conn.execute("UPDATE mix_tracks SET position=? WHERE id=?", (pos, tid))
+        conn.commit()
+        return _mix_detail(conn, mix_id)
+    finally:
+        conn.close()
+
+
 @router.post("/tracks/{track_id}/resolve")
 def resolve_track(track_id: int, req: ResolveRequest) -> dict:
     url = (req.url or "").strip()
