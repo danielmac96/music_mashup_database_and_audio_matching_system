@@ -33,8 +33,9 @@ from pydantic import BaseModel
 
 from api import jobs, queue_runner
 from api.workers import mix_resolve_worker
-from config import DATA_DIR
+from config import DATA_DIR, FIRECRAWL_API_KEY
 from database.models import get_conn, is_trusted_link, upsert_song
+from ingest.firecrawl_scrape import FirecrawlError, scrape_tracklist, scrape_track_links
 from ingest.sources import classify_url
 from ingest.tracklist_parse import parse_line, parse_tracklist
 
@@ -392,6 +393,23 @@ def import_mix(req: ImportRequest) -> dict:
             status_code=400,
             detail="That's a SoundCloud/YouTube track link — import mixes from a "
                    "tracklist page (e.g. 1001tracklists), or paste the tracklist.")
+
+    # 1001tracklists is Turnstile-walled; Firecrawl's stealth proxy renders it and
+    # returns structured tracks + each track's detail-page URL (for A6 link scrape).
+    if FIRECRAWL_API_KEY and "1001tracklists.com" in url.lower():
+        try:
+            scraped = scrape_tracklist(url)
+        except FirecrawlError as exc:
+            raise HTTPException(status_code=502,
+                                detail=f"Firecrawl scrape failed ({exc}). "
+                                       "Use paste import instead.") from exc
+        rows = _scraped_rows_to_persist_rows(scraped)
+        if not rows:
+            raise HTTPException(status_code=422,
+                                detail="Scraped the page but found no tracks. Use paste import.")
+        title = _title_from_rows("", rows, url)[0] or "Imported tracklist"
+        return _persist_mix(title, url, rows, method="scrape")
+
     html = _fetch_tracklist_html(url)
     rows = _parse_tracklist(html)
     if not rows:
