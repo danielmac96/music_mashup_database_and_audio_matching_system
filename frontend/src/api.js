@@ -207,6 +207,11 @@ export const api = {
   confirmMixTrack: (trackId) =>
     jsonFetch(`/api/mixes/tracks/${trackId}/confirm`, { method: "POST" }),
 
+  // Scrape the track's 1001tracklists detail page for its real SoundCloud/YouTube
+  // URL. On-demand only (one Firecrawl call per click).
+  scrapeMixTrackLink: (trackId) =>
+    jsonFetch(`/api/mixes/tracks/${trackId}/scrape-link`, { method: "POST" }),
+
   ingestMix: (id) => jsonFetch(`/api/mixes/${id}/ingest`, { method: "POST" }),
 
   // Bulk role + match save from the matching board. `roles` is

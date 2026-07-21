@@ -604,6 +604,43 @@ def confirm_track(track_id: int) -> dict:
     return out
 
 
+@router.post("/tracks/{track_id}/scrape-link")
+def scrape_track_link(track_id: int) -> dict:
+    """Fetch the real SoundCloud/YouTube URL from this track's 1001tracklists
+    detail page (stored at import as tl_track_url). On-demand only — one Firecrawl
+    call per track, never a bulk 216-page scrape. YouTube is preferred (its watch
+    URL is precise); SoundCloud is the fallback."""
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT id, mix_id, tl_track_url FROM mix_tracks WHERE id=?",
+                           (track_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="track not found")
+        tl = (row["tl_track_url"] or "").strip()
+        if not tl:
+            raise HTTPException(
+                status_code=400,
+                detail="No 1001tracklists detail URL for this track — re-import via URL, "
+                       "or use Auto-link / paste a link manually.")
+        try:
+            links = scrape_track_links(tl)
+        except FirecrawlError as exc:
+            raise HTTPException(status_code=502, detail=f"Firecrawl scrape failed ({exc}).") from exc
+        url = links.get("youtube_url") or links.get("soundcloud_url")
+        if not url:
+            raise HTTPException(status_code=422,
+                                detail="No SoundCloud/YouTube link found on the track page.")
+        platform = classify_url(url)[0]
+        conn.execute(
+            "UPDATE mix_tracks SET link_url=?, link_platform=?, resolve_status='scraped', "
+            "resolve_score=NULL, resolve_duration_secs=NULL WHERE id=?",
+            (url, platform, track_id))
+        conn.commit()
+        return _track_row(conn, track_id)
+    finally:
+        conn.close()
+
+
 class AutoResolveRequest(BaseModel):
     platform: str = "soundcloud"
 

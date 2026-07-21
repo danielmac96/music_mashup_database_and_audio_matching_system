@@ -13,6 +13,7 @@ import { MixMatchBoard } from "./MixMatchBoard";
 function ResolveInput({ track, onResolved }) {
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
+  const [scraping, setScraping] = useState(false);
 
   const submit = async () => {
     const u = url.trim();
@@ -33,6 +34,17 @@ function ResolveInput({ track, onResolved }) {
     }
   };
 
+  const scrapeLink = async () => {
+    setScraping(true);
+    try {
+      onResolved(await api.scrapeMixTrackLink(track.id));
+    } catch (e) {
+      toast(`Official link failed: ${e.message}`);
+    } finally {
+      setScraping(false);
+    }
+  };
+
   return (
     <div className="mix-resolve">
       <input
@@ -44,6 +56,16 @@ function ResolveInput({ track, onResolved }) {
       <button className="mini-btn" onClick={submit} disabled={busy || !url.trim()}>
         {busy ? "…" : "link"}
       </button>
+      {track.tl_track_url ? (
+        <button
+          className="mini-btn"
+          onClick={scrapeLink}
+          disabled={scraping}
+          title="Scrape the real SoundCloud/YouTube URL from the 1001tracklists track page"
+        >
+          {scraping ? "…" : "🔗 Official link"}
+        </button>
+      ) : null}
     </div>
   );
 }

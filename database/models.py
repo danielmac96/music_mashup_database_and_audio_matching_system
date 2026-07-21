@@ -385,14 +385,15 @@ def is_trusted_link(resolve_status: Optional[str],
     """Whether a mix_track's link is trustworthy enough to become a training
     positive.
 
-    Manual links and already-ingested tracks are trusted outright (a human chose
-    them, or they made it through ingest). An auto-linked track (yt-dlp search) is
-    trusted only when its fuzzy search score clears AUTO_LINK_MIN_SCORE *and* its
-    resolved upload is a full track, not a ~30s Go+ preview (AUTO_LINK_MIN_DURATION).
-    Everything else (unresolved, failed, low-confidence auto) is excluded from
-    training but stays usable for ingest."""
+    Manual links, page-scraped links (the exact URL 1001tracklists attributes to
+    the track), and already-ingested tracks are trusted outright (a human chose
+    them, the page vouches for them, or they made it through ingest). An auto-linked
+    track (yt-dlp search) is trusted only when its fuzzy search score clears
+    AUTO_LINK_MIN_SCORE *and* its resolved upload is a full track, not a ~30s Go+
+    preview (AUTO_LINK_MIN_DURATION). Everything else (unresolved, failed,
+    low-confidence auto) is excluded from training but stays usable for ingest."""
     status = (resolve_status or "").lower()
-    if status in ("manual", "resolved"):
+    if status in ("manual", "resolved", "scraped"):
         return True
     if status == "auto":
         score = resolve_score if resolve_score is not None else 0.0
