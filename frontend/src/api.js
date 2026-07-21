@@ -214,6 +214,12 @@ export const api = {
 
   ingestMix: (id) => jsonFetch(`/api/mixes/${id}/ingest`, { method: "POST" }),
 
+  reorderMixTracks: (id, trackIds) =>
+    jsonFetch(`/api/mixes/${id}/reorder`, {
+      method: "POST",
+      body: JSON.stringify({ track_ids: trackIds }),
+    }),
+
   // Bulk role + match save from the matching board. `roles` is
   // [{track_id, role}], `matches` is [{vocal_track_id, inst_track_id|null}].
   saveMixAssignments: (id, roles, matches) =>

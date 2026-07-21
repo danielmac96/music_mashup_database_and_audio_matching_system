@@ -1,10 +1,30 @@
 import { useEffect, useState } from "react";
+import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
+import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { api } from "../api";
 import { classifyUrl } from "../sources";
 import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
 import { MlPanel } from "./MlPanel";
 import { MixMatchBoard } from "./MixMatchBoard";
+
+function SortableRow({ track, children }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: track.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  };
+  return (
+    <div ref={setNodeRef} style={style} className="mix-row">
+      <span className="drag-handle" {...attributes} {...listeners}
+        title="Drag to reorder" style={{ cursor: "grab", userSelect: "none" }}>⋮⋮</span>
+      {children}
+    </div>
+  );
+}
 
 // Mixes tab: import a DJ-set tracklist (paste the text — URL scraping needs the
 // optional playwright stack), resolve each entry to a SoundCloud/YouTube link,
@@ -85,6 +105,21 @@ export function MixImporter() {
   const [exporting, setExporting] = useState(false);
   const [resolveJobId, setResolveJobId] = useState(null);
   const { job: resolveJob } = useJobPolling(resolveJobId);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
+
+  const onReorder = async ({ active, over }) => {
+    if (!over || active.id === over.id || !detail) return;
+    const ids = detail.tracks.map((t) => t.id);
+    const next = arrayMove(ids, ids.indexOf(active.id), ids.indexOf(over.id));
+    const byId = Object.fromEntries(detail.tracks.map((t) => [t.id, t]));
+    setDetail({ ...detail, tracks: next.map((id, i) => ({ ...byId[id], idx: i })) });
+    try {
+      setDetail(await api.reorderMixTracks(detail.id, next));
+    } catch (e) {
+      toast(`Reorder failed: ${e.message}`);
+      api.getMix(detail.id).then(setDetail).catch(() => {});
+    }
+  };
 
   const loadMixes = () =>
     api.getMixes().then((d) => setMixes(d.mixes)).catch((e) => setError(e.message));
@@ -342,8 +377,10 @@ export function MixImporter() {
                 <MixMatchBoard mix={detail} onMixUpdated={setDetail} />
               )}
               <div className="mix-rows" style={viewMode === "match" ? { display: "none" } : undefined}>
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onReorder}>
+                <SortableContext items={detail.tracks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
                 {detail.tracks.map((t) => (
-                  <div key={t.id} className="mix-row">
+                  <SortableRow key={t.id} track={t}>
                     <span className="mix-num">{t.idx + 1}</span>
                     <span className="mix-cue" />
                     <div className="mix-info">
@@ -383,8 +420,10 @@ export function MixImporter() {
                       </button>
                     )}
                     {!t.song_id && <ResolveInput track={t} onResolved={onTrackResolved} />}
-                  </div>
+                  </SortableRow>
                 ))}
+                </SortableContext>
+                </DndContext>
               </div>
             </>
           )}
