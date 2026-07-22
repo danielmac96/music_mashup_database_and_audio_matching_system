@@ -7,6 +7,11 @@ def _fake_post(payload):
     def _post(url, body, headers):
         assert "Authorization" in headers
         assert body["proxy"] == "stealth"
+        # v2 shape: JSON options are a typed object inside formats, not a
+        # top-level "jsonOptions" key (that returns HTTP 400).
+        assert "jsonOptions" not in body
+        assert body["formats"][0]["type"] == "json"
+        assert "schema" in body["formats"][0]
         return payload
     return _post
 

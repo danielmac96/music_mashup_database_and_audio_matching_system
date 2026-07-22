@@ -59,7 +59,13 @@ def _real_post(url: str, body: dict, headers: dict) -> dict:
         with urllib.request.urlopen(req, timeout=90) as resp:
             return json.loads(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
-        raise FirecrawlError(f"Firecrawl HTTP {exc.code}") from exc
+        # Surface Firecrawl's error body — it names the offending field on a 400.
+        try:
+            detail = json.loads(exc.read().decode("utf-8", "replace"))
+            msg = detail.get("error") or detail.get("code") or ""
+        except Exception:
+            msg = ""
+        raise FirecrawlError(f"Firecrawl HTTP {exc.code}{f': {msg}' if msg else ''}") from exc
     except (urllib.error.URLError, ValueError, TimeoutError) as exc:
         raise FirecrawlError(f"Firecrawl request failed: {exc}") from exc
 
@@ -68,12 +74,13 @@ def _scrape(url: str, schema: dict, prompt: str, api_key: str, _post) -> dict:
     if not api_key:
         raise FirecrawlError("FIRECRAWL_API_KEY is not set — configure it to scrape URLs.")
     post = _post or _real_post
+    # Firecrawl v2: JSON extraction options live INSIDE the formats array as a
+    # typed object — the old top-level "jsonOptions" key is rejected with HTTP 400.
     body = {
         "url": url,
-        "formats": ["json"],
+        "formats": [{"type": "json", "prompt": prompt, "schema": schema}],
         "proxy": "stealth",
         "waitFor": 6000,
-        "jsonOptions": {"prompt": prompt, "schema": schema},
     }
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     resp = post(FIRECRAWL_SCRAPE_URL, body, headers)
