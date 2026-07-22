@@ -683,9 +683,9 @@ def auto_resolve_mix(mix_id: int, req: AutoResolveRequest,
     this mix to its best SoundCloud/YouTube hit (resolve_status='auto'). Poll the
     returned job_id; auto links can be reviewed/overridden before ingest."""
     platform = (req.platform or "soundcloud").lower()
-    if platform not in ("soundcloud", "youtube"):
+    if platform not in ("soundcloud", "youtube", "both"):
         raise HTTPException(status_code=400,
-                            detail="platform must be 'soundcloud' or 'youtube'")
+                            detail="platform must be 'soundcloud', 'youtube', or 'both'")
     conn = get_conn()
     try:
         if not conn.execute("SELECT id FROM mixes WHERE id=?", (mix_id,)).fetchone():

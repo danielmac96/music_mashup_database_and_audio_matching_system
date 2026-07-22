@@ -347,6 +347,7 @@ export function MixImporter() {
                   >
                     <option value="soundcloud">SoundCloud</option>
                     <option value="youtube">YouTube</option>
+                    <option value="both">Both (SC → YT)</option>
                   </select>
                   <button
                     className="btn ghost"
