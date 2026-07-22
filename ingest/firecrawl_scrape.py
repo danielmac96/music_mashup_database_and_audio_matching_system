@@ -1,19 +1,24 @@
-"""Firecrawl-backed structured scrape of 1001tracklists.
+"""Firecrawl-backed scrape of 1001tracklists.
 
 A plain urllib GET of 1001tracklists returns a Cloudflare Turnstile interstitial
 (see api/routes/mixes.py _TURNSTILE_MSG). Firecrawl's hosted stealth proxy renders
-the page and returns structured JSON. We call its HTTP /v2/scrape endpoint directly
+the page and returns its content. We call the HTTP /v2/scrape endpoint directly
 with stdlib urllib (no firecrawl-py dependency).
 
-Two page shapes:
-  * the tracklist listing  -> beds/overlays + each track's internal /track/{id} URL
-  * a per-track sub-page    -> the real SoundCloud/YouTube streaming URLs
+Two page shapes, two strategies:
+  * the tracklist listing -> scraped as MARKDOWN and parsed deterministically.
+    LLM json extraction truncates a ~200-track set (it capped at ~33), so we parse
+    the rendered markdown ourselves: every track line carries an "[open track page]"
+    link, and a bare "w/" line marks the next track as a mashup overlay.
+  * a per-track sub-page   -> scraped with LLM json extraction (a small page, no
+    truncation risk) for the real SoundCloud/YouTube streaming URLs.
 The listing does NOT carry the external URLs; those live on the per-track pages,
-fetched on-demand (~9 credits each) — never all 216 at once.
+fetched on-demand (~9 credits each) — never all ~200 at once.
 """
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.request
 
@@ -24,21 +29,13 @@ class FirecrawlError(RuntimeError):
     """Firecrawl was unreachable, unauthenticated, or returned no usable data."""
 
 
-_TRACKLIST_SCHEMA = {
-    "type": "object",
-    "properties": {"tracks": {"type": "array", "items": {"type": "object", "properties": {
-        "position": {"type": "string"},          # "01".."NN" for beds, "w/" for overlays
-        "artist": {"type": "string"},
-        "title": {"type": "string"},
-        "is_overlay": {"type": "boolean"},
-        "youtube_url": {"type": "string"},        # here = the internal /track/{id} link
-    }}}},
-}
-_TRACKLIST_PROMPT = (
-    "Extract every track in this DJ set tracklist in order. For each track return: "
-    "the printed entry number as position ('w/' for a mashup overlay line), the artist, "
-    "the title, is_overlay true for 'w/' overlay lines, and youtube_url = the track's "
-    "detail-page link on this site. Include 'w/' sub-entries as separate tracks.")
+# A rendered track row: "Artist \- Title[open track page](https://.../track/ID/index.html ...".
+_TRACK_LINE_RE = re.compile(
+    r"^(?P<body>.+?)\[open track page\]\((?P<url>https://www\.1001tracklists\.com/track/[^ )]+)")
+# A remix/edit annotation that trails after the first link — fold it back into the title
+# so the shared parse_line can derive the remixer.
+_REMIX_PAREN_RE = re.compile(
+    r"\(([^)]*\b(?:remix|mix|edit|flip|bootleg|mashup|vip|rework|refix)\b[^)]*)\)", re.I)
 
 _LINKS_SCHEMA = {
     "type": "object",
@@ -70,45 +67,78 @@ def _real_post(url: str, body: dict, headers: dict) -> dict:
         raise FirecrawlError(f"Firecrawl request failed: {exc}") from exc
 
 
-def _scrape(url: str, schema: dict, prompt: str, api_key: str, _post) -> dict:
+def _post_scrape(url: str, formats: list, api_key: str, _post) -> dict:
+    """POST a /v2/scrape request and return the `data` object, or raise."""
     if not api_key:
         raise FirecrawlError("FIRECRAWL_API_KEY is not set — configure it to scrape URLs.")
     post = _post or _real_post
-    # Firecrawl v2: JSON extraction options live INSIDE the formats array as a
-    # typed object — the old top-level "jsonOptions" key is rejected with HTTP 400.
-    body = {
-        "url": url,
-        "formats": [{"type": "json", "prompt": prompt, "schema": schema}],
-        "proxy": "stealth",
-        "waitFor": 6000,
-    }
+    body = {"url": url, "formats": formats, "proxy": "stealth", "waitFor": 6000}
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     resp = post(FIRECRAWL_SCRAPE_URL, body, headers)
     if not resp or not resp.get("success"):
         raise FirecrawlError("Firecrawl returned no data (challenge or empty page).")
-    return (resp.get("data") or {}).get("json") or {}
+    return resp.get("data") or {}
+
+
+def _scrape_json(url: str, schema: dict, prompt: str, api_key: str, _post) -> dict:
+    # Firecrawl v2: JSON extraction options live INSIDE the formats array as a
+    # typed object — the old top-level "jsonOptions" key is rejected with HTTP 400.
+    data = _post_scrape(url, [{"type": "json", "prompt": prompt, "schema": schema}], api_key, _post)
+    return data.get("json") or {}
+
+
+def parse_markdown_tracklist(md: str) -> list[dict]:
+    """Deterministically parse a rendered 1001tracklists page into track rows.
+
+    Each track is a line ending in an "[open track page](…/track/ID…)" link; a bare
+    "w/" line immediately before a track marks it as a mashup overlay on the previous
+    (non-overlay) bed. Returns rows shaped like the old LLM output:
+    {position, artist, title, is_overlay, tl_track_url}.
+    """
+    rows: list[dict] = []
+    pending_overlay = False
+    for raw in md.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.lower() == "w/":
+            pending_overlay = True
+            continue
+        m = _TRACK_LINE_RE.match(line)
+        if not m:
+            continue
+        body = m.group("body").replace("\\-", "-").replace("\\", "").strip()
+        if " - " in body:
+            artist, title = body.split(" - ", 1)
+        else:
+            artist, title = "", body
+        # A remix credit prints as a second linked entity after the first link; fold it
+        # back into the title so parse_line can pull out the remixer downstream.
+        rem = _REMIX_PAREN_RE.search(line[m.end():])
+        if rem and "remix" not in title.lower():
+            title = f"{title.strip()} ({rem.group(1).strip()})"
+        rows.append({
+            "position": "w/" if pending_overlay else "",
+            "artist": artist.strip(),
+            "title": title.strip(),
+            "is_overlay": pending_overlay,
+            "tl_track_url": m.group("url"),
+        })
+        pending_overlay = False
+    return rows
 
 
 def scrape_tracklist(url: str, api_key: str = FIRECRAWL_API_KEY, *, _post=None) -> list[dict]:
-    data = _scrape(url, _TRACKLIST_SCHEMA, _TRACKLIST_PROMPT, api_key, _post)
-    tracks = data.get("tracks") or []
-    rows = []
-    for t in tracks:
-        rows.append({
-            "position": str(t.get("position") or "").strip(),
-            "artist": (t.get("artist") or "").strip(),
-            "title": (t.get("title") or "").strip(),
-            "is_overlay": bool(t.get("is_overlay")),
-            "tl_track_url": (t.get("youtube_url") or "").strip(),
-        })
-    rows = [r for r in rows if r["artist"] or r["title"]]
+    data = _post_scrape(url, ["markdown"], api_key, _post)
+    md = data.get("markdown") or ""
+    rows = [r for r in parse_markdown_tracklist(md) if r["artist"] or r["title"]]
     if not rows:
         raise FirecrawlError("Firecrawl scraped the page but found no tracks.")
     return rows
 
 
 def scrape_track_links(track_page_url: str, api_key: str = FIRECRAWL_API_KEY, *, _post=None) -> dict:
-    data = _scrape(track_page_url, _LINKS_SCHEMA, _LINKS_PROMPT, api_key, _post)
+    data = _scrape_json(track_page_url, _LINKS_SCHEMA, _LINKS_PROMPT, api_key, _post)
     return {
         "soundcloud_url": (data.get("soundcloud_url") or "").strip(),
         "youtube_url": (data.get("youtube_url") or "").strip(),
