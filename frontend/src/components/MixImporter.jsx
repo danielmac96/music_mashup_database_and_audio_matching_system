@@ -423,7 +423,6 @@ export function MixImporter() {
                       <span className="mix-select" />
                     )}
                     <span className="mix-num">{t.idx + 1}</span>
-                    <span className="mix-cue" />
                     <div className="mix-info">
                       <span className="mix-title">
                         {t.artist ? `${t.artist} — ` : ""}{t.title}
@@ -437,30 +436,31 @@ export function MixImporter() {
                           : t.resolved_url ? <span className="mix-flag ok">linked</span>
                           : <span className="mix-flag failed">needs link</span>}
                         {t.resolved_url && (
-                          <a className="faint" href={t.resolved_url} target="_blank" rel="noreferrer"
-                            style={{ fontSize: 10, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          <a className="mix-url" href={t.resolved_url} target="_blank" rel="noreferrer">
                             {t.resolved_url}
                           </a>
                         )}
                       </span>
                     </div>
-                    {!t.song_id && t.resolved_url && t.resolve_status === "auto" && !t.trusted && (
-                      <button
-                        className="mini-btn"
-                        title="Confirm this auto-found link is correct (promotes it to trusted)"
-                        onClick={async () => {
-                          try {
-                            const updated = await api.confirmMixTrack(t.id);
-                            onTrackResolved(updated);
-                          } catch (e) {
-                            toast(`Confirm failed: ${e.message}`);
-                          }
-                        }}
-                      >
-                        ✓ confirm
-                      </button>
-                    )}
-                    {!t.song_id && <ResolveInput track={t} onResolved={onTrackResolved} />}
+                    <div className="mix-actions">
+                      {!t.song_id && t.resolved_url && t.resolve_status === "auto" && !t.trusted && (
+                        <button
+                          className="mini-btn"
+                          title="Confirm this auto-found link is correct (promotes it to trusted)"
+                          onClick={async () => {
+                            try {
+                              const updated = await api.confirmMixTrack(t.id);
+                              onTrackResolved(updated);
+                            } catch (e) {
+                              toast(`Confirm failed: ${e.message}`);
+                            }
+                          }}
+                        >
+                          ✓ confirm
+                        </button>
+                      )}
+                      {!t.song_id && <ResolveInput track={t} onResolved={onTrackResolved} />}
+                    </div>
                   </SortableRow>
                 ))}
                 </SortableContext>

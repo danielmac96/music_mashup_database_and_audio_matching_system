@@ -1119,18 +1119,22 @@ input, select { font-family: inherit; }
 .mix-detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
 .mix-rows { display: flex; flex-direction: column; gap: 2px; }
 .mix-row {
-  display: grid; grid-template-columns: 34px 46px 1fr auto; align-items: center; gap: 8px;
+  display: grid;
+  grid-template-columns: 16px 16px 30px minmax(0, 1fr) auto;
+  align-items: center; gap: 8px;
   padding: 6px 8px; border-radius: 6px; font-size: 13px;
 }
 .mix-row:hover { background: rgba(255,255,255,0.03); }
-.mix-row.overlay { padding-left: 22px; }
 .mix-row.overlay .mix-num { color: var(--accent-light); font-style: italic; }
-.mix-select { width: 16px; flex: 0 0 16px; margin: 0; cursor: pointer; }
+.drag-handle { color: var(--text-2); cursor: grab; font-size: 12px; user-select: none; line-height: 1; }
+.mix-select { width: 16px; flex: 0 0 16px; margin: 0; cursor: pointer; justify-self: center; }
 .mix-num { font-weight: 600; color: var(--text-2); text-align: center; font-size: 12px; }
-.mix-cue { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-2); }
 .mix-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.mix-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mix-tags { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.mix-title { overflow-wrap: anywhere; line-height: 1.3; }
+.mix-tags { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; font-size: 11px; }
+.mix-url { font-size: 10px; color: var(--text-2); overflow-wrap: anywhere; text-decoration: none; }
+.mix-url:hover { color: var(--accent-light); text-decoration: underline; }
+.mix-actions { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; justify-content: flex-end; }
 .mix-flag { font-size: 10px; padding: 1px 5px; border-radius: 4px; }
 .mix-flag.failed { color: var(--amber-light); background: rgba(245,166,35,0.12); }
 .mix-flag.ok { color: var(--green); background: rgba(60,200,120,0.1); }
