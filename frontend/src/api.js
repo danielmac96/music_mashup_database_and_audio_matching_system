@@ -198,10 +198,12 @@ export const api = {
       body: JSON.stringify({ url }),
     }),
 
-  autoResolveMix: (id, platform = "soundcloud") =>
+  // trackIds: optional subset to resolve (omit/empty = every unlinked track).
+  autoResolveMix: (id, platform = "both", trackIds = null) =>
     jsonFetch(`/api/mixes/${id}/auto-resolve`, {
       method: "POST",
-      body: JSON.stringify({ platform }),
+      body: JSON.stringify(
+        trackIds && trackIds.length ? { platform, track_ids: trackIds } : { platform }),
     }),
 
   confirmMixTrack: (trackId) =>

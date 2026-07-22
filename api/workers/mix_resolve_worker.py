@@ -95,17 +95,22 @@ def resolve_one(artist: str, title: str, query: str, platform: str, *,
     return None
 
 
-def run(job_id: str, mix_id: int, platform: str = "soundcloud") -> None:
+def run(job_id: str, mix_id: int, platform: str = "both",
+        track_ids: list[int] | None = None) -> None:
     label = {"soundcloud": "SoundCloud", "youtube": "YouTube",
              "both": "SoundCloud→YouTube"}.get(platform, platform)
     jobs.update(job_id, status="running",
                 message=f"Searching {label} for unlinked tracks…")
 
+    sql = ("SELECT id, artist, title, raw_label FROM mix_tracks WHERE mix_id=? "
+           "AND (link_url IS NULL OR link_url='')")
+    params: list = [mix_id]
+    if track_ids:
+        sql += f" AND id IN ({','.join('?' * len(track_ids))})"
+        params += list(track_ids)
+    sql += " ORDER BY position"
     conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT id, artist, title, raw_label FROM mix_tracks WHERE mix_id=? "
-        "AND (link_url IS NULL OR link_url='') ORDER BY position",
-        (mix_id,)).fetchall()]
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     conn.close()
 
     if not rows:

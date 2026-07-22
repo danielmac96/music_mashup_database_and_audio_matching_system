@@ -1,4 +1,43 @@
+import importlib
+
 from api.workers import mix_resolve_worker as w
+
+
+def _setup_db(tmp_path, monkeypatch, n=3):
+    monkeypatch.setenv("MASHUP_DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("MASHUP_SETTINGS_DIR", str(tmp_path))
+    import config
+    importlib.reload(config)
+    from database import models
+    importlib.reload(models)
+    models.init_db()
+    from api.routes import mixes
+    importlib.reload(mixes)
+    rows = [{"entry_index": i + 1, "cue_secs": None, "is_overlay": False, "artist": f"A{i}",
+             "title": f"T{i}", "raw_label": f"{i+1}. A{i} - T{i}", "is_id": 0, "remixer": None,
+             "mashup_parts": [], "parse_confidence": 1.0} for i in range(n)]
+    detail = mixes._persist_mix("M", "https://src/w", rows, method="paste")
+    return models, detail
+
+
+def test_run_resolves_only_selected_tracks(tmp_path, monkeypatch):
+    models, detail = _setup_db(tmp_path, monkeypatch, n=3)
+    importlib.reload(w)
+    monkeypatch.setattr(w, "resolve_one",
+                        lambda a, t, q, p, **kw: {"url": "https://sc/x", "platform": "soundcloud",
+                                                  "score": 0.9, "duration_secs": 200.0})
+    monkeypatch.setattr(w.jobs, "update", lambda *a, **k: None)
+    monkeypatch.setattr(w.jobs, "done", lambda *a, **k: None)
+
+    picked = detail["tracks"][1]["id"]
+    w.run("job1", detail["id"], "both", track_ids=[picked])
+
+    conn = models.get_conn()
+    linked = {r["id"]: r["link_url"] for r in conn.execute(
+        "SELECT id, link_url FROM mix_tracks WHERE mix_id=?", (detail["id"],)).fetchall()}
+    conn.close()
+    assert linked[picked] == "https://sc/x"
+    assert all(v in (None, "") for k, v in linked.items() if k != picked)
 
 
 def test_strip_label_prefix():

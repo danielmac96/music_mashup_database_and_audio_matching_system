@@ -100,7 +100,8 @@ export function MixImporter() {
   const [busy, setBusy] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
-  const [platform, setPlatform] = useState("soundcloud");
+  const [platform, setPlatform] = useState("both");
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [viewMode, setViewMode] = useState("list"); // 'list' | 'match'
   const [exporting, setExporting] = useState(false);
   const [resolveJobId, setResolveJobId] = useState(null);
@@ -128,9 +129,28 @@ export function MixImporter() {
 
   useEffect(() => {
     setDetail(null);
+    setSelectedIds(new Set());   // fresh selection per mix
     if (activeId == null) return;
     api.getMix(activeId).then(setDetail).catch((e) => setError(e.message));
   }, [activeId]);
+
+  const toggleSelected = (id) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+
+  // Tracks eligible for auto-linking: not yet in the library and still unlinked.
+  const linkableIds = (detail?.tracks || [])
+    .filter((t) => !t.song_id && !t.resolved_url)
+    .map((t) => t.id);
+  const selectedLinkable = linkableIds.filter((id) => selectedIds.has(id));
+  const allLinkableSelected = linkableIds.length > 0 &&
+    selectedLinkable.length === linkableIds.length;
+
+  const toggleSelectAll = () =>
+    setSelectedIds(allLinkableSelected ? new Set() : new Set(linkableIds));
 
   // When an auto-resolve job finishes, pull the freshly-linked tracks back in.
   useEffect(() => {
@@ -184,9 +204,9 @@ export function MixImporter() {
     if (!detail) return;
     setError(null);
     try {
-      const res = await api.autoResolveMix(detail.id, platform);
+      const res = await api.autoResolveMix(detail.id, platform, selectedLinkable);
       setResolveJobId(res.job_id);
-      toast(`Searching ${res.platform} for ${res.queued} unlinked track${res.queued === 1 ? "" : "s"}…`);
+      toast(`Searching ${res.platform} for ${res.queued} selected track${res.queued === 1 ? "" : "s"}…`);
     } catch (e) {
       setError(e.message);
     }
@@ -338,6 +358,14 @@ export function MixImporter() {
                       {exporting ? "Exporting…" : "⇪ Export training set"}
                     </button>
                   )}
+                  {viewMode === "list" && linkableIds.length > 0 && (
+                    <label className="faint" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}
+                      title="Select / deselect every unlinked track">
+                      <input type="checkbox" checked={allLinkableSelected}
+                        onChange={toggleSelectAll} disabled={resolving} />
+                      All ({selectedLinkable.length}/{linkableIds.length})
+                    </label>
+                  )}
                   <select
                     className="mini-select"
                     value={platform}
@@ -345,17 +373,17 @@ export function MixImporter() {
                     disabled={resolving}
                     title="Which platform to search for links"
                   >
+                    <option value="both">Both (SC → YT)</option>
                     <option value="soundcloud">SoundCloud</option>
                     <option value="youtube">YouTube</option>
-                    <option value="both">Both (SC → YT)</option>
                   </select>
                   <button
                     className="btn ghost"
                     onClick={autoResolve}
-                    disabled={resolving || detail.resolved_count === detail.track_count}
-                    title="Search the platform and auto-link every track that still needs one"
+                    disabled={resolving || selectedLinkable.length === 0}
+                    title="Search the chosen platform and auto-link the selected tracks"
                   >
-                    {resolving ? "Searching…" : "⚡ Auto-link all"}
+                    {resolving ? "Searching…" : `⚡ Auto-link (${selectedLinkable.length})`}
                   </button>
                   <button
                     className="btn"
@@ -382,6 +410,18 @@ export function MixImporter() {
                 <SortableContext items={detail.tracks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
                 {detail.tracks.map((t) => (
                   <SortableRow key={t.id} track={t}>
+                    {!t.song_id && !t.resolved_url ? (
+                      <input
+                        type="checkbox"
+                        className="mix-select"
+                        checked={selectedIds.has(t.id)}
+                        onChange={() => toggleSelected(t.id)}
+                        disabled={resolving}
+                        title="Select this track for auto-linking"
+                      />
+                    ) : (
+                      <span className="mix-select" />
+                    )}
                     <span className="mix-num">{t.idx + 1}</span>
                     <span className="mix-cue" />
                     <div className="mix-info">

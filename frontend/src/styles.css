@@ -1125,6 +1125,7 @@ input, select { font-family: inherit; }
 .mix-row:hover { background: rgba(255,255,255,0.03); }
 .mix-row.overlay { padding-left: 22px; }
 .mix-row.overlay .mix-num { color: var(--accent-light); font-style: italic; }
+.mix-select { width: 16px; flex: 0 0 16px; margin: 0; cursor: pointer; }
 .mix-num { font-weight: 600; color: var(--text-2); text-align: center; font-size: 12px; }
 .mix-cue { font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-2); }
 .mix-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

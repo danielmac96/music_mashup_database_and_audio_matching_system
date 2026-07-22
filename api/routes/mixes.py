@@ -673,34 +673,44 @@ def scrape_track_link(track_id: int) -> dict:
 
 
 class AutoResolveRequest(BaseModel):
-    platform: str = "soundcloud"
+    platform: str = "both"
+    track_ids: list[int] | None = None   # None/empty = every unlinked track
 
 
 @router.post("/{mix_id}/auto-resolve")
 def auto_resolve_mix(mix_id: int, req: AutoResolveRequest,
                      background: BackgroundTasks) -> dict:
-    """Queue a background search that links every still-unlinked, non-ID track of
-    this mix to its best SoundCloud/YouTube hit (resolve_status='auto'). Poll the
-    returned job_id; auto links can be reviewed/overridden before ingest."""
-    platform = (req.platform or "soundcloud").lower()
+    """Queue a background search that links still-unlinked, non-ID tracks of this
+    mix to their best SoundCloud/YouTube hit (resolve_status='auto'). Pass
+    ``track_ids`` to resolve only a chosen subset (e.g. test a handful before
+    committing to all ~200); omit it to do every unlinked track. Poll the returned
+    job_id; auto links can be reviewed/overridden before ingest."""
+    platform = (req.platform or "both").lower()
     if platform not in ("soundcloud", "youtube", "both"):
         raise HTTPException(status_code=400,
                             detail="platform must be 'soundcloud', 'youtube', or 'both'")
+    ids = [int(i) for i in (req.track_ids or [])]
     conn = get_conn()
     try:
         if not conn.execute("SELECT id FROM mixes WHERE id=?", (mix_id,)).fetchone():
             raise HTTPException(status_code=404, detail="mix not found")
-        pending = conn.execute(
-            "SELECT COUNT(*) AS n FROM mix_tracks WHERE mix_id=? "
-            "AND (link_url IS NULL OR link_url='')", (mix_id,)).fetchone()["n"]
+        sql = ("SELECT COUNT(*) AS n FROM mix_tracks WHERE mix_id=? "
+               "AND (link_url IS NULL OR link_url='')")
+        params: list = [mix_id]
+        if ids:
+            sql += f" AND id IN ({','.join('?' * len(ids))})"
+            params += ids
+        pending = conn.execute(sql, params).fetchone()["n"]
     finally:
         conn.close()
     if not pending:
-        raise HTTPException(status_code=400,
-                            detail="Every track is already linked.")
+        raise HTTPException(
+            status_code=400,
+            detail="Every selected track is already linked." if ids
+                   else "Every track is already linked.")
     job_id = jobs.new_job(kind="mix_resolve",
                           message=f"Queued auto-resolve on {platform}")
-    background.add_task(mix_resolve_worker.run, job_id, mix_id, platform)
+    background.add_task(mix_resolve_worker.run, job_id, mix_id, platform, ids or None)
     return {"job_id": job_id, "queued": pending, "platform": platform}
 
 
