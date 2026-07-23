@@ -31,11 +31,23 @@ log = logging.getLogger(__name__)
 # Leading "1." / "12." entry number or a "w/" overlay marker — strip it so the
 # search sees just "Artist - Title".
 _PREFIX_RE = re.compile(r"^\s*(?:\d+\s*[.)]\s*|w/\s*)", re.IGNORECASE)
+# A URL, optionally wrapped in ( ) — 1001tracklists sometimes leaks a "(https://…/
+# track/…" fragment into a title, which wrecks a title search if left in.
+_URL_RE = re.compile(r"\(?\s*https?://[^\s)]*\)?", re.IGNORECASE)
+
+
+def _clean_query(text: str) -> str:
+    """Strip leaked URLs / dangling parens from a search string and tidy whitespace."""
+    text = _URL_RE.sub(" ", text or "")
+    text = re.sub(r"\(\s*$", "", text)           # trailing unbalanced "("
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip(" -")
 
 
 def strip_label_prefix(raw_label: str) -> str:
-    """Turn a tracklist raw_label ("1. A - B", "w/ A - B") into a search query."""
-    return _PREFIX_RE.sub("", raw_label or "").strip()
+    """Turn a tracklist raw_label ("1. A - B", "w/ A - B") into a search query,
+    dropping any leaked 1001tracklists URL fragment."""
+    return _clean_query(_PREFIX_RE.sub("", raw_label or "").strip())
 
 
 def _is_id_entry(artist: str, title: str) -> bool:
@@ -126,9 +138,9 @@ def run(job_id: str, mix_id: int, platform: str = "both",
             if _is_id_entry(t["artist"], t["title"]):
                 skipped += 1
                 continue
-            query = strip_label_prefix(t.get("raw_label") or "") or \
+            query = strip_label_prefix(t.get("raw_label") or "") or _clean_query(
                 " - ".join(p for p in ((t["artist"] or "").strip(),
-                                       (t["title"] or "").strip()) if p)
+                                       (t["title"] or "").strip()) if p))
             try:
                 hit = resolve_one(t["artist"] or "", t["title"] or "", query, platform)
             except Exception:  # noqa: BLE001 — one bad search must not kill the batch

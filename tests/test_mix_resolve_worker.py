@@ -48,6 +48,15 @@ def test_strip_label_prefix():
     assert w.strip_label_prefix("No Prefix - Here") == "No Prefix - Here"
 
 
+def test_strip_label_prefix_removes_leaked_url():
+    # The 1001tracklists "(https://…/track/…" fragment must not reach the search.
+    assert w.strip_label_prefix(
+        "1. Artist - Song (https://www.1001tracklists.com/track/h") == "Artist - Song"
+    assert w.strip_label_prefix(
+        "w/ A - B (https://www.1001tracklists.com/track/xyz/index.html)") == "A - B"
+    assert w._clean_query("Foo - Bar https://x.com/y") == "Foo - Bar"
+
+
 def _sc(url, score):
     def f(artist, title, query):
         return {"url": url, "score": score, "duration_secs": 200.0}

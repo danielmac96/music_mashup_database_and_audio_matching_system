@@ -33,7 +33,6 @@ function SortableRow({ track, children }) {
 function ResolveInput({ track, onResolved }) {
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
-  const [scraping, setScraping] = useState(false);
 
   const submit = async () => {
     const u = url.trim();
@@ -54,17 +53,6 @@ function ResolveInput({ track, onResolved }) {
     }
   };
 
-  const scrapeLink = async () => {
-    setScraping(true);
-    try {
-      onResolved(await api.scrapeMixTrackLink(track.id));
-    } catch (e) {
-      toast(`Official link failed: ${e.message}`);
-    } finally {
-      setScraping(false);
-    }
-  };
-
   return (
     <div className="mix-resolve">
       <input
@@ -76,16 +64,6 @@ function ResolveInput({ track, onResolved }) {
       <button className="mini-btn" onClick={submit} disabled={busy || !url.trim()}>
         {busy ? "…" : "link"}
       </button>
-      {track.tl_track_url ? (
-        <button
-          className="mini-btn"
-          onClick={scrapeLink}
-          disabled={scraping}
-          title="Scrape the real SoundCloud/YouTube URL from the 1001tracklists track page"
-        >
-          {scraping ? "…" : "🔗 Official link"}
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -289,22 +267,27 @@ export function MixImporter() {
         </div>
       )}
 
-      <div className="mix-layout">
-        <div className="mix-list">
+      <div className="mix-stack">
+        <div className="mix-list-bar">
           <div className="mix-list-head">Imported mixes ({mixes.length})</div>
-          {mixes.length === 0 && <div className="empty" style={{ padding: 14 }}>None yet.</div>}
-          {mixes.map((m) => (
-            <div
-              key={m.id}
-              className={`mix-list-item${m.id === activeId ? " active" : ""}`}
-              onClick={() => setActiveId(m.id)}
-            >
-              <div className="mix-list-title">{m.title}</div>
-              <div className="faint" style={{ fontSize: 11 }}>
-                {m.track_count} tracks · {m.resolved_count} linked
-              </div>
+          {mixes.length === 0 ? (
+            <div className="empty" style={{ padding: "6px 2px" }}>None yet.</div>
+          ) : (
+            <div className="mix-list-items">
+              {mixes.map((m) => (
+                <div
+                  key={m.id}
+                  className={`mix-list-item${m.id === activeId ? " active" : ""}`}
+                  onClick={() => setActiveId(m.id)}
+                >
+                  <div className="mix-list-title">{m.title}</div>
+                  <div className="faint" style={{ fontSize: 11 }}>
+                    {m.track_count} tracks · {m.resolved_count} linked
+                  </div>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
         </div>
 
         <div className="mix-detail">

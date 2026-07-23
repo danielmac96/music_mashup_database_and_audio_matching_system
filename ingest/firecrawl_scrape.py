@@ -36,6 +36,8 @@ _TRACK_LINE_RE = re.compile(
 # so the shared parse_line can derive the remixer.
 _REMIX_PAREN_RE = re.compile(
     r"\(([^)]*\b(?:remix|mix|edit|flip|bootleg|mashup|vip|rework|refix)\b[^)]*)\)", re.I)
+# A URL fragment (possibly wrapped in "(" and possibly truncated) leaked into a title.
+_URL_FRAGMENT_RE = re.compile(r"\(?\s*https?://[^\s)]*\)?", re.I)
 
 _LINKS_SCHEMA = {
     "type": "object",
@@ -108,6 +110,9 @@ def parse_markdown_tracklist(md: str) -> list[dict]:
         if not m:
             continue
         body = m.group("body").replace("\\-", "-").replace("\\", "").strip()
+        # Defensive: never let a leaked "(https://…/track/…" URL fragment into the
+        # artist/title — it wrecks a downstream title search.
+        body = _URL_FRAGMENT_RE.sub("", body).strip()
         if " - " in body:
             artist, title = body.split(" - ", 1)
         else:
@@ -119,8 +124,8 @@ def parse_markdown_tracklist(md: str) -> list[dict]:
             title = f"{title.strip()} ({rem.group(1).strip()})"
         rows.append({
             "position": "w/" if pending_overlay else "",
-            "artist": artist.strip(),
-            "title": title.strip(),
+            "artist": artist.strip(" -"),
+            "title": title.strip(" -"),
             "is_overlay": pending_overlay,
             "tl_track_url": m.group("url"),
         })
