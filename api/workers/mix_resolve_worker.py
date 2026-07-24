@@ -31,9 +31,12 @@ log = logging.getLogger(__name__)
 # Leading "1." / "12." entry number or a "w/" overlay marker — strip it so the
 # search sees just "Artist - Title".
 _PREFIX_RE = re.compile(r"^\s*(?:\d+\s*[.)]\s*|w/\s*)", re.IGNORECASE)
-# A URL, optionally wrapped in ( ) — 1001tracklists sometimes leaks a "(https://…/
-# track/…" fragment into a title, which wrecks a title search if left in.
-_URL_RE = re.compile(r"\(?\s*https?://[^\s)]*\)?", re.IGNORECASE)
+# A URL, optionally wrapped in ( ) and optionally carrying a markdown-link title
+# attribute (…/index.html "rework of track …") — 1001tracklists sometimes leaks
+# such a fragment into a title, which wrecks a title search if left in. Match the
+# quoted tooltip too so no unsearchable remnant survives (older imports predating
+# the parser fix still carry these).
+_URL_RE = re.compile(r'\(?\s*https?://[^\s)]*(?:\s+"[^"]*")?\s*\)?', re.IGNORECASE)
 
 
 def _clean_query(text: str) -> str:

@@ -36,8 +36,11 @@ _TRACK_LINE_RE = re.compile(
 # so the shared parse_line can derive the remixer.
 _REMIX_PAREN_RE = re.compile(
     r"\(([^)]*\b(?:remix|mix|edit|flip|bootleg|mashup|vip|rework|refix)\b[^)]*)\)", re.I)
-# A URL fragment (possibly wrapped in "(" and possibly truncated) leaked into a title.
-_URL_FRAGMENT_RE = re.compile(r"\(?\s*https?://[^\s)]*\)?", re.I)
+# A URL fragment leaked into a title — possibly wrapped in "(" and possibly
+# carrying a markdown-link title attribute (…index.html "rework of track …").
+# Both the URL and the trailing quoted tooltip must go, or an unsearchable
+# remnant survives and breaks the downstream SoundCloud/YouTube title search.
+_URL_FRAGMENT_RE = re.compile(r'\(?\s*https?://[^\s)]*(?:\s+"[^"]*")?\s*\)?', re.I)
 
 _LINKS_SCHEMA = {
     "type": "object",
@@ -117,11 +120,22 @@ def parse_markdown_tracklist(md: str) -> list[dict]:
             artist, title = body.split(" - ", 1)
         else:
             artist, title = "", body
-        # A remix credit prints as a second linked entity after the first link; fold it
-        # back into the title so parse_line can pull out the remixer downstream.
-        rem = _REMIX_PAREN_RE.search(line[m.end():])
-        if rem and "remix" not in title.lower():
-            title = f"{title.strip()} ({rem.group(1).strip()})"
+        # A genuine remix credit prints as a "(X Remix)" parenthetical after the
+        # first link; fold it back into the title so parse_line can pull out the
+        # remixer downstream. But 1001tracklists also renders a "rework of track …"
+        # annotation as a markdown link whose *title attribute* holds a remix word
+        # — [text](url "rework of track …"). That paren carries a URL, not a
+        # remixer name; folding it in produces an unsearchable title, so skip any
+        # match that contains a URL and take the first credit that doesn't.
+        for rem in _REMIX_PAREN_RE.finditer(line[m.end():]):
+            credit = rem.group(1).strip()
+            if "http" in credit.lower():
+                continue
+            if "remix" not in title.lower():
+                title = f"{title.strip()} ({credit})"
+            break
+        # Defensive last resort: never let a leaked URL fragment survive into a title.
+        title = _URL_FRAGMENT_RE.sub("", title).strip()
         rows.append({
             "position": "w/" if pending_overlay else "",
             "artist": artist.strip(" -"),

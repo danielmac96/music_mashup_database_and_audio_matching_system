@@ -56,6 +56,24 @@ def test_parse_markdown_overlay_markers():
     assert [r["is_overlay"] for r in rows] == [False, True, True, False]
 
 
+def test_rework_link_tooltip_not_folded_into_title():
+    # 1001tracklists renders a "rework of track X" annotation as a markdown link
+    # with a title attribute: [text](url "rework of track …"). The remix-word in
+    # that tooltip must NOT drag the URL (and tooltip) into the title — an
+    # unsearchable title breaks SoundCloud/YouTube linking.
+    md = (
+        "Ian Asher & Olly Alexander \\- Desire[open track page]"
+        "(https://www.1001tracklists.com/track/aaa/x/index.html \"open track page\")"
+        "[Desire](https://www.1001tracklists.com/track/zw050jf/years-years-desire/index.html "
+        "\"rework of track Years & Years - Desire\")\n"
+    )
+    rows = fc.parse_markdown_tracklist(md)
+    assert len(rows) == 1
+    assert rows[0]["artist"] == "Ian Asher & Olly Alexander"
+    assert rows[0]["title"] == "Desire"
+    assert "http" not in rows[0]["title"]
+
+
 def test_scrape_tracklist_empty_raises():
     payload = {"success": True, "data": {"markdown": "no tracks here\njust prose\n"}}
     with pytest.raises(fc.FirecrawlError):
