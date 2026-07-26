@@ -134,10 +134,18 @@ def _fetch_tracklist_html(url: str) -> str:
 
 # ── row shaping ───────────────────────────────────────────────────────────────
 
-_TRACK_SELECT = ("SELECT *, position AS idx, link_url AS resolved_url "
-                 "FROM mix_tracks WHERE mix_id=? ORDER BY position")
-_ONE_TRACK_SELECT = ("SELECT *, position AS idx, link_url AS resolved_url "
-                     "FROM mix_tracks WHERE id=?")
+# song_status / song_last_error come from the joined songs row (NULL until the
+# track is ingested) and drive the per-mix ingest tracker.
+_TRACK_SELECT = (
+    "SELECT mt.*, mt.position AS idx, mt.link_url AS resolved_url, "
+    "s.status AS song_status, s.last_error AS song_last_error "
+    "FROM mix_tracks mt LEFT JOIN songs s ON s.id = mt.song_id "
+    "WHERE mt.mix_id=? ORDER BY mt.position")
+_ONE_TRACK_SELECT = (
+    "SELECT mt.*, mt.position AS idx, mt.link_url AS resolved_url, "
+    "s.status AS song_status, s.last_error AS song_last_error "
+    "FROM mix_tracks mt LEFT JOIN songs s ON s.id = mt.song_id "
+    "WHERE mt.id=?")
 
 
 def _track_row(conn, track_id: int) -> dict:
@@ -170,6 +178,16 @@ def _mix_detail(conn, mix_id: int) -> dict:
         "SELECT id, inst_mix_track_id, vocal_mix_track_id, cue_secs, origin "
         "FROM mashup_pairs WHERE mix_id=? ORDER BY id", (mix_id,)).fetchall()]
     mix["match_count"] = len(mix["pairs"])
+    # Ingest tracker rollup: how far the mix's songs are through the pipeline.
+    # Keyed by songs.status ('queued'|'downloaded'|'stemmed'|'analysed'|'error_*').
+    counts: dict[str, int] = {}
+    for t in tracks:
+        st = t.get("song_status")
+        if t.get("song_id") and st:
+            counts[st] = counts.get(st, 0) + 1
+    mix["ingested_count"] = sum(1 for t in tracks if t.get("song_id"))
+    mix["analysed_count"] = counts.get("analysed", 0)
+    mix["ingest_status_counts"] = counts
     return mix
 
 
@@ -249,6 +267,36 @@ def _scraped_rows_to_persist_rows(scraped: list[dict]) -> list[dict]:
 _CARRY_COLS = ("link_url", "link_platform", "resolve_status", "resolve_score",
                "resolve_duration_secs", "song_id", "role", "role_assigned_at",
                "tl_track_url")
+
+
+def _seed_parsed_matches(conn, mix_id: int) -> None:
+    """Recreate the *original* matching state from the tracklist structure: each
+    'w/' overlay pairs with the nearest preceding bed (origin='parsed'), then beds
+    become instrumentals and overlays vocals for any row still 'unassigned'. Used
+    at import and by the Match tab's 'reset to original'. Does not commit."""
+    tracks = conn.execute(
+        "SELECT id, position, is_overlay, cue_secs FROM mix_tracks "
+        "WHERE mix_id=? ORDER BY position", (mix_id,)).fetchall()
+    last_bed = None
+    for t in tracks:
+        if not t["is_overlay"]:
+            last_bed = t
+        elif last_bed is not None:
+            conn.execute(
+                "INSERT OR IGNORE INTO mashup_pairs "
+                "(mix_id, inst_mix_track_id, vocal_mix_track_id, cue_secs, origin) "
+                "VALUES (?,?,?,?, 'parsed')",
+                (mix_id, last_bed["id"], t["id"], t["cue_secs"]))
+    # Beds → instrumental, overlays → vocal. Only rows still 'unassigned' — any
+    # carried-over user role always wins at import.
+    conn.execute(
+        "UPDATE mix_tracks SET role='instrumental' WHERE role='unassigned' "
+        "AND id IN (SELECT inst_mix_track_id FROM mashup_pairs WHERE mix_id=?)",
+        (mix_id,))
+    conn.execute(
+        "UPDATE mix_tracks SET role='vocal' WHERE role='unassigned' "
+        "AND id IN (SELECT vocal_mix_track_id FROM mashup_pairs WHERE mix_id=?)",
+        (mix_id,))
 
 
 def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
@@ -346,33 +394,9 @@ def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
                     "VALUES (?,?,?,?, 'manual')",
                     (mix_id, inst_id, vocal_id, p["cue_secs"]))
 
-        # Documented pairings: each 'w/' overlay rides on the nearest preceding
-        # bed — unless a restored manual match already owns that vocal.
-        tracks = conn.execute(
-            "SELECT id, position, is_overlay, cue_secs FROM mix_tracks "
-            "WHERE mix_id=? ORDER BY position", (mix_id,)).fetchall()
-        last_bed = None
-        for t in tracks:
-            if not t["is_overlay"]:
-                last_bed = t
-            elif last_bed is not None:
-                conn.execute(
-                    "INSERT OR IGNORE INTO mashup_pairs "
-                    "(mix_id, inst_mix_track_id, vocal_mix_track_id, cue_secs, origin) "
-                    "VALUES (?,?,?,?, 'parsed')",
-                    (mix_id, last_bed["id"], t["id"], t["cue_secs"]))
-
-        # Seed roles from the pairs so the matching board opens pre-populated:
-        # beds become instrumentals, overlays become vocals. Only rows still
-        # 'unassigned' — carried-over user roles always win.
-        conn.execute(
-            "UPDATE mix_tracks SET role='instrumental' WHERE role='unassigned' "
-            "AND id IN (SELECT inst_mix_track_id FROM mashup_pairs WHERE mix_id=?)",
-            (mix_id,))
-        conn.execute(
-            "UPDATE mix_tracks SET role='vocal' WHERE role='unassigned' "
-            "AND id IN (SELECT vocal_mix_track_id FROM mashup_pairs WHERE mix_id=?)",
-            (mix_id,))
+        # Documented pairings ('w/' overlay → nearest preceding bed) + role seed,
+        # honouring the manual matches just restored above.
+        _seed_parsed_matches(conn, mix_id)
 
         conn.commit()
         return _mix_detail(conn, mix_id)
@@ -459,6 +483,86 @@ def list_mixes() -> dict:
 def get_mix(mix_id: int) -> dict:
     conn = get_conn()
     try:
+        return _mix_detail(conn, mix_id)
+    finally:
+        conn.close()
+
+
+class AddTrackRequest(BaseModel):
+    artist: str = ""
+    title: str = ""
+    link: Optional[str] = None  # optional SC/YT URL; omit to Auto-link later
+
+
+@router.post("/{mix_id}/tracks")
+def add_track(mix_id: int, req: AddTrackRequest) -> dict:
+    """Append a manually-entered track to a mix. Title is required; artist is
+    optional. Leave the link blank to let the existing Auto-link flow find its URL
+    later ('unresolved'), or paste a SoundCloud/YouTube link to set it 'manual'
+    (trusted) right away. Returns the new track row, shaped like the detail rows."""
+    artist = (req.artist or "").strip()
+    title = (req.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    link = (req.link or "").strip()
+    link_url = link_platform = None
+    resolve_status = "unresolved"
+    if link:
+        source, _kind = classify_url(link)
+        if source == "unknown":
+            raise HTTPException(
+                status_code=400,
+                detail="Paste a SoundCloud or YouTube track URL, or leave the "
+                       "link blank and use Auto-link.")
+        link_url, link_platform, resolve_status = link, source, "manual"
+    conn = get_conn()
+    try:
+        if not conn.execute("SELECT id FROM mixes WHERE id=?",
+                            (mix_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="mix not found")
+        # Append after the last row; keep entry_index/position past every existing
+        # value so the UNIQUE(mix_id, entry_index, position) index never collides.
+        bounds = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) AS mp, "
+            "COALESCE(MAX(entry_index), 0) AS me FROM mix_tracks WHERE mix_id=?",
+            (mix_id,)).fetchone()
+        raw_label = f"{artist} - {title}" if artist else title
+        cur = conn.execute(
+            "INSERT INTO mix_tracks (mix_id, entry_index, position, is_overlay, "
+            "artist, title, raw_label, is_id, parse_confidence, link_url, "
+            "link_platform, resolve_status, role) "
+            "VALUES (?,?,?,0,?,?,?,0,1.0,?,?,?,'unassigned')",
+            (mix_id, bounds["me"] + 1, bounds["mp"] + 1, artist, title, raw_label,
+             link_url, link_platform, resolve_status))
+        conn.commit()
+        return _track_row(conn, cur.lastrowid)
+    finally:
+        conn.close()
+
+
+@router.delete("/{mix_id}/tracks/{track_id}")
+def delete_track(mix_id: int, track_id: int) -> dict:
+    """Remove a manually-added or wrong track row (and any match pairs that
+    referenced it) so no orphan pairs remain. Refuses once the track has been
+    ingested into the library (song_id set) — handle that from the Library.
+    Returns the full mix detail so the UI can reconcile match_count."""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, song_id FROM mix_tracks WHERE id=? AND mix_id=?",
+            (track_id, mix_id)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="mix track not found")
+        if row["song_id"] is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="This track is already ingested into the library — remove "
+                       "it from the Library, not here.")
+        conn.execute(
+            "DELETE FROM mashup_pairs WHERE inst_mix_track_id=? "
+            "OR vocal_mix_track_id=?", (track_id, track_id))
+        conn.execute("DELETE FROM mix_tracks WHERE id=?", (track_id,))
+        conn.commit()
         return _mix_detail(conn, mix_id)
     finally:
         conn.close()
@@ -553,6 +657,28 @@ def save_assignments(mix_id: int, req: AssignmentsRequest) -> dict:
                 "role_assigned_at=COALESCE(role_assigned_at, datetime('now')) "
                 "WHERE id=? AND role != 'instrumental'", (m.inst_track_id,))
 
+        conn.commit()
+        return _mix_detail(conn, mix_id)
+    finally:
+        conn.close()
+
+
+@router.post("/{mix_id}/reset-matches")
+def reset_matches(mix_id: int) -> dict:
+    """Discard every manual role/match edit and rebuild the *original* grouping
+    from the tracklist (each 'w/' overlay paired to its bed, roles reseeded) — a
+    clean baseline to experiment against. Links and ingested songs are untouched.
+    Returns the full mix detail so the board can re-hydrate."""
+    conn = get_conn()
+    try:
+        if not conn.execute("SELECT id FROM mixes WHERE id=?",
+                            (mix_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="mix not found")
+        conn.execute("DELETE FROM mashup_pairs WHERE mix_id=?", (mix_id,))
+        conn.execute(
+            "UPDATE mix_tracks SET role='unassigned', role_assigned_at=NULL "
+            "WHERE mix_id=?", (mix_id,))
+        _seed_parsed_matches(conn, mix_id)
         conn.commit()
         return _mix_detail(conn, mix_id)
     finally:

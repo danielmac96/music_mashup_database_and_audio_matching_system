@@ -26,6 +26,25 @@ function SortableRow({ track, children }) {
   );
 }
 
+// Ingest pipeline stages a song passes through, in order. Drives the per-mix
+// processing tracker so a heavy, multi-session ingest stays legible.
+const INGEST_STAGES = ["queued", "downloaded", "stemmed", "analysed"];
+
+function StageStepper({ status, error }) {
+  const s = status || "queued";
+  const isErr = String(s).startsWith("error");
+  const reached = isErr ? -1 : INGEST_STAGES.indexOf(s);
+  return (
+    <span className="stage-stepper" title={isErr ? (error || s) : `stage: ${s}`}>
+      {INGEST_STAGES.map((st, i) => (
+        <span key={st}
+          className={`stage-dot${i <= reached ? " on" : ""}${isErr ? " err" : ""}`} />
+      ))}
+      <span className={`stage-label${isErr ? " err" : ""}`}>{isErr ? "error" : s}</span>
+    </span>
+  );
+}
+
 // Mixes tab: import a DJ-set tracklist (paste the text — URL scraping needs the
 // optional playwright stack), resolve each entry to a SoundCloud/YouTube link,
 // then ingest the resolved tracks through the normal pipeline.
@@ -81,7 +100,8 @@ export function MixImporter() {
   const [platform, setPlatform] = useState("both");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [viewMode, setViewMode] = useState("list"); // 'list' | 'match'
-  const [exporting, setExporting] = useState(false);
+  const [newTrack, setNewTrack] = useState({ artist: "", title: "", link: "" });
+  const [addingTrack, setAddingTrack] = useState(false);
   const [resolveJobId, setResolveJobId] = useState(null);
   const { job: resolveJob } = useJobPolling(resolveJobId);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
@@ -217,6 +237,61 @@ export function MixImporter() {
     });
   };
 
+  const addTrack = async () => {
+    if (!detail) return;
+    const title = newTrack.title.trim();
+    if (!title) { toast("Enter a title for the track"); return; }
+    const link = newTrack.link.trim();
+    if (link && classifyUrl(link).source === "unknown") {
+      toast("Link must be a SoundCloud or YouTube URL (or leave it blank)");
+      return;
+    }
+    setAddingTrack(true);
+    try {
+      const row = await api.addMixTrack(detail.id, {
+        artist: newTrack.artist.trim(), title, link });
+      setDetail((d) => d && {
+        ...d,
+        tracks: [...d.tracks, row],
+        track_count: (d.track_count ?? d.tracks.length) + 1,
+        resolved_count: d.resolved_count + (row.resolved_url ? 1 : 0),
+      });
+      setNewTrack({ artist: "", title: "", link: "" });
+      toast(link ? "Track added" : "Track added — use Auto-link to find its URL");
+      loadMixes();
+    } catch (e) {
+      toast(`Add failed: ${e.message}`);
+    } finally {
+      setAddingTrack(false);
+    }
+  };
+
+  const removeTrack = async (t) => {
+    if (!detail) return;
+    const label = `${t.artist ? `${t.artist} — ` : ""}${t.title}`;
+    if (!window.confirm(`Remove “${label}” from this mix?`)) return;
+    try {
+      setDetail(await api.deleteMixTrack(detail.id, t.id));
+      loadMixes();
+    } catch (e) {
+      toast(`Remove failed: ${e.message}`);
+    }
+  };
+
+  // Live-refresh the ingest tracker while any of this mix's songs is still mid-
+  // pipeline. Ingest runs after matching, so this rarely overlaps board editing.
+  useEffect(() => {
+    if (!detail) return;
+    const busy = (detail.tracks || []).some((t) =>
+      t.song_id && t.song_status && t.song_status !== "analysed" &&
+      !String(t.song_status).startsWith("error"));
+    if (!busy) return;
+    const h = setInterval(() => {
+      api.getMix(detail.id).then(setDetail).catch(() => {});
+    }, 3000);
+    return () => clearInterval(h);
+  }, [detail]);
+
   return (
     <div className="page mid">
       <div className="screen-head" style={{ display: "block" }}>
@@ -322,24 +397,12 @@ export function MixImporter() {
                     </button>
                   </div>
                   {viewMode === "match" && (
-                    <button
-                      className="btn ghost"
-                      disabled={exporting || !detail.match_count}
-                      title="Write these matched pairs out as a training dataset"
-                      onClick={async () => {
-                        setExporting(true);
-                        try {
-                          const res = await api.exportMixTrainingSet(detail.id);
-                          toast(`Exported ${res.n_pos} pair${res.n_pos === 1 ? "" : "s"} → ${res.name} v${res.version}`);
-                        } catch (e) {
-                          toast(`Export failed: ${e.message}`);
-                        } finally {
-                          setExporting(false);
-                        }
-                      }}
-                    >
-                      {exporting ? "Exporting…" : "⇪ Export training set"}
-                    </button>
+                    <span className={`match-checkpoint${detail.match_count ? " ok" : ""}`}
+                      title="Matches save automatically as you arrange them — you can leave and resume later, then Ingest.">
+                      {detail.match_count
+                        ? `✓ ${detail.match_count} match${detail.match_count === 1 ? "" : "es"} saved`
+                        : "no matches yet"}
+                    </span>
                   )}
                   {viewMode === "list" && linkableIds.length > 0 && (
                     <label className="faint" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}
@@ -383,6 +446,28 @@ export function MixImporter() {
                   <span className="spin-dot" /> {resolveJob?.message || "Queued…"}
                   {typeof resolveJob?.progress === "number" && resolveJob.progress > 0
                     ? ` (${resolveJob.progress}%)` : ""}
+                </div>
+              )}
+              {detail.ingested_count > 0 && (
+                <div className="mix-ingest-tracker">
+                  <div className="mix-ingest-head">
+                    <strong>Processing</strong>
+                    <span className="faint">
+                      {detail.analysed_count}/{detail.ingested_count} analysed
+                      {detail.analysed_count < detail.ingested_count
+                        ? " · runs in the background, resumes automatically across sessions" : " ✓"}
+                    </span>
+                  </div>
+                  <div className="mix-ingest-rows">
+                    {detail.tracks.filter((t) => t.song_id).map((t) => (
+                      <div key={t.id} className="mix-ingest-row">
+                        <span className="mix-ingest-title" title={t.song_last_error || undefined}>
+                          {t.artist ? `${t.artist} — ` : ""}{t.title}
+                        </span>
+                        <StageStepper status={t.song_status} error={t.song_last_error} />
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
               {viewMode === "match" && (
@@ -443,11 +528,33 @@ export function MixImporter() {
                         </button>
                       )}
                       {!t.song_id && <ResolveInput track={t} onResolved={onTrackResolved} />}
+                      {!t.song_id && (
+                        <button className="mini-btn danger" title="Remove this track from the mix"
+                          onClick={() => removeTrack(t)}>✕</button>
+                      )}
                     </div>
                   </SortableRow>
                 ))}
                 </SortableContext>
                 </DndContext>
+                <div className="mix-add-track">
+                  <span className="mix-add-label">+ Add track</span>
+                  <input className="mix-add-in" placeholder="Artist (optional)"
+                    value={newTrack.artist}
+                    onChange={(e) => setNewTrack((n) => ({ ...n, artist: e.target.value }))} />
+                  <input className="mix-add-in" placeholder="Title"
+                    value={newTrack.title}
+                    onChange={(e) => setNewTrack((n) => ({ ...n, title: e.target.value }))}
+                    onKeyDown={(e) => e.key === "Enter" && addTrack()} />
+                  <input className="mix-add-in wide" placeholder="SoundCloud/YouTube link (optional)"
+                    value={newTrack.link}
+                    onChange={(e) => setNewTrack((n) => ({ ...n, link: e.target.value }))}
+                    onKeyDown={(e) => e.key === "Enter" && addTrack()} />
+                  <button className="mini-btn" onClick={addTrack}
+                    disabled={addingTrack || !newTrack.title.trim()}>
+                    {addingTrack ? "…" : "Add"}
+                  </button>
+                </div>
               </div>
             </>
           )}

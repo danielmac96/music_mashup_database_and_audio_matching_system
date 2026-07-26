@@ -216,6 +216,18 @@ export const api = {
 
   ingestMix: (id) => jsonFetch(`/api/mixes/${id}/ingest`, { method: "POST" }),
 
+  // Manually add a track (artist/title + optional SC/YT link). No link → the row
+  // is left 'unresolved' for the Auto-link flow. Returns the new track row.
+  addMixTrack: (id, { artist = "", title, link = "" }) =>
+    jsonFetch(`/api/mixes/${id}/tracks`, {
+      method: "POST",
+      body: JSON.stringify({ artist, title, link }),
+    }),
+
+  // Remove a not-yet-ingested track (and its match pairs). Returns full detail.
+  deleteMixTrack: (id, trackId) =>
+    jsonFetch(`/api/mixes/${id}/tracks/${trackId}`, { method: "DELETE" }),
+
   reorderMixTracks: (id, trackIds) =>
     jsonFetch(`/api/mixes/${id}/reorder`, {
       method: "POST",
@@ -230,11 +242,9 @@ export const api = {
       body: JSON.stringify({ roles, matches }),
     }),
 
-  exportMixTrainingSet: (id, force = false) =>
-    jsonFetch(`/api/mixes/${id}/export`, {
-      method: "POST",
-      body: JSON.stringify({ force }),
-    }),
+  // Discard manual edits and rebuild the original 'w/'-derived grouping.
+  resetMixMatches: (id) =>
+    jsonFetch(`/api/mixes/${id}/reset-matches`, { method: "POST" }),
 
   // ── Training data + learned model ─────────────────────────────────────────
   getDatasets: () => jsonFetch("/api/datasets"),

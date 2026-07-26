@@ -19,22 +19,46 @@ function trackLabel(t) {
   return `${t.artist ? `${t.artist} – ` : ""}${t.title}`;
 }
 
-function Pill({ track, matched, dragging }) {
-  const low = track.is_id || (track.parse_confidence != null && track.parse_confidence < 1);
+// Explicit role toggle: a non-drag way to fix a track wrongly auto-marked as a
+// bed vs a vocal. Clicks must not start a drag, so we swallow pointerdown.
+function RoleToggle({ track, role, onSetRole }) {
+  if (!onSetRole) return null;
   return (
-    <span
-      className={`match-pill${low ? " low" : ""}${matched ? " matched" : ""}${dragging ? " dragging" : ""}`}
-      title={track.raw_label || trackLabel(track)}
-    >
-      <span className="match-pos">{track.position + 1}</span>
-      <span className="match-label">{trackLabel(track)}</span>
-      {!!track.is_id && <span className="match-chip id">ID</span>}
-      {!!track.is_overlay && <span className="match-chip wv" title="was a 'w/' overlay line">w/</span>}
+    <span className="role-toggle" onPointerDown={(e) => e.stopPropagation()}>
+      <button className={`role-btn${role === "instrumental" ? " on" : ""}`}
+        title="Mark as instrumental (bed)"
+        onClick={() => onSetRole(track.id, "instrumental")}>Inst</button>
+      <button className={`role-btn${role === "vocal" ? " on" : ""}`}
+        title="Mark as vocal"
+        onClick={() => onSetRole(track.id, "vocal")}>Voc</button>
     </span>
   );
 }
 
-function DraggablePill({ track, matched }) {
+// A track card: title on its own line, compact meta (number, tags, role toggle)
+// beneath — so long titles stay readable in the two-column board.
+function Pill({ track, matched, dragging, role, onSetRole }) {
+  const low = track.is_id || (track.parse_confidence != null && track.parse_confidence < 1);
+  const unsorted = onSetRole && (!role || role === "unassigned");
+  return (
+    <div
+      className={`match-pill${low ? " low" : ""}${matched ? " matched" : ""}` +
+        `${dragging ? " dragging" : ""}${unsorted ? " unsorted" : ""}`}
+      title={track.raw_label || trackLabel(track)}
+    >
+      <span className="match-card-title">{trackLabel(track)}</span>
+      <span className="match-card-meta">
+        <span className="match-pos">{track.position + 1}</span>
+        {!!track.is_id && <span className="match-chip id">ID</span>}
+        {!!track.is_overlay && <span className="match-chip wv" title="was a 'w/' overlay line">w/</span>}
+        {unsorted && <span className="match-chip unsorted">unsorted</span>}
+        <RoleToggle track={track} role={role} onSetRole={onSetRole} />
+      </span>
+    </div>
+  );
+}
+
+function DraggablePill({ track, matched, role, onSetRole }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
     id: `t-${track.id}`,
     data: { trackId: track.id },
@@ -42,7 +66,7 @@ function DraggablePill({ track, matched }) {
   return (
     <div ref={setNodeRef} {...listeners} {...attributes}
       className={`match-pill-wrap${isDragging ? " ghost" : ""}`}>
-      <Pill track={track} matched={matched} />
+      <Pill track={track} matched={matched} role={role} onSetRole={onSetRole} />
     </div>
   );
 }
@@ -61,7 +85,7 @@ function Column({ droppableId, title, hint, count, children, accent }) {
   );
 }
 
-function InstGroup({ inst, vocals, byId }) {
+function InstGroup({ inst, vocals, byId, roles, onSetRole }) {
   const { isOver, setNodeRef } = useDroppable({
     id: `inst-${inst.id}`,
     data: { instId: inst.id },
@@ -69,17 +93,21 @@ function InstGroup({ inst, vocals, byId }) {
   return (
     <div ref={setNodeRef} className={`inst-group${isOver ? " over" : ""}`}>
       <div className="inst-group-head">
-        <DraggablePill track={inst} />
+        <DraggablePill track={inst} role={roles?.[inst.id]} onSetRole={onSetRole} />
+        <span className="inst-group-count faint">
+          {vocals.length} vocal{vocals.length === 1 ? "" : "s"}
+        </span>
       </div>
       {vocals.length === 0 ? (
-        <div className="inst-group-empty faint">drop a vocal here</div>
+        <div className="inst-group-empty faint">drop a vocal here →  becomes 1 training pair</div>
       ) : (
         <div className="inst-group-vocals">
           {vocals.map(({ vocalId, origin }) => {
             const v = byId[vocalId];
             return v ? (
               <div key={vocalId} className="inst-group-vocal">
-                <DraggablePill track={v} matched />
+                <DraggablePill track={v} matched
+                  role={roles?.[vocalId]} onSetRole={onSetRole} />
                 <span className={`match-chip origin ${origin}`}
                   title={origin === "parsed" ? "from a 'w/' line in the tracklist" : "matched by hand"}>
                   {origin === "parsed" ? "w/ line" : "manual"}
@@ -99,7 +127,6 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
   const [assign, setAssign] = useState({});
   const [saveState, setSaveState] = useState("saved"); // saved | dirty | saving | error
   const [filter, setFilter] = useState("");
-  const [showAssigned, setShowAssigned] = useState(false);
   const [activeId, setActiveId] = useState(null);
 
   const undoStack = useRef([]);
@@ -186,6 +213,31 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
     schedule();
   };
 
+  // Restore the original 'w/'-derived grouping — a clean baseline for
+  // experimenting. Cancels any pending save and invalidates in-flight flushes.
+  const [resetting, setResetting] = useState(false);
+  const resetToOriginal = async () => {
+    if (!window.confirm(
+      "Reset all matches to the original tracklist grouping?\n" +
+      "Your manual role and match edits for this mix will be discarded.")) return;
+    clearTimeout(timer.current);
+    revision.current += 1;
+    setResetting(true);
+    try {
+      const detail = await api.resetMixMatches(mix.id);
+      hydrate(detail);
+      undoStack.current = [];
+      setSaveState("saved");
+      onMixUpdated?.(detail);
+      toast("Matches reset to original grouping");
+    } catch (e) {
+      setSaveState("error");
+      toast(`Reset failed: ${e.message}`);
+    } finally {
+      setResetting(false);
+    }
+  };
+
   const undo = () => {
     const prev = undoStack.current.pop();
     if (!prev) return;
@@ -242,8 +294,7 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
     if (!over) return;
     const trackId = active.data.current?.trackId;
     if (trackId == null) return;
-    if (over.id === "col-unassigned") setRole(trackId, "unassigned");
-    else if (over.id === "col-inst") setRole(trackId, "instrumental");
+    if (over.id === "col-inst") setRole(trackId, "instrumental");
     else if (over.id === "col-vocal") setRole(trackId, "vocal");
     else if (String(over.id).startsWith("inst-")) {
       matchVocal(trackId, over.data.current?.instId);
@@ -255,18 +306,18 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
     trackLabel(t).toLowerCase().includes(q) ||
     (t.raw_label || "").toLowerCase().includes(q);
 
-  const unassigned = mix.tracks.filter((t) =>
-    (roles[t.id] || "unassigned") === "unassigned" && matchesFilter(t));
-  const assignedElsewhere = showAssigned
-    ? mix.tracks.filter((t) => (roles[t.id] || "unassigned") !== "unassigned" && matchesFilter(t))
-    : [];
-  const insts = mix.tracks.filter((t) => roles[t.id] === "instrumental");
+  // Instrumentals column holds every backing/unsorted track: a track with no
+  // role defaults here (still 'unassigned' in the DB until acted on) and is a
+  // droppable bed. Vocals column holds free (unmatched) vocals.
+  const beds = mix.tracks.filter((t) =>
+    (roles[t.id] === "instrumental" || (roles[t.id] || "unassigned") === "unassigned")
+    && matchesFilter(t));
   // A pair whose bed is no longer an instrumental can exist transiently —
   // render its vocal as free rather than dropping it from every column.
   const liveAssign = (id) =>
     assign[id] && roles[assign[id].instId] === "instrumental";
   const vocalsFree = mix.tracks.filter(
-    (t) => roles[t.id] === "vocal" && !liveAssign(t.id));
+    (t) => roles[t.id] === "vocal" && !liveAssign(t.id) && matchesFilter(t));
   const vocalsByInst = {};
   Object.entries(assign).forEach(([vocalId, { instId, origin }]) => {
     if (roles[instId] !== "instrumental") return;
@@ -287,11 +338,6 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
-        <label className="match-toggle faint">
-          <input type="checkbox" checked={showAssigned}
-            onChange={(e) => setShowAssigned(e.target.checked)} />
-          show assigned in list
-        </label>
         <span style={{ flex: 1 }} />
         <span className="faint" style={{ fontSize: 11 }}>
           {matchCount} match{matchCount === 1 ? "" : "es"}
@@ -299,6 +345,10 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
         <button className="mini-btn" onClick={undo}
           disabled={!undoStack.current.length} title="Undo last move (Ctrl+Z)">
           ↶ undo
+        </button>
+        <button className="mini-btn" onClick={resetToOriginal} disabled={resetting}
+          title="Discard manual edits and restore the original 'w/'-derived grouping">
+          {resetting ? "…" : "↺ reset to original"}
         </button>
         <span className={`match-save ${saveState}`}>
           {saveState === "saved" ? "saved ✓"
@@ -308,42 +358,44 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
         </span>
       </div>
 
+      <div className="match-explainer">
+        <strong>How matching works.</strong> Every track starts in
+        <b> Instrumentals</b> (the <code>w/</code> tag marks a vocal overlay from
+        the set). Move the singing parts to <b>Vocals</b> — drag a card across or
+        use its <b>Voc</b> button — then drag a vocal <b>onto</b> an instrumental to
+        pair them. <b>One instrumental can hold many vocals</b>, and
+        <b> each instrumental ↔ vocal pair becomes one training example</b>.
+        Everything saves automatically.
+      </div>
+
       <DndContext sensors={sensors}
         onDragStart={({ active: a }) => setActiveId(a.data.current?.trackId)}
         onDragEnd={onDragEnd}
         onDragCancel={() => setActiveId(null)}>
         <div className="match-board">
-          <Column droppableId="col-unassigned" title="Tracklist" accent="c-un"
-            hint="drag a track right to declare its role"
-            count={unassigned.length}>
-            {unassigned.map((t) => <DraggablePill key={t.id} track={t} />)}
-            {assignedElsewhere.length > 0 && (
-              <div className="match-assigned-strip">
-                {assignedElsewhere.map((t) => (
-                  <div key={t.id} className="assigned-dim">
-                    <DraggablePill track={t} />
-                  </div>
-                ))}
-              </div>
-            )}
-            {unassigned.length === 0 && !assignedElsewhere.length && (
-              <div className="empty" style={{ padding: 10 }}>everything is assigned 🎉</div>
-            )}
-          </Column>
-
-          <Column droppableId="col-inst" title="Instrumentals (beds)" accent="c-inst"
-            hint="each track dropped here becomes a group — drop vocals onto it"
-            count={insts.length}>
-            {insts.map((t) => (
+          <Column droppableId="col-inst" title="Instrumentals" accent="c-inst"
+            hint="backing tracks (and anything unsorted) — drop a vocal onto one to pair"
+            count={beds.length}>
+            {beds.map((t) => (
               <InstGroup key={t.id} inst={t}
-                vocals={vocalsByInst[t.id] || []} byId={byId} />
+                vocals={vocalsByInst[t.id] || []} byId={byId}
+                roles={roles} onSetRole={setRole} />
             ))}
+            {beds.length === 0 && (
+              <div className="empty" style={{ padding: 10 }}>no tracks here</div>
+            )}
           </Column>
 
           <Column droppableId="col-vocal" title="Vocals" accent="c-voc"
-            hint="vocals waiting for a bed — drag one onto an instrumental group"
+            hint="acapellas — drag one onto an instrumental to pair, or use Inst to move it back"
             count={vocalsFree.length}>
-            {vocalsFree.map((t) => <DraggablePill key={t.id} track={t} />)}
+            {vocalsFree.map((t) => (
+              <DraggablePill key={t.id} track={t}
+                role={roles[t.id]} onSetRole={setRole} />
+            ))}
+            {vocalsFree.length === 0 && (
+              <div className="empty" style={{ padding: 10 }}>no free vocals</div>
+            )}
           </Column>
         </div>
         <DragOverlay>{active ? <Pill track={active} dragging /> : null}</DragOverlay>

@@ -1157,6 +1157,51 @@ input, select { font-family: inherit; }
   background: var(--panel); border: 1px solid var(--border-ctrl); border-radius: 6px;
   color: var(--text); padding: 3px 8px; font-size: 12px; width: 160px;
 }
+.mini-btn.danger { color: var(--red); border-color: rgba(220,80,80,.35); }
+.mini-btn.danger:hover:not(:disabled) { background: rgba(220,80,80,.12); }
+
+/* Manual "+ Add track" row at the foot of the tracklist. */
+.mix-add-track {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin-top: 10px; padding: 8px 9px;
+  border: 1px dashed var(--border-ctrl); border-radius: 8px; background: var(--inset-2);
+}
+.mix-add-label { font-size: 11px; font-weight: 600; color: var(--muted); flex: none; }
+.mix-add-in {
+  background: var(--panel); border: 1px solid var(--border-ctrl); border-radius: 6px;
+  color: var(--text); padding: 4px 8px; font: inherit; font-size: 12px; width: 140px;
+}
+.mix-add-in.wide { flex: 1; min-width: 200px; }
+
+/* Per-mix ingest / processing tracker (item 4). */
+.mix-ingest-tracker {
+  border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
+  padding: 9px 11px; margin: 6px 0 10px;
+}
+.mix-ingest-head {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 7px; font-size: 12px;
+}
+.mix-ingest-head .faint { font-size: 11px; }
+.mix-ingest-rows { display: flex; flex-direction: column; gap: 4px; }
+.mix-ingest-row {
+  display: flex; align-items: center; gap: 10px; justify-content: space-between;
+  font-size: 12px;
+}
+.mix-ingest-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.stage-stepper { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.stage-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--inset); border: 1px solid var(--border-ctrl);
+}
+.stage-dot.on { background: var(--green); border-color: var(--green); }
+.stage-dot.err { background: var(--red); border-color: var(--red); }
+.stage-label {
+  font-size: 10px; color: var(--muted); font-family: var(--font-mono);
+  min-width: 74px; text-align: right;
+}
+.stage-label.err { color: var(--red); }
 
 /* ── ML panel (datasets + models) ────────────────────────────────────────── */
 .ml-panel {
@@ -1416,14 +1461,17 @@ input, select { font-family: inherit; }
 .match-save.error { color: var(--red); }
 
 .match-board {
-  display: grid; grid-template-columns: 1fr 1.2fr 1fr; gap: 10px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
   align-items: start;
 }
-@media (max-width: 980px) { .match-board { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .match-board { grid-template-columns: 1fr; } }
 
 .match-col {
   background: var(--inset-2); border: 1px solid var(--border);
   border-radius: 10px; padding: 9px; min-height: 240px;
+  /* min-width:0 lets each grid track honour its fr share instead of growing to
+     fit a long pill — without it the Vocals column overflows off-screen. */
+  min-width: 0;
   transition: border-color .12s, background .12s;
 }
 .match-col.over { border-color: var(--accent); background: var(--accent-tint); }
@@ -1433,22 +1481,31 @@ input, select { font-family: inherit; }
 .match-col-hint { font-size: 10.5px; margin: 2px 0 8px; }
 .match-col-body { display: flex; flex-direction: column; gap: 5px; }
 
-.match-pill-wrap { touch-action: none; }
+.match-pill-wrap { touch-action: none; min-width: 0; width: 100%; }
 .match-pill-wrap.ghost { opacity: .35; }
+/* Track card: title line above a compact meta line. */
 .match-pill {
-  display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+  display: flex; flex-direction: column; align-items: stretch; gap: 4px;
+  width: 100%; box-sizing: border-box;
   background: var(--raised); border: 1px solid var(--border-ctrl);
-  border-radius: 999px; padding: 4px 11px 4px 6px; font-size: 12px;
+  border-radius: 8px; padding: 7px 9px; font-size: 12px;
   cursor: grab; user-select: none;
 }
 .match-pill.dragging { box-shadow: 0 6px 18px rgba(0,0,0,.5); cursor: grabbing; }
 .match-pill.low { border-style: dashed; border-color: var(--amber); }
 .match-pill.matched { border-color: var(--cyan); }
+.match-pill.unsorted { border-style: dashed; border-color: var(--border); }
+.match-card-title {
+  font-size: 12.5px; line-height: 1.35; word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.match-card-meta { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .match-pos {
   font-family: var(--font-mono); font-size: 10px; color: var(--muted);
   background: var(--inset); border-radius: 999px; padding: 2px 6px; flex: none;
 }
-.match-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.match-card-meta .role-toggle { margin-left: auto; }
 .match-chip {
   flex: none; font-size: 9px; font-weight: 700; letter-spacing: .06em;
   border-radius: 4px; padding: 1px 5px;
@@ -1457,6 +1514,7 @@ input, select { font-family: inherit; }
 .match-chip.wv { background: rgba(56,189,248,.14); color: var(--cyan-light); }
 .match-chip.origin.parsed { background: rgba(56,189,248,.14); color: var(--cyan-light); }
 .match-chip.origin.manual { background: rgba(46,204,113,.15); color: var(--green); }
+.match-chip.unsorted { background: var(--inset); color: var(--muted); font-weight: 600; }
 
 .inst-group {
   border: 1px solid var(--border-accent); border-radius: 9px;
@@ -1464,12 +1522,50 @@ input, select { font-family: inherit; }
   transition: border-color .12s, background .12s;
 }
 .inst-group.over { border-color: var(--amber); background: rgba(245,166,35,.07); }
+/* Keep a column of empty beds tidy: only reveal the hint on hover / drag-over. */
+.inst-group-empty { display: none; }
+.inst-group:hover .inst-group-empty,
+.inst-group.over .inst-group-empty { display: block; }
 .inst-group-head { margin-bottom: 6px; }
 .inst-group-empty { font-size: 10.5px; padding: 4px 6px 2px; font-style: italic; }
 .inst-group-vocals {
-  display: flex; flex-direction: column; gap: 4px;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
   margin-left: 14px; padding-left: 9px; border-left: 2px solid var(--border-accent);
 }
-.inst-group-vocal { display: flex; align-items: center; gap: 6px; }
-.match-assigned-strip { margin-top: 9px; padding-top: 8px; border-top: 1px dashed var(--hair); }
-.assigned-dim { opacity: .45; }
+.inst-group-vocal { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.inst-group-vocal .match-pill-wrap { flex: 1 1 auto; min-width: 0; }
+.inst-group-vocal .match-chip.origin { flex: none; }
+
+.inst-group { min-width: 0; }
+.inst-group-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.inst-group-head .match-pill-wrap { flex: 1 1 auto; min-width: 0; }
+.inst-group-count { font-size: 10px; flex: none; }
+
+/* Explainer banner above the three-box board (item 3 clarity). */
+.match-explainer {
+  font-size: 11.5px; line-height: 1.5; color: var(--text);
+  background: var(--inset-2); border: 1px solid var(--hair);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px; padding: 8px 11px; margin-bottom: 10px;
+}
+.match-explainer code {
+  font-family: var(--font-mono); font-size: 10.5px;
+  background: rgba(56,189,248,.14); color: var(--cyan-light);
+  border-radius: 4px; padding: 0 4px;
+}
+
+/* Non-drag role toggle on each pill. */
+.role-toggle { display: inline-flex; gap: 3px; margin-left: 6px; flex: none; }
+.role-btn {
+  font-size: 9px; font-weight: 700; letter-spacing: .04em;
+  border: 1px solid var(--border-ctrl); background: var(--inset);
+  color: var(--muted); border-radius: 5px; padding: 2px 5px; cursor: pointer;
+}
+.role-btn:hover { filter: brightness(1.3); }
+.role-btn.on { background: var(--accent-tint); border-color: var(--accent); color: var(--text); }
+
+.match-checkpoint {
+  font-size: 11px; color: var(--muted);
+  border: 1px solid var(--hair); border-radius: 6px; padding: 4px 9px;
+}
+.match-checkpoint.ok { color: var(--green); border-color: rgba(46,204,113,.4); }
