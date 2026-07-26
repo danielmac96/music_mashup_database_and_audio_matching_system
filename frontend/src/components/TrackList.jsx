@@ -27,15 +27,17 @@ const JOB_ACTIVE = new Set(["queued", "running"]);
 // an out-of-range BPM is the honest signal to flag for a manual sanity-check.)
 const bpmLooksOff = (f) => f?.bpm != null && (f.bpm < 80 || f.bpm > 170);
 
-function FeatureEditor({ track, onSaved, onCancel }) {
+function TrackEditor({ track, onSaved, onCancel }) {
   const feats = track.features?.full || {};
+  const analysed = isAnalysed(track);
   const [bpm, setBpm] = useState(feats.bpm != null ? String(feats.bpm) : "");
   const [key, setKey] = useState(feats.key || "C");
   const [mode, setMode] = useState(feats.mode || "major");
+  const [url, setUrl] = useState(track.source_url || "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
-  const save = async () => {
+  const saveFeatures = async () => {
     setSaving(true);
     setError(null);
     try {
@@ -52,29 +54,65 @@ function FeatureEditor({ track, onSaved, onCancel }) {
     }
   };
 
+  const saveUrl = async () => {
+    const next = url.trim();
+    if (!next || next === (track.source_url || "")) { onCancel(); return; }
+    if (!window.confirm(
+      "Change the source URL?\n\nThis resets download, stems and analysis for this "
+      + "track and re-processes it from the new link.")) return;
+    setSaving(true);
+    setError(null);
+    try {
+      await api.updateTrackUrl(track.id, next);
+      toast("URL updated — re-processing from the new link");
+      onSaved();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="feat-edit">
-      <label>
-        <span className="muted" style={{ width: 34 }}>BPM</span>
-        <input type="number" step="0.1" min="1" value={bpm}
-          onChange={(e) => setBpm(e.target.value)} style={{ width: 72 }} />
+      <label style={{ flexBasis: "100%", display: "flex", gap: 6, alignItems: "center" }}>
+        <span className="muted" style={{ width: 34 }}>URL</span>
+        <input type="url" value={url} onChange={(e) => setUrl(e.target.value)}
+          placeholder="soundcloud.com/…  ·  youtube.com/watch?v=…"
+          style={{ flex: 1, minWidth: 0 }} />
+        <button className="mini-btn" onClick={saveUrl}
+          disabled={saving || !url.trim() || url.trim() === (track.source_url || "")}
+          title="Repoint this track at a corrected URL (resets & re-processes)">
+          Save URL
+        </button>
       </label>
-      <label>
-        <span className="muted" style={{ width: 34 }}>Key</span>
-        <select value={key} onChange={(e) => setKey(e.target.value)}>
-          {KEY_NAMES.map((k) => <option key={k} value={k}>{k}</option>)}
-        </select>
-        <select value={mode} onChange={(e) => setMode(e.target.value)}>
-          <option value="major">major</option>
-          <option value="minor">minor</option>
-        </select>
-      </label>
+      {analysed && (
+        <>
+          <label>
+            <span className="muted" style={{ width: 34 }}>BPM</span>
+            <input type="number" step="0.1" min="1" value={bpm}
+              onChange={(e) => setBpm(e.target.value)} style={{ width: 72 }} />
+          </label>
+          <label>
+            <span className="muted" style={{ width: 34 }}>Key</span>
+            <select value={key} onChange={(e) => setKey(e.target.value)}>
+              {KEY_NAMES.map((k) => <option key={k} value={k}>{k}</option>)}
+            </select>
+            <select value={mode} onChange={(e) => setMode(e.target.value)}>
+              <option value="major">major</option>
+              <option value="minor">minor</option>
+            </select>
+          </label>
+          <div className="mini-actions">
+            <button className="mini-btn" onClick={saveFeatures} disabled={saving}>
+              {saving ? "Saving…" : "Save features"}
+            </button>
+          </div>
+        </>
+      )}
       {error && <div className="error-text">{error}</div>}
       <div className="mini-actions">
-        <button className="mini-btn" onClick={save} disabled={saving}>
-          {saving ? "Saving…" : "Save"}
-        </button>
-        <button className="mini-btn" onClick={onCancel} disabled={saving}>Cancel</button>
+        <button className="mini-btn" onClick={onCancel} disabled={saving}>Close</button>
       </div>
     </div>
   );
@@ -314,6 +352,21 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
     }
   };
 
+  const removeTrack = async (t) => {
+    if (!window.confirm(
+      `Remove “${t.title}” from the library?\n\nThis deletes the song from the `
+      + `database and its downloaded audio + stems from disk.`)) return;
+    try {
+      await api.deleteTrack(t.id);
+      toast(`Removed “${t.title}”`);
+      if (player?.trackId === t.id) setPlayer(null);
+      if (editing === t.id) setEditing(null);
+      refresh();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const RunActions = ({ t }) => {
     const g = gating(t);
     if (g.pipelining) return <PipelineProgress job={g.pipe} />;
@@ -346,11 +399,17 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
         <button className="mini-btn" disabled={!g.analysed}
           title={g.analysed ? "Find scored beds for this vocal" : "Analyze first"}
           onClick={() => onFindMatches?.(t.id, "vocal")}>Find beds</button>
-        {g.analysed && (
-          <button className="mini-btn" onClick={() => setEditing(editing === t.id ? null : t.id)}>
-            {editing === t.id ? "Close" : "Edit"}
-          </button>
-        )}
+        <button className="mini-btn"
+          title="Edit the source URL or correct BPM/key"
+          onClick={() => setEditing(editing === t.id ? null : t.id)}>
+          {editing === t.id ? "Close" : "Edit"}
+        </button>
+        <button className="mini-btn danger" disabled={g.pipelining}
+          title="Remove this song and its audio from the library"
+          onClick={() => removeTrack(t)}
+          style={{ color: "var(--red, #ff6b6b)" }}>
+          🗑 Remove
+        </button>
       </div>
     );
   };
@@ -456,7 +515,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
 
                 <RunActions t={t} />
                 {editing === t.id && (
-                  <FeatureEditor track={t}
+                  <TrackEditor track={t}
                     onSaved={() => { setEditing(null); refresh(); }}
                     onCancel={() => setEditing(null)} />
                 )}
@@ -475,32 +534,46 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
             const f = t.features?.full || {};
             const g = gating(t);
             return (
-              <div key={t.id} className="data-row" style={{ gridTemplateColumns: "34px 40px 2fr 100px 70px 70px 54px 1.4fr 1fr" }}>
-                <div>
-                  <button className={`row-act play${player?.trackId === t.id ? " vocal" : ""}`}
-                    disabled={!t.stems.full} title="Play in the bottom player"
-                    onClick={() => playTrack(t, "full")}>▶</button>
+              <div key={t.id}>
+                <div className="data-row" style={{ gridTemplateColumns: "34px 40px 2fr 100px 70px 70px 54px 1.4fr 1fr" }}>
+                  <div>
+                    <button className={`row-act play${player?.trackId === t.id ? " vocal" : ""}`}
+                      disabled={!t.stems.full} title="Play in the bottom player"
+                      onClick={() => playTrack(t, "full")}>▶</button>
+                  </div>
+                  <div className="mono faint">{t.id}</div>
+                  <div>
+                    <div className="t">{t.title}</div>
+                    <div className="a">{t.artist || "—"}</div>
+                  </div>
+                  <div><StatusTag status={t.status} /></div>
+                  <div className="mono" style={{ color: "var(--text-2)" }}>{f.bpm != null ? f.bpm.toFixed(1) : "—"}</div>
+                  <div>
+                    <KeyChip camelot={f.camelot} as="span" style={{ fontSize: 12, padding: "3px 7px" }} />
+                  </div>
+                  <div className="mono" style={{ color: "var(--text-2)" }} title="Energy (0–100)">
+                    {f.energy != null ? Math.round(f.energy * 100) : "—"}
+                  </div>
+                  <div><PipelineDots track={t} runningKind={g.job?.kind} /></div>
+                  <div className="row-actions">
+                    <button className="row-act vocal" disabled={!g.analysed || !t.stems.vocals}
+                      onClick={() => onSendToAudition?.({ vocalId: t.id })}>Vocal</button>
+                    <button className="row-act bed" disabled={!g.analysed || !t.stems.instrumental}
+                      onClick={() => onSendToAudition?.({ instId: t.id })}>Bed</button>
+                    <button className="row-act" title="Edit source URL / BPM / key"
+                      onClick={() => setEditing(editing === t.id ? null : t.id)}>Edit</button>
+                    <button className="row-act" disabled={g.pipelining}
+                      title="Remove this song and its audio" style={{ color: "var(--red, #ff6b6b)" }}
+                      onClick={() => removeTrack(t)}>🗑</button>
+                  </div>
                 </div>
-                <div className="mono faint">{t.id}</div>
-                <div>
-                  <div className="t">{t.title}</div>
-                  <div className="a">{t.artist || "—"}</div>
-                </div>
-                <div><StatusTag status={t.status} /></div>
-                <div className="mono" style={{ color: "var(--text-2)" }}>{f.bpm != null ? f.bpm.toFixed(1) : "—"}</div>
-                <div>
-                  <KeyChip camelot={f.camelot} as="span" style={{ fontSize: 12, padding: "3px 7px" }} />
-                </div>
-                <div className="mono" style={{ color: "var(--text-2)" }} title="Energy (0–100)">
-                  {f.energy != null ? Math.round(f.energy * 100) : "—"}
-                </div>
-                <div><PipelineDots track={t} runningKind={g.job?.kind} /></div>
-                <div className="row-actions">
-                  <button className="row-act vocal" disabled={!g.analysed || !t.stems.vocals}
-                    onClick={() => onSendToAudition?.({ vocalId: t.id })}>Vocal</button>
-                  <button className="row-act bed" disabled={!g.analysed || !t.stems.instrumental}
-                    onClick={() => onSendToAudition?.({ instId: t.id })}>Bed</button>
-                </div>
+                {editing === t.id && (
+                  <div style={{ padding: "0 8px 10px" }}>
+                    <TrackEditor track={t}
+                      onSaved={() => { setEditing(null); refresh(); }}
+                      onCancel={() => setEditing(null)} />
+                  </div>
+                )}
               </div>
             );
           })}

@@ -6,7 +6,15 @@ the two in sync when adding a source.
 """
 from __future__ import annotations
 
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
+
+# Query params that carry no identity — just analytics/sharing context. Stripped
+# before comparing/storing a URL so trivial variants of the same link dedup.
+_TRACKING_PARAMS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "si", "ref", "ref_", "fbclid", "gclid", "feature", "pp", "ab_channel",
+    "spm", "igshid", "t", "start", "time_continue", "index",
+}
 
 
 def classify_url(url: str) -> tuple[str, str]:
@@ -42,3 +50,37 @@ def classify_url(url: str) -> tuple[str, str]:
         return "youtube", kind
 
     return "unknown", "track"
+
+
+def normalize_url(url: str) -> str:
+    """Canonicalize a link for dedup + storage: force https, lowercase host,
+    drop www./m. and the fragment, strip tracking params, and sort the rest.
+
+    SoundCloud track identity lives entirely in the path, so its query is
+    dropped (keeping only ?secret_token= for private tracks). Returns the
+    original (trimmed) string if it can't be parsed."""
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    had_scheme = "://" in raw
+    if not had_scheme:
+        raw = "https://" + raw
+    try:
+        parsed = urlparse(raw)
+    except ValueError:
+        return (url or "").strip()
+
+    scheme = "https"
+    host = (parsed.netloc or "").lower().removeprefix("www.").removeprefix("m.")
+    if not host:
+        return (url or "").strip()
+    path = (parsed.path or "").rstrip("/")
+
+    params = [(k, v) for k, v in parse_qsl(parsed.query or "", keep_blank_values=False)
+              if k.lower() not in _TRACKING_PARAMS]
+    source, _ = classify_url(raw)
+    if source == "soundcloud":
+        params = [(k, v) for k, v in params if k.lower() == "secret_token"]
+    params.sort()
+    query = urlencode(params)
+    return urlunparse((scheme, host, path, "", query, ""))

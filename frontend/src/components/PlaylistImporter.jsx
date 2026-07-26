@@ -4,6 +4,7 @@ import { TrackArt } from "./TrackArt";
 import { SourceBadge } from "./SourceBadge";
 import { classifyUrl, cleanYouTubeTitle } from "../sources";
 import { toast } from "../toast";
+import { DataLocationPanel } from "./DataLocationPanel";
 
 export function PlaylistImporter({ onIngested }) {
   const [url, setUrl] = useState("");
@@ -13,6 +14,7 @@ export function PlaylistImporter({ onIngested }) {
   const [previewing, setPreviewing] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
+  const [skipped, setSkipped] = useState([]); // dupes reported by the last ingest
   const [deps, setDeps] = useState(null); // { ok, missing[], stale[], deps[] }
   const [updatingYtdlp, setUpdatingYtdlp] = useState(false);
   const [previewId, setPreviewId] = useState(null);   // hydration session
@@ -59,6 +61,7 @@ export function PlaylistImporter({ onIngested }) {
   const handlePreview = async () => {
     if (!url.trim()) return;
     setError(null);
+    setSkipped([]);
     setTracks([]);
     setSelected({});
     setPreviewId(null);
@@ -126,8 +129,20 @@ export function PlaylistImporter({ onIngested }) {
     try {
       const kept = tracks.filter((_, i) => selected[i] !== false);
       const res = await api.ingestTracks(kept, previewId);
-      toast(`Auto-processing ${res.count} track${res.count === 1 ? "" : "s"}: download → stems → analyze → structure`);
-      if (onIngested) onIngested();
+      const parts = [];
+      if (res.count)
+        parts.push(`Auto-processing ${res.count} track${res.count === 1 ? "" : "s"}: download → stems → analyze → structure`);
+      if (res.skipped_count)
+        parts.push(`${res.skipped_count} already in library (skipped)`);
+      toast(parts.join(" · ") || "Nothing new to add.");
+
+      if (res.count) {
+        if (onIngested) onIngested();
+      } else {
+        // Everything was a duplicate — stay put and show which ones.
+        setError(null);
+        setSkipped(res.skipped || []);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -145,6 +160,8 @@ export function PlaylistImporter({ onIngested }) {
           download → stems → analyze → structure.
         </div>
       </div>
+
+      <DataLocationPanel />
 
       {deps && !deps.ok && (
         <div className="dep-warn" title={deps.deps.filter((d) => !d.ok).map((d) => `${d.name}: ${d.detail}`).join("\n")}>
@@ -230,6 +247,18 @@ export function PlaylistImporter({ onIngested }) {
       </div>
 
       {error && <div className="error-text" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {skipped.length > 0 && (
+        <div className="dep-warn" style={{ marginBottom: 12 }}>
+          ⤳ {skipped.length} track{skipped.length === 1 ? "" : "s"} already in your library (skipped):
+          <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+            {skipped.slice(0, 10).map((s, i) => (
+              <li key={s.url || i} style={{ fontSize: 12 }}>{s.title}</li>
+            ))}
+            {skipped.length > 10 && <li style={{ fontSize: 12 }}>…and {skipped.length - 10} more</li>}
+          </ul>
+        </div>
+      )}
 
       {tracks.length > 0 && (
         <>

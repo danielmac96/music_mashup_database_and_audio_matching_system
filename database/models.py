@@ -610,6 +610,90 @@ def get_song(song_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
     return dict(row) if row else None
 
 
+def get_song_by_url(source_url: str, db_path: Path = DB_PATH) -> Optional[Dict]:
+    """Look up a song by its exact source_url (used for pre-ingest dedup).
+    Callers should pass an already-normalized URL (ingest.sources.normalize_url)
+    so trivial variants of the same link collide."""
+    if not source_url:
+        return None
+    conn = get_conn(db_path)
+    row = conn.execute("SELECT * FROM songs WHERE source_url=?", (source_url,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_song(song_id: int, db_path: Path = DB_PATH) -> Dict:
+    """Delete a song and every derived row (features, sections, stems, mashup
+    candidates), and drop the back-reference from any mix_tracks. Returns
+    ``{"existed": bool, "files": [paths]}`` — the on-disk audio/stem files the
+    caller must unlink (this function only touches the database). There is no FK
+    cascade, so children are removed explicitly."""
+    conn = get_conn(db_path)
+    song = conn.execute("SELECT id, raw_path FROM songs WHERE id=?", (song_id,)).fetchone()
+    if not song:
+        conn.close()
+        return {"existed": False, "files": []}
+    files: List[str] = []
+    if song["raw_path"]:
+        files.append(song["raw_path"])
+    for r in conn.execute("SELECT file_path FROM stems WHERE song_id=?", (song_id,)).fetchall():
+        if r["file_path"]:
+            files.append(r["file_path"])
+    conn.execute("DELETE FROM features WHERE song_id=?", (song_id,))
+    conn.execute("DELETE FROM sections WHERE song_id=?", (song_id,))
+    conn.execute("DELETE FROM stems WHERE song_id=?", (song_id,))
+    conn.execute(
+        "DELETE FROM mashup_candidates WHERE vocal_song_id=? OR inst_song_id=?",
+        (song_id, song_id))
+    # Keep the tracklist rows but drop the link so the mix can be re-ingested.
+    conn.execute("UPDATE mix_tracks SET song_id=NULL WHERE song_id=?", (song_id,))
+    conn.execute("DELETE FROM songs WHERE id=?", (song_id,))
+    conn.commit()
+    conn.close()
+    return {"existed": True, "files": files}
+
+
+def update_song_url(song_id: int, new_url: str, db_path: Path = DB_PATH) -> Dict:
+    """Point a song at a new source_url and reset its derived pipeline data so a
+    re-run re-downloads from the new URL. Deletes stale stems/features/sections
+    rows + mashup candidates, blanks raw_path, and sets status back to 'queued'.
+    Returns ``{"files": [paths]}`` of stale audio/stem files for the caller to
+    unlink. Raises ValueError on an empty URL, a missing song, or a collision
+    with another song's URL (source_url is UNIQUE)."""
+    new_url = (new_url or "").strip()
+    if not new_url:
+        raise ValueError("URL cannot be empty")
+    conn = get_conn(db_path)
+    song = conn.execute("SELECT id, raw_path FROM songs WHERE id=?", (song_id,)).fetchone()
+    if not song:
+        conn.close()
+        raise ValueError("song not found")
+    clash = conn.execute(
+        "SELECT id FROM songs WHERE source_url=? AND id != ?", (new_url, song_id)).fetchone()
+    if clash:
+        conn.close()
+        raise ValueError(f"Another track (id {clash['id']}) already uses that URL")
+    files: List[str] = []
+    if song["raw_path"]:
+        files.append(song["raw_path"])
+    for r in conn.execute("SELECT file_path FROM stems WHERE song_id=?", (song_id,)).fetchall():
+        if r["file_path"]:
+            files.append(r["file_path"])
+    conn.execute("DELETE FROM features WHERE song_id=?", (song_id,))
+    conn.execute("DELETE FROM sections WHERE song_id=?", (song_id,))
+    conn.execute("DELETE FROM stems WHERE song_id=?", (song_id,))
+    conn.execute(
+        "DELETE FROM mashup_candidates WHERE vocal_song_id=? OR inst_song_id=?",
+        (song_id, song_id))
+    conn.execute(
+        "UPDATE songs SET source_url=?, raw_path='', status='queued', "
+        "last_error=NULL, updated_at=datetime('now') WHERE id=?",
+        (new_url, song_id))
+    conn.commit()
+    conn.close()
+    return {"files": files}
+
+
 def get_all_songs(db_path: Path = DB_PATH) -> List[Dict]:
     conn = get_conn(db_path)
     rows = conn.execute("SELECT * FROM songs ORDER BY id").fetchall()

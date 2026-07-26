@@ -70,6 +70,17 @@ export const api = {
       body: JSON.stringify({ bpm, key, mode }),
     }),
 
+  // Remove a song from the library — deletes its DB rows AND audio/stem files.
+  deleteTrack: (id) => jsonFetch(`/api/tracks/${id}`, { method: "DELETE" }),
+
+  // Repoint a song at a corrected URL. Resets download/stems/analysis and
+  // re-runs the pipeline from the new URL.
+  updateTrackUrl: (id, sourceUrl) =>
+    jsonFetch(`/api/tracks/${id}/url`, {
+      method: "PATCH",
+      body: JSON.stringify({ source_url: sourceUrl }),
+    }),
+
   getJob: (jobId) => jsonFetch(`/api/jobs/${jobId}`),
 
   // Whether ffmpeg/ffprobe/yt-dlp/demucs/librosa are available on the server.
@@ -85,6 +96,14 @@ export const api = {
     jsonFetch("/api/settings/validate-path", {
       method: "POST",
       body: JSON.stringify({ path }),
+    }),
+
+  // Create a fresh empty library (db + audio folders) at `path` and make it
+  // active. Takes effect on the next server restart (paths bind at import).
+  newLibrary: (path, force = false) =>
+    jsonFetch("/api/settings/new-library", {
+      method: "POST",
+      body: JSON.stringify({ path, force }),
     }),
 
   saveSettings: ({ audioRoot = null, dbPath = null, pipelineWorkers = null,

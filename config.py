@@ -138,7 +138,9 @@ def save_settings(new: dict) -> Path:
 
 def settings_provenance() -> dict:
     """Report each resolved setting's value and where it came from, so the
-    Settings UI can show 'set by environment' vs 'editable'."""
+    Settings UI can show 'set by environment' vs 'editable'. `paths` carries
+    the derived working directories (downloads/stems/previews/data) so the
+    Import tab can show the user exactly where their data lives."""
     return {
         "audio_root": {"value": str(AUDIO_DIR), "source": AUDIO_ROOT_SOURCE},
         "db_path":    {"value": str(DB_PATH),   "source": DB_PATH_SOURCE},
@@ -148,6 +150,13 @@ def settings_provenance() -> dict:
                            "source": STEM_SEPARATOR_SOURCE},
         "configured": CONFIGURED,
         "settings_path": str(settings_path()),
+        "paths": {
+            "downloads":     str(RAW_DIR),
+            "vocals":        str(VOCALS_DIR),
+            "instrumentals": str(INSTRUMENTALS_DIR),
+            "previews":      str(PREVIEWS_DIR),
+            "data_dir":      str(DATA_DIR),
+        },
     }
 
 

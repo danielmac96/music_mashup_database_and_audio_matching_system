@@ -81,6 +81,74 @@ def validate_path(req: ValidatePathRequest) -> dict:
     return {"ok": True, "resolved": str(p), "existed": exists}
 
 
+class NewLibraryRequest(BaseModel):
+    path: str
+    force: bool = False  # allow reusing a folder that already has a mashup.db
+
+
+@router.post("/new-library")
+def new_library(req: NewLibraryRequest) -> dict:
+    """Create a fresh, empty music library at `path` and make it active.
+
+    Materializes an empty SQLite schema at <path>/mashup.db and the audio
+    subfolders under <path>/audio, then persists db_path/audio_root/data_dir to
+    settings.json. Because config.py binds its path constants at import, the new
+    library only becomes live on the next server start — the response says so.
+    """
+    raw = (req.path or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="path is empty")
+
+    root = Path(os.path.expanduser(raw))
+    if not root.is_absolute():
+        raise HTTPException(status_code=400,
+                            detail="Use an absolute path (e.g. C:\\Music\\mashups).")
+    if root.exists() and not root.is_dir():
+        raise HTTPException(status_code=400,
+                            detail="That path exists but is a file, not a folder.")
+
+    db_path = root / "mashup.db"
+    audio_root = root / "audio"
+
+    if db_path.exists() and not req.force:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A database already exists at {db_path}. Pass force to reuse this folder.")
+
+    # Create folders + probe writability before touching anything permanent.
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        for sub in ("full_song", "vocals", "instrumentals", "previews"):
+            (audio_root / sub).mkdir(parents=True, exist_ok=True)
+        probe = root / ".mashup-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"Folder is not writable: {exc}")
+
+    # Materialize an empty schema in the new DB file (idempotent if it exists).
+    try:
+        from database.models import init_db
+        init_db(db_path=db_path)
+    except Exception as exc:  # pragma: no cover - surfaced to the user
+        raise HTTPException(status_code=500,
+                            detail=f"Could not create the database: {exc}")
+
+    config.save_settings({
+        "db_path": str(db_path),
+        "audio_root": str(audio_root),
+        "data_dir": str(root),
+    })
+
+    return {
+        "created": True,
+        "db_path": str(db_path),
+        "audio_root": str(audio_root),
+        "restart_required": True,
+        "settings": _provenance_live(),
+    }
+
+
 class SaveSettingsRequest(BaseModel):
     audio_root: Optional[str] = None
     db_path: Optional[str] = None

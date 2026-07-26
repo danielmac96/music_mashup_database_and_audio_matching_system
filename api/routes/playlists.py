@@ -11,9 +11,9 @@ from pydantic import BaseModel
 from config import ENRICH_WORKERS
 
 from api import preview_hydrator, queue_runner
-from database.models import upsert_song
+from database.models import get_song_by_url, upsert_song
 from ingest.soundcloud import enrich_track, fetch_playlist_flat, fetch_single
-from ingest.sources import classify_url
+from ingest.sources import classify_url, normalize_url
 
 log = logging.getLogger(__name__)
 
@@ -105,14 +105,28 @@ def ingest(req: IngestRequest) -> dict:
         resolved = list(pool.map(_resolve_metadata, [dict(t) for t in req.tracks]))
 
     inserted_ids: list[int] = []
+    skipped: list[dict] = []   # already in the library — reported, not re-processed
     partial_count = 0
     for merged, is_rich in resolved:
+        source_url = normalize_url(merged.get("source_url") or "")
+
+        # Dedup: a URL already in the library is skipped (and surfaced) rather
+        # than silently re-downloaded/re-analyzed. Empty URLs can't be deduped.
+        if source_url:
+            existing = get_song_by_url(source_url)
+            if existing:
+                skipped.append({
+                    "title": merged.get("title") or existing.get("title") or "Unknown",
+                    "url": source_url,
+                    "id": existing.get("id"),
+                })
+                continue
+
         if not is_rich:
             partial_count += 1
             log.warning("Saving partial metadata row for %s",
-                        merged.get("source_url") or merged.get("title"))
+                        source_url or merged.get("title"))
 
-        source_url = (merged.get("source_url") or "").strip()
         source, _ = classify_url(source_url)
 
         sid = upsert_song(
@@ -149,6 +163,8 @@ def ingest(req: IngestRequest) -> dict:
     return {
         "inserted_ids": inserted_ids,
         "count": len(inserted_ids),
+        "skipped": skipped,
+        "skipped_count": len(skipped),
         "partial_count": partial_count,
         "job_ids": job_ids,
     }

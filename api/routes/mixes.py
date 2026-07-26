@@ -34,9 +34,9 @@ from pydantic import BaseModel
 from api import jobs, queue_runner
 from api.workers import mix_resolve_worker
 from config import DATA_DIR, FIRECRAWL_API_KEY
-from database.models import get_conn, is_trusted_link, upsert_song
+from database.models import get_conn, get_song_by_url, is_trusted_link, upsert_song
 from ingest.firecrawl_scrape import FirecrawlError, scrape_tracklist, scrape_track_links
-from ingest.sources import classify_url
+from ingest.sources import classify_url, normalize_url
 from ingest.tracklist_parse import parse_line, parse_tracklist
 
 log = logging.getLogger(__name__)
@@ -862,8 +862,19 @@ def ingest_mix(mix_id: int) -> dict:
     from ingest.soundcloud import enrich_track  # lazy: needs yt-dlp
 
     inserted: list[int] = []
+    linked: list[int] = []   # already in the library — relinked, not re-processed
     job_ids: dict[int, str] = {}
     for t in tracks:
+        # Dedup: if this link is already a song, just re-point the tracklist row
+        # at the existing song instead of re-fetching + re-processing it.
+        norm = normalize_url(t["link_url"])
+        existing = get_song_by_url(norm) if norm else None
+        if existing:
+            conn.execute("UPDATE mix_tracks SET song_id=?, resolve_status='resolved' "
+                         "WHERE id=?", (existing["id"], t["id"]))
+            linked.append(existing["id"])
+            continue
+
         rich: dict[str, Any] | None = None
         try:
             rich = enrich_track(t["link_url"])
@@ -871,11 +882,12 @@ def ingest_mix(mix_id: int) -> dict:
             log.exception("enrich_track raised for %s", t["link_url"])
         merged = rich or {"title": t["title"], "artist": t["artist"],
                           "source_url": t["link_url"]}
-        source, _ = classify_url(merged.get("source_url", t["link_url"]))
+        source_url = normalize_url(merged.get("source_url", t["link_url"]))
+        source, _ = classify_url(source_url)
         sid = upsert_song(
             title=merged.get("title") or t["title"] or "Unknown",
             artist=merged.get("artist") or t["artist"] or "",
-            source_url=merged.get("source_url", t["link_url"]),
+            source_url=source_url,
             duration_secs=float(merged.get("duration_secs") or 0),
             genre=merged.get("genre", ""),
             thumbnail=merged.get("thumbnail", ""),
@@ -889,5 +901,5 @@ def ingest_mix(mix_id: int) -> dict:
 
     conn.commit()
     conn.close()
-    return {"mix_id": mix_id, "inserted_ids": inserted,
-            "count": len(inserted), "job_ids": job_ids}
+    return {"mix_id": mix_id, "inserted_ids": inserted, "count": len(inserted),
+            "linked_existing": linked, "linked_count": len(linked), "job_ids": job_ids}

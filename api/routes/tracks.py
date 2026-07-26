@@ -9,9 +9,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from database.models import (
-    get_all_features, get_all_songs, get_conn, get_features_for_song,
-    get_sections, update_features_manual,
+    delete_song, get_all_features, get_all_songs, get_conn, get_features_for_song,
+    get_sections, update_features_manual, update_song_url,
 )
+from ingest.sources import classify_url, normalize_url
 
 from api import jobs, queue_runner
 from api.workers import (
@@ -259,6 +260,64 @@ def correct_features(song_id: int, body: FeatureCorrection) -> dict:
             detail="track has no analysed features yet — analyze it first",
         )
     return {"updated_rows": updated, "features": get_features_for_song(song_id, "full")}
+
+
+def _unlink_files(paths: list[str]) -> int:
+    """Best-effort delete of on-disk audio/stem files. Returns how many were
+    actually removed; missing/locked files are skipped silently."""
+    removed = 0
+    for p in paths:
+        try:
+            fp = Path(p)
+            if fp.exists():
+                fp.unlink()
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+@router.delete("/{song_id}")
+def delete_track(song_id: int) -> dict:
+    """Remove a song from the library entirely: delete its DB rows (features,
+    sections, stems, mashup candidates, and the songs row) and its audio/stem
+    files on disk. Mainly used to clean up tracks downloaded under a wrong URL."""
+    result = delete_song(song_id)
+    if not result["existed"]:
+        raise HTTPException(status_code=404, detail="song not found")
+    removed = _unlink_files(result["files"])
+    return {"deleted": True, "song_id": song_id, "files_removed": removed}
+
+
+class UrlUpdate(BaseModel):
+    source_url: str
+
+
+@router.patch("/{song_id}/url")
+def change_url(song_id: int, body: UrlUpdate) -> dict:
+    """Repoint a song at a corrected source URL. Because the current audio/stems/
+    analysis belong to the OLD url, this resets the pipeline: it deletes the
+    stale audio + derived rows, sets status back to 'queued', and re-runs the
+    full download → stems → analyze → structure chain from the new URL."""
+    new_url = normalize_url(body.source_url or "")
+    if not new_url:
+        raise HTTPException(status_code=400, detail="source_url is required")
+    if classify_url(new_url)[0] == "unknown":
+        raise HTTPException(
+            status_code=400,
+            detail="Unrecognised link — paste a SoundCloud or YouTube URL.")
+    try:
+        result = update_song_url(song_id, new_url)
+    except ValueError as exc:
+        msg = str(exc)
+        if "already uses" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        if "not found" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=400, detail=msg)
+    _unlink_files(result["files"])
+    job_id = queue_runner.enqueue_song(song_id)
+    return {"updated": True, "song_id": song_id, "source_url": new_url, "job_id": job_id}
 
 
 @router.get("/{song_id}/sections")

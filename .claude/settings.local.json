@@ -85,7 +85,13 @@
       "Bash(command -v uv)",
       "Bash(C:/Users/danie/AppData/Local/graphify-venv/Scripts/python.exe -c 'import sys; open\\('\\\\''graphify-out/.graphify_python'\\\\'', '\\\\''w'\\\\'', encoding='\\\\''utf-8'\\\\''\\).write\\(sys.executable\\)')",
       "Bash(grep -E '\\\\.\\(py|md\\)$')",
-      "mcp__firecrawl__firecrawl_scrape"
+      "mcp__firecrawl__firecrawl_scrape",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -q)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/test_mix_resolve.py)",
+      "Bash(./.venv/Scripts/python.exe -c \"import api.preview_hydrator as p; print\\([a for a in dir\\(p\\) if 'CACHE' in a.upper\\(\\) or 'cache' in a]\\)\")",
+      "Bash(git stash *)",
+      "Bash(./.venv/Scripts/python.exe -m pytest \"tests/test_tracklist_parse.py::test_fixture_snapshot\" -q)",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_library_manage.py -q)"
     ]
   }
 }
