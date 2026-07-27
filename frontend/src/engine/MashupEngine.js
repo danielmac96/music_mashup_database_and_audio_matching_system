@@ -79,7 +79,9 @@ export class MashupEngine {
     if (!existing) gainNode.connect(this.master);
     this.voices.set(role, {
       buffer, offsetSec, rate, semitones, gainNode,
+      loop: existing?.loop ?? null,          // per-voice loop {start,end} (display secs)
       src: existing?.src ?? null, st: existing?.st ?? null,
+      _armWhen: 0, _looped: false,           // filled at arm for voicePosition()
     });
   }
 
@@ -99,6 +101,35 @@ export class MashupEngine {
   setLoop(loop) {
     this.loop = loop && loop.end > loop.start ? { ...loop } : null;
     if (this._playing) this._rearm();
+  }
+
+  // Per-voice loop window (display seconds). Overrides the global loop for THIS
+  // voice only, so each deck can loop an independent window (1/2/4/8 bars) while
+  // the others play through. Pass null to clear.
+  setVoiceLoop(role, loop) {
+    const v = this.voices.get(role);
+    if (!v) return;
+    v.loop = loop && loop.end > loop.start ? { ...loop } : null;
+    if (this._playing) this._rearm();
+  }
+
+  // A voice's own display playhead — wrapped inside its loop window when it is
+  // looping natively, else the linear global position. Lets each deck draw its
+  // own playhead even though all voices share one transport clock.
+  voicePosition(role) {
+    const v = this.voices.get(role);
+    if (!v || !v.buffer) return this._currentDisplayPos();
+    if (this._playing && v._looped && v.loop) {
+      const len = v.loop.end - v.loop.start;
+      const off = ((this.ctx.currentTime - v._armWhen) % len + len) % len;
+      return v.loop.start + off;
+    }
+    return this._currentDisplayPos();
+  }
+
+  _anyVoiceLooping() {
+    for (const v of this.voices.values()) if (v.loop) return true;
+    return false;
   }
 
   // Re-arm the voices from the current position so config changes made via
@@ -209,9 +240,12 @@ export class MashupEngine {
   }
 
   _armVoice(v, pos, when) {
+    v._looped = false;
+    v._armWhen = when;
     if (!v.buffer) return;
     const displayDur = v.buffer.duration / v.rate;
     const contentAtStart = pos - v.offsetSec; // display seconds into this voice
+    const loop = v.loop || this.loop;         // per-voice loop overrides global
 
     const src = this.ctx.createBufferSource();
     src.buffer = v.buffer;
@@ -222,9 +256,9 @@ export class MashupEngine {
     src.connect(st);
     st.connect(v.gainNode);
 
-    if (this.loop) {
-      const lsRaw = (this.loop.start - v.offsetSec) * v.rate;
-      const leRaw = (this.loop.end - v.offsetSec) * v.rate;
+    if (loop) {
+      const lsRaw = (loop.start - v.offsetSec) * v.rate;
+      const leRaw = (loop.end - v.offsetSec) * v.rate;
       // Only loop natively (gaplessly) when the loop window lies fully inside
       // this voice's content; otherwise the voice would loop a shorter raw
       // span and drift, so play it once and let it fall silent.
@@ -232,10 +266,9 @@ export class MashupEngine {
         src.loop = true;
         src.loopStart = lsRaw;
         src.loopEnd = leRaw;
-        let rawOffset = contentAtStart * v.rate;
-        if (rawOffset < lsRaw || rawOffset >= leRaw) rawOffset = lsRaw;
-        src.start(when, rawOffset);
-        v.src = src; v.st = st;
+        // Start at the loop head so voicePosition() can wrap cleanly from armWhen.
+        src.start(when, lsRaw);
+        v.src = src; v.st = st; v._looped = true;
         return;
       }
     }
@@ -263,7 +296,7 @@ export class MashupEngine {
     const tick = () => {
       if (!this._playing) return;
       const pos = this._currentDisplayPos();
-      if (!this.loop && pos >= this.totalDuration()) {
+      if (!this.loop && !this._anyVoiceLooping() && pos >= this.totalDuration()) {
         this.pause();
         this._position = this.totalDuration();
         this._emit();

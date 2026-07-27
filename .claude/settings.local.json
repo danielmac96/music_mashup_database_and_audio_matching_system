@@ -91,7 +91,15 @@
       "Bash(./.venv/Scripts/python.exe -c \"import api.preview_hydrator as p; print\\([a for a in dir\\(p\\) if 'CACHE' in a.upper\\(\\) or 'cache' in a]\\)\")",
       "Bash(git stash *)",
       "Bash(./.venv/Scripts/python.exe -m pytest \"tests/test_tracklist_parse.py::test_fixture_snapshot\" -q)",
-      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_library_manage.py -q)"
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/test_library_manage.py -q)",
+      "Bash(./.venv/Scripts/python.exe -c \"import uvicorn, api.server; print\\('server import ok'\\)\")",
+      "Bash(./.venv/Scripts/python.exe -m uvicorn api.server:app --host 127.0.0.1 --port 8137 --log-level warning)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8137/api/tracks)",
+      "Bash(curl -s http://127.0.0.1:8137/api/tracks)",
+      "mcp__playwright__browser_navigate",
+      "Bash(curl -s -X POST http://127.0.0.1:8137/api/studio/mixdown -H \"Content-Type: application/json\" -d '{\"clips\":[{\"song_id\":1,\"stem\":\"vocals\",\"offset_sec\":0.0,\"rate\":1.0,\"semitones\":0,\"gain\":0.85},{\"song_id\":2,\"stem\":\"instrumental\",\"offset_sec\":-0.5,\"rate\":1.05,\"semitones\":2,\"gain\":0.8}]}')",
+      "Bash(./.venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/test_mix_resolve.py --ignore=tests/test_preview_hydration.py -p no:cacheprovider)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8137/api/health)"
     ]
   }
 }
