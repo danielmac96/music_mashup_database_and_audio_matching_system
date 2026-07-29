@@ -45,9 +45,9 @@ function StageStepper({ status, error }) {
   );
 }
 
-// Mixes tab: import a DJ-set tracklist (paste the text — URL scraping needs the
-// optional playwright stack), resolve each entry to a SoundCloud/YouTube link,
-// then ingest the resolved tracks through the normal pipeline.
+// Mixes tab: import a DJ-set tracklist by URL, resolve each entry to a
+// SoundCloud/YouTube link, then ingest the resolved tracks through the normal
+// pipeline.
 
 function ResolveInput({ track, onResolved }) {
   const [url, setUrl] = useState("");
@@ -92,8 +92,6 @@ export function MixImporter() {
   const [activeId, setActiveId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [url, setUrl] = useState("");
-  const [paste, setPaste] = useState("");
-  const [showPaste, setShowPaste] = useState(true);
   const [busy, setBusy] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
@@ -173,22 +171,6 @@ export function MixImporter() {
       const mix = await api.importMix(url.trim());
       toast(`Imported “${mix.title}” (${mix.track_count} tracks)`);
       setUrl("");
-      await loadMixes();
-      setActiveId(mix.id);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const importPaste = async () => {
-    setError(null);
-    setBusy(true);
-    try {
-      const mix = await api.importMixPaste(paste, url.trim());
-      toast(`Parsed ${mix.track_count} tracks from paste`);
-      setPaste("");
       await loadMixes();
       setActiveId(mix.id);
     } catch (e) {
@@ -293,7 +275,7 @@ export function MixImporter() {
   }, [detail]);
 
   return (
-    <div className="page mid">
+    <div className="page mixes">
       <div className="screen-head" style={{ display: "block" }}>
         <h1>Mixes — learn from real DJ sets</h1>
         <div className="hint" style={{ marginTop: 5 }}>
@@ -309,7 +291,7 @@ export function MixImporter() {
           <span className="faint">🔗</span>
           <input
             type="url"
-            placeholder="tracklist URL (optional — used as the mix's source link)"
+            placeholder="tracklist URL (e.g. a 1001tracklists set page)"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
           />
@@ -319,28 +301,9 @@ export function MixImporter() {
         </button>
       </div>
       <div className="faint" style={{ fontSize: 11, margin: "4px 0 10px" }}>
-        URL scraping needs the optional playwright stack —{" "}
-        <button className="linklike" onClick={() => setShowPaste((s) => !s)}>
-          pasting the tracklist text
-        </button>{" "}
-        always works.
+        Scraping a set page imports its whole tracklist — you can add or remove
+        individual tracks afterwards.
       </div>
-
-      {showPaste && (
-        <div className="paste-panel">
-          <textarea
-            rows={7}
-            placeholder={"Paste the tracklist here, e.g.\n\nTwo Friends Big Bootie Mix 20\n1. Artist - Title\n2. [12:34] Artist - Title\n…"}
-            value={paste}
-            onChange={(e) => setPaste(e.target.value)}
-          />
-          <div style={{ marginTop: 6, display: "flex", justifyContent: "flex-end" }}>
-            <button className="btn" onClick={importPaste} disabled={busy || !paste.trim()}>
-              {busy ? "Parsing…" : "Parse pasted tracklist"}
-            </button>
-          </div>
-        </div>
-      )}
 
       <div className="mix-stack">
         <div className="mix-list-bar">
@@ -492,7 +455,7 @@ export function MixImporter() {
                     )}
                     <span className="mix-num">{t.idx + 1}</span>
                     <div className="mix-info">
-                      <span className="mix-title">
+                      <span className="mix-title" title={`${t.artist ? `${t.artist} — ` : ""}${t.title}`}>
                         {t.artist ? `${t.artist} — ` : ""}{t.title}
                       </span>
                       <span className="mix-tags">
@@ -504,7 +467,8 @@ export function MixImporter() {
                           : t.resolved_url ? <span className="mix-flag ok">linked</span>
                           : <span className="mix-flag failed">needs link</span>}
                         {t.resolved_url && (
-                          <a className="mix-url" href={t.resolved_url} target="_blank" rel="noreferrer">
+                          <a className="mix-url" href={t.resolved_url} target="_blank"
+                            rel="noreferrer" title={t.resolved_url}>
                             {t.resolved_url}
                           </a>
                         )}

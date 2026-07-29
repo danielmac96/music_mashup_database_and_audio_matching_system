@@ -412,17 +412,13 @@ API endpoints: `POST /api/mashups/score`, `GET /api/mashups`,
 Beyond the hand-weighted heuristic, the engine can **learn** what makes a good
 pairing from real, documented mashups.
 
-**1. Import a mix (Mixes tab).** Paste a Two Friends “Big Bootie Mix” page from
-1001tracklists — either by URL (needs the optional Playwright scraper) or by
-pasting the page HTML/text (the guaranteed path, since the site Cloudflare-blocks
-bots). Numbered entries are parsed as instrumental **beds**; `w/` entries are
-**vocal overlays** paired to the nearest preceding bed. Resolve any missing
-SoundCloud/YouTube links inline, then **Ingest** — resolved tracks flow through
-the same download → stems → analyze pipeline.
-
-```bash
-pip install -r requirements-scrape.txt && playwright install chromium   # optional
-```
+**1. Import a mix (Mixes tab).** Paste the URL of a Two Friends “Big Bootie Mix”
+page from 1001tracklists and hit **Scrape URL**. The site Cloudflare-blocks bots,
+so those pages need `FIRECRAWL_API_KEY` set (plain-HTML set pages scrape without
+it). Numbered entries are parsed as instrumental **beds**; `w/` entries are
+**vocal overlays** paired to the nearest preceding bed. Add or remove individual
+tracks inline, resolve any missing SoundCloud/YouTube links, then **Ingest** —
+resolved tracks flow through the same download → stems → analyze pipeline.
 
 **2. Build a dataset (Database tab → Training data).** Positives are the
 documented `mashup_pairs` (vocal-stem features over instrumental-stem features);

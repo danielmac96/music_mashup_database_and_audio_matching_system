@@ -5,12 +5,10 @@ one gives the library curated pairing data ('w/' overlay lines = documented
 vocal-over-bed mashups, saved into mashup_pairs) and a shopping list of tracks
 to ingest. Tables come from database/models.py init_db (Phase 3 schema).
 
-Import paths:
-  * POST /import-paste — paste the tracklist text (or page HTML); parsed here
-    with a tolerant line parser. Always available.
-  * POST /import       — fetch + scrape a tracklist URL. Needs the optional
-    playwright scraping stack, which this build doesn't ship — returns 501
-    pointing at paste mode instead of failing mysteriously.
+Import path: POST /import — fetch + scrape a tracklist URL. Turnstile-walled
+sites (1001tracklists) go through Firecrawl's stealth proxy when
+FIRECRAWL_API_KEY is set; plain-HTML set pages are parsed with the tolerant
+line parser in ingest/tracklist_parse.py.
 
 Each mix track can then be resolved to a playable SoundCloud/YouTube link
 (POST /tracks/{id}/resolve) and the whole mix ingested into the normal
@@ -57,7 +55,7 @@ _parse_tracklist = parse_tracklist
 # GET returns a "please wait, you will be forwarded" interstitial, never the
 # tracklist. We still *try* the fetch (many other tracklist/festival-set pages
 # are plain HTML and parse fine), but when we recognise the Turnstile wall we say
-# so precisely and point at paste import instead of failing mysteriously.
+# so precisely and point at Firecrawl instead of failing mysteriously.
 
 _BROWSER_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -70,9 +68,8 @@ _BLOCK_MARKERS = ("challenges.cloudflare.com", "you will be forwarded",
                   "enable javascript and cookies to continue")
 _TURNSTILE_MSG = (
     "This tracklist page is behind a Cloudflare Turnstile CAPTCHA "
-    "(1001tracklists uses one), so it can't be scraped server-side. Open the "
-    "page, copy the tracklist text, and use paste import instead — it parses "
-    "the same data, including the 'w/' mashup lines.")
+    "(1001tracklists uses one), so it can't be fetched directly. Set "
+    "FIRECRAWL_API_KEY to scrape it through Firecrawl's stealth proxy.")
 
 
 def _html_title(html: str) -> str:
@@ -116,11 +113,11 @@ def _fetch_tracklist_html(url: str) -> str:
             raise HTTPException(status_code=501, detail=_TURNSTILE_MSG) from exc
         raise HTTPException(status_code=502,
                             detail=f"Could not fetch the page (HTTP {exc.code}). "
-                                   "Use paste import instead.") from exc
+                                   "Check the URL and try again.") from exc
     except (urllib.error.URLError, ValueError, TimeoutError) as exc:
         raise HTTPException(status_code=502,
                             detail=f"Could not reach the page ({exc}). "
-                                   "Use paste import instead.") from exc
+                                   "Check the URL and try again.") from exc
     low = html.lower()
     if any(m in low for m in _BLOCK_MARKERS):
         raise HTTPException(status_code=501, detail=_TURNSTILE_MSG)
@@ -197,17 +194,12 @@ class ImportRequest(BaseModel):
     url: str
 
 
-class ImportPasteRequest(BaseModel):
-    content: str
-    url: str = ""
-
-
 class ResolveRequest(BaseModel):
     url: str
 
 
 def _title_from_rows(content: str, rows: list[dict], url: str) -> tuple[str, list[dict]]:
-    """Derive a mix title from the first non-track line of pasted/flattened text,
+    """Derive a mix title from the first non-track line of flattened text,
     else from the URL slug. Returns (title, rows) — rows may lose a leading line
     that was actually the title. Raises 400 if only a title line was supplied."""
     title = ""
@@ -407,8 +399,8 @@ def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
 @router.post("/import")
 def import_mix(req: ImportRequest) -> dict:
     """Best-effort scrape of a tracklist URL. Works for plain-HTML tracklist/
-    festival-set pages; returns an accurate 501 for Cloudflare/Turnstile-walled
-    sites (1001tracklists) pointing at paste import."""
+    festival-set pages; Turnstile-walled sites (1001tracklists) need
+    FIRECRAWL_API_KEY, and return an accurate 501 saying so without it."""
     url = (req.url or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="url is required")
@@ -416,7 +408,7 @@ def import_mix(req: ImportRequest) -> dict:
         raise HTTPException(
             status_code=400,
             detail="That's a SoundCloud/YouTube track link — import mixes from a "
-                   "tracklist page (e.g. 1001tracklists), or paste the tracklist.")
+                   "tracklist page (e.g. 1001tracklists).")
 
     # 1001tracklists is Turnstile-walled; Firecrawl's stealth proxy renders it and
     # returns structured tracks + each track's detail-page URL (for A6 link scrape).
@@ -425,12 +417,11 @@ def import_mix(req: ImportRequest) -> dict:
             scraped = scrape_tracklist(url)
         except FirecrawlError as exc:
             raise HTTPException(status_code=502,
-                                detail=f"Firecrawl scrape failed ({exc}). "
-                                       "Use paste import instead.") from exc
+                                detail=f"Firecrawl scrape failed ({exc}).") from exc
         rows = _scraped_rows_to_persist_rows(scraped)
         if not rows:
             raise HTTPException(status_code=422,
-                                detail="Scraped the page but found no tracks. Use paste import.")
+                                detail="Scraped the page but found no tracks.")
         title = _title_from_rows("", rows, url)[0] or "Imported tracklist"
         return _persist_mix(title, url, rows, method="scrape")
 
@@ -439,25 +430,9 @@ def import_mix(req: ImportRequest) -> dict:
     if not rows:
         raise HTTPException(
             status_code=422,
-            detail="Fetched the page but found no 'Artist - Title' tracklist rows. "
-                   "Use paste import instead.")
+            detail="Fetched the page but found no 'Artist - Title' tracklist rows.")
     title = _html_title(html) or _title_from_rows("", rows, url)[0] or "Imported tracklist"
     return _persist_mix(title, url, rows, method="scrape")
-
-
-@router.post("/import-paste")
-def import_mix_paste(req: ImportPasteRequest) -> dict:
-    rows = _parse_tracklist(req.content)
-    if not rows:
-        raise HTTPException(
-            status_code=400,
-            detail="Could not find any 'Artist - Title' lines in the pasted text.",
-        )
-    url = (req.url or "").strip()
-    title, rows = _title_from_rows(req.content, rows, url)
-    if not title:
-        title = "Pasted tracklist"
-    return _persist_mix(title, url, rows, method="paste")
 
 
 @router.get("")

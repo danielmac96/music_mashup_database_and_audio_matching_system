@@ -99,7 +99,11 @@
       "mcp__playwright__browser_navigate",
       "Bash(curl -s -X POST http://127.0.0.1:8137/api/studio/mixdown -H \"Content-Type: application/json\" -d '{\"clips\":[{\"song_id\":1,\"stem\":\"vocals\",\"offset_sec\":0.0,\"rate\":1.0,\"semitones\":0,\"gain\":0.85},{\"song_id\":2,\"stem\":\"instrumental\",\"offset_sec\":-0.5,\"rate\":1.05,\"semitones\":2,\"gain\":0.8}]}')",
       "Bash(./.venv/Scripts/python.exe -m pytest tests/ -q --ignore=tests/test_mix_resolve.py --ignore=tests/test_preview_hydration.py -p no:cacheprovider)",
-      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8137/api/health)"
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://127.0.0.1:8137/api/health)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest tests/test_mixes_matching.py tests/test_studio_and_mixes.py tests/test_mix_manual_tracks.py tests/test_mix_reorder.py tests/test_mix_resolve.py tests/test_auto_resolve_route.py -q 2>&1 | Select-Object -Last 25)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest tests/test_mixes_matching.py tests/test_studio_and_mixes.py tests/test_mix_manual_tracks.py tests/test_mix_reorder.py tests/test_auto_resolve_route.py tests/test_mix_resolve_worker.py -q 2>&1 | Select-Object -Last 25)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -c \"import api.routes.mixes as m; print\\([r.path for r in m.router.routes]\\)\")",
+      "Bash(grep -c '\\\\\\\\\\\\*' frontend/src/styles.css)"
     ]
   }
 }

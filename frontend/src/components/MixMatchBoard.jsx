@@ -35,8 +35,9 @@ function RoleToggle({ track, role, onSetRole }) {
   );
 }
 
-// A track card: title on its own line, compact meta (number, tags, role toggle)
-// beneath — so long titles stay readable in the two-column board.
+// A track card, laid out as one line: position, then the title (ellipsised),
+// then the chips and role toggle. Keeping each track to a single row is what
+// lets the whole board fit on screen without scrolling.
 function Pill({ track, matched, dragging, role, onSetRole }) {
   const low = track.is_id || (track.parse_confidence != null && track.parse_confidence < 1);
   const unsorted = onSetRole && (!role || role === "unassigned");
@@ -46,9 +47,9 @@ function Pill({ track, matched, dragging, role, onSetRole }) {
         `${dragging ? " dragging" : ""}${unsorted ? " unsorted" : ""}`}
       title={track.raw_label || trackLabel(track)}
     >
+      <span className="match-pos">{track.position + 1}</span>
       <span className="match-card-title">{trackLabel(track)}</span>
       <span className="match-card-meta">
-        <span className="match-pos">{track.position + 1}</span>
         {!!track.is_id && <span className="match-chip id">ID</span>}
         {!!track.is_overlay && <span className="match-chip wv" title="was a 'w/' overlay line">w/</span>}
         {unsorted && <span className="match-chip unsorted">unsorted</span>}

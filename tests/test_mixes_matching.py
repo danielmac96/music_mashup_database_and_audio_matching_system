@@ -49,10 +49,13 @@ PASTE = (
 
 
 def _import(env, content=PASTE, url="https://example.com/test-mix"):
-    res = env["client"].post("/api/mixes/import-paste",
-                             json={"content": content, "url": url})
-    assert res.status_code == 200, res.text
-    return res.json()
+    """Seed a mix straight through the parse → persist path the scrape route
+    uses, so these tests exercise re-import/carry-over without a network fetch."""
+    import api.routes.mixes as mixes
+    rows = mixes._parse_tracklist(content)
+    assert rows, "fixture tracklist parsed to nothing"
+    title, rows = mixes._title_from_rows(content, rows, url)
+    return mixes._persist_mix(title or "Test mix", url, rows, method="paste")
 
 
 # ── schema migration (Checkpoint 2) ───────────────────────────────────────────
@@ -258,7 +261,7 @@ def test_role_change_away_drops_dependent_manual_matches(env):
     assert all(p["origin"] != "manual" for p in res.json()["pairs"])
 
 
-def test_import_paste_idempotent_on_url(env):
+def test_import_idempotent_on_url(env):
     one = _import(env)
     two = _import(env)
     assert one["id"] == two["id"]

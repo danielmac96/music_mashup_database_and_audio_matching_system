@@ -219,12 +219,6 @@ export const api = {
   importMix: (url) =>
     jsonFetch("/api/mixes/import", { method: "POST", body: JSON.stringify({ url }) }),
 
-  importMixPaste: (content, url = "") =>
-    jsonFetch("/api/mixes/import-paste", {
-      method: "POST",
-      body: JSON.stringify({ content, url }),
-    }),
-
   getMixes: () => jsonFetch("/api/mixes"),
 
   getMix: (id) => jsonFetch(`/api/mixes/${id}`),
