@@ -103,7 +103,18 @@
       "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest tests/test_mixes_matching.py tests/test_studio_and_mixes.py tests/test_mix_manual_tracks.py tests/test_mix_reorder.py tests/test_mix_resolve.py tests/test_auto_resolve_route.py -q 2>&1 | Select-Object -Last 25)",
       "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest tests/test_mixes_matching.py tests/test_studio_and_mixes.py tests/test_mix_manual_tracks.py tests/test_mix_reorder.py tests/test_auto_resolve_route.py tests/test_mix_resolve_worker.py -q 2>&1 | Select-Object -Last 25)",
       "PowerShell(.venv\\\\Scripts\\\\python.exe -c \"import api.routes.mixes as m; print\\([r.path for r in m.router.routes]\\)\")",
-      "Bash(grep -c '\\\\\\\\\\\\*' frontend/src/styles.css)"
+      "Bash(grep -c '\\\\\\\\\\\\*' frontend/src/styles.css)",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -c \"import sqlite3,config;print\\(config.DB_PATH if hasattr\\(config,'DB_PATH'\\) else '?'\\)\" 2>&1 | Select-Object -Last 3)",
+      "PowerShell(Start-Process -FilePath \".\\\\.venv\\\\Scripts\\\\python.exe\" -ArgumentList \"-m\",\"uvicorn\",\"api.server:app\",\"--port\",\"8011\" -RedirectStandardOutput \"$env:TEMP\\\\claude\\\\uvi.out\" -RedirectStandardError \"$env:TEMP\\\\claude\\\\uvi.err\" -WindowStyle Hidden -PassThru | Select-Object Id)",
+      "PowerShell(try { \\(Invoke-WebRequest \"http://localhost:8011/api/health\" -UseBasicParsing\\).Content } catch { \"not up yet: $_\" })",
+      "mcp__playwright__browser_evaluate",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_drag",
+      "mcp__playwright__browser_run_code_unsafe",
+      "mcp__playwright__browser_console_messages",
+      "mcp__playwright__browser_network_requests",
+      "PowerShell(.\\\\.venv\\\\Scripts\\\\python.exe -c \"import sqlite3;c=sqlite3.connect\\(r'database_v2\\\\mashup.db'\\);c.row_factory=sqlite3.Row;[print\\(r['position'], r['role'], \\(r['artist'] or ''\\)[:24],'-',\\(r['title'] or ''\\)[:30]\\) for r in c.execute\\('select position,role,artist,title from mix_tracks where mix_id=1 order by position limit 12'\\)]\")",
+      "mcp__playwright__browser_resize"
     ]
   }
 }

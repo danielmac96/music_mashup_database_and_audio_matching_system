@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  DndContext, DragOverlay, KeyboardSensor, PointerSensor,
-  useDraggable, useDroppable, useSensor, useSensors,
+  closestCenter, DndContext, DragOverlay, KeyboardSensor, PointerSensor,
+  rectIntersection, useDraggable, useDroppable, useSensor, useSensors,
 } from "@dnd-kit/core";
+import {
+  SortableContext, useSortable, verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { api } from "../api";
 import { toast } from "../toast";
 
@@ -11,6 +15,10 @@ import { toast } from "../toast";
 // to record "this vocal was mashed over this bed". Many vocals per bed; a
 // vocal lives on exactly one bed. Saves are optimistic + debounced-batched to
 // POST /mixes/{id}/assignments; undo covers the last 20 moves.
+//
+// Instrumental groups are additionally sortable by their ⋮⋮ handle — the same
+// drag-to-reorder UI as the list view — which moves the bed *and its matched
+// vocals* to a new slot in the tracklist via POST /mixes/{id}/reorder.
 
 const SAVE_DEBOUNCE_MS = 900;
 const UNDO_DEPTH = 20;
@@ -91,33 +99,52 @@ function InstGroup({ inst, vocals, byId, roles, onSetRole }) {
     id: `inst-${inst.id}`,
     data: { instId: inst.id },
   });
+  // The block as a whole is one sortable item so it can be dragged between
+  // other beds; only the ⋮⋮ handle starts that drag, leaving the bed's own pill
+  // free to keep behaving like every other card (re-role it, or drop it onto
+  // another bed to demote it to a vocal).
+  const {
+    attributes, listeners, setNodeRef: setSortRef, transform, transition, isDragging,
+  } = useSortable({
+    id: `grp-${inst.id}`,
+    data: { type: "group", instId: inst.id, trackId: inst.id },
+  });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+  };
   return (
-    <div ref={setNodeRef} className={`inst-group${isOver ? " over" : ""}`}>
-      <div className="inst-group-head">
-        <DraggablePill track={inst} role={roles?.[inst.id]} onSetRole={onSetRole} />
-        <span className="inst-group-count faint">
-          {vocals.length} vocal{vocals.length === 1 ? "" : "s"}
-        </span>
-      </div>
-      {vocals.length === 0 ? (
-        <div className="inst-group-empty faint">drop a vocal here →  becomes 1 training pair</div>
-      ) : (
-        <div className="inst-group-vocals">
-          {vocals.map(({ vocalId, origin }) => {
-            const v = byId[vocalId];
-            return v ? (
-              <div key={vocalId} className="inst-group-vocal">
-                <DraggablePill track={v} matched
-                  role={roles?.[vocalId]} onSetRole={onSetRole} />
-                <span className={`match-chip origin ${origin}`}
-                  title={origin === "parsed" ? "from a 'w/' line in the tracklist" : "matched by hand"}>
-                  {origin === "parsed" ? "w/ line" : "manual"}
-                </span>
-              </div>
-            ) : null;
-          })}
+    <div ref={setSortRef} className="inst-group-sort" style={style}>
+      <div ref={setNodeRef} className={`inst-group${isOver ? " over" : ""}`}>
+        <div className="inst-group-head">
+          <span className="drag-handle" {...attributes} {...listeners}
+            title="Drag to reorder this instrumental (its vocals move with it)">⋮⋮</span>
+          <DraggablePill track={inst} role={roles?.[inst.id]} onSetRole={onSetRole} />
+          <span className="inst-group-count faint">
+            {vocals.length} vocal{vocals.length === 1 ? "" : "s"}
+          </span>
         </div>
-      )}
+        {vocals.length === 0 ? (
+          <div className="inst-group-empty faint">drop a vocal here →  becomes 1 training pair</div>
+        ) : (
+          <div className="inst-group-vocals">
+            {vocals.map(({ vocalId, origin }) => {
+              const v = byId[vocalId];
+              return v ? (
+                <div key={vocalId} className="inst-group-vocal">
+                  <DraggablePill track={v} matched
+                    role={roles?.[vocalId]} onSetRole={onSetRole} />
+                  <span className={`match-chip origin ${origin}`}
+                    title={origin === "parsed" ? "from a 'w/' line in the tracklist" : "matched by hand"}>
+                    {origin === "parsed" ? "w/ line" : "manual"}
+                  </span>
+                </div>
+              ) : null;
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -126,6 +153,9 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
   // Local optimistic state: roles per track id, and vocal → {instId, origin}.
   const [roles, setRoles] = useState({});
   const [assign, setAssign] = useState({});
+  // Track ids in board order. Normally identical to the server's position
+  // order; it leads the server briefly while an optimistic reorder is in flight.
+  const [order, setOrder] = useState([]);
   const [saveState, setSaveState] = useState("saved"); // saved | dirty | saving | error
   const [filter, setFilter] = useState("");
   const [activeId, setActiveId] = useState(null);
@@ -135,8 +165,19 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
   const revision = useRef(0);
   const timer = useRef(null);
 
+  // Tracks in board order, renumbered to match — reorder rewrites position to a
+  // dense 0..n-1 run server-side, so numbering this way is what comes back.
+  // Tracks missing from `order` (just added elsewhere) keep their tail order.
+  const orderedTracks = useMemo(() => {
+    if (!order.length) return mix.tracks;
+    const rank = new Map(order.map((id, i) => [id, i]));
+    const sorted = [...mix.tracks].sort(
+      (a, b) => (rank.get(a.id) ?? Infinity) - (rank.get(b.id) ?? Infinity));
+    return sorted.map((t, i) => (t.position === i ? t : { ...t, position: i }));
+  }, [mix.tracks, order]);
+
   const byId = useMemo(
-    () => Object.fromEntries(mix.tracks.map((t) => [t.id, t])), [mix.tracks]);
+    () => Object.fromEntries(orderedTracks.map((t) => [t.id, t])), [orderedTracks]);
 
   // (Re)hydrate local state from the server's mix detail.
   const hydrate = (detail) => {
@@ -148,6 +189,7 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
     });
     setRoles(r);
     setAssign(a);
+    setOrder(detail.tracks.map((t) => t.id));
     synced.current = { roles: { ...r }, assign: { ...a } };
   };
   useEffect(() => { hydrate(mix); undoStack.current = []; setSaveState("saved"); },
@@ -293,6 +335,12 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
   const onDragEnd = ({ active, over }) => {
     setActiveId(null);
     if (!over) return;
+    if (active.data.current?.type === "group") {
+      if (over.id !== active.id) {
+        moveBed(active.data.current.instId, over.data.current?.instId);
+      }
+      return;
+    }
     const trackId = active.data.current?.trackId;
     if (trackId == null) return;
     if (over.id === "col-inst") setRole(trackId, "instrumental");
@@ -302,6 +350,18 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
     }
   };
 
+  // Block reordering and card dragging share one DndContext, so keep their
+  // drop targets apart: a block only ever lands on another block, and a card
+  // never lands on the sortable wrappers.
+  const collisionDetection = useCallback((args) => {
+    const isGroup = args.active?.data?.current?.type === "group";
+    const droppableContainers = args.droppableContainers.filter(
+      (c) => (c.data.current?.type === "group") === isGroup);
+    return isGroup
+      ? closestCenter({ ...args, droppableContainers })
+      : rectIntersection({ ...args, droppableContainers });
+  }, []);
+
   const q = filter.trim().toLowerCase();
   const matchesFilter = (t) => !q ||
     trackLabel(t).toLowerCase().includes(q) ||
@@ -310,14 +370,14 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
   // Instrumentals column holds every backing/unsorted track: a track with no
   // role defaults here (still 'unassigned' in the DB until acted on) and is a
   // droppable bed. Vocals column holds free (unmatched) vocals.
-  const beds = mix.tracks.filter((t) =>
+  const beds = orderedTracks.filter((t) =>
     (roles[t.id] === "instrumental" || (roles[t.id] || "unassigned") === "unassigned")
     && matchesFilter(t));
   // A pair whose bed is no longer an instrumental can exist transiently —
   // render its vocal as free rather than dropping it from every column.
   const liveAssign = (id) =>
     assign[id] && roles[assign[id].instId] === "instrumental";
-  const vocalsFree = mix.tracks.filter(
+  const vocalsFree = orderedTracks.filter(
     (t) => roles[t.id] === "vocal" && !liveAssign(t.id) && matchesFilter(t));
   const vocalsByInst = {};
   Object.entries(assign).forEach(([vocalId, { instId, origin }]) => {
@@ -327,6 +387,44 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
   Object.values(vocalsByInst).forEach((l) =>
     l.sort((a, b) => (byId[a.vocalId]?.position ?? 0) - (byId[b.vocalId]?.position ?? 0)));
   const matchCount = Object.keys(assign).length;
+
+  // Move an instrumental block above/below another one. The bed and the vocals
+  // matched to it travel together as a contiguous run; every other track keeps
+  // its relative place. There is no board-only ordering — this writes
+  // mix_tracks.position through the endpoint the list view uses, so both views
+  // and the printed tracklist always agree.
+  const moveBed = async (movedId, targetId) => {
+    const bedIds = beds.map((b) => b.id);
+    const from = bedIds.indexOf(movedId);
+    const to = bedIds.indexOf(targetId);
+    if (from < 0 || to < 0 || from === to) return;
+    const blockOf = (id) => [id, ...(vocalsByInst[id] || []).map((v) => v.vocalId)];
+    const block = blockOf(movedId);
+    const lifted = new Set(block);
+    const rest = orderedTracks.map((t) => t.id).filter((id) => !lifted.has(id));
+    const targetSlots = blockOf(targetId)
+      .map((id) => rest.indexOf(id)).filter((i) => i >= 0);
+    if (!targetSlots.length) return;
+    // Dragging down lands after the target block, dragging up lands before it —
+    // the drop-in-place semantics of the list view's sortable rows.
+    const at = from < to ? Math.max(...targetSlots) + 1 : Math.min(...targetSlots);
+    const next = [...rest.slice(0, at), ...block, ...rest.slice(at)];
+
+    const prev = orderedTracks.map((t) => t.id);
+    // Land pending role/match edits first: that save re-hydrates the board and
+    // would otherwise stomp the optimistic order set just below.
+    clearTimeout(timer.current);
+    if (saveState !== "saved") await flushRef.current();
+    setOrder(next);
+    try {
+      const detail = await api.reorderMixTracks(mix.id, next);
+      setOrder(detail.tracks.map((t) => t.id));
+      onMixUpdated?.(detail);
+    } catch (e) {
+      setOrder(prev);
+      toast(`Reorder failed: ${e.message}`);
+    }
+  };
 
   const active = activeId != null ? byId[activeId] : null;
 
@@ -369,19 +467,22 @@ export function MixMatchBoard({ mix, onMixUpdated }) {
         Everything saves automatically.
       </div>
 
-      <DndContext sensors={sensors}
+      <DndContext sensors={sensors} collisionDetection={collisionDetection}
         onDragStart={({ active: a }) => setActiveId(a.data.current?.trackId)}
         onDragEnd={onDragEnd}
         onDragCancel={() => setActiveId(null)}>
         <div className="match-board">
           <Column droppableId="col-inst" title="Instrumentals" accent="c-inst"
-            hint="backing tracks (and anything unsorted) — drop a vocal onto one to pair"
+            hint="backing tracks (and anything unsorted) — drop a vocal onto one to pair, or drag ⋮⋮ to reorder"
             count={beds.length}>
-            {beds.map((t) => (
-              <InstGroup key={t.id} inst={t}
-                vocals={vocalsByInst[t.id] || []} byId={byId}
-                roles={roles} onSetRole={setRole} />
-            ))}
+            <SortableContext items={beds.map((t) => `grp-${t.id}`)}
+              strategy={verticalListSortingStrategy}>
+              {beds.map((t) => (
+                <InstGroup key={t.id} inst={t}
+                  vocals={vocalsByInst[t.id] || []} byId={byId}
+                  roles={roles} onSetRole={setRole} />
+              ))}
+            </SortableContext>
             {beds.length === 0 && (
               <div className="empty" style={{ padding: 10 }}>no tracks here</div>
             )}

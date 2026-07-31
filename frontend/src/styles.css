@@ -1573,6 +1573,14 @@ input, select { font-family: inherit; }
 .inst-group-head .match-pill-wrap { flex: 1 1 auto; min-width: 0; }
 .inst-group-count { font-size: 10px; flex: none; }
 
+/* Instrumental blocks are sortable among themselves: the ⋮⋮ handle drags the
+   bed and its matched vocals as one unit, while the pill beside it keeps its
+   own drag (re-role / pair onto another bed). */
+.inst-group-sort { min-width: 0; }
+.inst-group-head .drag-handle { flex: none; touch-action: none; }
+.inst-group-head .drag-handle:active { cursor: grabbing; }
+.inst-group-sort:hover .drag-handle { color: var(--text); }
+
 /* Explainer banner above the three-box board (item 3 clarity). */
 .match-explainer {
   font-size: 11.5px; line-height: 1.5; color: var(--text);
