@@ -307,6 +307,30 @@ def get_hook(song_id: int, role: str = "vocal") -> dict:
             "cached": False}
 
 
+@router.get("/{song_id}/hook/audio")
+def stream_hook(song_id: int, stem: str = "vocals"):
+    """Serve the pre-rendered 16-bar hook clip, rendering it on a cache miss.
+
+    This is the request the ranked list makes on every keypress, so a warm hit
+    is a plain file serve. A cold one is a seek-and-copy of a byte range that
+    already exists on disk — no DSP, no decode.
+    """
+    from api.workers.hook_worker import HookRenderError, render_hook
+    try:
+        path = Path(render_hook(song_id, stem))
+    except HookRenderError as exc:
+        # Missing dependency is a capability gap (501); everything else is a
+        # missing artefact (404). Neither is ever a bare 500.
+        status = 501 if "soundfile is not installed" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="audio/wav",
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=3600"},
+        filename=path.name,
+    )
+
+
 class BeatPhaseUpdate(BaseModel):
     stem: str = "full"
     phase: int = 0

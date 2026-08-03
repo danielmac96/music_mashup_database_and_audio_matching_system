@@ -258,7 +258,11 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
 
     replace_sections(song_id, sections)
     hooks = _persist_hooks(song_id, sections)
-    return {"section_count": len(sections), "hooks": hooks}
+    # Cut the clips now so they are warm before the user reaches the ranked list
+    # — a cold hook is the difference between an instant preview and a stall.
+    from api.workers.hook_worker import warm_hooks
+    clips = warm_hooks(song_id)
+    return {"section_count": len(sections), "hooks": hooks, "clips": clips}
 
 
 # Which stem each hook role previews. The vocal hook is cut from the vocal stem

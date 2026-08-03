@@ -85,6 +85,7 @@ RAW_DIR           = AUDIO_DIR / "full_song"
 VOCALS_DIR        = AUDIO_DIR / "vocals"
 INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
 PREVIEWS_DIR      = AUDIO_DIR / "previews"   # rendered Studio mixdowns (render/mixdown.py)
+HOOKS_DIR         = AUDIO_DIR / "hooks"      # 16-bar preview clips (api/workers/hook_worker.py)
 
 # SQLite file path — must not be BASE_DIR / "database" (that is the Python package directory).
 _db_val, DB_PATH_SOURCE = _resolve(
@@ -107,7 +108,7 @@ CONFIGURED = AUDIO_ROOT_SOURCE in ("env", "settings")
 def ensure_dirs() -> None:
     """Create all working directories. Called at import (best-effort) and again
     after the wizard saves settings, so a freshly-chosen library folder exists."""
-    for d in (RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR, PREVIEWS_DIR,
+    for d in (RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR, PREVIEWS_DIR, HOOKS_DIR,
               SNAPSHOTS_DIR, DATASETS_DIR, MODELS_DIR):
         d.mkdir(parents=True, exist_ok=True)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
