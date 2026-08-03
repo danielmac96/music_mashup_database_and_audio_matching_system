@@ -22,35 +22,6 @@ log = logging.getLogger(__name__)
 
 # ── Semitone / key helpers ────────────────────────────────────────────────────
 
-_KEY_SEMITONE: Dict[str, int] = {
-    "C": 0,  "C#": 1, "Db": 1,
-    "D": 2,  "D#": 3, "Eb": 3,
-    "E": 4,
-    "F": 5,  "F#": 6, "Gb": 6,
-    "G": 7,  "G#": 8, "Ab": 8,
-    "A": 9,  "A#": 10, "Bb": 10,
-    "B": 11,
-}
-
-
-def compute_semitone_shift(vocal_key: str, inst_key: str) -> Optional[int]:
-    """
-    Minimum semitones to shift the INSTRUMENTAL to match the vocal's root note.
-    Positive = shift up, negative = shift down. Range: -6 to +6.
-    Returns None if either key is unknown.
-
-    Formula: (vocal_semitone - inst_semitone) % 12 gives the "shift up" value.
-    If > 6, shifting down by (value - 12) is cheaper.
-    Relative major/minor is covered naturally: C(0) over A(9) → (0-9)%12=3 → +3.
-    """
-    v = _KEY_SEMITONE.get(vocal_key or "")
-    i = _KEY_SEMITONE.get(inst_key or "")
-    if v is None or i is None:
-        return None
-    diff = (v - i) % 12
-    return diff if diff <= 6 else diff - 12
-
-
 def _sanitize_folder_name(s: str, max_len: int = 40) -> str:
     from config import sanitize_filename_chars
     s = sanitize_filename_chars(s)
@@ -94,6 +65,30 @@ def camelot_score(c1: str, c2: str) -> float:
     if n1 == n2 and s1 != s2:          return 0.75   # relative major/minor
     if s1 == s2 and abs(n1-n2) in (2, 10): return 0.55  # two steps
     return 0.25
+
+
+def compute_semitone_shift(vocal_camelot: str, inst_camelot: str) -> Optional[int]:
+    """
+    Minimum semitones to shift the INSTRUMENTAL so it sits in the vocal's key.
+    Positive = shift up, negative = shift down. Range: -6 to +6.
+    Returns None if either Camelot code is unknown.
+
+    Derived from the Camelot pair, not from raw root notes, so the shift agrees
+    with camelot_score by construction — a pair the wheel calls compatible is
+    never handed a destructive transposition. One step around the wheel is a
+    perfect fifth, so the shift is 7 × the hour difference, folded into [-6, +6].
+
+    The letter is deliberately ignored: 8A and 8B (A minor / C major) are the
+    same pitch collection, so a relative major/minor pair needs no transposition
+    at all. The old root-note formula returned +3 there, dragging the bed to C
+    minor against the vocal's major third.
+    """
+    v = _parse_camelot(vocal_camelot or "")
+    i = _parse_camelot(inst_camelot or "")
+    if v is None or i is None:
+        return None
+    diff = ((v[0] - i[0]) * 7) % 12
+    return diff if diff <= 6 else diff - 12
 
 
 # ── BPM compatibility ─────────────────────────────────────────────────────────
@@ -536,7 +531,7 @@ def export_mashup_report(db_path=None, output_path: str = "mashup_report",
             i_bpm = r.get("inst_bpm") or 0.0
             stretch = compute_stretch_factor(v_bpm, i_bpm)
             shift   = compute_semitone_shift(
-                r.get("vocal_key") or "", r.get("inst_key") or ""
+                r.get("vocal_camelot") or "", r.get("inst_camelot") or ""
             )
             v_path = _path_str(r.get("vocal_wav_path"))
             i_path = _path_str(r.get("inst_wav_path"))
@@ -673,7 +668,7 @@ def prep_fl_session(db_path=None, output_dir: str = "fl_session",
         i_bpm   = r.get("inst_bpm") or 0.0
         stretch = compute_stretch_factor(v_bpm, i_bpm)
         shift   = compute_semitone_shift(
-            r.get("vocal_key") or "", r.get("inst_key") or ""
+            r.get("vocal_camelot") or "", r.get("inst_camelot") or ""
         )
         stretch_str = f"{stretch:.4f}x" if stretch else "?"
         shift_str   = (f"{shift:+d}" if shift is not None else "?")

@@ -125,7 +125,8 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     i_bpm = i_feat.get("bpm") or 0.0
     i_bpm_eff = effective_bpm(v_bpm, i_bpm)
     stretch = compute_stretch_factor(v_bpm, i_bpm)
-    shift = compute_semitone_shift(v_feat.get("key") or "", i_feat.get("key") or "")
+    shift = compute_semitone_shift(v_feat.get("camelot") or "",
+                                   i_feat.get("camelot") or "")
 
     v_sections = get_sections(vocal_song_id, db_path=db)
     i_sections = get_sections(inst_song_id, db_path=db)
