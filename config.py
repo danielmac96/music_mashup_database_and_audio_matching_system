@@ -84,7 +84,7 @@ AUDIO_DIR         = Path(_audio_val)
 RAW_DIR           = AUDIO_DIR / "full_song"
 VOCALS_DIR        = AUDIO_DIR / "vocals"
 INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
-PREVIEWS_DIR      = AUDIO_DIR / "previews"   # rendered audition mashup previews
+PREVIEWS_DIR      = AUDIO_DIR / "previews"   # rendered Studio mixdowns (render/mixdown.py)
 
 # SQLite file path — must not be BASE_DIR / "database" (that is the Python package directory).
 _db_val, DB_PATH_SOURCE = _resolve(

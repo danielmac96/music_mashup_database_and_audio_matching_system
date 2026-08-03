@@ -151,41 +151,6 @@ export const api = {
   getMashupPlan: (vocalId, instId) =>
     jsonFetch(`/api/mashups/plan?vocal_id=${vocalId}&inst_id=${instId}`),
 
-  startPreview: (vocalId, instId, vocalStart = null, instStart = null) => {
-    const params = new URLSearchParams({ vocal_id: vocalId, inst_id: instId });
-    if (vocalStart != null) params.set("vocal_start", vocalStart.toFixed(3));
-    if (instStart  != null) params.set("inst_start",  instStart.toFixed(3));
-    return jsonFetch(`/api/mashups/preview?${params}`, { method: "POST" });
-  },
-
-  previewAudioUrl: (vocalId, instId) =>
-    `/api/mashups/preview/audio?vocal_id=${vocalId}&inst_id=${instId}`,
-
-  startAdjust: (vocalId, instId, anchor, stretch = null, shift = null) => {
-    const params = new URLSearchParams({ vocal_id: vocalId, inst_id: instId, anchor });
-    if (stretch != null) params.set("stretch", String(stretch));
-    if (shift != null) params.set("shift", String(shift));
-    return jsonFetch(`/api/mashups/adjust?${params}`, { method: "POST" });
-  },
-
-  adjustedAudioUrl: (vocalId, instId, anchor) =>
-    `/api/mashups/adjust/audio?vocal_id=${vocalId}&inst_id=${instId}&anchor=${anchor}`,
-
-  startExport: (vocalId, instId, anchor, stretch, shift, vocalOffset, instOffset,
-                vocalGain = null, instGain = null) => {
-    const params = new URLSearchParams({ vocal_id: vocalId, inst_id: instId, anchor });
-    if (stretch != null) params.set("stretch", String(stretch));
-    if (shift != null) params.set("shift", String(shift));
-    if (vocalOffset != null) params.set("vocal_offset", vocalOffset.toFixed(3));
-    if (instOffset != null) params.set("inst_offset", instOffset.toFixed(3));
-    if (vocalGain != null) params.set("vocal_gain", vocalGain.toFixed(3));
-    if (instGain != null) params.set("inst_gain", instGain.toFixed(3));
-    return jsonFetch(`/api/mashups/export?${params}`, { method: "POST" });
-  },
-
-  exportAudioUrl: (vocalId, instId) =>
-    `/api/mashups/export/audio?vocal_id=${vocalId}&inst_id=${instId}`,
-
   // ── Studio (DAW tab) ───────────────────────────────────────────────────────
   // Render the arrangement server-side (decoupled stretch/pitch per clip) to a
   // WAV. clips: [{ song_id, stem, offset_sec, rate, semitones, gain }]
