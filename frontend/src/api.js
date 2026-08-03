@@ -70,6 +70,14 @@ export const api = {
       body: JSON.stringify({ bpm, key, mode }),
     }),
 
+  // Which beat of the bar this stem's grid starts on (0-3). Set by alt+clicking
+  // a beat line in Studio when detected bar lines don't match what you hear.
+  setBeatPhase: (id, stem, phase) =>
+    jsonFetch(`/api/tracks/${id}/beat-phase`, {
+      method: "PATCH",
+      body: JSON.stringify({ stem, phase }),
+    }),
+
   // Remove a song from the library — deletes its DB rows AND audio/stem files.
   deleteTrack: (id) => jsonFetch(`/api/tracks/${id}`, { method: "DELETE" }),
 

@@ -271,6 +271,7 @@ _FEATURES_OPTIONAL_COLUMNS = (
     ("beat_times_json", "TEXT"),
     ("waveform_rms_json", "TEXT"),
     ("key_confidence", "REAL"),
+    ("beat_phase", "INTEGER DEFAULT 0"),
 )
 
 
@@ -578,14 +579,15 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
     conn.execute(
         """INSERT INTO features
                (song_id, stem_type, bpm, bpm_confidence, key, mode, camelot,
-                key_confidence, loudness_rms, energy, mfcc_json,
+                key_confidence, beat_phase, loudness_rms, energy, mfcc_json,
                 spectral_centroid, spectral_rolloff, zero_crossing_rate,
                 beat_times_json, waveform_rms_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(song_id, stem_type) DO UPDATE SET
                bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
                key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
                key_confidence=excluded.key_confidence,
+               beat_phase=excluded.beat_phase,
                loudness_rms=excluded.loudness_rms, energy=excluded.energy,
                mfcc_json=excluded.mfcc_json,
                spectral_centroid=excluded.spectral_centroid,
@@ -596,7 +598,7 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
         (song_id, stem_type,
          features.get("bpm"), features.get("bpm_confidence"),
          features.get("key"), features.get("mode"), features.get("camelot"),
-         features.get("key_confidence"),
+         features.get("key_confidence"), features.get("beat_phase") or 0,
          features.get("loudness_rms"), features.get("energy"), mfcc_json,
          features.get("spectral_centroid"), features.get("spectral_rolloff"),
          features.get("zero_crossing_rate"),

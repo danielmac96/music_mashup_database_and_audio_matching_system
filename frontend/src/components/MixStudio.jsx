@@ -5,6 +5,7 @@ import { KeyChip } from "./KeyChip";
 import { TrackArt } from "./TrackArt";
 import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
+import { isDownbeat, phaseForDownbeatAt } from "../engine/grid";
 import { fmtTime } from "../theme";
 import { toast } from "../toast";
 
@@ -163,10 +164,12 @@ function paintLane(canvas, lane, viewStart, pps, selected) {
       const x = Math.round((t - viewStart) * pps) + 0.5;
       if (x < 0) continue;
       if (x > W) break;
-      const isBar = i % 4 === 0;
+      const isBar = isDownbeat(i, lane.beatPhase);
       if (!isBar && pps < 24) continue;
-      ctx.strokeStyle = `rgba(${rgb},${isBar ? 0.5 : 0.18})`;
-      ctx.lineWidth = isBar ? 1.4 : 1;
+      // Downbeats are drawn well clear of beat lines so a wrong phase is
+      // obvious by eye — that is the only way to catch a bad detection.
+      ctx.strokeStyle = `rgba(${rgb},${isBar ? 0.75 : 0.15})`;
+      ctx.lineWidth = isBar ? 2 : 1;
       ctx.beginPath();
       ctx.moveTo(x, isBar ? 9 : H * 0.45);
       ctx.lineTo(x, H);
@@ -357,7 +360,7 @@ export function MixStudio({ onStatus }) {
       gain: saved.gain ?? 0.8,
       muted: saved.muted ?? false,
       synced: saved.synced ?? false,
-      waveform: [], beatTimes: [], sections: [],
+      waveform: [], beatTimes: [], beatPhase: 0, sections: [],
       buffer: null, rawDur: track.duration_secs || 0,
       loading: true, loadError: null,
     };
@@ -366,7 +369,10 @@ export function MixStudio({ onStatus }) {
 
     api.getWaveform(track.id, stem)
       .then((d) => setLanes((ls) => ls.map((l) =>
-        l.id === id ? { ...l, waveform: d.waveform || [], beatTimes: d.beat_times || [] } : l)))
+        l.id === id
+          ? { ...l, waveform: d.waveform || [], beatTimes: d.beat_times || [],
+              beatPhase: d.beat_phase || 0 }
+          : l)))
       .catch(() => {});
     api.getSections(track.id)
       .then((d) => setLanes((ls) => ls.map((l) => (l.id === id ? { ...l, sections: d.sections } : l))))
@@ -607,9 +613,31 @@ export function MixStudio({ onStatus }) {
   };
 
   // Lane drag: horizontal move with snap; click selects.
+  // alt+click a beat line to declare it bar 1. Onset-strength phase detection
+  // is fooled by syncopation and quiet intros; the ear is not, so the manual
+  // value wins and is persisted against the stem the lane is showing.
+  const claimDownbeat = (e, lane) => {
+    const beats = lane.beatTimes || [];
+    if (!beats.length) { toast("No beat grid — analyze this track first"); return; }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const t = viewStart + (e.clientX - rect.left) / pps;
+    // Lane beats are stored raw; the canvas draws them warped by rate + offset.
+    const rawT = (t - lane.offsetSec) * lane.rate;
+    let nearest = 0;
+    for (let i = 1; i < beats.length; i++) {
+      if (Math.abs(beats[i] - rawT) < Math.abs(beats[nearest] - rawT)) nearest = i;
+    }
+    const phase = phaseForDownbeatAt(nearest);
+    patchLane(lane.id, { beatPhase: phase });
+    api.setBeatPhase(lane.songId, lane.stem, phase)
+      .then(() => toast(`Bar 1 set to beat ${nearest + 1} (phase ${phase})`))
+      .catch((err) => toast(err.message || "Could not save downbeat"));
+  };
+
   const handleLaneDown = (e, lane) => {
     e.preventDefault();
     setSelectedId(lane.id);
+    if (e.altKey) { claimDownbeat(e, lane); return; }
     const startX = e.clientX;
     const startOffset = lane.offsetSec;
     const onMove = (me) => {

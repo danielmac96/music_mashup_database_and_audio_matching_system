@@ -5,6 +5,7 @@ import { KeyChip } from "./KeyChip";
 import { TrackArt } from "./TrackArt";
 import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
+import { downbeatsOf, isDownbeat } from "../engine/grid";
 import { fmtTime, keyRel } from "../theme";
 import { toast } from "../toast";
 
@@ -101,7 +102,7 @@ const nearest = (arr, target) =>
 // ── One waveform lane (section ribbon + canvas waveform/beat-grid + playhead) ─
 function Lane({
   deck, sections, durationSecs, pps, offsetSecs, onOffsetChange,
-  waveform = [], beatTimes = [], onPlay, isPlaying, playheadPos, loop,
+  waveform = [], beatTimes = [], beatPhase = 0, onPlay, isPlaying, playheadPos, loop,
   otherBeatTimes = [], otherOffsetSecs = 0, snapMode = "beats", beatSecs = 0,
 }) {
   const [dragging, setDragging] = useState(false);
@@ -149,16 +150,17 @@ function Lane({
       for (let i = 0; i < beatTimes.length; i++) {
         const x = Math.round(beatTimes[i] * pps + offsetPx) + 0.5;
         if (x < 0 || x > W) continue;
-        const isBar = i % 4 === 0;
+        const isBar = isDownbeat(i, beatPhase);
+        // Downbeats sit visibly stronger than beats so a wrong phase shows.
         ctx.strokeStyle = isBar ? barColor : beatColor;
-        ctx.lineWidth = isBar ? 1.5 : 1;
+        ctx.lineWidth = isBar ? 2.5 : 1;
         ctx.beginPath();
         ctx.moveTo(x, isBar ? 13 : TIMELINE_HEIGHT * 0.3);
         ctx.lineTo(x, isBar ? TIMELINE_HEIGHT : TIMELINE_HEIGHT * 0.75);
         ctx.stroke();
       }
     }
-  }, [waveform, beatTimes, pps, durationSecs, offsetSecs, isA]);
+  }, [waveform, beatTimes, beatPhase, pps, durationSecs, offsetSecs, isA]);
 
   const handleMouseDown = (e) => {
     if (!onOffsetChange) return;
@@ -382,6 +384,9 @@ export function AuditionStudio({ seed, onStatus }) {
     () => (aWave.beat_times || []).map((t) => t * aFactor), [aWave.beat_times, aFactor]);
   const bBeatDisplay = useMemo(
     () => (bWave.beat_times || []).map((t) => t * bFactor), [bWave.beat_times, bFactor]);
+  // Which beat of the bar the grid starts on (T1.4); 0 = pre-beat_phase track.
+  const aBeatPhase = aWave.beat_phase || 0;
+  const bBeatPhase = bWave.beat_phase || 0;
 
   // ── Load metadata + decode audio when a deck's track/stem changes ─────────
   const loadDeck = (id, stem, setSections, setWave, setBuffer) => {
@@ -567,7 +572,8 @@ export function AuditionStudio({ seed, onStatus }) {
     if (!effBpm) { toast("Analyze this deck first"); return; }
     const barSecs = (4 * 60) / effBpm; // display seconds per bar
     // Snap the loop start to this deck's nearest downbeat at/under the playhead.
-    const downbeats = beats.filter((_, i) => i % 4 === 0).map((t) => t + offset);
+    const phase = isA ? aBeatPhase : bBeatPhase;
+    const downbeats = downbeatsOf(beats, phase).map((t) => t + offset);
     let start = playPos;
     if (downbeats.length) {
       const before = downbeats.filter((d) => d <= playPos + 0.05);
@@ -578,8 +584,8 @@ export function AuditionStudio({ seed, onStatus }) {
   };
 
   const alignDownbeats = () => {
-    const aDown = aBeatDisplay.filter((_, i) => i % 4 === 0).map((t) => t + aOffset);
-    const bDown = bBeatDisplay.filter((_, i) => i % 4 === 0).map((t) => t + bOffset);
+    const aDown = downbeatsOf(aBeatDisplay, aBeatPhase).map((t) => t + aOffset);
+    const bDown = downbeatsOf(bBeatDisplay, bBeatPhase).map((t) => t + bOffset);
     if (aDown.length === 0 || bDown.length === 0) { toast("Beat data missing — analyze both decks"); return; }
     const aAt = nearest(aDown, playPos);
     const bAt = nearest(bDown, playPos);
@@ -827,7 +833,7 @@ export function AuditionStudio({ seed, onStatus }) {
             <Lane
               deck="a" sections={aDisplaySections} durationSecs={aDisplayDur}
               pps={pps} offsetSecs={aOffset} onOffsetChange={setAOffset}
-              waveform={aWave.waveform} beatTimes={aBeatDisplay} loop={aLoop}
+              waveform={aWave.waveform} beatTimes={aBeatDisplay} beatPhase={aBeatPhase} loop={aLoop}
               onPlay={aBuffer ? () => handleSolo("a") : null}
               isPlaying={isPlaying && soloDeck === "a"} playheadPos={deckPos.a ?? playPos}
               otherBeatTimes={bBeatDisplay} otherOffsetSecs={bOffset} snapMode={snapMode}
@@ -836,7 +842,7 @@ export function AuditionStudio({ seed, onStatus }) {
             <Lane
               deck="b" sections={bDisplaySections} durationSecs={bDisplayDur}
               pps={pps} offsetSecs={bOffset} onOffsetChange={setBOffset}
-              waveform={bWave.waveform} beatTimes={bBeatDisplay} loop={bLoop}
+              waveform={bWave.waveform} beatTimes={bBeatDisplay} beatPhase={bBeatPhase} loop={bLoop}
               onPlay={bBuffer ? () => handleSolo("b") : null}
               isPlaying={isPlaying && soloDeck === "b"} playheadPos={deckPos.b ?? playPos}
               otherBeatTimes={aBeatDisplay} otherOffsetSecs={aOffset} snapMode={snapMode}

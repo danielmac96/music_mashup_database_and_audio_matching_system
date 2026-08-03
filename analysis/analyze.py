@@ -44,14 +44,45 @@ STEPS = ("tempo", "key", "dynamics", "timbre", "waveform")
 # None of these mutate shared state, so any one of them can fail without
 # corrupting the others.
 
+def _pick_beat_phase(onset_env: np.ndarray, beat_frames: np.ndarray) -> int:
+    """Which of the 4 positions in a bar the detected beat grid starts on.
+
+    Consumers treat "every 4th beat from the first detected beat" as a downbeat,
+    but librosa's tracker latches wherever the onset evidence is strongest and
+    is just as happy to start on beat 3. Summing onset strength at each of the 4
+    candidate phases and taking the argmax recovers the real bar line: the kick
+    that starts the bar is louder than the beats between.
+
+    Returns 0 when there is nothing to go on (too few beats, or a flat envelope
+    where every phase scores the same), so an un-analysable track renders on the
+    old assumption rather than a made-up offset.
+    """
+    beat_frames = np.asarray(beat_frames, dtype=int)
+    if beat_frames.size < 4:
+        return 0
+    n = onset_env.shape[0]
+    strengths = np.array([
+        float(onset_env[[f for f in beat_frames[phase::4] if 0 <= f < n]].sum())
+        if any(0 <= f < n for f in beat_frames[phase::4]) else 0.0
+        for phase in range(4)
+    ])
+    # A flat envelope carries no downbeat information — argmax would return an
+    # arbitrary 0 anyway, but be explicit so the intent survives refactoring.
+    if float(strengths.max() - strengths.min()) <= 1e-9:
+        return 0
+    return int(np.argmax(strengths))
+
+
 def _step_tempo(y: np.ndarray, sr: int, hop_length: int) -> dict:
     import librosa
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop_length)
     beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=hop_length)
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
     return {
         "bpm": float(round(float(np.atleast_1d(tempo)[0]), 2)),
         "bpm_confidence": float(min(len(beats) / (len(y) / hop_length), 1.0)),
         "beat_times": [round(float(t), 4) for t in beat_times],
+        "beat_phase": _pick_beat_phase(onset_env, beats),
     }
 
 
