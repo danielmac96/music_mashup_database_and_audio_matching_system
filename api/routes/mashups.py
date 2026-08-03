@@ -5,8 +5,11 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
+from pydantic import BaseModel
 
-from database.models import get_candidates_enriched
+from database.models import (
+    VERDICTS, get_candidates_enriched, get_pair_feedback, upsert_pair_feedback,
+)
 
 from api import jobs
 from api.workers import match_worker
@@ -72,6 +75,44 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
     )
     return {"count": len(rows), "candidates": rows}
+
+
+class PairVerdict(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+    verdict: str
+    vocal_section: Optional[int] = None
+    inst_section: Optional[int] = None
+
+
+@router.post("/feedback")
+def save_feedback(body: PairVerdict) -> dict:
+    """Record the user's ✓/✗ on a pair from the ranked list.
+
+    This is the highest-signal training data in the system — the user's own
+    taste — so it lives in its own table and survives 'Score library', which
+    truncates mashup_candidates. Re-judging a pair corrects it rather than
+    adding a second, contradictory row.
+    """
+    if body.verdict not in VERDICTS:
+        raise HTTPException(status_code=400,
+                            detail=f"verdict must be one of {sorted(VERDICTS)}")
+    upsert_pair_feedback(
+        body.vocal_song_id, body.inst_song_id, body.verdict,
+        vocal_section=body.vocal_section, inst_section=body.inst_section,
+    )
+    return {"ok": True, "vocal_song_id": body.vocal_song_id,
+            "inst_song_id": body.inst_song_id, "verdict": body.verdict}
+
+
+@router.get("/feedback")
+def list_feedback(verdict: str = "") -> dict:
+    """Every judgment so far, so the ranked list can render ✓/✗ on reload."""
+    if verdict and verdict not in VERDICTS:
+        raise HTTPException(status_code=400,
+                            detail=f"verdict must be one of {sorted(VERDICTS)}")
+    rows = get_pair_feedback(verdict=verdict)
+    return {"count": len(rows), "feedback": rows}
 
 
 @router.get("/plan")

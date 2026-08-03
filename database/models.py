@@ -128,6 +128,24 @@ CREATE INDEX IF NOT EXISTS idx_candidates_type   ON mashup_candidates(combo_type
 CREATE INDEX IF NOT EXISTS idx_candidates_vocal  ON mashup_candidates(vocal_song_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_inst   ON mashup_candidates(inst_song_id);
 
+-- ── The user's own ✓/✗ judgments on pairs (T2.1) ─────────────────────────────
+-- The highest-signal training data in the system: a pair rejected by ear is a
+-- far better negative than a randomly sampled one. Deliberately NOT part of
+-- mashup_candidates — 'Score library' truncates that table, and a re-score must
+-- never destroy the user's taste. UNIQUE(vocal, inst) + upsert so re-judging a
+-- pair corrects it instead of adding a second, contradictory training row.
+CREATE TABLE IF NOT EXISTS pair_feedback (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    vocal_song_id   INTEGER NOT NULL,
+    inst_song_id    INTEGER NOT NULL,
+    vocal_section   INTEGER,
+    inst_section    INTEGER,
+    verdict         TEXT NOT NULL CHECK(verdict IN ('love','ok','no')),
+    created_at      TEXT DEFAULT (datetime('now')),
+    UNIQUE(vocal_song_id, inst_song_id)
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_verdict ON pair_feedback(verdict);
+
 -- ── Documented mixes (1001tracklists ingestion, Phase 3) ─────────────────────
 CREATE TABLE IF NOT EXISTS mixes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -980,11 +998,52 @@ def upsert_candidate(vocal: dict, inst: dict, scores: dict,
 
 def clear_candidates(db_path: Path = DB_PATH) -> None:
     """Wipe all scored pairs so a re-score reflects exactly the current features
-    and pre-filter thresholds (no stale pairs left over from a looser run)."""
+    and pre-filter thresholds (no stale pairs left over from a looser run).
+
+    Note this does NOT touch pair_feedback: the user's judgments are training
+    data, not derived output, and must outlive any number of re-scores."""
     conn = get_conn(db_path)
     conn.execute("DELETE FROM mashup_candidates")
     conn.commit()
     conn.close()
+
+
+VERDICTS = ("love", "ok", "no")
+
+
+def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int, verdict: str,
+                         vocal_section: Optional[int] = None,
+                         inst_section: Optional[int] = None,
+                         db_path: Path = DB_PATH) -> None:
+    """Record (or correct) the user's verdict on one pair."""
+    conn = get_conn(db_path)
+    conn.execute(
+        """INSERT INTO pair_feedback
+               (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(vocal_song_id, inst_song_id) DO UPDATE SET
+               verdict=excluded.verdict,
+               vocal_section=excluded.vocal_section,
+               inst_section=excluded.inst_section,
+               created_at=datetime('now')""",
+        (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_pair_feedback(verdict: str = "", db_path: Path = DB_PATH) -> List[Dict]:
+    """Every judgment, newest first. Pass a verdict to filter."""
+    conn = get_conn(db_path)
+    sql = "SELECT * FROM pair_feedback"
+    params: list = []
+    if verdict:
+        sql += " WHERE verdict = ?"
+        params.append(verdict)
+    sql += " ORDER BY created_at DESC, id DESC"
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_candidates(min_score: float = 0.0, limit: int = 100,
