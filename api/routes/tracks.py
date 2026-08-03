@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from database.models import (
     delete_song, get_all_features, get_all_songs, get_conn, get_features_for_song,
-    get_sections, update_features_manual, update_song_url,
+    get_sections, update_features_manual, update_hook, update_song_url,
 )
 from ingest.sources import classify_url, normalize_url
 
@@ -264,6 +264,47 @@ def correct_features(song_id: int, body: FeatureCorrection) -> dict:
             detail="track has no analysed features yet — analyze it first",
         )
     return {"updated_rows": updated, "features": get_features_for_song(song_id, "full")}
+
+
+# Each hook role is cut from the stem it will be heard in.
+_HOOK_ROLE_STEMS = {"vocal": "vocals", "bed": "instrumental"}
+
+
+@router.get("/{song_id}/hook")
+def get_hook(song_id: int, role: str = "vocal") -> dict:
+    """The 16 bars of this track worth previewing, for 'vocal' or 'bed'.
+
+    Computes and stores the window on first request when it is absent, so
+    tracks analysed before hooks existed backfill on demand rather than needing
+    a full re-run of the pipeline.
+    """
+    if role not in _HOOK_ROLE_STEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role must be one of {sorted(_HOOK_ROLE_STEMS)}")
+    stem = _HOOK_ROLE_STEMS[role]
+
+    feat = get_features_for_song(song_id, stem) or get_features_for_song(song_id, "full")
+    if not feat:
+        raise HTTPException(
+            status_code=404,
+            detail="track has no analysed features yet — analyze it first")
+
+    if feat.get("hook_start") is not None and feat.get("hook_end") is not None:
+        return {"song_id": song_id, "role": role, "stem": stem,
+                "hook_start": feat["hook_start"], "hook_end": feat["hook_end"],
+                "cached": True}
+
+    from analysis.hooks import pick_hook
+    hook = pick_hook(get_sections(song_id), feat, role=role)
+    if not hook:
+        raise HTTPException(
+            status_code=404,
+            detail="not enough structure or energy data to choose a hook")
+    update_hook(song_id, stem, hook)
+    return {"song_id": song_id, "role": role, "stem": stem,
+            "hook_start": hook["hook_start"], "hook_end": hook["hook_end"],
+            "cached": False}
 
 
 class BeatPhaseUpdate(BaseModel):

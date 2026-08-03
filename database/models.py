@@ -272,6 +272,9 @@ _FEATURES_OPTIONAL_COLUMNS = (
     ("waveform_rms_json", "TEXT"),
     ("key_confidence", "REAL"),
     ("beat_phase", "INTEGER DEFAULT 0"),
+    ("hook_start", "REAL"),
+    ("hook_end", "REAL"),
+    ("hook_role", "TEXT"),
 )
 
 
@@ -581,8 +584,9 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
                (song_id, stem_type, bpm, bpm_confidence, key, mode, camelot,
                 key_confidence, beat_phase, loudness_rms, energy, mfcc_json,
                 spectral_centroid, spectral_rolloff, zero_crossing_rate,
-                beat_times_json, waveform_rms_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                beat_times_json, waveform_rms_json,
+                hook_start, hook_end, hook_role)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(song_id, stem_type) DO UPDATE SET
                bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
                key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
@@ -594,7 +598,9 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
                spectral_rolloff=excluded.spectral_rolloff,
                zero_crossing_rate=excluded.zero_crossing_rate,
                beat_times_json=excluded.beat_times_json,
-               waveform_rms_json=excluded.waveform_rms_json""",
+               waveform_rms_json=excluded.waveform_rms_json,
+               hook_start=excluded.hook_start, hook_end=excluded.hook_end,
+               hook_role=excluded.hook_role""",
         (song_id, stem_type,
          features.get("bpm"), features.get("bpm_confidence"),
          features.get("key"), features.get("mode"), features.get("camelot"),
@@ -602,10 +608,36 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
          features.get("loudness_rms"), features.get("energy"), mfcc_json,
          features.get("spectral_centroid"), features.get("spectral_rolloff"),
          features.get("zero_crossing_rate"),
-         beat_times_json, waveform_rms_json)
+         beat_times_json, waveform_rms_json,
+         features.get("hook_start"), features.get("hook_end"),
+         features.get("hook_role"))
     )
     conn.commit()
     conn.close()
+
+
+def update_hook(song_id: int, stem_type: str, hook: Optional[Dict],
+                db_path: Path = DB_PATH) -> int:
+    """Write just the hook window for one stem.
+
+    Deliberately NOT upsert_features: that statement overwrites every column
+    from the row it is given, so calling it with only hook fields would blank
+    out bpm, key and the rest. Hooks are computed after sections exist, one
+    stage later than the features they sit beside.
+    """
+    if not hook:
+        return 0
+    conn = get_conn(db_path)
+    cur = conn.execute(
+        """UPDATE features SET hook_start=?, hook_end=?, hook_role=?
+           WHERE song_id=? AND stem_type=?""",
+        (hook.get("hook_start"), hook.get("hook_end"), hook.get("hook_role"),
+         song_id, stem_type),
+    )
+    conn.commit()
+    updated = cur.rowcount
+    conn.close()
+    return updated
 
 
 def get_song(song_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
