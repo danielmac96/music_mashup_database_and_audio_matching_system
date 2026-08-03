@@ -270,6 +270,7 @@ _SONGS_OPTIONAL_COLUMNS = (
 _FEATURES_OPTIONAL_COLUMNS = (
     ("beat_times_json", "TEXT"),
     ("waveform_rms_json", "TEXT"),
+    ("key_confidence", "REAL"),
 )
 
 
@@ -577,13 +578,14 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
     conn.execute(
         """INSERT INTO features
                (song_id, stem_type, bpm, bpm_confidence, key, mode, camelot,
-                loudness_rms, energy, mfcc_json,
+                key_confidence, loudness_rms, energy, mfcc_json,
                 spectral_centroid, spectral_rolloff, zero_crossing_rate,
                 beat_times_json, waveform_rms_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(song_id, stem_type) DO UPDATE SET
                bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
                key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
+               key_confidence=excluded.key_confidence,
                loudness_rms=excluded.loudness_rms, energy=excluded.energy,
                mfcc_json=excluded.mfcc_json,
                spectral_centroid=excluded.spectral_centroid,
@@ -594,6 +596,7 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
         (song_id, stem_type,
          features.get("bpm"), features.get("bpm_confidence"),
          features.get("key"), features.get("mode"), features.get("camelot"),
+         features.get("key_confidence"),
          features.get("loudness_rms"), features.get("energy"), mfcc_json,
          features.get("spectral_centroid"), features.get("spectral_rolloff"),
          features.get("zero_crossing_rate"),
@@ -1009,7 +1012,20 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                    (SELECT COUNT(*) FROM sections WHERE song_id = mc.vocal_song_id)
                        AS vocal_section_count,
                    (SELECT COUNT(*) FROM sections WHERE song_id = mc.inst_song_id)
-                       AS inst_section_count
+                       AS inst_section_count,
+                   -- Joined live rather than frozen onto the candidate row, so a
+                   -- re-analysis updates the ⚠ flag without needing a re-score.
+                   -- Prefer the stem the match was scored on, fall back to full.
+                   (SELECT key_confidence FROM features
+                     WHERE song_id = mc.vocal_song_id
+                       AND stem_type IN ('vocals', 'full')
+                     ORDER BY CASE stem_type WHEN 'vocals' THEN 0 ELSE 1 END
+                     LIMIT 1) AS vocal_key_confidence,
+                   (SELECT key_confidence FROM features
+                     WHERE song_id = mc.inst_song_id
+                       AND stem_type IN ('instrumental', 'full')
+                     ORDER BY CASE stem_type WHEN 'instrumental' THEN 0 ELSE 1 END
+                     LIMIT 1) AS inst_key_confidence
             FROM mashup_candidates mc
             LEFT JOIN songs sv ON sv.id = mc.vocal_song_id
             LEFT JOIN songs si ON si.id = mc.inst_song_id

@@ -73,10 +73,32 @@ def _step_key(y: np.ndarray, sr: int, hop_length: int) -> dict:
         key_idx, mode = best_major_idx, "major"
     else:
         key_idx, mode = best_minor_idx, "minor"
+
+    # Key is the heaviest score weight and the least reliable number we store,
+    # so report how much to trust it. Detection fails two independent ways and
+    # confidence must collapse if EITHER holds, hence the product:
+    #
+    #   margin — how far the winning profile beat the next best of the other 23.
+    #            Near 0 means two keys are effectively tied (tonal but ambiguous).
+    #   peak   — how peaked the chroma is. Near 0 means there is no tonal centre
+    #            to find at all (percussion, noise, a drum-led instrumental).
+    #
+    # Margin alone is not enough: corrcoef normalises away scale, so the tiny
+    # random wiggles in a flat chroma still correlate strongly with whichever
+    # profile happens to match them. Measured on real stems, white noise scores
+    # a *higher* bare margin (0.27) than any track in the library (0.005–0.20).
+    ranked = sorted((c for c in (major_corrs + minor_corrs) if np.isfinite(c)),
+                    reverse=True)
+    margin = float(ranked[0] - ranked[1]) if len(ranked) >= 2 else 0.0
+    peak = float((chroma_mean.max() - chroma_mean.mean())
+                 / (chroma_mean.max() + 1e-9)) if chroma_mean.max() > 0 else 0.0
+    confidence = min(max(margin, 0.0), 1.0) * min(max(peak, 0.0), 1.0)
+
     return {
         "key": KEY_NAMES[key_idx],
         "mode": mode,
         "camelot": CAMELOT.get((key_idx, mode), "?"),
+        "key_confidence": float(confidence),
     }
 
 

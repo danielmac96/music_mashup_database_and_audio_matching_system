@@ -20,6 +20,14 @@ const MATCH_PRESETS = [
 const SORTS = ["Score", "Popularity"];
 const popOf = (c) => (c.vocal_popularity || 0) + (c.inst_popularity || 0);
 
+// Key drives 30% of the score and the suggested pitch shift, so an unreliable
+// one has to be visible on the row you are about to judge. See TrackList.jsx for
+// how key_confidence is derived; null means analysed before it existed.
+const KEY_CONFIDENCE_MIN = 0.05;
+const keyLooksOff = (kc) => kc != null && kc < KEY_CONFIDENCE_MIN;
+const keyWarnTitle = (kc) =>
+  `Key uncertain (${kc.toFixed(3)} confidence) — the suggested pitch shift may be wrong.`;
+
 function PlanDetails({ vocalId, instId }) {
   const { plan, error } = usePlan(vocalId, instId);
 
@@ -223,6 +231,11 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
                       <div className="pair-title" title={c.vocal_title}>{c.vocal_title}</div>
                       <div className="pair-meta">
                         {c.vocal_artist || "—"} · {c.vocal_bpm?.toFixed(1)} · {c.vocal_camelot || "?"}
+                        {keyLooksOff(c.vocal_key_confidence) && (
+                          <span className="bpm-warn" title={keyWarnTitle(c.vocal_key_confidence)}>
+                            {" ⚠"}
+                          </span>
+                        )}
                         {c.vocal_popularity != null && (
                           <span className="pop" title="Popularity percentile in your library">
                             {" · ★"}{Math.round(c.vocal_popularity * 100)}
@@ -253,6 +266,11 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
                       <div className="pair-title" title={c.inst_title}>{c.inst_title}</div>
                       <div className="pair-meta">
                         {c.inst_artist || "—"} · {c.inst_bpm?.toFixed(1)} · {c.inst_camelot || "?"}
+                        {keyLooksOff(c.inst_key_confidence) && (
+                          <span className="bpm-warn" title={keyWarnTitle(c.inst_key_confidence)}>
+                            {" ⚠"}
+                          </span>
+                        )}
                         {c.inst_popularity != null && (
                           <span className="pop" title="Popularity percentile in your library">
                             {" · ★"}{Math.round(c.inst_popularity * 100)}

@@ -27,6 +27,15 @@ const JOB_ACTIVE = new Set(["queued", "running"]);
 // an out-of-range BPM is the honest signal to flag for a manual sanity-check.)
 const bpmLooksOff = (f) => f?.bpm != null && (f.bpm < 80 || f.bpm > 170);
 
+// key_confidence (T1.3) is margin-over-runner-up x chroma peakiness, so it is
+// low both when two keys are effectively tied and when there is no tonal centre
+// to find. Measured across the library it spans ~0.001–0.14, with clearly tonal
+// tracks above ~0.05 — below that the key is a guess, and key carries the
+// heaviest match weight. null = analysed before this existed, so say nothing.
+const KEY_CONFIDENCE_MIN = 0.05;
+const keyLooksOff = (f) =>
+  f?.key_confidence != null && f.key_confidence < KEY_CONFIDENCE_MIN;
+
 function TrackEditor({ track, onSaved, onCancel }) {
   const feats = track.features?.full || {};
   const analysed = isAnalysed(track);
@@ -483,6 +492,12 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                     </span>
                   )}
                   <KeyChip camelot={f.camelot} />
+                  {keyLooksOff(f) && (
+                    <span className="bpm-warn"
+                      title={`Key uncertain (${f.key_confidence.toFixed(3)} confidence) — verify before trusting the suggested pitch shift. Key is the heaviest match weight.`}>
+                      ⚠
+                    </span>
+                  )}
                   <div className="bpm-chip" title="Energy (0–100)">
                     <span className="u">EN </span>{f.energy != null ? Math.round(f.energy * 100) : "—"}
                   </div>
