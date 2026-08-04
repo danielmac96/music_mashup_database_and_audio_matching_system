@@ -179,6 +179,38 @@ def test_candidates_expose_a_library_percentile_alongside_the_raw_score(tmp_path
     assert best["score_total"] == pytest.approx(0.70)   # raw value still there
 
 
+def test_percentile_ranks_within_combo_type_not_across_it(tmp_path, monkeypatch):
+    """The ranked list is segmented by combo type, so ranking a vocal-over-bed
+    pair against instrumental-over-instrumental ones makes the best visible row
+    read as ~84th percentile instead of the top."""
+    models, _ = _setup(tmp_path, monkeypatch)
+
+    def cand(n, combo, total):
+        v = models.upsert_song(f"V{combo}{n}", "A", f"https://sc/{combo}v{n}", 200,
+                               "Pop", status="analysed")
+        b = models.upsert_song(f"B{combo}{n}", "A", f"https://sc/{combo}b{n}", 200,
+                               "EDM", status="analysed")
+        models.upsert_candidate(
+            {"song_id": v, "title": "V", "artist": "A", "bpm": 120.0, "key": "C",
+             "mode": "major", "camelot": "8B", "loudness_rms": 0.1, "energy": 0.5},
+            {"song_id": b, "title": "B", "artist": "A", "bpm": 120.0, "key": "C",
+             "mode": "major", "camelot": "8B", "loudness_rms": 0.1, "energy": 0.5},
+            {"total": total, "bpm_score": 1.0, "key_score": 1.0,
+             "energy_score": 0.5, "timbre_score": 0.5},
+            combo_type=combo)
+
+    # instrumental pairs all score ABOVE every vocal pair
+    for n, t in enumerate([0.90, 0.95, 0.99]):
+        cand(n, "instrumental_over_instrumental", t)
+    for n, t in enumerate([0.50, 0.60, 0.70]):
+        cand(n, "vocal_over_instrumental", t)
+
+    vi = models.get_candidates_enriched(combo_type="vocal_over_instrumental", limit=10)
+    top = max(vi, key=lambda r: r["score_total"])
+    assert top["score_percentile"] == pytest.approx(1.0), \
+        "best vocal-over-bed pair must be the top of ITS list, not dragged down by I/I pairs"
+
+
 def test_library_stats_are_computed_once_not_per_pair(tmp_path, monkeypatch):
     """Scoring a 900-song library must not re-read every features row per pair."""
     models, match = _setup(tmp_path, monkeypatch)

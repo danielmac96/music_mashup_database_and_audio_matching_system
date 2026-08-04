@@ -1091,13 +1091,17 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                        PERCENT_RANK() OVER (ORDER BY (plays + 2 * likes)) AS popularity
                 FROM songs
             ),
-            -- Where this pair sits among ALL scored pairs. A raw composite reads
-            -- ~78% for nearly everything, which says nothing about whether this
-            -- pair is good *for this library*; the rank does. Computed over the
-            -- whole table, not the returned page, or filtering would rescale it.
+            -- Where this pair sits among the other pairs OF ITS KIND. A raw
+            -- composite reads ~78% for nearly everything, which says nothing
+            -- about whether this pair is good *for this library*; the rank does.
+            -- Computed over the whole table rather than the returned page, so
+            -- filtering does not rescale it, but partitioned by combo_type:
+            -- ranking a vocal-over-bed pair against instrumental-over-
+            -- instrumental pairs would make the best visible row read ~84th.
             pct AS (
                 SELECT id,
-                       PERCENT_RANK() OVER (ORDER BY score_total) AS score_percentile
+                       PERCENT_RANK() OVER (PARTITION BY combo_type
+                                            ORDER BY score_total) AS score_percentile
                 FROM mashup_candidates
             )
             SELECT mc.*,
