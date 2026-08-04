@@ -5,7 +5,8 @@ with start/end timestamps for each section.
 Method (librosa + scipy only, no extra deps):
   1. Beat-track the full mix, beat-synchronise chroma + MFCC features.
   2. Build a self-similarity matrix and a checkerboard-kernel novelty curve.
-  3. Pick novelty peaks as section boundaries (snapped to beats).
+  3. Pick novelty peaks as section boundaries, then snap them to the 8-bar
+     phrase grid measured from the detected downbeat (snap_boundaries_to_phrases).
   4. Score each section: relative energy (full mix RMS) and vocal presence
      (RMS of the Demucs vocal stem inside the section).
   5. Count repetitions (sections whose mean chroma is near-identical) —
@@ -92,6 +93,82 @@ def label_segments(segs: List[dict], has_vocals: bool) -> List[dict]:
                        + (s.get("vocal_presence") or 0))
             best["label"] = "chorus"
             best["confidence"] = 0.4
+    return segs
+
+
+# ── Phrase snapping (pure python — unit-testable without librosa) ────────────
+#
+# Pop and EDM are written in 8- and 16-bar phrases: the drop lands on a phrase
+# boundary, never three beats into one. The novelty curve, though, peaks
+# wherever the timbre changes fastest, which is typically a beat or two after
+# the real edit. Left alone that error compounds — a hook cut from the section
+# starts late, a section-level match compares two windows that are misaligned by
+# a beat, and every downstream length in bars is fractional.
+
+BEATS_PER_BAR = 4
+PHRASE_BARS = 8
+PHRASE_BEATS = PHRASE_BARS * BEATS_PER_BAR
+
+# How far a detected boundary may be pulled. Beyond 2 bars the novelty peak is
+# more likely to be a real event the phrase grid does not describe (a track in
+# 3/4, a half-bar edit, a tempo the beat tracker read at double time) than a
+# late detection, so the detection is kept and the section is marked less
+# trustworthy instead of being moved somewhere it was never heard.
+SNAP_TOLERANCE_BARS = 2
+SNAP_TOLERANCE_BEATS = SNAP_TOLERANCE_BARS * BEATS_PER_BAR
+
+# Applied to the confidence of a section that starts off the phrase grid.
+PHRASE_CONFIDENCE_FACTOR = 0.75
+
+
+def snap_boundaries_to_phrases(bounds: List[int], phase: int, n_beats: int,
+                               min_beats: int,
+                               phrase_beats: int = PHRASE_BEATS,
+                               tolerance_beats: int = SNAP_TOLERANCE_BEATS):
+    """Pull boundary beat indices onto the 8-bar grid. Returns (bounds, snapped).
+
+    `phase` is the beat index the bar grid starts on (T1.4's beat_phase), so the
+    phrase grid is every `phrase_beats`th beat counted from there — snapping to
+    beat 32 when the bar actually starts on beat 2 would land mid-bar.
+
+    A boundary is only moved when the nearest phrase line is within
+    `tolerance_beats` AND the move leaves every section at least `min_beats`
+    long; otherwise the detected boundary is kept and flagged unsnapped. A
+    boundary that cannot satisfy the minimum either way is dropped — merging it
+    into its neighbour is better than emitting a two-bar "section".
+    """
+    out: List[int] = []
+    snapped: List[bool] = []
+    prev = 0
+    last = max(n_beats - 1, 0)
+    for b in bounds:
+        target = phase + int(round((b - phase) / phrase_beats)) * phrase_beats
+
+        def _fits(idx: int) -> bool:
+            return prev + min_beats <= idx <= last - min_beats
+
+        if abs(target - b) <= tolerance_beats and _fits(target):
+            out.append(target)
+            snapped.append(True)
+            prev = target
+        elif _fits(b):
+            out.append(b)
+            snapped.append(False)
+            prev = b
+    return out, snapped
+
+
+def apply_phrase_alignment(segs: List[dict],
+                           factor: float = PHRASE_CONFIDENCE_FACTOR) -> List[dict]:
+    """Discount the confidence of sections that start off the phrase grid.
+
+    Consumers already rank by confidence — the hook picker
+    (analysis/hooks.py _best_section) and the plan builder both do — so this is
+    how a boundary the grid could not explain gets quietly deprioritised
+    without discarding it. Consumes the private phrase_aligned marker."""
+    for s in segs:
+        if s.pop("phrase_aligned", True) is False:
+            s["confidence"] = round((s.get("confidence") or 0.0) * factor, 3)
     return segs
 
 
@@ -195,13 +272,26 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     bounds = _novelty_boundaries(X, min_beats=min_beats,
                                  max_sections=SECTION_MAX_COUNT)
 
-    # Beat-index boundaries → [start, end) segments in seconds.
+    # Snap to the 8-bar phrase grid, measured from this track's own downbeat.
+    # The phase is recomputed here rather than read from `features`: analysis
+    # trims the head of the file before beat-tracking (BEAT_TRIM_SECS), so the
+    # stored beat_phase indexes a different grid from the one above.
+    from analysis.analyze import _pick_beat_phase
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP_LENGTH)
+    phase = _pick_beat_phase(onset_env, beats)
+    bounds, snapped = snap_boundaries_to_phrases(
+        bounds, phase, len(beat_times), min_beats)
+
+    # Beat-index boundaries → [start, end) segments in seconds. Each section
+    # inherits the alignment of the boundary that starts it; the first starts at
+    # the top of the track, which is not a detected boundary to doubt.
     edges = [0] + bounds + [len(beat_times) - 1]
+    aligned = [True] + snapped
     seg_ranges = []
-    for a, b in zip(edges[:-1], edges[1:]):
+    for idx, (a, b) in enumerate(zip(edges[:-1], edges[1:])):
         if b <= a:
             continue
-        seg_ranges.append((a, b))
+        seg_ranges.append((a, b, aligned[idx]))
     if not seg_ranges:
         return []
 
@@ -223,7 +313,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     _tick("Scoring + labelling sections…")
     segs = []
     chroma_means = []
-    for a, b in seg_ranges:
+    for a, b, phrase_aligned in seg_ranges:
         start_t = float(beat_times[a])
         end_t = float(beat_times[b]) if b < len(beat_times) else duration
         energy = float(np.clip(rms_b[a:b].mean() / (rms_max + 1e-9), 0, 1))
@@ -242,6 +332,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
             "end_sec": round(end_t, 2),
             "energy": round(energy, 4),
             "vocal_presence": round(vp, 4) if vp is not None else None,
+            "phrase_aligned": phrase_aligned,
         })
     # Extend the last section to the true end of the audio.
     segs[-1]["end_sec"] = round(duration, 2)
@@ -254,6 +345,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         s["repetition"] = int((sim[i] >= SECTION_SIM_THRESHOLD).sum())
 
     label_segments(segs, has_vocals=vocal_rms is not None)
+    apply_phrase_alignment(segs)
 
     log.info("  → " + ", ".join(
         f"{s['label']} {s['start_sec']:.0f}-{s['end_sec']:.0f}s" for s in segs))
