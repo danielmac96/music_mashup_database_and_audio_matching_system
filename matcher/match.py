@@ -98,9 +98,22 @@ def compute_semitone_shift(vocal_camelot: str, inst_camelot: str) -> Optional[in
 
 # ── BPM compatibility ─────────────────────────────────────────────────────────
 
+def _bpm(value) -> float:
+    """Coerce a possibly-NULL/garbage tempo to a float. features.bpm is
+    nullable — a track whose tempo step failed stores None, and .get("bpm", 0)
+    returns that None rather than the default, so every arithmetic path below
+    has to survive it."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if math.isfinite(v) and v > 0 else 0.0
+
+
 def effective_bpm(target_bpm: float, other_bpm: float) -> float:
     """other_bpm interpreted at half/normal/double time, whichever lands
     closest to target_bpm."""
+    target_bpm, other_bpm = _bpm(target_bpm), _bpm(other_bpm)
     if not target_bpm or not other_bpm:
         return other_bpm or 0.0
     options = (other_bpm, other_bpm / 2, other_bpm * 2)
@@ -110,6 +123,7 @@ def effective_bpm(target_bpm: float, other_bpm: float) -> float:
 def compute_stretch_factor(vocal_bpm: float, inst_bpm: float) -> Optional[float]:
     """Ratio to stretch the instrumental (at whichever of half/normal/double
     time is closest to the vocal) to reach the vocal's tempo."""
+    vocal_bpm, inst_bpm = _bpm(vocal_bpm), _bpm(inst_bpm)
     if not vocal_bpm or not inst_bpm:
         return None
     inst_eff = effective_bpm(vocal_bpm, inst_bpm)
@@ -118,6 +132,7 @@ def compute_stretch_factor(vocal_bpm: float, inst_bpm: float) -> Optional[float]
 
 def _bpm_min_diff(bpm1: float, bpm2: float) -> float:
     """Smallest BPM difference accounting for halftime and doubletime."""
+    bpm1, bpm2 = _bpm(bpm1), _bpm(bpm2)
     if bpm1 <= 0 or bpm2 <= 0:
         return 999.0
     return abs(bpm1 - effective_bpm(bpm1, bpm2))
@@ -461,7 +476,8 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         scores = sub_scores(feat_a, feat_b, lib_stats)
         feats = pair_features(feat_a, feat_b,
                               _sections(feat_a.get("song_id")),
-                              _sections(feat_b.get("song_id")))
+                              _sections(feat_b.get("song_id")),
+                              lib_stats)
         scores["total"] = round(model_score(feats, bundle), 4)
         return scores
 

@@ -172,6 +172,29 @@ _CACHE_LOCK = threading.Lock()
 _CACHE: dict[tuple[str, float], dict] = {}
 
 
+def _feature_names_match(bundle: dict) -> bool:
+    """Refuse a model trained on a different feature vector.
+
+    model_score orders the row by the bundle's own feature_names, so a stale
+    name simply is not present in the dict and _coerce turns it into 0.0 — the
+    model would keep scoring, on zeros, with no error anywhere. Falling back to
+    the heuristic is the honest failure. Retrain to re-enable the model.
+    """
+    try:
+        from matcher.features import FEATURE_NAMES
+    except Exception:  # noqa: BLE001
+        return True                      # cannot verify; do not block scoring
+    trained = list(bundle.get("feature_names") or [])
+    if trained == list(FEATURE_NAMES):
+        return True
+    log.warning(
+        "Active model was trained on a different feature set — falling back to "
+        "the heuristic. Rebuild the dataset and retrain. missing=%s unexpected=%s",
+        sorted(set(FEATURE_NAMES) - set(trained)),
+        sorted(set(trained) - set(FEATURE_NAMES)))
+    return False
+
+
 def load_active_model(db_path: Path = DB_PATH) -> Optional[dict]:
     """Load the active model's bundle, or None when none is active or loading
     fails. Never raises — scoring falls back to the heuristic on None."""
@@ -196,6 +219,8 @@ def load_active_model(db_path: Path = DB_PATH) -> Optional[dict]:
             return cached
         import joblib
         bundle = joblib.load(path)
+        if not _feature_names_match(bundle):
+            return None
         with _CACHE_LOCK:
             _CACHE[key] = bundle
         return bundle

@@ -33,38 +33,66 @@ from database.models import (
     DB_PATH, get_all_features, get_conn, get_sections, is_trusted_link,
 )
 from matcher.match import (
-    _bpm_min_diff, _parse_camelot, _with_full_bpm, mfcc_cosine, sub_scores,
+    LibraryStats, _bpm_min_diff, _parse_camelot, _with_full_bpm,
+    compute_semitone_shift, compute_stretch_factor, effective_bpm,
+    get_library_stats, sub_scores,
 )
+from matcher.plan import build_pairings
 
 log = logging.getLogger(__name__)
 
 
 # ── Pair feature vector ───────────────────────────────────────────────────────
 #
-# FEATURE_NAMES is the contract between train and serve. Append new features at
-# the END only — a model stores the names it was trained on, so reordering or
-# inserting silently corrupts inference for existing models.
+# FEATURE_NAMES is the contract between train and serve. A model stores the
+# names it was trained on and model_scorer refuses to score on a mismatch, so
+# reordering or inserting silently corrupts inference for an existing model —
+# append at the END only, and bump the model version if you must do more.
 FEATURE_NAMES: list[str] = [
-    # The four heuristic sub-scores (shared with the hand-weighted composite).
+    # ── The four heuristic sub-scores, taken from match.sub_scores verbatim.
+    # Never re-derived here: if these drifted from the composite, the ranking
+    # the user sees and the vector the model learns from would describe
+    # different pairs. energy_score and timbre_score are the T2.2-repaired ones.
     "bpm_score",
     "key_score",
     "energy_score",
     "timbre_score",
-    # Raw signal deltas — give the model more than the bucketed heuristic sees.
+    # ── Tempo, unbucketed. bpm_score is a step function; the model can do
+    # better with the underlying distances.
+    "bpm_ratio",
     "bpm_min_diff",
+    # ── Key. camelot_distance is finer-grained than the 5-value camelot_score,
+    # and the shift is the corrected Camelot-derived one (T1.2) — a relative
+    # major/minor pair reads 0, not 3.
     "camelot_distance",
-    "energy_ratio",
-    "loudness_diff",
-    "mfcc_cosine",
+    "abs_semitone_shift",
+    "semitone_shift_known",
+    # ── Spectral character deltas.
     "spectral_centroid_diff",
     "spectral_rolloff_diff",
     "zcr_diff",
-    # Structure-derived features (0 when the side has no analysed sections).
+    "loudness_diff",
+    # ── Section-level terms, from the sections build_pairings would actually
+    # pair. A whole-track average often describes a moment that never occurs.
+    "top_section_vocal_presence",
+    "hook_energy_delta",
+    "duration_fit",
+    "top_section_count",
     "bed_section_count",
-    "bed_energy_max",
-    "bed_energy_mean",
-    "top_vocal_presence_mean",
+    # ── How much to trust the inputs above. A confident 0.9 key match and a
+    # coin-flip 0.9 key match are not the same evidence, and only these columns
+    # let the model tell them apart.
+    "top_bpm_confidence",
+    "bed_bpm_confidence",
+    "top_key_confidence",
+    "bed_key_confidence",
 ]
+
+# Deliberately NOT included: raw mfcc_cosine and the raw min/max energy ratio.
+# T2.2 measured both as near-constant or artefact-driven across a real library
+# (mfcc_cosine spans 0.73–0.99 on scored pairs because MFCC[0] dominates), and a
+# column with no signal is only a chance for a boosted tree to overfit noise.
+# Their repaired successors are timbre_score and energy_score above.
 
 
 def _num(val, default: float = 0.0) -> float:
@@ -94,60 +122,152 @@ def _camelot_distance(c1: Optional[str], c2: Optional[str]) -> float:
     return float(ring) + (0.0 if l1 == l2 else 0.5)
 
 
-def _section_stats(sections: list) -> tuple[float, float, float]:
-    """(count, energy_max, energy_mean) for a side's structure sections."""
-    if not sections:
-        return 0.0, 0.0, 0.0
-    energies = [_num(s.get("energy")) for s in sections]
-    return float(len(sections)), max(energies), float(np.mean(energies))
+# The widest a corrected shift can be (compute_semitone_shift folds to [-6,+6]),
+# used as the stand-in when a key is unknown. Paired with semitone_shift_known so
+# "we don't know" never looks like "no transposition needed".
+_MAX_SHIFT = 6.0
+
+
+def _section_terms(top: dict, bed: dict,
+                   top_sections: list, bed_sections: list) -> dict:
+    """Terms describing the sections that would actually be layered.
+
+    Uses build_pairings so this agrees with the Plan the user reads: the same
+    label priority, the same duration-fit rule, the same chosen pair. Scoring a
+    whole-track average often describes a moment that never occurs in the song.
+    """
+    blank = {
+        "top_section_vocal_presence": 0.0,
+        "hook_energy_delta": 0.0,
+        "duration_fit": 0.0,
+        "top_section_count": float(len(top_sections or [])),
+        "bed_section_count": float(len(bed_sections or [])),
+    }
+    if not top_sections or not bed_sections:
+        return blank
+
+    stretch = compute_stretch_factor(_num(top.get("bpm")), _num(bed.get("bpm"))) or 1.0
+    try:
+        pairings = build_pairings(top_sections, bed_sections, stretch, max_pairings=1)
+    except (KeyError, TypeError):
+        # build_pairings indexes start_sec/end_sec directly. Real rows always
+        # have them, but a dataset build sweeps the whole library and one
+        # malformed row must not take down the run.
+        log.warning("malformed sections while building pair features", exc_info=True)
+        return blank
+    if not pairings:
+        return blank
+    p = pairings[0]
+
+    # Resolve back to the section rows so we can read energy / vocal_presence,
+    # which build_pairings does not carry.
+    v_sec = next((s for s in top_sections
+                  if _num(s.get("start_sec")) == _num(p.get("vocal_start"))), None)
+    b_sec = next((s for s in bed_sections
+                  if _num(s.get("start_sec")) == _num(p.get("inst_start"))), None)
+
+    v_dur = _num(p.get("vocal_duration"))
+    i_dur = _num(p.get("inst_duration_stretched"))
+    fit = (min(v_dur, i_dur) / max(v_dur, i_dur)) if v_dur > 0 and i_dur > 0 else 0.0
+
+    return {
+        "top_section_vocal_presence": _num((v_sec or {}).get("vocal_presence")),
+        "hook_energy_delta": abs(_num((v_sec or {}).get("energy"))
+                                 - _num((b_sec or {}).get("energy"))),
+        "duration_fit": fit,
+        "top_section_count": float(len(top_sections)),
+        "bed_section_count": float(len(bed_sections)),
+    }
 
 
 def pair_features(top: dict, bed: dict,
                   top_sections: Optional[list] = None,
-                  bed_sections: Optional[list] = None) -> dict:
+                  bed_sections: Optional[list] = None,
+                  stats: Optional[LibraryStats] = None) -> dict:
     """Fixed-order feature dict for a (vocal-top, instrumental-bed) pair.
 
     ``top`` = the vocal/top layer's features, ``bed`` = the instrumental/bed's.
-    ``*_sections`` are the structure rows (get_sections) for each side. Every
-    value is a finite float keyed by an entry in FEATURE_NAMES."""
+    ``*_sections`` are the structure rows (get_sections) for each side.
+    ``stats`` supplies the library normalisation for the repaired timbre/energy
+    terms; it is resolved from the cache when omitted, so train and serve
+    normalise identically either way.
+
+    Every value is a finite float keyed by an entry in FEATURE_NAMES. Missing
+    inputs degrade to a neutral number rather than a NaN — a NaN propagates
+    silently through a scikit-learn pipeline and poisons a whole training run.
+    """
+    top, bed = top or {}, bed or {}
     top_sections = top_sections or []
     bed_sections = bed_sections or []
+    stats = stats if stats is not None else get_library_stats()
 
-    scores = sub_scores(top, bed)  # bpm/key/energy/timbre — shared with heuristic
+    # The four weighted sub-scores, verbatim — never recomputed here.
+    scores = sub_scores(top, bed, stats)
 
+    t_bpm, b_bpm = _num(top.get("bpm")), _num(bed.get("bpm"))
+    # Compare against the half/double reading actually used, so a 70 vs 140 pair
+    # reads as the perfect tempo match it is rather than a 2x mismatch.
+    b_eff = effective_bpm(t_bpm, b_bpm) if t_bpm > 0 and b_bpm > 0 else 0.0
+    bpm_ratio = (b_eff / t_bpm) if t_bpm > 0 and b_eff > 0 else 1.0
+
+    shift = compute_semitone_shift(top.get("camelot") or "", bed.get("camelot") or "")
     l_top, l_bed = _loudness(top), _loudness(bed)
-    energy_ratio = (min(l_top, l_bed) / max(l_top, l_bed)) if l_top > 0 and l_bed > 0 else 0.0
-
-    _, bed_e_max, bed_e_mean = _section_stats(bed_sections)
-    top_vp = ([_num(s.get("vocal_presence")) for s in top_sections] or [0.0])
 
     feats = {
         "bpm_score":    scores["bpm_score"],
         "key_score":    scores["key_score"],
         "energy_score": scores["energy_score"],
         "timbre_score": scores["timbre_score"],
-        "bpm_min_diff": _bpm_min_diff(_num(top.get("bpm")), _num(bed.get("bpm"))),
+
+        "bpm_ratio":    bpm_ratio,
+        "bpm_min_diff": _bpm_min_diff(t_bpm, b_bpm),
+
         "camelot_distance": _camelot_distance(top.get("camelot"), bed.get("camelot")),
-        "energy_ratio": energy_ratio,
-        "loudness_diff": abs(l_top - l_bed),
-        "mfcc_cosine":  mfcc_cosine(top.get("mfcc", []), bed.get("mfcc", [])),
+        "abs_semitone_shift": float(abs(shift)) if shift is not None else _MAX_SHIFT,
+        "semitone_shift_known": 1.0 if shift is not None else 0.0,
+
         "spectral_centroid_diff": abs(_num(top.get("spectral_centroid"))
                                       - _num(bed.get("spectral_centroid"))),
         "spectral_rolloff_diff": abs(_num(top.get("spectral_rolloff"))
                                      - _num(bed.get("spectral_rolloff"))),
         "zcr_diff": abs(_num(top.get("zero_crossing_rate"))
                         - _num(bed.get("zero_crossing_rate"))),
-        "bed_section_count": float(len(bed_sections)),
-        "bed_energy_max":  bed_e_max,
-        "bed_energy_mean": bed_e_mean,
-        "top_vocal_presence_mean": float(np.mean(top_vp)),
+        "loudness_diff": abs(l_top - l_bed),
+
+        "top_bpm_confidence": _num(top.get("bpm_confidence")),
+        "bed_bpm_confidence": _num(bed.get("bpm_confidence")),
+        "top_key_confidence": _num(top.get("key_confidence")),
+        "bed_key_confidence": _num(bed.get("key_confidence")),
     }
+    feats.update(_section_terms(top, bed, top_sections, bed_sections))
     return feats
 
 
 def features_to_row(feats: dict) -> list[float]:
-    """Order a pair_features dict into the FEATURE_NAMES column order."""
+    """Order a pair_features dict into the FEATURE_NAMES column order.
+
+    _num coerces anything non-finite to 0.0 — a NaN reaching a CSV or an .npz
+    is not noticed until a model trains on it and quietly returns garbage."""
     return [_num(feats.get(name)) for name in FEATURE_NAMES]
+
+
+def _assert_contract() -> None:
+    """FEATURE_NAMES is the train/serve contract, so verify at import that the
+    builder actually produces exactly it. A name added to one and not the other
+    is otherwise invisible until a model scores every pair identically."""
+    if len(FEATURE_NAMES) != len(set(FEATURE_NAMES)):
+        dupes = sorted({n for n in FEATURE_NAMES if FEATURE_NAMES.count(n) > 1})
+        raise RuntimeError(f"FEATURE_NAMES contains duplicates: {dupes}")
+    produced = set(pair_features({}, {}, [], [], LibraryStats()))
+    declared = set(FEATURE_NAMES)
+    if produced != declared:
+        raise RuntimeError(
+            "pair_features does not match FEATURE_NAMES — "
+            f"missing from output: {sorted(declared - produced)}; "
+            f"undeclared in FEATURE_NAMES: {sorted(produced - declared)}")
+
+
+_assert_contract()
 
 
 # ── Dataset builder ───────────────────────────────────────────────────────────

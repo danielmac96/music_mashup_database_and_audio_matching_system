@@ -56,22 +56,46 @@ def test_identical_sides_give_neutral_deltas():
     feats = pair_features(same, dict(same, song_id=2), [], [])
     assert feats["bpm_min_diff"] == 0.0
     assert feats["camelot_distance"] == 0.0
-    assert feats["energy_ratio"] == 1.0
     assert feats["loudness_diff"] == 0.0
     assert feats["spectral_centroid_diff"] == 0.0
+    # Same key on both sides needs no transposition, and we know that for sure.
+    assert feats["abs_semitone_shift"] == 0.0
+    assert feats["semitone_shift_known"] == 1.0
+    assert feats["bpm_ratio"] == 1.0
 
 
-def test_section_features_populate_from_structure():
-    bed_sections = [
-        {"energy": 0.3, "vocal_presence": 0.0},
-        {"energy": 0.9, "vocal_presence": 0.1},
+def test_section_features_come_from_the_sections_that_would_be_paired():
+    """T2.3 replaced the whole-track section averages with terms describing the
+    specific vocal section and bed section build_pairings would lay together —
+    an average blends an intro, three sections and an outro, often describing a
+    moment that never occurs in the song."""
+    top_sections = [
+        {"label": "intro", "start_sec": 0, "end_sec": 16, "energy": 0.2,
+         "vocal_presence": 0.0, "confidence": 0.5, "repetition": 1},
+        {"label": "chorus", "start_sec": 16, "end_sec": 48, "energy": 0.5,
+         "vocal_presence": 0.8, "confidence": 0.9, "repetition": 2},
     ]
-    top_sections = [{"energy": 0.5, "vocal_presence": 0.8}]
+    bed_sections = [
+        {"label": "drop", "start_sec": 0, "end_sec": 32, "energy": 0.9,
+         "vocal_presence": None, "confidence": 0.8, "repetition": 2},
+    ]
     feats = pair_features(_feat(), _feat(song_id=2), top_sections, bed_sections)
-    assert feats["bed_section_count"] == 2.0
-    assert feats["bed_energy_max"] == 0.9
-    assert abs(feats["bed_energy_mean"] - 0.6) < 1e-9
-    assert abs(feats["top_vocal_presence_mean"] - 0.8) < 1e-9
+
+    assert feats["top_section_count"] == 2.0
+    assert feats["bed_section_count"] == 1.0
+    # The chorus is chosen over the intro, so its vocal presence is what counts.
+    assert abs(feats["top_section_vocal_presence"] - 0.8) < 1e-9
+    assert abs(feats["hook_energy_delta"] - 0.4) < 1e-9   # |0.5 - 0.9|
+    assert 0.0 < feats["duration_fit"] <= 1.0
+
+
+def test_section_terms_survive_malformed_section_rows():
+    """Dataset builds run this across the whole library; one bad row must not
+    take down the build."""
+    feats = pair_features(_feat(), _feat(song_id=2),
+                          [{"energy": 0.5}], [{"energy": 0.9}])
+    assert feats["duration_fit"] == 0.0
+    assert math.isfinite(feats["hook_energy_delta"])
 
 
 def test_camelot_distance_letters_and_ring():
