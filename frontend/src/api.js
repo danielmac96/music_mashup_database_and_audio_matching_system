@@ -70,6 +70,21 @@ export const api = {
       body: JSON.stringify({ bpm, key, mode }),
     }),
 
+  // ── Pair judgments (T2.1) — the ✓/✗ made while triaging the ranked list.
+  // Survives "Score library", unlike mashup_candidates.
+  getPairFeedback: (verdict = "") =>
+    jsonFetch(`/api/mashups/feedback${verdict ? `?verdict=${verdict}` : ""}`),
+
+  savePairFeedback: ({ vocalSongId, instSongId, verdict,
+                       vocalSection = null, instSection = null }) =>
+    jsonFetch("/api/mashups/feedback", {
+      method: "POST",
+      body: JSON.stringify({
+        vocal_song_id: vocalSongId, inst_song_id: instSongId, verdict,
+        vocal_section: vocalSection, inst_section: instSection,
+      }),
+    }),
+
   // Which beat of the bar this stem's grid starts on (0-3). Set by alt+clicking
   // a beat line in Studio when detected bar lines don't match what you hear.
   setBeatPhase: (id, stem, phase) =>

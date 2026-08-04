@@ -13,6 +13,7 @@ from database.models import (
 
 from api import jobs
 from api.workers import match_worker
+from matcher.match import compute_semitone_shift, compute_stretch_factor
 from matcher.plan import build_mashup_plan
 
 router = APIRouter()
@@ -74,6 +75,15 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         limit=max(1, min(limit, 500)),
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
     )
+    # The instant preview (T1.7) arms the bed at the vocal's tempo and pitch on
+    # every keypress. Deriving these here keeps one implementation of the
+    # Camelot math — recomputing it in JS would silently drift from the T1.2
+    # fix — and costs the browser no extra round-trip per row.
+    for r in rows:
+        r["semitone_shift"] = compute_semitone_shift(
+            r.get("vocal_camelot") or "", r.get("inst_camelot") or "")
+        r["stretch_factor"] = compute_stretch_factor(
+            r.get("vocal_bpm") or 0.0, r.get("inst_bpm") or 0.0)
     return {"count": len(rows), "candidates": rows}
 
 

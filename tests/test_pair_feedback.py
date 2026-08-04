@@ -129,6 +129,28 @@ def test_feedback_can_be_read_back_for_the_ranked_list(tmp_path, monkeypatch):
     assert verdicts == {(v1, i1): "love", (v2, i2): "no"}
 
 
+def test_candidate_rows_carry_the_shift_and_stretch_the_preview_needs(tmp_path, monkeypatch):
+    """T1.7 arms the bed at the vocal's tempo and pitch on every keypress. Both
+    numbers are served with the row so the browser never re-derives the Camelot
+    math (which would drift from the T1.2 fix) or pays a round-trip per row."""
+    models, mashups = _setup(tmp_path, monkeypatch)
+    v, i = _pair(models)
+    models.upsert_candidate(
+        {"song_id": v, "title": "V", "artist": "A", "bpm": 120.0, "key": "C",
+         "mode": "major", "camelot": "8B", "loudness_rms": 0.1, "energy": 0.5},
+        {"song_id": i, "title": "I", "artist": "B", "bpm": 60.0, "key": "A",
+         "mode": "minor", "camelot": "8A", "loudness_rms": 0.1, "energy": 0.5},
+        {"total": 0.9, "bpm_score": 1.0, "key_score": 0.75,
+         "energy_score": 0.9, "timbre_score": 0.9},
+    )
+
+    row = mashups.list_candidates(limit=1)["candidates"][0]
+    # 8B over 8A is relative major/minor — no transposition (T1.2).
+    assert row["semitone_shift"] == 0
+    # 60 BPM bed read as double-time under a 120 BPM vocal needs no stretch.
+    assert row["stretch_factor"] == pytest.approx(1.0)
+
+
 def test_pair_feedback_is_browsable_in_the_database_tab(tmp_path, monkeypatch):
     models, _ = _setup(tmp_path, monkeypatch)
     from api.routes import database as db_route

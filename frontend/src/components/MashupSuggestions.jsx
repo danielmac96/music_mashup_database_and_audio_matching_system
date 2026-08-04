@@ -1,5 +1,6 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { useHookAudition } from "../hooks/useHookAudition";
 import { JobBadge } from "./JobBadge";
 import { TrackArt } from "./TrackArt";
 import { usePlan } from "../hooks/usePlan";
@@ -23,7 +24,8 @@ const popOf = (c) => (c.vocal_popularity || 0) + (c.inst_popularity || 0);
 // Key drives 30% of the score and the suggested pitch shift, so an unreliable
 // one has to be visible on the row you are about to judge. See TrackList.jsx for
 // how key_confidence is derived; null means analysed before it existed.
-const KEY_CONFIDENCE_MIN = 0.05;
+// Calibrated against the real library — see TrackList.jsx for the distribution.
+const KEY_CONFIDENCE_MIN = 0.012;
 const keyLooksOff = (kc) => kc != null && kc < KEY_CONFIDENCE_MIN;
 const keyWarnTitle = (kc) =>
   `Key uncertain (${kc.toFixed(3)} confidence) — the suggested pitch shift may be wrong.`;
@@ -81,8 +83,29 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
   const [expanded, setExpanded] = useState(null);
   const [scorer, setScorer] = useState(null); // { scorer, model_version, auc }
 
+  // ── T1.7 triage: highlighted row, verdicts, shortlist, shortcut legend ────
+  const [cursor, setCursor] = useState(0);
+  const [verdicts, setVerdicts] = useState({});   // "vocalId:instId" -> love|ok|no
+  const [shortlist, setShortlist] = useState(() => new Set());
+  const [showKeys, setShowKeys] = useState(false);
+  const rowRefs = useRef(new Map());
+  // `auditioning` is the user's intent (space toggles it); playingId is what the
+  // engine actually has armed. Keeping them separate is what lets the audio
+  // FOLLOW the cursor: arrowing while auditioning re-arms on the new row
+  // instead of making you press play again on every candidate.
+  const [auditioning, setAuditioning] = useState(false);
+  const { audition, stop, prefetch, playingId, error: audioError } = useHookAudition();
+
   const refreshScorer = () => api.getScorerStatus().then(setScorer).catch(() => setScorer(null));
   useEffect(() => { refreshScorer(); }, []);
+
+  // Verdicts persist server-side (T2.1), so a reload shows what you already judged.
+  useEffect(() => {
+    api.getPairFeedback()
+      .then((d) => setVerdicts(Object.fromEntries(
+        (d.feedback || []).map((f) => [`${f.vocal_song_id}:${f.inst_song_id}`, f.verdict]))))
+      .catch(() => {});
+  }, []);
 
   const refresh = async (type = comboType, activeSeed = seed, min = minMatch) => {
     setLoading(true);
@@ -136,6 +159,99 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
     return candidates; // server already returns score-descending
   }, [candidates, sortMode]);
 
+  // ── T1.7 keyboard triage ─────────────────────────────────────────────────
+  const keyOf = (c) => `${c.vocal_song_id}:${c.inst_song_id}`;
+  const current = sortedCandidates[cursor] || null;
+
+  // Keep the highlight on a real row when the list changes underneath it
+  // (re-score, filter, sort) instead of pointing past the end.
+  useEffect(() => {
+    setCursor((i) => Math.min(i, Math.max(0, sortedCandidates.length - 1)));
+  }, [sortedCandidates.length]);
+
+  useEffect(() => {
+    rowRefs.current.get(current?.id)?.scrollIntoView({ block: "nearest" });
+    // Warm the NEXT rows, not this one — this one is already decoding.
+    prefetch(sortedCandidates.slice(cursor + 1, cursor + 3));
+  }, [cursor, current?.id, sortedCandidates, prefetch]);
+
+  // Audio follows the cursor while auditioning; silence when toggled off.
+  useEffect(() => {
+    if (auditioning && current) audition(current);
+    else stop();
+    // Intentionally keyed on the row IDENTITY, not the object — re-renders
+    // from unrelated state must not restart playback mid-listen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auditioning, current?.id]);
+
+  const judge = useCallback(async (c, verdict) => {
+    if (!c) return;
+    const k = keyOf(c);
+    const prev = verdicts[k];
+    setVerdicts((v) => ({ ...v, [k]: verdict }));   // optimistic — keep triage fast
+    try {
+      await api.savePairFeedback({
+        vocalSongId: c.vocal_song_id, instSongId: c.inst_song_id, verdict,
+      });
+    } catch (e) {
+      setVerdicts((v) => ({ ...v, [k]: prev }));    // put it back if it didn't stick
+      toast(e.message || "Could not save that verdict");
+    }
+  }, [verdicts]);
+
+  const judgeAndAdvance = useCallback((verdict) => {
+    const c = sortedCandidates[cursor];
+    if (!c) return;
+    judge(c, verdict);
+    // Judging is a decision, so move on — that is what makes 50 candidates
+    // a two-minute pass rather than a chore.
+    setCursor((i) => Math.min(i + 1, sortedCandidates.length - 1));
+  }, [cursor, judge, sortedCandidates]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (!sortedCandidates.length) return;
+
+      switch (e.key) {
+        case "j": case "ArrowDown":
+          e.preventDefault();
+          setCursor((i) => Math.min(i + 1, sortedCandidates.length - 1));
+          break;
+        case "k": case "ArrowUp":
+          e.preventDefault();
+          setCursor((i) => Math.max(i - 1, 0));
+          break;
+        case " ":
+          e.preventDefault();
+          setAuditioning((a) => !a);
+          break;
+        case "f": e.preventDefault(); judgeAndAdvance("love"); break;
+        case "d": e.preventDefault(); judgeAndAdvance("no"); break;
+        case "s": {
+          e.preventDefault();
+          const c = sortedCandidates[cursor];
+          if (c) setShortlist((s) => {
+            const n = new Set(s);
+            n.has(c.id) ? n.delete(c.id) : n.add(c.id);
+            return n;
+          });
+          break;
+        }
+        case "?": e.preventDefault(); setShowKeys((v) => !v); break;
+        case "Escape": setAuditioning(false); setShowKeys(false); break;
+        default: break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cursor, sortedCandidates, judgeAndAdvance]);
+
+  // Switching away from the tab must not leave an AudioContext playing.
+  useEffect(() => stop, [stop]);
+
   const switchType = (type) => { setComboType(type); setExpanded(null); refresh(type, seed, minMatch); };
   const cycleMin = () => {
     const next = MIN_MATCHES[(MIN_MATCHES.indexOf(minMatch) + 1) % MIN_MATCHES.length];
@@ -188,12 +304,37 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
           </div>
         )}
         <div className="spacer" />
+        <div className="chip" onClick={() => setShowKeys((v) => !v)}
+          title="Keyboard shortcuts for judging by ear">
+          <span className="k">Keys</span><span className="mono">?</span>
+        </div>
         {scoreJobId ? (
           <JobBadge jobId={scoreJobId} onComplete={() => { setScoreJobId(null); refresh(); }} />
         ) : (
           <button className="btn" onClick={startScoring}>↻ Score library</button>
         )}
       </div>
+
+      {showKeys && (
+        <div className="key-legend">
+          <b>Judge by ear</b>
+          <span><kbd>j</kbd>/<kbd>k</kbd> or <kbd>↑</kbd><kbd>↓</kbd> move</span>
+          <span><kbd>space</kbd> play / stop the 16-bar hooks</span>
+          <span><kbd>f</kbd> ✓ keep · <kbd>d</kbd> ✗ reject (both advance)</span>
+          <span><kbd>s</kbd> shortlist · <kbd>esc</kbd> stop · <kbd>?</kbd> close</span>
+          <span className="faint">
+            The bed is conformed to the vocal's tempo and pitch automatically.
+            Verdicts are saved and train the scorer.
+          </span>
+        </div>
+      )}
+
+      {audioError && (
+        <p className="error-text">
+          {audioError} — the hook clip may not be rendered yet. Analyze the track,
+          or open it in Studio to audition the full stems.
+        </p>
+      )}
 
       <div className="legend">
         <span>Sub-scores:</span>
@@ -220,10 +361,25 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
             const kr = keyRel(c.vocal_camelot, c.inst_camelot);
             const w = (v) => `${Math.round((v || 0) * 100)}%`;
             const isVI = comboType === "vocal_over_instrumental";
+            const verdict = verdicts[keyOf(c)];
+            const isCursor = i === cursor;
             return (
               <Fragment key={c.id}>
-                <div className={`pair${i === 0 ? " top" : ""}`}>
-                  <div className="pair-rank">{i + 1}</div>
+                <div
+                  ref={(el) => { el ? rowRefs.current.set(c.id, el) : rowRefs.current.delete(c.id); }}
+                  onClick={() => setCursor(i)}
+                  className={`pair${i === 0 ? " top" : ""}${isCursor ? " cursor" : ""}`
+                    + `${verdict ? ` judged-${verdict}` : ""}`
+                    + `${playingId === c.id ? " playing" : ""}`}>
+                  <div className="pair-rank">
+                    {shortlist.has(c.id) ? "★" : i + 1}
+                    {verdict && (
+                      <span className={`verdict-chip ${verdict}`}
+                        title={`You judged this "${verdict}" — press f/d to change`}>
+                        {verdict === "no" ? "✗" : verdict === "love" ? "✓" : "~"}
+                      </span>
+                    )}
+                  </div>
                   <div className="pair-side">
                     <TrackArt id={c.vocal_song_id} className="pair-art">♪</TrackArt>
                     <div style={{ minWidth: 0 }}>

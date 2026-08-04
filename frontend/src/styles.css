@@ -583,6 +583,38 @@ input, select { font-family: inherit; }
   padding: 14px 16px;
 }
 .pair.top { border-color: var(--border-accent); }
+
+/* ── T1.7 keyboard triage ───────────────────────────────────────────────── */
+/* The highlighted row has to be findable at a glance while arrowing fast, so
+   it gets a solid left rail rather than a subtle tint. */
+.pair { cursor: pointer; transition: border-color 120ms, box-shadow 120ms; }
+.pair.cursor {
+  border-color: var(--accent, #38bdf8);
+  box-shadow: inset 3px 0 0 var(--accent, #38bdf8), 0 0 0 1px var(--accent, #38bdf8);
+}
+.pair.playing { box-shadow: inset 3px 0 0 #22c55e, 0 0 0 1px #22c55e; border-color: #22c55e; }
+/* Judged rows recede — you have already spent attention on them. */
+.pair.judged-no { opacity: 0.45; }
+.pair.judged-love { border-color: #22c55e55; }
+.verdict-chip { display: block; font-size: 12px; line-height: 1.4; }
+.verdict-chip.love { color: #22c55e; }
+.verdict-chip.ok { color: var(--amber-light, #fbbf24); }
+.verdict-chip.no { color: #ff9b9b; }
+
+.key-legend {
+  display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
+  background: var(--panel); border: 1px solid var(--border-accent);
+  border-radius: 9px; padding: 10px 14px; margin-bottom: 11px;
+  font-size: 0.82rem; color: var(--faint);
+}
+.key-legend b { color: var(--text, #e6edf3); }
+.key-legend kbd {
+  font-family: var(--font-mono); font-size: 0.78rem;
+  background: var(--bg, #0d1117); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 5px; margin: 0 1px;
+}
+.key-legend .faint { flex-basis: 100%; opacity: 0.7; }
+
 .pair-rank { font-family: var(--font-mono); font-size: 18px; color: var(--faint); text-align: center; }
 .pair-side { display: flex; gap: 11px; align-items: center; min-width: 0; }
 .pair-side.bed { justify-content: flex-end; text-align: right; }

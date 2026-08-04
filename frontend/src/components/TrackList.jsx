@@ -29,10 +29,12 @@ const bpmLooksOff = (f) => f?.bpm != null && (f.bpm < 80 || f.bpm > 170);
 
 // key_confidence (T1.3) is margin-over-runner-up x chroma peakiness, so it is
 // low both when two keys are effectively tied and when there is no tonal centre
-// to find. Measured across the library it spans ~0.001–0.14, with clearly tonal
-// tracks above ~0.05 — below that the key is a guess, and key carries the
-// heaviest match weight. null = analysed before this existed, so say nothing.
-const KEY_CONFIDENCE_MIN = 0.05;
+// to find. Calibrated against a re-analysed 90-stem library, where it runs
+// p25=0.010, p50=0.023, p90=0.066, max=0.128 — real music simply does not
+// produce confident key estimates very often. The threshold marks the worst
+// ~quartile: flagging the median would put a ⚠ on three tracks in four and
+// train the eye to ignore it. null = analysed before this existed, say nothing.
+const KEY_CONFIDENCE_MIN = 0.012;
 const keyLooksOff = (f) =>
   f?.key_confidence != null && f.key_confidence < KEY_CONFIDENCE_MIN;
 
