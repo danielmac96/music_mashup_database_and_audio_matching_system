@@ -17,6 +17,11 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, List, Dict
 
+# database.models never imports matcher, so this is safe at module scope — and
+# it has to be, so the library-stats cache can read features without threading a
+# handle through every scoring call.
+from database.models import DB_PATH, get_all_features
+
 log = logging.getLogger(__name__)
 
 
@@ -129,18 +134,123 @@ def bpm_score(bpm1: float, bpm2: float) -> float:
     return max(0.0, 0.20 - (diff - 25) / 100)
 
 
+# ── Library statistics (T2.2) ─────────────────────────────────────────────────
+#
+# Timbre and energy only mean anything RELATIVE to the rest of the library.
+# Both normalisations need library-wide mean/std, which is read once per scoring
+# run and passed down — recomputing it per pair would re-read every features row
+# 810k times on a 900-song library.
+
+class LibraryStats:
+    """Normalisation constants for timbre and energy, over one library.
+
+    mfcc_mean/mfcc_std cover coefficients 1..12 only (0 is dropped — see
+    timbre_score). `loudness` is keyed by stem_type because vocal stems are
+    systematically quieter than instrumental ones; comparing them on a raw scale
+    measures which stem it is rather than whether the two tracks fit.
+    """
+
+    __slots__ = ("mfcc_mean", "mfcc_std", "loudness", "n")
+
+    def __init__(self, mfcc_mean=None, mfcc_std=None, loudness=None, n=0):
+        self.mfcc_mean = mfcc_mean
+        self.mfcc_std = mfcc_std
+        self.loudness = loudness or {}
+        self.n = n
+
+    @property
+    def usable(self) -> bool:
+        """False for a library too small to normalise against, in which case
+        callers fall back to the un-normalised comparison rather than dividing
+        by a meaningless std."""
+        return self.n >= 4 and self.mfcc_mean is not None
+
+
+_STATS_CACHE: Dict[str, "LibraryStats"] = {}
+
+# Stems that get matched. 'full' is included so its stats exist for fallbacks.
+_STEM_KINDS = ("vocals", "instrumental", "full")
+
+
+def compute_library_stats(db_path=None) -> LibraryStats:
+    rows = []
+    for stem in _STEM_KINDS:
+        rows.extend(get_all_features(stem_type=stem,
+                                     db_path=db_path or DB_PATH) or [])
+    mats = [r["mfcc"] for r in rows if r.get("mfcc") and len(r["mfcc"]) >= 13]
+    mfcc_mean = mfcc_std = None
+    if len(mats) >= 4:
+        M = np.array(mats, dtype=float)[:, 1:13]
+        mfcc_mean = M.mean(axis=0)
+        # Guard a degenerate coefficient (constant across the library) so it
+        # contributes 0 rather than exploding the z-score.
+        mfcc_std = np.where(M.std(axis=0) > 1e-9, M.std(axis=0), 1.0)
+
+    loudness = {}
+    for stem in _STEM_KINDS:
+        vals = [r.get("loudness_rms") for r in rows
+                if r.get("stem_type") == stem and (r.get("loudness_rms") or 0) > 0]
+        if len(vals) >= 2:
+            lg = np.log(np.array(vals, dtype=float))
+            loudness[stem] = (float(lg.mean()), float(max(lg.std(), 1e-6)))
+    return LibraryStats(mfcc_mean, mfcc_std, loudness, len(mats))
+
+
+def get_library_stats(db_path=None, refresh: bool = False) -> LibraryStats:
+    """Cached per DB path. score_all_pairs refreshes once at the start so a
+    re-analysis is picked up; everything else reuses the cached constants."""
+    key = str(db_path or DB_PATH)
+    if refresh or key not in _STATS_CACHE:
+        _STATS_CACHE[key] = compute_library_stats(db_path)
+    return _STATS_CACHE[key]
+
+
 # ── Energy compatibility ──────────────────────────────────────────────────────
 
 def energy_score(e1: float, e2: float) -> float:
+    """Raw level-ratio similarity. Kept as a model input feature and for
+    callers without library context; sub_scores uses energy_match instead."""
     if e1 <= 0 or e2 <= 0:
         return 0.5
     ratio = min(e1, e2) / max(e1, e2)
     return float(math.exp(-((1 - ratio) ** 2) / (2 * 0.25 ** 2)))
 
 
+def _loudness_z(feat: dict, stats: LibraryStats) -> Optional[float]:
+    """How loud this stem is *for its kind*, in standard deviations."""
+    rms = feat.get("loudness_rms") or 0.0
+    if rms <= 0:
+        return None
+    ref = stats.loudness.get(feat.get("stem_type") or "full") \
+        or stats.loudness.get("full")
+    if not ref:
+        return None
+    mu, sd = ref
+    return (math.log(rms) - mu) / sd
+
+
+def energy_match(feat_a: dict, feat_b: dict, stats: LibraryStats) -> float:
+    """Do these two sit at a comparable level *within their own stem types*?
+
+    A raw min/max ratio over commercially mastered, loudness-normalised releases
+    carries almost no information, and across stem types it mostly reports that
+    vocal stems are quieter than instrumentals — a constant offset dressed up as
+    a score. Comparing z-scores removes that offset and leaves the real signal:
+    a belted chorus over a sparse bed genuinely does not sit right.
+    """
+    za, zb = _loudness_z(feat_a, stats), _loudness_z(feat_b, stats)
+    if za is None or zb is None:
+        return energy_score(feat_a.get("loudness_rms") or feat_a.get("energy") or 0,
+                            feat_b.get("loudness_rms") or feat_b.get("energy") or 0)
+    # 1.2 sd of separation is where a pairing starts to feel unbalanced.
+    return float(math.exp(-((za - zb) ** 2) / (2 * 1.2 ** 2)))
+
+
 # ── Timbre similarity ─────────────────────────────────────────────────────────
 
 def mfcc_cosine(mfcc1: list, mfcc2: list) -> float:
+    """Raw cosine over the full MFCC vector. Retained as a model input feature
+    and for backwards compatibility; sub_scores uses timbre_score instead."""
     if not mfcc1 or not mfcc2:
         return 0.5
     v1 = np.array(mfcc1, dtype=float)
@@ -149,6 +259,35 @@ def mfcc_cosine(mfcc1: list, mfcc2: list) -> float:
     if norm == 0:
         return 0.0
     return float(np.clip(np.dot(v1, v2) / norm, 0, 1))
+
+
+def timbre_score(feat_a: dict, feat_b: dict, stats: LibraryStats) -> float:
+    """Timbral similarity that can actually tell two records apart.
+
+    mfcc_cosine compares raw mean-MFCC vectors, where coefficient 0 is a large
+    same-sign loudness term — measured on a real library it is ~12x the mean
+    magnitude of coefficients 1-12 — so the dot product is dominated by "both of
+    these are music" and every pair lands near 1.0. Clipping to [0, 1] then
+    discarded what spread survived.
+
+    So: drop c0, z-score c1-12 against the library (otherwise the
+    high-variance low coefficients still swamp the rest), and map the cosine
+    from [-1, 1] onto [0, 1] instead of clipping — an anti-correlated timbre is
+    the most different thing available, not the same as an orthogonal one.
+    """
+    m1, m2 = feat_a.get("mfcc") or [], feat_b.get("mfcc") or []
+    if len(m1) < 13 or len(m2) < 13:
+        return 0.5                      # unknown, not "perfectly similar"
+    if not stats.usable:
+        return mfcc_cosine(m1, m2)      # too small a library to normalise against
+
+    v1 = (np.array(m1[1:13], dtype=float) - stats.mfcc_mean) / stats.mfcc_std
+    v2 = (np.array(m2[1:13], dtype=float) - stats.mfcc_mean) / stats.mfcc_std
+    norm = float(np.linalg.norm(v1) * np.linalg.norm(v2))
+    if norm < 1e-12:
+        return 0.5
+    cos = float(np.dot(v1, v2) / norm)
+    return float(np.clip((cos + 1.0) / 2.0, 0.0, 1.0))
 
 
 # ── Pre-filter ────────────────────────────────────────────────────────────────
@@ -174,25 +313,31 @@ def _passes_filter(feat_a: dict, feat_b: dict,
 
 # ── Composite score ───────────────────────────────────────────────────────────
 
-def sub_scores(feat_a: dict, feat_b: dict) -> dict:
+def sub_scores(feat_a: dict, feat_b: dict,
+               stats: Optional[LibraryStats] = None) -> dict:
     """The four heuristic sub-scores for a (top, bed) pair. Extracted so the
     learned pair-feature builder (matcher/features.py) and the heuristic
-    composite_score compute them identically — keeping train and serve aligned."""
+    composite_score compute them identically — keeping train and serve aligned.
+
+    `stats` supplies the library normalisation for timbre and energy. It is
+    resolved from the cache when omitted so every caller — scoring, dataset
+    build, inference — normalises against the same constants; passing it
+    explicitly just avoids the dict lookup in a hot loop.
+    """
+    stats = stats if stats is not None else get_library_stats()
     return {
         "bpm_score":    bpm_score(feat_a.get("bpm", 0),
                                    feat_b.get("bpm", 0)),
         "key_score":    camelot_score(feat_a.get("camelot", ""),
                                        feat_b.get("camelot", "")),
-        "energy_score": energy_score(
-                            feat_a.get("loudness_rms") or feat_a.get("energy", 0),
-                            feat_b.get("loudness_rms") or feat_b.get("energy", 0)),
-        "timbre_score": mfcc_cosine(feat_a.get("mfcc", []),
-                                     feat_b.get("mfcc", [])),
+        "energy_score": energy_match(feat_a, feat_b, stats),
+        "timbre_score": timbre_score(feat_a, feat_b, stats),
     }
 
 
 def composite_score(feat_a: dict, feat_b: dict,
-                    weights: Optional[Dict] = None) -> dict:
+                    weights: Optional[Dict] = None,
+                    stats: Optional[LibraryStats] = None) -> dict:
     try:
         from config import MATCH_WEIGHTS
         weights = weights or MATCH_WEIGHTS
@@ -200,7 +345,7 @@ def composite_score(feat_a: dict, feat_b: dict,
         weights = {"bpm_score": 0.25, "key_score": 0.30,
                    "energy_score": 0.20, "timbre_score": 0.25}
 
-    scores = sub_scores(feat_a, feat_b)
+    scores = sub_scores(feat_a, feat_b, stats)
     scores["total"] = round(
         sum(scores[k] * weights.get(k, 0) for k in scores), 4
     )
@@ -291,6 +436,12 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             _sections_cache[song_id] = get_sections(song_id, db_path=db) if use_model else []
         return _sections_cache[song_id]
 
+    # Read the library's normalisation constants ONCE for this run — timbre and
+    # energy are relative measures, and recomputing them per pair would re-read
+    # every features row for every candidate. Refreshed here so a re-analysis
+    # since the last run is picked up.
+    lib_stats = get_library_stats(db_path=db, refresh=True)
+
     def _passes(feat_a, feat_b, model_ok):
         # Model path (vocal-over-instrumental only): BPM window only. Heuristic
         # path: BPM + key (unchanged). The learned model is trained solely on
@@ -304,10 +455,10 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         Heuristic: total = weighted composite. Model: total = model probability,
         with the four heuristic sub-scores kept for display."""
         if not model_ok:
-            return composite_score(feat_a, feat_b)
+            return composite_score(feat_a, feat_b, stats=lib_stats)
         from matcher.features import pair_features
         from matcher.model_scorer import model_score
-        scores = sub_scores(feat_a, feat_b)
+        scores = sub_scores(feat_a, feat_b, lib_stats)
         feats = pair_features(feat_a, feat_b,
                               _sections(feat_a.get("song_id")),
                               _sections(feat_b.get("song_id")))

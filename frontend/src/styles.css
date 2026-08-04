@@ -615,6 +615,16 @@ input, select { font-family: inherit; }
 }
 .key-legend .faint { flex-basis: 100%; opacity: 0.7; }
 
+/* T2.2: the row headline is a library percentile; the raw composite and its
+   four sub-scores live in the Plan expander. */
+.pct-suffix { font-size: 0.6rem; letter-spacing: 0.06em; color: var(--faint); margin-left: 2px; }
+.raw-scores {
+  font-size: 0.78rem; color: var(--faint);
+  padding-bottom: 8px; margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.raw-scores b { color: var(--text, #e6edf3); }
+
 .pair-rank { font-family: var(--font-mono); font-size: 18px; color: var(--faint); text-align: center; }
 .pair-side { display: flex; gap: 11px; align-items: center; min-width: 0; }
 .pair-side.bed { justify-content: flex-end; text-align: right; }

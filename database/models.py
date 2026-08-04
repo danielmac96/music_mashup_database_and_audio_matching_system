@@ -1090,8 +1090,18 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                 SELECT id,
                        PERCENT_RANK() OVER (ORDER BY (plays + 2 * likes)) AS popularity
                 FROM songs
+            ),
+            -- Where this pair sits among ALL scored pairs. A raw composite reads
+            -- ~78% for nearly everything, which says nothing about whether this
+            -- pair is good *for this library*; the rank does. Computed over the
+            -- whole table, not the returned page, or filtering would rescale it.
+            pct AS (
+                SELECT id,
+                       PERCENT_RANK() OVER (ORDER BY score_total) AS score_percentile
+                FROM mashup_candidates
             )
             SELECT mc.*,
+                   pc.score_percentile,
                    sv.genre        AS vocal_genre,
                    sv.release_year AS vocal_year,
                    sv.plays        AS vocal_plays,
@@ -1124,6 +1134,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             LEFT JOIN songs si ON si.id = mc.inst_song_id
             LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
             LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
+            LEFT JOIN pct pc   ON pc.id = mc.id
             WHERE {' AND '.join(where)}
             ORDER BY mc.score_total DESC
             LIMIT ?""",

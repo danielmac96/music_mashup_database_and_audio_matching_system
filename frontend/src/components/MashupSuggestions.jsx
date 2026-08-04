@@ -30,14 +30,27 @@ const keyLooksOff = (kc) => kc != null && kc < KEY_CONFIDENCE_MIN;
 const keyWarnTitle = (kc) =>
   `Key uncertain (${kc.toFixed(3)} confidence) — the suggested pitch shift may be wrong.`;
 
-function PlanDetails({ vocalId, instId }) {
+function PlanDetails({ vocalId, instId, candidate }) {
   const { plan, error } = usePlan(vocalId, instId);
 
   if (error) return <div className="plan-detail error-text">{error}</div>;
   if (!plan) return <div className="plan-detail muted">Loading plan…</div>;
 
+  const sc = candidate || {};
+  const pc = (v) => `${Math.round((v || 0) * 100)}%`;
+
   return (
     <div className="plan-detail">
+      {candidate && (
+        <div className="raw-scores mono"
+          title="Raw sub-scores behind the percentile shown on the row">
+          composite <b>{pc(sc.score_total)}</b>
+          {" · bpm "}{pc(sc.score_bpm)}
+          {" · key "}{pc(sc.score_key)}
+          {" · energy "}{pc(sc.score_energy)}
+          {" · timbre "}{pc(sc.score_timbre)}
+        </div>
+      )}
       <strong>Recipe</strong>
       <ol>
         {plan.steps.map((s, i) => <li key={i}>{s.replace(/^\d+\.\s*/, "")}</li>)}
@@ -357,6 +370,11 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
         <div className="pair-list">
           {sortedCandidates.map((c, i) => {
             const total = Math.round((c.score_total || 0) * 100);
+            // The headline is the pair's rank within YOUR library, not the raw
+            // composite — a raw 0-1 reads ~78% for almost everything and so
+            // tells you nothing about whether this pair is worth your time.
+            // The raw value stays in the tooltip and the Plan expander.
+            const pct = Math.round((c.score_percentile ?? 0) * 100);
             const { tier, color, textColor } = tierFor(total);
             const kr = keyRel(c.vocal_camelot, c.inst_camelot);
             const w = (v) => `${Math.round((v || 0) * 100)}%`;
@@ -401,8 +419,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
                     </div>
                   </div>
                   <div className="score-cluster">
-                    <div className="score-hero">
-                      <span className="pctv" style={{ color }}>{total}%</span>
+                    <div className="score-hero"
+                      title={`Top ${Math.max(1, 100 - pct)}% of your scored pairs. Raw composite ${total}% — see Plan for the breakdown.`}>
+                      <span className="pctv" style={{ color }}>{pct}</span>
+                      <span className="pct-suffix">pctl</span>
                       <span className="tier-badge" style={{ color: textColor, background: color }}>{tier}</span>
                     </div>
                     <div className="subscores">
@@ -448,7 +468,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
                   </div>
                 </div>
                 {expanded === c.id && (
-                  <PlanDetails vocalId={c.vocal_song_id} instId={c.inst_song_id} />
+                  <PlanDetails vocalId={c.vocal_song_id} instId={c.inst_song_id} candidate={c} />
                 )}
               </Fragment>
             );
