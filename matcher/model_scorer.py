@@ -239,6 +239,23 @@ def model_score(feats: dict, bundle: dict) -> float:
     return float(np.clip(proba, 0.0, 1.0))
 
 
+def model_score_batch(feats_list: list, bundle: dict) -> list:
+    """model_score for many pairs at once — one predict_proba call instead of
+    one per pair. Same ordering rule (the bundle's own feature_names) and the
+    same clipping, so a batch of one is identical to model_score.
+
+    Library-wide scoring calls this tens of thousands of times' worth of rows;
+    per-row predict_proba spends nearly all of its time in scikit-learn's
+    validation and dispatch, not in the model."""
+    names = bundle["feature_names"]
+    if not feats_list:
+        return []
+    X = np.asarray([[_coerce(f.get(n)) for n in names] for f in feats_list],
+                   dtype=np.float64)
+    proba = bundle["estimator"].predict_proba(X)[:, 1]
+    return np.clip(proba, 0.0, 1.0).tolist()
+
+
 def _coerce(val) -> float:
     try:
         f = float(val)

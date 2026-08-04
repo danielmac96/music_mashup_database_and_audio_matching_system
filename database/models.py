@@ -944,56 +944,94 @@ def upsert_candidate(vocal: dict, inst: dict, scores: dict,
     Insert or update a mashup_candidates row for a vocal+instrumental pair.
     combo_type: 'vocal_over_instrumental' | 'instrumental_over_instrumental'
     scorer:     'heuristic' | 'model'  (which scorer produced score_total)
+
+    One pair, one commit. Library-wide scoring uses bulk_upsert_candidates.
     """
     conn = get_conn(db_path)
-    conn.execute(
-        """INSERT INTO mashup_candidates (
-               combo_type,
-               vocal_song_id, vocal_title, vocal_artist,
-               vocal_bpm, vocal_key, vocal_mode, vocal_camelot,
-               vocal_loudness_rms, vocal_energy,
-               inst_song_id, inst_title, inst_artist,
-               inst_bpm, inst_key, inst_mode, inst_camelot,
-               inst_loudness_rms, inst_energy,
-               score_total, score_bpm, score_key, score_energy, score_timbre,
-               scorer, model_version, scored_at
-           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-           ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
-               score_total=excluded.score_total,
-               score_bpm=excluded.score_bpm,
-               score_key=excluded.score_key,
-               score_energy=excluded.score_energy,
-               score_timbre=excluded.score_timbre,
-               scorer=excluded.scorer,
-               model_version=excluded.model_version,
-               vocal_bpm=excluded.vocal_bpm,
-               vocal_key=excluded.vocal_key,
-               vocal_mode=excluded.vocal_mode,
-               vocal_camelot=excluded.vocal_camelot,
-               vocal_loudness_rms=excluded.vocal_loudness_rms,
-               vocal_energy=excluded.vocal_energy,
-               inst_bpm=excluded.inst_bpm,
-               inst_key=excluded.inst_key,
-               inst_mode=excluded.inst_mode,
-               inst_camelot=excluded.inst_camelot,
-               inst_loudness_rms=excluded.inst_loudness_rms,
-               inst_energy=excluded.inst_energy,
-               scored_at=datetime('now')""",
-        (
-            combo_type,
-            vocal["song_id"], vocal.get("title"), vocal.get("artist"),
-            vocal.get("bpm"), vocal.get("key"), vocal.get("mode"), vocal.get("camelot"),
-            vocal.get("loudness_rms"), vocal.get("energy"),
-            inst["song_id"],  inst.get("title"),  inst.get("artist"),
-            inst.get("bpm"),  inst.get("key"),  inst.get("mode"),  inst.get("camelot"),
-            inst.get("loudness_rms"),  inst.get("energy"),
-            scores["total"], scores["bpm_score"], scores["key_score"],
-            scores["energy_score"], scores["timbre_score"],
-            scorer, model_version,
-        )
-    )
+    conn.execute(_CANDIDATE_INSERT_SQL,
+                 candidate_row(vocal, inst, scores, combo_type,
+                               scorer, model_version))
     conn.commit()
     conn.close()
+
+
+_CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
+       combo_type,
+       vocal_song_id, vocal_title, vocal_artist,
+       vocal_bpm, vocal_key, vocal_mode, vocal_camelot,
+       vocal_loudness_rms, vocal_energy,
+       inst_song_id, inst_title, inst_artist,
+       inst_bpm, inst_key, inst_mode, inst_camelot,
+       inst_loudness_rms, inst_energy,
+       score_total, score_bpm, score_key, score_energy, score_timbre,
+       scorer, model_version, scored_at
+   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+   ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
+       score_total=excluded.score_total,
+       score_bpm=excluded.score_bpm,
+       score_key=excluded.score_key,
+       score_energy=excluded.score_energy,
+       score_timbre=excluded.score_timbre,
+       scorer=excluded.scorer,
+       model_version=excluded.model_version,
+       vocal_bpm=excluded.vocal_bpm,
+       vocal_key=excluded.vocal_key,
+       vocal_mode=excluded.vocal_mode,
+       vocal_camelot=excluded.vocal_camelot,
+       vocal_loudness_rms=excluded.vocal_loudness_rms,
+       vocal_energy=excluded.vocal_energy,
+       inst_bpm=excluded.inst_bpm,
+       inst_key=excluded.inst_key,
+       inst_mode=excluded.inst_mode,
+       inst_camelot=excluded.inst_camelot,
+       inst_loudness_rms=excluded.inst_loudness_rms,
+       inst_energy=excluded.inst_energy,
+       scored_at=datetime('now')"""
+
+
+def candidate_row(vocal: dict, inst: dict, scores: dict,
+                  combo_type: str = "vocal_over_instrumental",
+                  scorer: str = "heuristic",
+                  model_version: Optional[str] = None) -> tuple:
+    """The parameter tuple for one mashup_candidates row.
+
+    Split out so the bulk writer and upsert_candidate bind the same columns in
+    the same order — a scoring run inserts hundreds of thousands of these, and
+    two copies of a 26-placeholder tuple would drift."""
+    return (
+        combo_type,
+        vocal["song_id"], vocal.get("title"), vocal.get("artist"),
+        vocal.get("bpm"), vocal.get("key"), vocal.get("mode"), vocal.get("camelot"),
+        vocal.get("loudness_rms"), vocal.get("energy"),
+        inst["song_id"], inst.get("title"), inst.get("artist"),
+        inst.get("bpm"), inst.get("key"), inst.get("mode"), inst.get("camelot"),
+        inst.get("loudness_rms"), inst.get("energy"),
+        scores["total"], scores["bpm_score"], scores["key_score"],
+        scores["energy_score"], scores["timbre_score"],
+        scorer, model_version,
+    )
+
+
+def bulk_upsert_candidates(rows, db_path: Path = DB_PATH,
+                           chunk_size: int = 5000) -> int:
+    """Write many candidate rows (from candidate_row) in one transaction.
+
+    upsert_candidate opens a connection, commits and closes per pair — fine for
+    a one-off, ruinous for a library-wide re-score where every commit is an
+    fsync. Scoring ~900 songs produces on the order of 100k rows; batching them
+    into executemany chunks inside a single transaction turns hours of disk
+    sync into seconds. Returns the number of rows written."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    conn = get_conn(db_path)
+    try:
+        for start in range(0, len(rows), chunk_size):
+            conn.executemany(_CANDIDATE_INSERT_SQL, rows[start:start + chunk_size])
+        conn.commit()
+    finally:
+        conn.close()
+    return len(rows)
 
 
 def clear_candidates(db_path: Path = DB_PATH) -> None:
