@@ -146,6 +146,27 @@ CREATE TABLE IF NOT EXISTS pair_feedback (
 );
 CREATE INDEX IF NOT EXISTS idx_feedback_verdict ON pair_feedback(verdict);
 
+-- ── Pairs and tracks the user does not want to see again (T3.4) ──────────────
+-- Same reasoning as pair_feedback: these outlive 'Score library'. Kept apart
+-- from it because they are not training data — "don't show me this" is a
+-- display preference, and folding it into the verdict would teach the model
+-- that a track the user is simply bored of is a bad pairing.
+-- Two tables rather than one with a sentinel: hiding one pair and excluding a
+-- track from every pair are different keys, and SQLite's UNIQUE treats NULLs as
+-- distinct, so a nullable inst_song_id would not actually dedupe.
+CREATE TABLE IF NOT EXISTS pair_hidden (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    vocal_song_id   INTEGER NOT NULL,
+    inst_song_id    INTEGER NOT NULL,
+    created_at      TEXT DEFAULT (datetime('now')),
+    UNIQUE(vocal_song_id, inst_song_id)
+);
+
+CREATE TABLE IF NOT EXISTS track_excluded (
+    song_id         INTEGER PRIMARY KEY,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
 -- ── Documented mixes (1001tracklists ingestion, Phase 3) ─────────────────────
 CREATE TABLE IF NOT EXISTS mixes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1140,6 +1161,8 @@ def get_candidates(min_score: float = 0.0, limit: int = 100,
 def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             limit: int = 100, vocal_song_id: Optional[int] = None,
                             inst_song_id: Optional[int] = None,
+                            max_per_song: int = 0,
+                            include_hidden: bool = False,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -1147,7 +1170,13 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     sections each side has (0 = structure not analysed yet).
 
     Pass vocal_song_id and/or inst_song_id to do a directed search — e.g.
-    'which beds work under this acapella?' (vocal_song_id set)."""
+    'which beds work under this acapella?' (vocal_song_id set).
+
+    max_per_song > 0 caps how many times any one song may appear in the result,
+    counting both sides (T3.4). One vocal that sits at 128 BPM in 8A otherwise
+    owns the whole page, which makes a 50-row list worth about 8 real choices.
+    include_hidden returns rows the user has hidden or excluded, for the UI that
+    manages them."""
     conn = get_conn(db_path)
     where = ["mc.score_total >= ?"]
     params: list = [min_score]
@@ -1160,7 +1189,22 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     if inst_song_id is not None:
         where.append("mc.inst_song_id = ?")
         params.append(inst_song_id)
-    params.append(limit)
+    if not include_hidden:
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM pair_hidden h "
+            "            WHERE h.vocal_song_id = mc.vocal_song_id "
+            "              AND h.inst_song_id = mc.inst_song_id)")
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM track_excluded x "
+            "            WHERE x.song_id IN (mc.vocal_song_id, mc.inst_song_id))")
+
+    # The cap is a greedy pass over the ranked rows, so it needs more rows than
+    # it will return. Fetching everything would mean 90k rows through the join
+    # on a big library; this pool is enough to fill `limit` unless one song
+    # dominates far beyond the cap, and the shortfall is visible as a short page
+    # rather than a wrong one.
+    fetch = limit if max_per_song <= 0 else min(max(limit * 20, 200), 5000)
+    params.append(fetch)
     rows = conn.execute(
         f"""WITH pop AS (
                 SELECT id,
@@ -1232,7 +1276,134 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         params,
     ).fetchall()
     conn.close()
+    return _cap_per_song([dict(r) for r in rows], max_per_song, limit)
+
+
+def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int) -> List[Dict]:
+    """Keep the best `limit` rows in which no song appears more than
+    `max_per_song` times, counting appearances on either side.
+
+    Greedy down the ranked list: the top pair is always kept, and a song only
+    loses a row once it already has its share of better ones. Done here rather
+    than with a window function because the cap spans both columns — a song can
+    be the vocal in one row and the bed in the next, and SQL would have to
+    partition by one or the other."""
+    if max_per_song <= 0:
+        return rows[:limit]
+    seen: Dict[int, int] = {}
+    kept: List[Dict] = []
+    for row in rows:
+        v, i = row["vocal_song_id"], row["inst_song_id"]
+        if seen.get(v, 0) >= max_per_song or seen.get(i, 0) >= max_per_song:
+            continue
+        seen[v] = seen.get(v, 0) + 1
+        seen[i] = seen.get(i, 0) + 1
+        kept.append(row)
+        if len(kept) >= limit:
+            break
+    return kept
+
+
+def best_bed_per_vocal(combo_type: str = "vocal_over_instrumental",
+                       per_vocal: int = 1, limit: int = 50,
+                       min_score: float = 0.0,
+                       db_path: Path = DB_PATH) -> List[Dict]:
+    """One (or `per_vocal`) best bed for each vocal — the 'what can I do with
+    each of my acapellas?' view (T3.4).
+
+    A flat ranked list answers "what is the best pair in the library", which is
+    one question asked fifty times. This answers a different one, and it is the
+    view that makes a big library feel navigable: every vocal gets a turn,
+    ordered by how good its best option is.
+
+    Hidden pairs and excluded tracks are filtered out here too."""
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        """WITH ranked AS (
+               SELECT mc.*,
+                      ROW_NUMBER() OVER (PARTITION BY mc.vocal_song_id
+                                         ORDER BY mc.score_total DESC) AS bed_rank,
+                      MAX(mc.score_total) OVER (PARTITION BY mc.vocal_song_id)
+                          AS vocal_best_score
+               FROM mashup_candidates mc
+               WHERE mc.combo_type = ?
+                 AND mc.score_total >= ?
+                 AND NOT EXISTS (SELECT 1 FROM pair_hidden h
+                                  WHERE h.vocal_song_id = mc.vocal_song_id
+                                    AND h.inst_song_id = mc.inst_song_id)
+                 AND NOT EXISTS (SELECT 1 FROM track_excluded x
+                                  WHERE x.song_id IN (mc.vocal_song_id,
+                                                      mc.inst_song_id))
+           )
+           SELECT * FROM ranked
+           WHERE bed_rank <= ?
+           ORDER BY vocal_best_score DESC, vocal_song_id, bed_rank
+           LIMIT ?""",
+        (combo_type, min_score, max(1, per_vocal), max(1, limit)),
+    ).fetchall()
+    conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Hidden pairs / excluded tracks (T3.4) ────────────────────────────────────
+
+def hide_pair(vocal_song_id: int, inst_song_id: int,
+              db_path: Path = DB_PATH) -> None:
+    """Never show this exact pairing again. Survives 'Score library'."""
+    conn = get_conn(db_path)
+    conn.execute(
+        "INSERT OR IGNORE INTO pair_hidden (vocal_song_id, inst_song_id) "
+        "VALUES (?,?)", (vocal_song_id, inst_song_id))
+    conn.commit()
+    conn.close()
+
+
+def unhide_pair(vocal_song_id: int, inst_song_id: int,
+                db_path: Path = DB_PATH) -> None:
+    conn = get_conn(db_path)
+    conn.execute(
+        "DELETE FROM pair_hidden WHERE vocal_song_id=? AND inst_song_id=?",
+        (vocal_song_id, inst_song_id))
+    conn.commit()
+    conn.close()
+
+
+def exclude_track(song_id: int, db_path: Path = DB_PATH) -> None:
+    """Drop this track from Discover entirely, on either side of a pair."""
+    conn = get_conn(db_path)
+    conn.execute("INSERT OR IGNORE INTO track_excluded (song_id) VALUES (?)",
+                 (song_id,))
+    conn.commit()
+    conn.close()
+
+
+def include_track(song_id: int, db_path: Path = DB_PATH) -> None:
+    conn = get_conn(db_path)
+    conn.execute("DELETE FROM track_excluded WHERE song_id=?", (song_id,))
+    conn.commit()
+    conn.close()
+
+
+def list_hidden(db_path: Path = DB_PATH) -> Dict[str, List[Dict]]:
+    """Everything the user has suppressed, with titles so the UI can offer it
+    back. A hidden pair with no title left is a track that has since been
+    deleted; the row stays harmless."""
+    conn = get_conn(db_path)
+    pairs = conn.execute(
+        """SELECT h.vocal_song_id, h.inst_song_id, h.created_at,
+                  sv.title AS vocal_title, si.title AS inst_title
+           FROM pair_hidden h
+           LEFT JOIN songs sv ON sv.id = h.vocal_song_id
+           LEFT JOIN songs si ON si.id = h.inst_song_id
+           ORDER BY h.id DESC""").fetchall()
+    tracks = conn.execute(
+        """SELECT x.song_id, x.created_at, s.title, s.artist
+           FROM track_excluded x
+           LEFT JOIN songs s ON s.id = x.song_id
+           ORDER BY x.rowid DESC""").fetchall()
+    conn.close()
+    return {"pairs": [dict(r) for r in pairs],
+            "tracks": [dict(r) for r in tracks]}
 
 
 def get_candidates_for_song(song_id: int, role: str = "vocal",

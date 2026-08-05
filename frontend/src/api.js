@@ -161,6 +161,9 @@ export const api = {
     limit = 50,
     vocalSongId = null,
     instSongId = null,
+    // 0 = uncapped. Server-side (T3.4): capping a truncated 50 client-side
+    // would just show fewer rows, not better ones.
+    maxPerSong = 3,
   } = {}) => {
     const params = new URLSearchParams();
     if (comboType) params.set("combo_type", comboType);
@@ -168,8 +171,40 @@ export const api = {
     params.set("limit", String(limit));
     if (vocalSongId != null) params.set("vocal_song_id", String(vocalSongId));
     if (instSongId != null) params.set("inst_song_id", String(instSongId));
+    params.set("max_per_song", String(maxPerSong));
     return jsonFetch(`/api/mashups?${params}`);
   },
+
+  // "The best bed for each of my vocals" — every acapella gets a turn instead
+  // of one well-placed vocal owning the page.
+  getBestBedPerVocal: ({ limit = 50, perVocal = 1, minScore = 0 } = {}) => {
+    const params = new URLSearchParams({
+      limit: String(limit), per_vocal: String(perVocal),
+    });
+    if (minScore) params.set("min_score", String(minScore));
+    return jsonFetch(`/api/mashups/by-vocal?${params}`);
+  },
+
+  // ── Hidden pairs / excluded tracks (T3.4) ─────────────────────────────────
+  // Display preferences, not judgments: they survive "Score library" but are
+  // deliberately not training data.
+  getHidden: () => jsonFetch("/api/mashups/hidden"),
+
+  hidePair: (vocalSongId, instSongId) =>
+    jsonFetch("/api/mashups/hidden", {
+      method: "POST",
+      body: JSON.stringify({ vocal_song_id: vocalSongId, inst_song_id: instSongId }),
+    }),
+
+  unhidePair: (vocalSongId, instSongId) =>
+    jsonFetch(`/api/mashups/hidden?vocal_song_id=${vocalSongId}`
+      + `&inst_song_id=${instSongId}`, { method: "DELETE" }),
+
+  excludeTrack: (songId) =>
+    jsonFetch(`/api/mashups/excluded/${songId}`, { method: "POST" }),
+
+  includeTrack: (songId) =>
+    jsonFetch(`/api/mashups/excluded/${songId}`, { method: "DELETE" }),
 
   getMashupPlan: (vocalId, instId) =>
     jsonFetch(`/api/mashups/plan?vocal_id=${vocalId}&inst_id=${instId}`),

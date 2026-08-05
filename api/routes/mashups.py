@@ -8,7 +8,9 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from database.models import (
-    VERDICTS, get_candidates_enriched, get_pair_feedback, upsert_pair_feedback,
+    VERDICTS, best_bed_per_vocal, exclude_track, get_candidates_enriched,
+    get_pair_feedback, hide_pair, include_track, list_hidden, unhide_pair,
+    upsert_pair_feedback,
 )
 
 from api import jobs
@@ -61,30 +63,98 @@ def scorer_status() -> dict:
     }
 
 
-@router.get("")
-def list_candidates(combo_type: str = "", min_score: float = 0.0,
-                    limit: int = 50, vocal_song_id: Optional[int] = None,
-                    inst_song_id: Optional[int] = None) -> dict:
-    if combo_type and combo_type not in _COMBO_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}",
-        )
-    rows = get_candidates_enriched(
-        combo_type=combo_type, min_score=min_score,
-        limit=max(1, min(limit, 500)),
-        vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
-    )
-    # The instant preview (T1.7) arms the bed at the vocal's tempo and pitch on
-    # every keypress. Deriving these here keeps one implementation of the
-    # Camelot math — recomputing it in JS would silently drift from the T1.2
-    # fix — and costs the browser no extra round-trip per row.
+def _with_playback_terms(rows: list) -> list:
+    """The instant preview (T1.7) arms the bed at the vocal's tempo and pitch on
+    every keypress. Deriving these here keeps one implementation of the Camelot
+    math — recomputing it in JS would silently drift from the T1.2 fix — and
+    costs the browser no extra round-trip per row."""
     for r in rows:
         r["semitone_shift"] = compute_semitone_shift(
             r.get("vocal_camelot") or "", r.get("inst_camelot") or "")
         r["stretch_factor"] = compute_stretch_factor(
             r.get("vocal_bpm") or 0.0, r.get("inst_bpm") or 0.0)
-    return {"count": len(rows), "candidates": rows}
+    return rows
+
+
+@router.get("")
+def list_candidates(combo_type: str = "", min_score: float = 0.0,
+                    limit: int = 50, vocal_song_id: Optional[int] = None,
+                    inst_song_id: Optional[int] = None,
+                    max_per_song: int = 3) -> dict:
+    """The ranked list. max_per_song caps how often one song may appear (0 =
+    uncapped) so a single well-placed vocal cannot own the page."""
+    if combo_type and combo_type not in _COMBO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}",
+        )
+    if max_per_song < 0:
+        raise HTTPException(status_code=400,
+                            detail="max_per_song must be 0 or greater")
+    rows = get_candidates_enriched(
+        combo_type=combo_type, min_score=min_score,
+        limit=max(1, min(limit, 500)),
+        vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
+        max_per_song=max_per_song,
+    )
+    return {"count": len(rows), "candidates": _with_playback_terms(rows),
+            "max_per_song": max_per_song}
+
+
+@router.get("/by-vocal")
+def list_best_bed_per_vocal(limit: int = 50, per_vocal: int = 1,
+                            min_score: float = 0.0,
+                            combo_type: str = "vocal_over_instrumental") -> dict:
+    """'The best bed for each of my vocals' — every acapella gets a turn,
+    ordered by how good its best option is."""
+    if combo_type not in _COMBO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
+    rows = best_bed_per_vocal(combo_type=combo_type,
+                              per_vocal=max(1, min(per_vocal, 10)),
+                              limit=max(1, min(limit, 500)),
+                              min_score=min_score)
+    return {"count": len(rows), "candidates": _with_playback_terms(rows)}
+
+
+class HiddenPair(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+
+
+@router.post("/hidden")
+def hide_a_pair(body: HiddenPair) -> dict:
+    """Stop showing this exact pairing. Outlives 'Score library' — unlike a
+    verdict it is a display preference, not training data."""
+    hide_pair(body.vocal_song_id, body.inst_song_id)
+    return {"ok": True, **body.model_dump()}
+
+
+@router.delete("/hidden")
+def unhide_a_pair(vocal_song_id: int, inst_song_id: int) -> dict:
+    unhide_pair(vocal_song_id, inst_song_id)
+    return {"ok": True, "vocal_song_id": vocal_song_id,
+            "inst_song_id": inst_song_id}
+
+
+@router.post("/excluded/{song_id}")
+def exclude_a_track(song_id: int) -> dict:
+    """Drop a track out of Discover entirely, on either side of a pair."""
+    exclude_track(song_id)
+    return {"ok": True, "song_id": song_id}
+
+
+@router.delete("/excluded/{song_id}")
+def include_a_track(song_id: int) -> dict:
+    include_track(song_id)
+    return {"ok": True, "song_id": song_id}
+
+
+@router.get("/hidden")
+def list_suppressed() -> dict:
+    """Everything currently hidden or excluded, so the user can undo it."""
+    return list_hidden()
 
 
 class PairVerdict(BaseModel):

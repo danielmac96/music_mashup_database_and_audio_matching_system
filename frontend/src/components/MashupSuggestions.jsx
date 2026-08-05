@@ -19,6 +19,9 @@ const MATCH_PRESETS = [
   { label: "Wide", bpm: 16, key: 0.4 },
 ];
 const SORTS = ["Score", "Popularity"];
+// How many rows any one song may occupy. 0 = uncapped, which is what the list
+// did before T3.4 — and why a single 128 BPM 8A vocal could hold 40 of 50 rows.
+const PER_SONG_CAPS = [3, 2, 1, 0];
 const popOf = (c) => (c.vocal_popularity || 0) + (c.inst_popularity || 0);
 
 // Key drives 30% of the score and the suggested pitch shift, so an unreliable
@@ -105,6 +108,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
   const [scoreJobId, setScoreJobId] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [scorer, setScorer] = useState(null); // { scorer, model_version, auc }
+  // ── T3.4 diversity: one 128 BPM 8A vocal otherwise owns the whole page ────
+  const [maxPerSong, setMaxPerSong] = useState(3);
+  const [grouped, setGrouped] = useState(false);
+  const [hiddenCount, setHiddenCount] = useState(0);
 
   // ── T1.7 triage: highlighted row, verdicts, shortlist, shortcut legend ────
   const [cursor, setCursor] = useState(0);
@@ -130,11 +137,21 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
       .catch(() => {});
   }, []);
 
-  const refresh = async (type = comboType, activeSeed = seed, min = minMatch) => {
+  const refresh = async (type = comboType, activeSeed = seed, min = minMatch,
+                        cap = maxPerSong, group = grouped) => {
     setLoading(true);
     setError(null);
     try {
-      const opts = { comboType: type, minScore: min / 100, limit: 50 };
+      // "Best bed per vocal" answers a different question from the flat list —
+      // what can I do with each acapella, rather than what is the single best
+      // pair — so it has its own endpoint and ignores the seed and the cap.
+      if (group && type === "vocal_over_instrumental" && activeSeed?.songId == null) {
+        const data = await api.getBestBedPerVocal({ limit: 50, minScore: min / 100 });
+        setCandidates(data.candidates);
+        return;
+      }
+      const opts = { comboType: type, minScore: min / 100, limit: 50,
+                     maxPerSong: cap };
       if (activeSeed?.songId != null) {
         if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
         else opts.vocalSongId = activeSeed.songId;
@@ -267,6 +284,14 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
           });
           break;
         }
+        case "h": {
+          e.preventDefault();
+          const c = sortedCandidates[cursor];
+          // Hiding removes the row, so the cursor already points at the next
+          // pair — no advance, or you skip one.
+          if (c) hide(c);
+          break;
+        }
         case "?": e.preventDefault(); setShowKeys((v) => !v); break;
         case "Escape": setAuditioning(false); setShowKeys(false); break;
         default: break;
@@ -274,7 +299,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cursor, sortedCandidates, judgeAndAdvance]);
+  }, [cursor, sortedCandidates, judgeAndAdvance, hide]);
 
   // Switching away from the tab must not leave an AudioContext playing.
   useEffect(() => stop, [stop]);
@@ -285,6 +310,68 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
     setMinMatch(next);
     refresh(comboType, seed, next);
   };
+  const cycleCap = () => {
+    const next = PER_SONG_CAPS[(PER_SONG_CAPS.indexOf(maxPerSong) + 1) % PER_SONG_CAPS.length];
+    setMaxPerSong(next);
+    refresh(comboType, seed, minMatch, next);
+  };
+  const toggleGrouped = () => {
+    const next = !grouped;
+    setGrouped(next);
+    setExpanded(null);
+    refresh(comboType, seed, minMatch, maxPerSong, next);
+  };
+
+  const refreshHiddenCount = useCallback(() => {
+    api.getHidden()
+      .then((d) => setHiddenCount((d.pairs?.length || 0) + (d.tracks?.length || 0)))
+      .catch(() => {});
+  }, []);
+  useEffect(() => { refreshHiddenCount(); }, [refreshHiddenCount]);
+
+  // Hiding is a display preference, not a verdict — it never becomes training
+  // data. Drop the row immediately: waiting for a refetch to make it disappear
+  // is what makes triage feel slow.
+  const hide = useCallback(async (c) => {
+    if (!c) return;
+    setCandidates((rows) => rows.filter((r) => r.id !== c.id));
+    try {
+      await api.hidePair(c.vocal_song_id, c.inst_song_id);
+      refreshHiddenCount();
+    } catch (e) {
+      toast(e.message || "Could not hide that pair");
+      refresh();
+    }
+  }, [refreshHiddenCount]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const excludeSong = useCallback(async (songId, title) => {
+    if (songId == null) return;
+    setCandidates((rows) => rows.filter(
+      (r) => r.vocal_song_id !== songId && r.inst_song_id !== songId));
+    try {
+      await api.excludeTrack(songId);
+      refreshHiddenCount();
+      toast(`Excluded "${title || songId}" from Discover`);
+    } catch (e) {
+      toast(e.message || "Could not exclude that track");
+      refresh();
+    }
+  }, [refreshHiddenCount]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const unhideAll = useCallback(async () => {
+    try {
+      const d = await api.getHidden();
+      await Promise.all([
+        ...(d.pairs || []).map((p) => api.unhidePair(p.vocal_song_id, p.inst_song_id)),
+        ...(d.tracks || []).map((t) => api.includeTrack(t.song_id)),
+      ]);
+      refreshHiddenCount();
+      refresh();
+      toast("Restored every hidden pair and excluded track");
+    } catch (e) {
+      toast(e.message || "Could not restore");
+    }
+  }, [refreshHiddenCount]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="page">
@@ -324,6 +411,26 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
         <div className="chip" onClick={() => setSortMode(SORTS[(SORTS.indexOf(sortMode) + 1) % SORTS.length])}>
           <span className="k">Sort</span><span>{sortMode}</span><span className="caret">▾</span>
         </div>
+        <div className="chip" onClick={cycleCap}
+          title="How many rows one song may occupy, counting both sides. Without a cap, one well-placed vocal takes the whole page.">
+          <span className="k">Per song</span>
+          <span className="mono">{maxPerSong === 0 ? "∞" : `≤${maxPerSong}`}</span>
+          <span className="caret">▾</span>
+        </div>
+        {comboType === "vocal_over_instrumental" && seed?.songId == null && (
+          <div className={`chip${grouped ? " active" : ""}`} onClick={toggleGrouped}
+            title="One row per vocal: the best bed for each of your acapellas, instead of the best pairs overall.">
+            <span className="k">View</span><span>{grouped ? "Per vocal" : "Flat"}</span>
+            <span className="caret">▾</span>
+          </div>
+        )}
+        {hiddenCount > 0 && (
+          <div className="chip" onClick={unhideAll}
+            title="Restore every pair you hid and every track you excluded">
+            <span className="k">Hidden</span><span className="mono">{hiddenCount}</span>
+            <span className="x">↺</span>
+          </div>
+        )}
         {seedTitle && (
           <div className="chip seed">
             Seeded: <b>{seedTitle}</b> as {seed.role === "instrumental" ? "bed" : "vocal"}
@@ -348,7 +455,8 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
           <span><kbd>j</kbd>/<kbd>k</kbd> or <kbd>↑</kbd><kbd>↓</kbd> move</span>
           <span><kbd>space</kbd> play / stop the 16-bar hooks</span>
           <span><kbd>f</kbd> ✓ keep · <kbd>d</kbd> ✗ reject (both advance)</span>
-          <span><kbd>s</kbd> shortlist · <kbd>esc</kbd> stop · <kbd>?</kbd> close</span>
+          <span><kbd>s</kbd> shortlist · <kbd>h</kbd> hide this pair</span>
+          <span><kbd>esc</kbd> stop · <kbd>?</kbd> close</span>
           <span className="faint">
             The bed is conformed to the vocal's tempo and pitch automatically.
             Verdicts are saved and train the scorer.
@@ -479,6 +587,15 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
                         ▶ Audition
                       </button>
                     )}
+                    <button className="plan" onClick={() => hide(c)}
+                      title="Hide this pairing (h). Kept out of every future list until you restore it.">
+                      ⊘ Hide
+                    </button>
+                    <button className="plan"
+                      onClick={() => excludeSong(c.vocal_song_id, c.vocal_title)}
+                      title={`Exclude "${c.vocal_title}" from Discover entirely, on either side of a pair`}>
+                      ⊘ Top track
+                    </button>
                   </div>
                 </div>
                 {expanded === c.id && (
