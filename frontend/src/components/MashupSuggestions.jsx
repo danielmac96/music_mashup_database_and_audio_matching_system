@@ -97,7 +97,13 @@ function PlanDetails({ vocalId, instId, candidate }) {
   );
 }
 
-export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
+// `showInstOverInst` (T4.4) restores the combo-type segmented control. It is off
+// by default: instrumental-over-instrumental is not the stated goal, and it owned
+// a control at the top of the screen while doubling the scoring work. Nothing
+// about the scoring path changes — the pairs are still scored and stored, they
+// just are not offered here unless asked for.
+export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
+                                    showInstOverInst = false }) {
   const [candidates, setCandidates] = useState([]);
   const [comboType, setComboType] = useState("vocal_over_instrumental");
   const [minMatch, setMinMatch] = useState(50);
@@ -417,10 +423,19 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
   // Switching away from the tab must not leave an AudioContext playing.
   useEffect(() => stop, [stop]);
 
+  // Turning the setting off while looking at instrumental-over-instrumental
+  // would otherwise strand the user on a view with no control to leave it.
+  useEffect(() => {
+    if (!showInstOverInst && comboType !== "vocal_over_instrumental") {
+      switchType("vocal_over_instrumental");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showInstOverInst]);
+
   return (
     <div className="page">
       <div className="screen-head">
-        <h1>Mashups</h1>
+        <h1>Discover</h1>
         <span className="sub">
           {loading ? "loading…" : `Ranked best-first${seedTitle ? " · seed fixed" : ""}`}
         </span>
@@ -439,12 +454,14 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
       </div>
 
       <div className="toolbar">
-        <div className="seg">
-          <button className={comboType === "vocal_over_instrumental" ? "active" : ""}
-            onClick={() => switchType("vocal_over_instrumental")}>Vocal / Instrumental</button>
-          <button className={comboType === "instrumental_over_instrumental" ? "active" : ""}
-            onClick={() => switchType("instrumental_over_instrumental")}>Instr. / Instr.</button>
-        </div>
+        {showInstOverInst && (
+          <div className="seg">
+            <button className={comboType === "vocal_over_instrumental" ? "active" : ""}
+              onClick={() => switchType("vocal_over_instrumental")}>Vocal / Instrumental</button>
+            <button className={comboType === "instrumental_over_instrumental" ? "active" : ""}
+              onClick={() => switchType("instrumental_over_instrumental")}>Instr. / Instr.</button>
+          </div>
+        )}
         <div className="chip" onClick={cycleMin}>
           <span className="k">Min match</span><span className="mono">{minMatch}%</span><span className="caret">▾</span>
         </div>

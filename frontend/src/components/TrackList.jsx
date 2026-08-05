@@ -3,6 +3,7 @@ import { api } from "../api";
 import { JobBadge } from "./JobBadge";
 import { KeyChip } from "./KeyChip";
 import { PlayerBar } from "./PlayerBar";
+import { PlaylistImporter } from "./PlaylistImporter";
 import { TrackArt } from "./TrackArt";
 import { SourceBadge } from "./SourceBadge";
 import {
@@ -432,6 +433,12 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
         <span className="sub">{loading ? "refreshing…" : `${readyCount} ready to mash`}</span>
       </div>
 
+      {/* Importing is not a place you go — it is a thing you do to the library
+          (T4.2). Paste, preview, save; the tracks appear in the list below and
+          start processing, with no tab change. The dependency-health banner
+          rides along, so a missing ffmpeg is visible where the work happens. */}
+      <PlaylistImporter embedded onIngested={() => refresh()} />
+
       {/* filter toolbar */}
       <div className="toolbar">
         <div className="search-box">
@@ -459,7 +466,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
       {error && <div className="error-text" style={{ marginBottom: 10 }}>{error}</div>}
 
       {filtered.length === 0 && !loading ? (
-        <p className="empty">No tracks match. Import a SoundCloud URL on the Import tab.</p>
+        <p className="empty">No tracks match. Paste a SoundCloud or YouTube link above to add some.</p>
       ) : view === "cards" ? (
         <div className="card-grid">
           {filtered.map((t) => {

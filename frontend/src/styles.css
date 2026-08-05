@@ -160,6 +160,49 @@ input, select { font-family: inherit; }
   color: var(--muted);
 }
 
+/* ── Settings drawer (T4.3) ────────────────────────────────────────────── */
+/* The database browser used to be a top-level tab. It is a debugging window,
+   not a step in the workflow, so it lives behind this alongside the view
+   preferences. */
+.settings-btn {
+  margin-left: 12px; cursor: pointer; font-size: 15px; line-height: 1;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border-ctrl); border-radius: 7px; padding: 5px 9px;
+}
+.settings-btn:hover { color: var(--text); border-color: var(--accent); }
+.settings-btn.on { color: var(--accent-light); border-color: var(--accent); }
+
+.drawer-scrim {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40;
+}
+.settings-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 41;
+  width: min(1080px, 92vw); overflow-y: auto;
+  background: var(--bg); border-left: 1px solid var(--border);
+  box-shadow: -18px 0 48px rgba(0,0,0,0.45);
+  padding: 18px 22px 40px;
+}
+.drawer-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.drawer-head h2 { font-size: 18px; margin: 0; }
+.drawer-x {
+  cursor: pointer; font-size: 14px; background: transparent; color: var(--muted);
+  border: 1px solid var(--border-ctrl); border-radius: 7px; padding: 4px 9px;
+}
+.drawer-x:hover { color: var(--text); }
+.drawer-pref {
+  display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 9px;
+  background: var(--panel); padding: 12px 14px; margin-bottom: 18px;
+}
+.drawer-pref input { margin-top: 3px; accent-color: var(--accent); }
+.drawer-pref b { display: block; font-size: 13px; margin-bottom: 3px; }
+.drawer-pref .hint { display: block; }
+.drawer-section h3 { font-size: 13px; margin: 0 0 3px; }
+.drawer-body { margin-top: 6px; }
+/* The browser already wraps itself in .page; inside the drawer that padding
+   and centring would fight the drawer's own. */
+.drawer-body .page { max-width: none; margin: 0; padding: 0; }
+
 /* ── Page containers ───────────────────────────────────────────────────── */
 .page {
   max-width: 1560px;

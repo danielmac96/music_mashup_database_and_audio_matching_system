@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { TrackArt } from "./TrackArt";
 import { SourceBadge } from "./SourceBadge";
@@ -6,7 +6,10 @@ import { classifyUrl, cleanYouTubeTitle } from "../sources";
 import { toast } from "../toast";
 import { DataLocationPanel } from "./DataLocationPanel";
 
-export function PlaylistImporter({ onIngested }) {
+// `embedded` renders this as the paste bar at the top of Library rather than a
+// screen of its own (T4.2): no page wrapper, no heading, and Save leaves you
+// where you are — the tracks it just queued appear in the list underneath.
+export function PlaylistImporter({ onIngested, embedded = false }) {
   const [url, setUrl] = useState("");
   const [tracks, setTracks] = useState([]);
   const [source, setSource] = useState("");   // from preview() response
@@ -137,6 +140,13 @@ export function PlaylistImporter({ onIngested }) {
       toast(parts.join(" · ") || "Nothing new to add.");
 
       if (res.count) {
+        // Clear the preview: it has been saved, and the paste bar now sits
+        // above the library list rather than on a screen you get moved off.
+        setTracks([]);
+        setSelected({});
+        setPreviewId(null);
+        setHydration(null);
+        setUrl("");
         if (onIngested) onIngested();
       } else {
         // Everything was a duplicate — stay put and show which ones.
@@ -150,16 +160,21 @@ export function PlaylistImporter({ onIngested }) {
     }
   };
 
+  const Wrapper = embedded ? Fragment : "div";
+  const wrapperProps = embedded ? {} : { className: "page narrow" };
+
   return (
-    <div className="page narrow">
-      <div className="screen-head" style={{ display: "block" }}>
-        <h1>Import from SoundCloud or YouTube</h1>
-        <div className="hint" style={{ marginTop: 5 }}>
-          Paste a track or playlist link — we auto-detect the source and which it is.
-          Preview first, then choose what to keep. Saved tracks auto-process:
-          download → stems → analyze → structure.
+    <Wrapper {...wrapperProps}>
+      {!embedded && (
+        <div className="screen-head" style={{ display: "block" }}>
+          <h1>Import from SoundCloud or YouTube</h1>
+          <div className="hint" style={{ marginTop: 5 }}>
+            Paste a track or playlist link — we auto-detect the source and which it is.
+            Preview first, then choose what to keep. Saved tracks auto-process:
+            download → stems → analyze → structure.
+          </div>
         </div>
-      </div>
+      )}
 
       <DataLocationPanel />
 
@@ -318,6 +333,6 @@ export function PlaylistImporter({ onIngested }) {
           </div>
         </>
       )}
-    </div>
+    </Wrapper>
   );
 }

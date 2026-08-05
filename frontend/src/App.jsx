@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { PlaylistImporter } from "./components/PlaylistImporter";
 import { MixImporter } from "./components/MixImporter";
 import { TrackList } from "./components/TrackList";
 import { MashupSuggestions } from "./components/MashupSuggestions";
@@ -9,14 +8,29 @@ import { SetupWizard } from "./components/SetupWizard";
 import { api } from "./api";
 import { onToast } from "./toast";
 
+// Four tabs, in the order the work happens: get tracks in, tag the documented
+// mixes, find pairs, build them (T4.3). Import folded into Library (T4.2),
+// Audition into Studio (T4.1), and the database browser sits behind Settings —
+// it is a debugging window, not a step.
 const TABS = [
-  ["import", "Import"],
-  ["mixes", "Mixes"],
   ["library", "Library"],
-  ["mashups", "Mashups"],
+  ["mixes", "Mixes"],
+  ["mashups", "Discover"],
   ["studio", "Studio"],
-  ["database", "Database"],
 ];
+
+// Client-side preferences. Kept in localStorage rather than the server settings
+// table because they are about this browser's view, not how audio is processed.
+const PREFS_KEY = "mashup.prefs.v1";
+const DEFAULT_PREFS = { showInstOverInst: false };
+
+function loadPrefs() {
+  try {
+    return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") };
+  } catch {
+    return { ...DEFAULT_PREFS };
+  }
+}
 
 function Toast() {
   const [msg, setMsg] = useState("");
@@ -39,7 +53,9 @@ function Toast() {
 }
 
 export default function App() {
-  const [tab, setTabState] = useState("import");
+  // Library is the landing screen (T4.2): importing is a paste bar at the top
+  // of it, not a place you have to go to first.
+  const [tab, setTabState] = useState("library");
   const [refreshKey, setRefreshKey] = useState(0);
   // null = still loading, true/false = configured flag from GET /api/settings.
   const [configured, setConfigured] = useState(null);
@@ -51,6 +67,22 @@ export default function App() {
   const [mashupSeed, setMashupSeed] = useState(null); // { songId, role }
   // Right-side header status readout — each screen reports its own.
   const [headerStatus, setHeaderStatus] = useState(null); // { locked, text }
+  // Settings drawer: view preferences plus the database browser (T4.3).
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [prefs, setPrefs] = useState(loadPrefs);
+
+  const setPref = (key, value) => {
+    const next = { ...prefs, [key]: value };
+    setPrefs(next);
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(next)); } catch { /* full */ }
+  };
+
+  useEffect(() => {
+    if (!settingsOpen) return undefined;
+    const onKey = (e) => { if (e.key === "Escape") setSettingsOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [settingsOpen]);
 
   // On load, check whether the app has been configured (first-run wizard gate).
   // If /api/settings is unreachable, assume configured so a transient error
@@ -64,11 +96,6 @@ export default function App() {
   const setTab = (next) => {
     setHeaderStatus(null);
     setTabState(next);
-  };
-
-  const handleIngested = () => {
-    setRefreshKey((k) => k + 1);
-    setTab("library");
   };
 
   // Each send is its own instruction, not a patch over the last one: a pair
@@ -123,9 +150,13 @@ export default function App() {
         ) : headerStatus?.text ? (
           <div className="status-pill plain">{headerStatus.text}</div>
         ) : null}
+        <button className={`settings-btn${settingsOpen ? " on" : ""}`}
+          onClick={() => setSettingsOpen((v) => !v)}
+          title="Settings and the database browser">
+          ⚙
+        </button>
       </header>
 
-      {tab === "import" && <PlaylistImporter onIngested={handleIngested} />}
       {tab === "mixes" && <MixImporter />}
       {tab === "library" && (
         <TrackList
@@ -141,6 +172,7 @@ export default function App() {
           onClearSeed={() => setMashupSeed(null)}
           onAudition={(patch) => sendToStudio(patch)}
           onStatus={setHeaderStatus}
+          showInstOverInst={prefs.showInstOverInst}
         />
       )}
       {tab === "studio" && (
@@ -150,7 +182,42 @@ export default function App() {
           onStatus={setHeaderStatus}
         />
       )}
-      {tab === "database" && <DatabaseBrowser />}
+      {settingsOpen && (
+        <>
+          <div className="drawer-scrim" onClick={() => setSettingsOpen(false)} />
+          <aside className="settings-drawer">
+            <div className="drawer-head">
+              <h2>Settings</h2>
+              <span className="spacer" style={{ flex: 1 }} />
+              <button className="drawer-x" onClick={() => setSettingsOpen(false)}
+                title="Close (esc)">✕</button>
+            </div>
+
+            <label className="drawer-pref">
+              <input type="checkbox" checked={prefs.showInstOverInst}
+                onChange={(e) => setPref("showInstOverInst", e.target.checked)} />
+              <span>
+                <b>Show instrumental-over-instrumental pairs</b>
+                <span className="hint">
+                  Off by default: the goal is a vocal over a bed, and this combo
+                  doubles the scoring work for a segmented control at the top of
+                  Discover. The scoring path is unchanged either way.
+                </span>
+              </span>
+            </label>
+
+            <div className="drawer-section">
+              <span className="hint">
+                The database browser is a debugging window, not a step in the
+                workflow — which is why it lives here rather than in the tab bar.
+              </span>
+            </div>
+            <div className="drawer-body">
+              <DatabaseBrowser />
+            </div>
+          </aside>
+        </>
+      )}
 
       <Toast />
     </div>
