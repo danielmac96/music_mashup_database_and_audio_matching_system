@@ -128,3 +128,40 @@ def test_structure_output_shape_is_unchanged(monkeypatch):
     apply_phrase_alignment(segs)
     assert set(segs[0]) == {"energy", "vocal_presence", "repetition",
                             "start_sec", "end_sec", "label", "confidence"}
+
+
+# ── lookahead: never trade a whole section for one alignment ─────────────────
+
+def test_snapping_yields_rather_than_crowding_the_next_boundary():
+    """Two detections exactly min_beats apart. Pulling the first forward onto a
+    phrase line would leave the second under the floor and merge it away, so the
+    first stays where it was detected and BOTH survive."""
+    first, second = 60, 60 + MIN_BEATS      # 60, 86 — legal as detected
+    bounds, snapped = _snap([first, second])
+    assert bounds == [first, second], "a section was dropped to buy an alignment"
+    assert snapped[0] is False, "the first boundary should have yielded"
+
+
+def test_lookahead_does_not_block_a_snap_that_has_room():
+    """The guard is narrow: with slack before the next boundary, snapping still
+    happens."""
+    bounds, snapped = _snap([66, 66 + MIN_BEATS * 3])
+    assert bounds[0] == 64 and snapped[0] is True
+
+
+def test_lookahead_ignores_a_next_boundary_that_is_doomed_anyway():
+    """If the next detection is too close to the END to survive regardless,
+    yielding for it costs an alignment and saves nothing.
+
+    Constructed so the guard would otherwise fire: 474 snaps forward to 480,
+    which leaves only 20 beats before 500 — but 500 sits inside the end margin
+    (511 - 26 = 485) and cannot be kept either way."""
+    doomed = N_BEATS - 12                       # 500, past the end margin
+    bounds, snapped = _snap([doomed - MIN_BEATS, doomed])
+    assert bounds == [480], "should still snap — the next boundary was lost anyway"
+    assert snapped == [True]
+
+
+def test_last_boundary_has_nothing_to_yield_to():
+    bounds, snapped = _snap([66])
+    assert bounds == [64] and snapped == [True]
