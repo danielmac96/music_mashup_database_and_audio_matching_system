@@ -55,7 +55,7 @@ cd frontend; npm run dev
 ```
 
 Sanity check the backend any time: open http://localhost:8000/api/health → `{"ok": true}`.
-The Import tab also shows a live dependency check (`/api/health/deps`) so you learn about a
+The Library tab also shows a live dependency check (`/api/health/deps`) so you learn about a
 missing ffmpeg/yt-dlp/demucs **before** starting a big import.
 
 The sections below expand each path with what to expect on first run.
@@ -124,12 +124,13 @@ below is unchanged.)
 
 The web app is the primary way to use the engine: paste a SoundCloud/YouTube link
 and every track **auto-processes** through download → stems → analyze → structure
-on its own — no per-track clicking. The Import tab shows a warning banner if
+on its own — no per-track clicking. The Library tab shows a warning banner if
 ffmpeg/yt-dlp/demucs/librosa are missing, so you find out before a big import.
 
-Open the app → **Import** tab → paste a playlist or track link → **Preview** →
-**Save to library**. Switch to **Library** and watch each track walk the pipeline
-live (per-track progress + an overall batch banner). Processing is bounded
+Open the app → **Library** tab → paste a playlist or track link into the bar at
+the top → **Preview** → **Save to library**. The tracks appear in the list
+directly below and walk the pipeline live (per-track progress + an overall batch
+banner) — there is no separate Import screen. Processing is bounded
 (`MASHUP_PIPELINE_WORKERS`, default 1) so a big playlist won't thrash the machine,
 and it **resumes** unfinished tracks if you restart the server mid-import. A
 failed track shows the reason and a one-click **Retry**; suspected 30s Go+
@@ -139,12 +140,16 @@ previews get a **Fix preview** action.
 
 ## Studio tab (multi-track mashup DAW)
 
-**Audition** is the fast two-stem playground; **Studio** is the arrangement view
-for building a full Two Friends-style mashup out of *any number* of stems on one
-timeline:
+**Studio** is the only arranger — it absorbed the old two-deck Audition tab,
+which was a near-duplicate over the same engine. It builds a full Two
+Friends-style mashup out of *any number* of stems on one timeline:
 
 - **＋ Add track** puts any library stem (vocals / instrumental / full) on its own
-  lane. The same song can appear on several lanes.
+  lane. The same song can appear on several lanes. **Audition** on a Discover row
+  opens Studio on that pair instead: bed conformed to the vocal's tempo, pitched
+  by the shift the row computed, both lanes placed on the winning section pair.
+- Each lane's **VOX / INST / FULL** buttons switch its stem in place, keeping the
+  lane's position, tempo, pitch and level.
 - Every lane shows its waveform, its own beat grid, and the detected structure
   ribbon (verse/chorus/drop), plus a live key chip that follows the pitch shift.
 - **SYNC** conforms a lane to the project BPM with a decoupled time-stretch
@@ -152,11 +157,15 @@ timeline:
   ×2). Change the project BPM and every synced lane follows.
 - Drag a clip to move it — with snap set to `bar`/`beat`, the clip's downbeats
   click onto the project grid. `←`/`→` nudge the selected lane by a beat
-  (shift = 10 ms), `space` plays, `L` loops 8 bars, shift-drag the ruler for a
-  custom loop, wheel pans and ctrl+wheel zooms.
-- Per lane: gain, mute, solo, pitch ±12 st (live, no restart). Playback runs all
-  lanes sample-locked to one clock through the same SoundTouch worklet engine as
-  Audition, so tempo and pitch stay decoupled in real time.
+  (shift = 10 ms), `space` plays, `L` loops, shift-drag the ruler for a custom
+  loop, wheel pans and ctrl+wheel zooms. Loop length is 1/2/4/8 bars.
+- Per lane: gain, mute, solo, pitch ±12 st (live, no restart), a manual stretch
+  factor when SYNC is off, **⚡ key** to pitch into lane 1's key, **⇥ grid** to
+  snap the nearest downbeat onto the bar line, and **↺** to reset the lane.
+  Playback runs all lanes sample-locked to one clock through a SoundTouch
+  worklet, so tempo and pitch stay decoupled in real time.
+- The **A/B** crossfader in the toolbar rides the first two lanes; centred, it
+  does nothing.
 - The arrangement auto-saves locally and restores when you come back.
 - **Export WAV** renders the arrangement server-side (`POST /api/studio/mixdown`,
   librosa phase-vocoder per clip — same math, offline quality) and hands back a
@@ -211,7 +220,7 @@ skips the folder step.
 | `uvicorn` not found | The virtual environment isn't activated, or `pip install -r requirements.txt` hasn't been run. |
 | Port already in use | Change the port (`--port 8001` for uvicorn) and update the proxy target in `frontend/vite.config.js`, or stop the process using the port. |
 | CORS errors in the browser console | The backend only allows origins `http://localhost:5173` / `http://127.0.0.1:5173` (see `api/server.py`). Use one of those URLs for the frontend. |
-| Database tab is empty or errors | Its endpoints live at `/api/db/tables` (registered in `api/server.py`); confirm the backend restarted after pulling changes. |
+| Database browser is empty or errors | It lives behind the ⚙ Settings drawer in the top bar. Its endpoints are at `/api/db/tables` (registered in `api/server.py`); confirm the backend restarted after pulling changes. |
 
 ---
 
@@ -395,10 +404,14 @@ The **Mashups** tab in the web app drives the suggestion workflow:
   instrumental stretch factor (halftime/doubletime aware), the semitone shift
   to align keys, and which vocal chorus/verse to lay over which instrumental
   drop/chorus — with timestamps and duration fit after stretching.
-- **Audition** opens the pair in the real-time Studio. **✨ Good start**
-  one-clicks a playable mashup — matches tempo, applies the suggested pitch, and
-  aligns the best vocal/bed section pair under the playhead — then you tweak by
-  ear. Out-of-range tempos are flagged so you nudge rather than trust them.
+- **Audition** opens the pair in Studio, already playable: the bed conformed to
+  the vocal's tempo, pitched by the suggested shift, and both lanes placed so the
+  winning vocal/bed section pair starts together. Then you tweak by ear.
+  Out-of-range tempos are flagged so you nudge rather than trust them.
+- **Hide** drops a pairing for good and **Top track** drops a song from Discover
+  entirely; both survive a re-score, and the **Hidden** chip restores them.
+  **Per song** caps how many rows one song may occupy, and **View → Per vocal**
+  swaps the flat ranking for the best bed under each of your acapellas.
   **Export mashup WAV** renders exactly what you hear, including the live
   mix-bus levels (vocal/bed faders, mutes, crossfade).
 
@@ -420,7 +433,7 @@ it). Numbered entries are parsed as instrumental **beds**; `w/` entries are
 tracks inline, resolve any missing SoundCloud/YouTube links, then **Ingest** —
 resolved tracks flow through the same download → stems → analyze pipeline.
 
-**2. Build a dataset (Database tab → Training data).** Positives are the
+**2. Build a dataset (⚙ Settings → Database → Training data).** Positives are the
 documented `mashup_pairs` (vocal-stem features over instrumental-stem features);
 negatives are sampled non-pairs (half random, half “hard” — inside the BPM/key
 gate but never used by a DJ), grouped by mix for leakage-safe CV.
@@ -437,7 +450,7 @@ on all rows and saved to `MODELS_DIR`.
 python -m ml.train --dataset-id 1
 ```
 
-Once a model is **active**, the Mashups tab’s “Score library” uses it
+Once a model is **active**, the Discover tab’s “Score library” uses it
 automatically (the badge reads “Scorer: Model vN”), pre-filtering on the BPM
 window only while still showing the heuristic sub-scores. Deactivate or delete
 the model and scoring silently falls back to the heuristic. Force either scorer
