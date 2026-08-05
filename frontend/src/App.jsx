@@ -3,7 +3,6 @@ import { PlaylistImporter } from "./components/PlaylistImporter";
 import { MixImporter } from "./components/MixImporter";
 import { TrackList } from "./components/TrackList";
 import { MashupSuggestions } from "./components/MashupSuggestions";
-import { AuditionStudio } from "./components/AuditionStudio";
 import { MixStudio } from "./components/MixStudio";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { SetupWizard } from "./components/SetupWizard";
@@ -15,7 +14,6 @@ const TABS = [
   ["mixes", "Mixes"],
   ["library", "Library"],
   ["mashups", "Mashups"],
-  ["audition", "Audition"],
   ["studio", "Studio"],
   ["database", "Database"],
 ];
@@ -45,8 +43,10 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   // null = still loading, true/false = configured flag from GET /api/settings.
   const [configured, setConfigured] = useState(null);
-  // Seed passed into the Audition tab when sent from Library/Mashups.
-  const [auditionSeed, setAuditionSeed] = useState({ vocalId: null, instId: null });
+  // Pair handed to Studio from Library/Discover. Audition used to be a separate
+  // tab over the same engine (T4.1); it is now Studio opened on this pair.
+  // `at` is bumped on every send so re-sending the same pair still re-seeds.
+  const [studioSeed, setStudioSeed] = useState({ vocalId: null, instId: null });
   // Seed passed into the Mashups tab for a directed "find matches" search.
   const [mashupSeed, setMashupSeed] = useState(null); // { songId, role }
   // Right-side header status readout — each screen reports its own.
@@ -71,9 +71,12 @@ export default function App() {
     setTab("library");
   };
 
-  const sendToAudition = (patch) => {
-    setAuditionSeed((prev) => ({ ...prev, ...patch }));
-    setTab("audition");
+  // Each send is its own instruction, not a patch over the last one: a pair
+  // from Discover opens as a pair, and a single track from Library is added as
+  // one lane to whatever is already arranged.
+  const sendToStudio = (patch) => {
+    setStudioSeed({ ...patch, at: Date.now() });
+    setTab("studio");
   };
 
   const findMatches = (songId, role) => {
@@ -127,7 +130,7 @@ export default function App() {
       {tab === "library" && (
         <TrackList
           refreshKey={refreshKey}
-          onSendToAudition={sendToAudition}
+          onSendToAudition={sendToStudio}
           onFindMatches={findMatches}
           onStatus={setHeaderStatus}
         />
@@ -136,14 +139,17 @@ export default function App() {
         <MashupSuggestions
           seed={mashupSeed}
           onClearSeed={() => setMashupSeed(null)}
-          onAudition={(vocalId, instId) => sendToAudition({ vocalId, instId })}
+          onAudition={(patch) => sendToStudio(patch)}
           onStatus={setHeaderStatus}
         />
       )}
-      {tab === "audition" && (
-        <AuditionStudio seed={auditionSeed} onStatus={setHeaderStatus} />
+      {tab === "studio" && (
+        <MixStudio
+          seed={studioSeed}
+          onSeedConsumed={() => setStudioSeed({ vocalId: null, instId: null })}
+          onStatus={setHeaderStatus}
+        />
       )}
-      {tab === "studio" && <MixStudio onStatus={setHeaderStatus} />}
       {tab === "database" && <DatabaseBrowser />}
 
       <Toast />

@@ -1362,12 +1362,34 @@ input, select { font-family: inherit; }
   color: var(--faint); padding: 2px 4px;
 }
 .lh-x:hover { color: var(--red, #f87171); }
-.lh-rate { font-size: 10.5px; color: var(--muted); min-width: 46px; }
+.lh-rate {
+  font-size: 10.5px; color: var(--muted); width: 58px; padding: 1px 3px;
+  background: transparent; border: 1px solid transparent; border-radius: 4px;
+}
+.lh-rate:not(:disabled):hover, .lh-rate:focus {
+  border-color: var(--border-ctrl); color: var(--text); outline: none;
+}
+.lh-rate:disabled { opacity: 0.55; }
+
+/* In-place stem switch on a lane (ported from Audition's deck picker). */
+.lh-stem-seg { display: inline-flex; gap: 2px; }
+.lh-stem-seg button {
+  cursor: pointer; font-size: 8.5px; font-weight: 700; letter-spacing: 0.05em;
+  padding: 1px 4px; border-radius: 3px; background: transparent;
+  color: var(--faint); border: 1px solid transparent;
+}
+.lh-stem-seg button:hover:not(:disabled) { color: var(--text); border-color: var(--border-ctrl); }
+.lh-stem-seg button.active { border-color: var(--border-ctrl); }
+.lh-stem-seg button:disabled:not(.active) { opacity: 0.3; cursor: not-allowed; }
+
+/* Crossfader in the Studio toolbar — rides the first two lanes. */
+.studio-cross { width: 118px; accent-color: var(--accent); height: 14px; }
 .lh-pitch { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--text-2); }
 .lh-note { font-size: 10.5px; color: var(--amber-light, #f5a623); }
 
+/* Matches the four-row lane header (T4.1 added the key/grid/reset row). */
 .studio-lane {
-  position: relative; height: 96px; cursor: grab;
+  position: relative; height: 118px; cursor: grab;
   border-bottom: 1px solid var(--border-top);
 }
 .studio-lane:active { cursor: grabbing; }

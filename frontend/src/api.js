@@ -231,23 +231,10 @@ export const api = {
 
   mixdownAudioUrl: (token) => `/api/studio/mixdown/${token}/audio`,
 
-  // ── Audition export ────────────────────────────────────────────────────────
-  // Render the two-deck mashup exactly as it sounds (per-deck stem + rate +
-  // pitch + offset + gain) via the shared offline mixdown renderer. The render
-  // token equals the returned job_id.
-  startAuditionExport: ({ aId, bId, aStem, bStem, aRate, bRate, aShift, bShift,
-                          aOffset, bOffset, aGain, bGain }) =>
-    jsonFetch("/api/studio/mixdown", {
-      method: "POST",
-      body: JSON.stringify({
-        clips: [
-          { song_id: aId, stem: aStem, offset_sec: aOffset, rate: aRate, semitones: aShift, gain: aGain },
-          { song_id: bId, stem: bStem, offset_sec: bOffset, rate: bRate, semitones: bShift, gain: bGain },
-        ],
-      }),
-    }),
-
-  auditionExportAudioUrl: (token) => `/api/studio/mixdown/${token}/audio`,
+  // The Audition tab's export used to live here as startAuditionExport — a
+  // fixed two-clip wrapper over this same endpoint, with its own duplicate of
+  // mixdownAudioUrl. It went with the tab (T4.1): one arranger, one export
+  // payload shape.
 
   // ── Mixes (1001tracklists ingestion) ──────────────────────────────────────
   importMix: (url) =>

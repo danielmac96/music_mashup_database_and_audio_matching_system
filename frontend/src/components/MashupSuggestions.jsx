@@ -254,67 +254,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
     }
   }, [verdicts]);
 
-  const judgeAndAdvance = useCallback((verdict) => {
-    const c = sortedCandidates[cursor];
-    if (!c) return;
-    judge(c, verdict);
-    // Judging is a decision, so move on — that is what makes 50 candidates
-    // a two-minute pass rather than a chore.
-    setCursor((i) => Math.min(i + 1, sortedCandidates.length - 1));
-  }, [cursor, judge, sortedCandidates]);
-
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const t = e.target;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      if (!sortedCandidates.length) return;
-
-      switch (e.key) {
-        case "j": case "ArrowDown":
-          e.preventDefault();
-          setCursor((i) => Math.min(i + 1, sortedCandidates.length - 1));
-          break;
-        case "k": case "ArrowUp":
-          e.preventDefault();
-          setCursor((i) => Math.max(i - 1, 0));
-          break;
-        case " ":
-          e.preventDefault();
-          setAuditioning((a) => !a);
-          break;
-        case "f": e.preventDefault(); judgeAndAdvance("love"); break;
-        case "d": e.preventDefault(); judgeAndAdvance("no"); break;
-        case "s": {
-          e.preventDefault();
-          const c = sortedCandidates[cursor];
-          if (c) setShortlist((s) => {
-            const n = new Set(s);
-            n.has(c.id) ? n.delete(c.id) : n.add(c.id);
-            return n;
-          });
-          break;
-        }
-        case "h": {
-          e.preventDefault();
-          const c = sortedCandidates[cursor];
-          // Hiding removes the row, so the cursor already points at the next
-          // pair — no advance, or you skip one.
-          if (c) hide(c);
-          break;
-        }
-        case "?": e.preventDefault(); setShowKeys((v) => !v); break;
-        case "Escape": setAuditioning(false); setShowKeys(false); break;
-        default: break;
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [cursor, sortedCandidates, judgeAndAdvance, hide]);
-
-  // Switching away from the tab must not leave an AudioContext playing.
-  useEffect(() => stop, [stop]);
-
+  // ── toolbar actions ───────────────────────────────────────────────────────
+  // Declared above the keyboard handler on purpose: it lists `hide` in its
+  // dependency array, which is evaluated during render, so a later declaration
+  // is a temporal-dead-zone crash rather than a lint warning.
   const switchType = (type) => { setComboType(type); setExpanded(null); refresh(type, seed, minMatch); };
   const cycleMin = () => {
     const next = MIN_MATCHES[(MIN_MATCHES.indexOf(minMatch) + 1) % MIN_MATCHES.length];
@@ -412,6 +355,67 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
       toast(e.message || "Could not restore");
     }
   }, [refreshHiddenCount]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const judgeAndAdvance = useCallback((verdict) => {
+    const c = sortedCandidates[cursor];
+    if (!c) return;
+    judge(c, verdict);
+    // Judging is a decision, so move on — that is what makes 50 candidates
+    // a two-minute pass rather than a chore.
+    setCursor((i) => Math.min(i + 1, sortedCandidates.length - 1));
+  }, [cursor, judge, sortedCandidates]);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (!sortedCandidates.length) return;
+
+      switch (e.key) {
+        case "j": case "ArrowDown":
+          e.preventDefault();
+          setCursor((i) => Math.min(i + 1, sortedCandidates.length - 1));
+          break;
+        case "k": case "ArrowUp":
+          e.preventDefault();
+          setCursor((i) => Math.max(i - 1, 0));
+          break;
+        case " ":
+          e.preventDefault();
+          setAuditioning((a) => !a);
+          break;
+        case "f": e.preventDefault(); judgeAndAdvance("love"); break;
+        case "d": e.preventDefault(); judgeAndAdvance("no"); break;
+        case "s": {
+          e.preventDefault();
+          const c = sortedCandidates[cursor];
+          if (c) setShortlist((s) => {
+            const n = new Set(s);
+            n.has(c.id) ? n.delete(c.id) : n.add(c.id);
+            return n;
+          });
+          break;
+        }
+        case "h": {
+          e.preventDefault();
+          const c = sortedCandidates[cursor];
+          // Hiding removes the row, so the cursor already points at the next
+          // pair — no advance, or you skip one.
+          if (c) hide(c);
+          break;
+        }
+        case "?": e.preventDefault(); setShowKeys((v) => !v); break;
+        case "Escape": setAuditioning(false); setShowKeys(false); break;
+        default: break;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cursor, sortedCandidates, judgeAndAdvance, hide]);
+
+  // Switching away from the tab must not leave an AudioContext playing.
+  useEffect(() => stop, [stop]);
 
   return (
     <div className="page">
@@ -662,7 +666,16 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
                       {expanded === c.id ? "Hide ▴" : "Plan ▾"}
                     </button>
                     {isVI && (
-                      <button className="audition" onClick={() => onAudition?.(c.vocal_song_id, c.inst_song_id)}>
+                      // Studio opens on this pair (T4.1): the bed already
+                      // pitched by the shift computed here, and both lanes
+                      // placed on the section pair the preview just played.
+                      <button className="audition" onClick={() => onAudition?.({
+                        vocalId: c.vocal_song_id,
+                        instId: c.inst_song_id,
+                        semitoneShift: c.semitone_shift ?? 0,
+                        vocalSectionStart: c.vocal_section_start ?? 0,
+                        instSectionStart: c.inst_section_start ?? 0,
+                      })}>
                         ▶ Audition
                       </button>
                     )}
