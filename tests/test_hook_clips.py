@@ -182,3 +182,32 @@ def test_empty_window_raises(tmp_path, monkeypatch):
     sid = _seed(tmp_path, models)
     with pytest.raises(hook_worker.HookRenderError):
         hook_worker.render_hook(sid, "vocals", start=20.0, end=20.0)
+
+
+def test_warm_hooks_force_recuts_a_moved_window(tmp_path, monkeypatch):
+    """Re-running structure moves the hook. The clip cache is keyed by
+    (song, stem), so without force the old 16 bars would be served for ever
+    while hook_start/hook_end in the DB said something else."""
+    config, models, hook_worker = _setup(tmp_path, monkeypatch)
+    sid = _seed(tmp_path, models, hook=(0.0, 10.0))
+    models.upsert_stem(sid, "instrumental",
+                       str(_write_stem(tmp_path / "stems" / "i.wav")))
+    models.upsert_features(sid, "instrumental",
+                           {"bpm": 120.0, "hook_start": 0.0, "hook_end": 10.0})
+
+    hook_worker.warm_hooks(sid)
+    assert sf.info(hook_worker.hook_clip_path(sid, "vocals")).duration \
+        == pytest.approx(10.0, abs=0.05)
+
+    # Structure re-run: the window moves.
+    models.update_hook(sid, "vocals", {"hook_start": 20.0, "hook_end": 50.0})
+    models.update_hook(sid, "instrumental", {"hook_start": 20.0, "hook_end": 50.0})
+
+    hook_worker.warm_hooks(sid)          # without force: stale
+    assert sf.info(hook_worker.hook_clip_path(sid, "vocals")).duration \
+        == pytest.approx(10.0, abs=0.05)
+
+    hook_worker.warm_hooks(sid, force=True)
+    for stem in ("vocals", "instrumental"):
+        assert sf.info(hook_worker.hook_clip_path(sid, stem)).duration \
+            == pytest.approx(30.0, abs=0.05)

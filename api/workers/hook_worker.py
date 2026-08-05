@@ -146,16 +146,21 @@ def render_hook(song_id: int, stem: str = "vocals", force: bool = False,
     return str(out)
 
 
-def warm_hooks(song_id: int) -> dict:
+def warm_hooks(song_id: int, force: bool = False) -> dict:
     """Best-effort pre-render of both preview stems after analysis.
 
     Never raises: a cold hook is a slower first keypress, not a broken track,
     and this runs at the tail of a pipeline that has already succeeded.
+
+    `force` re-cuts a clip that already exists. Callers that have just CHANGED
+    the hook window must pass it: the cache is keyed by (song, stem) alone, so
+    a re-analysis that moves the hook would otherwise keep serving the old 16
+    bars for ever, silently disagreeing with hook_start/hook_end in the DB.
     """
     done, failed = [], {}
     for stem in ("vocals", "instrumental"):
         try:
-            render_hook(song_id, stem)
+            render_hook(song_id, stem, force=force)
             done.append(stem)
         except HookRenderError as exc:
             failed[stem] = str(exc)

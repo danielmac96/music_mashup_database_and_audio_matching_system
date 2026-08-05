@@ -260,8 +260,10 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
     hooks = _persist_hooks(song_id, sections)
     # Cut the clips now so they are warm before the user reaches the ranked list
     # — a cold hook is the difference between an instant preview and a stall.
+    # force: _persist_hooks has just moved the hook window, and the clip cache is
+    # keyed by (song, stem), so without it a re-run keeps the previous 16 bars.
     from api.workers.hook_worker import warm_hooks
-    clips = warm_hooks(song_id)
+    clips = warm_hooks(song_id, force=True)
     return {"section_count": len(sections), "hooks": hooks, "clips": clips}
 
 
