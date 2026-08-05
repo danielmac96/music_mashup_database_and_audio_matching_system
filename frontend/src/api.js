@@ -164,6 +164,8 @@ export const api = {
     // 0 = uncapped. Server-side (T3.4): capping a truncated 50 client-side
     // would just show fewer rows, not better ones.
     maxPerSong = 3,
+    // T3.5 filters — also server-side, and for the same reason.
+    genre = "", era = "", energy = "", bpmBand = "", vocalForward = false,
   } = {}) => {
     const params = new URLSearchParams();
     if (comboType) params.set("combo_type", comboType);
@@ -172,8 +174,17 @@ export const api = {
     if (vocalSongId != null) params.set("vocal_song_id", String(vocalSongId));
     if (instSongId != null) params.set("inst_song_id", String(instSongId));
     params.set("max_per_song", String(maxPerSong));
+    if (genre) params.set("genre", genre);
+    if (era) params.set("era", era);
+    if (energy) params.set("energy", energy);
+    if (bpmBand) params.set("bpm_band", bpmBand);
+    if (vocalForward) params.set("vocal_forward", "true");
     return jsonFetch(`/api/mashups?${params}`);
   },
+
+  // Which filter values this library actually contains.
+  getMashupFilters: (comboType = "") =>
+    jsonFetch(`/api/mashups/filters${comboType ? `?combo_type=${comboType}` : ""}`),
 
   // "The best bed for each of my vocals" — every acapella gets a turn instead
   // of one well-placed vocal owning the page.

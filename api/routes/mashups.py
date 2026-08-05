@@ -8,7 +8,8 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from database.models import (
-    VERDICTS, best_bed_per_vocal, exclude_track, get_candidates_enriched,
+    BPM_BANDS, ENERGY_BANDS, ERA_BANDS, VERDICTS, best_bed_per_vocal,
+    candidate_filter_options, exclude_track, get_candidates_enriched,
     get_pair_feedback, hide_pair, include_track, list_hidden, unhide_pair,
     upsert_pair_feedback,
 )
@@ -80,9 +81,16 @@ def _with_playback_terms(rows: list) -> list:
 def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     limit: int = 50, vocal_song_id: Optional[int] = None,
                     inst_song_id: Optional[int] = None,
-                    max_per_song: int = 3) -> dict:
-    """The ranked list. max_per_song caps how often one song may appear (0 =
-    uncapped) so a single well-placed vocal cannot own the page."""
+                    max_per_song: int = 3,
+                    genre: str = "", era: str = "", energy: str = "",
+                    bpm_band: str = "", vocal_forward: bool = False) -> dict:
+    """The ranked list.
+
+    max_per_song caps how often one song may appear (0 = uncapped) so a single
+    well-placed vocal cannot own the page. genre / era / energy / bpm_band /
+    vocal_forward compose, and all of them filter in SQL — narrowing a
+    truncated 50 client-side would search the top of the list, not the library.
+    """
     if combo_type and combo_type not in _COMBO_TYPES:
         raise HTTPException(
             status_code=400,
@@ -91,14 +99,34 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     if max_per_song < 0:
         raise HTTPException(status_code=400,
                             detail="max_per_song must be 0 or greater")
+    for value, allowed, name in ((era, ERA_BANDS, "era"),
+                                 (energy, ENERGY_BANDS, "energy"),
+                                 (bpm_band, BPM_BANDS, "bpm_band")):
+        if value and value not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{name} must be one of {sorted(allowed)}")
     rows = get_candidates_enriched(
         combo_type=combo_type, min_score=min_score,
         limit=max(1, min(limit, 500)),
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
         max_per_song=max_per_song,
+        genre=genre, era=era, energy=energy, bpm_band=bpm_band,
+        vocal_forward=vocal_forward,
     )
     return {"count": len(rows), "candidates": _with_playback_terms(rows),
             "max_per_song": max_per_song}
+
+
+@router.get("/filters")
+def filter_options(combo_type: str = "") -> dict:
+    """Which filter values this library actually contains, so the chips only
+    offer what will match something."""
+    if combo_type and combo_type not in _COMBO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
+    return candidate_filter_options(combo_type=combo_type)
 
 
 @router.get("/by-vocal")

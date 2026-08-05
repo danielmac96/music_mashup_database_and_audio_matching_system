@@ -1163,6 +1163,9 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             inst_song_id: Optional[int] = None,
                             max_per_song: int = 0,
                             include_hidden: bool = False,
+                            genre: str = "", era: str = "",
+                            energy: str = "", bpm_band: str = "",
+                            vocal_forward: bool = False,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -1176,7 +1179,13 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     counting both sides (T3.4). One vocal that sits at 128 BPM in 8A otherwise
     owns the whole page, which makes a 50-row list worth about 8 real choices.
     include_hidden returns rows the user has hidden or excluded, for the UI that
-    manages them."""
+    manages them.
+
+    genre / era / energy / bpm_band / vocal_forward are the T3.5 filters, and
+    they compose. All of them run in SQL: client-filtering a truncated 50 would
+    search the top of the list rather than the library, which is the opposite of
+    what a filter is for. See ERA_BANDS / BPM_BANDS / ENERGY_BANDS for the
+    accepted values."""
     conn = get_conn(db_path)
     where = ["mc.score_total >= ?"]
     params: list = [min_score]
@@ -1197,6 +1206,46 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         where.append(
             "NOT EXISTS (SELECT 1 FROM track_excluded x "
             "            WHERE x.song_id IN (mc.vocal_song_id, mc.inst_song_id))")
+
+    # ── T3.5 filters ──────────────────────────────────────────────────────────
+    # Genre and era match EITHER side: "show me the 2010s pairs" means a pair
+    # with a 2010s record in it, not one where both tracks happen to be.
+    if genre:
+        where.append("(sv.genre LIKE ? OR si.genre LIKE ?)")
+        params += [f"%{genre}%", f"%{genre}%"]
+    if era:
+        lo, hi = era_bounds(era)
+        if lo is None:
+            raise ValueError(f"era must be one of {sorted(ERA_BANDS)}")
+        where.append(
+            "((sv.release_year BETWEEN ? AND ?) OR (si.release_year BETWEEN ? AND ?))")
+        params += [lo, hi, lo, hi]
+    if bpm_band:
+        lo, hi = bpm_bounds(bpm_band)
+        if lo is None:
+            raise ValueError(f"bpm_band must be one of {sorted(BPM_BANDS)}")
+        # The vocal sets the target tempo — the bed is conformed to it.
+        where.append("mc.vocal_bpm >= ? AND mc.vocal_bpm < ?")
+        params += [lo, hi]
+    if energy:
+        lo, hi = ENERGY_BANDS.get(energy, (None, None))
+        if lo is None:
+            raise ValueError(f"energy must be one of {sorted(ENERGY_BANDS)}")
+        # Ranked within the library rather than thresholded on a raw number:
+        # spectral energy has no absolute meaning across masters.
+        where.append("ne.energy_pct >= ? AND ne.energy_pct < ?")
+        params += [lo, hi]
+    if vocal_forward:
+        # The vocal presence of the section that will actually play, falling
+        # back to the track's most vocal section when no pair was stored.
+        where.append(
+            f"""COALESCE(
+                    (SELECT vocal_presence FROM sections
+                      WHERE song_id = mc.vocal_song_id
+                        AND section_index = mc.vocal_section_idx),
+                    (SELECT MAX(vocal_presence) FROM sections
+                      WHERE song_id = mc.vocal_song_id)
+                ) >= {VOCAL_FORWARD_MIN}""")
 
     # The cap is a greedy pass over the ranked rows, so it needs more rows than
     # it will return. Fetching everything would mean 90k rows through the join
@@ -1223,9 +1272,19 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                        PERCENT_RANK() OVER (PARTITION BY combo_type
                                             ORDER BY score_total) AS score_percentile
                 FROM mashup_candidates
+            ),
+            -- How hard this pair hits, relative to the rest of the library.
+            -- The bed carries the energy, and a raw spectral figure means
+            -- nothing across differently mastered records, so band on the rank.
+            nrg AS (
+                SELECT id,
+                       PERCENT_RANK() OVER (PARTITION BY combo_type
+                                            ORDER BY inst_energy) AS energy_pct
+                FROM mashup_candidates
             )
             SELECT mc.*,
                    pc.score_percentile,
+                   ne.energy_pct,
                    sv.genre        AS vocal_genre,
                    sv.release_year AS vocal_year,
                    sv.plays        AS vocal_plays,
@@ -1270,6 +1329,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
             LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
             LEFT JOIN pct pc   ON pc.id = mc.id
+            LEFT JOIN nrg ne   ON ne.id = mc.id
             WHERE {' AND '.join(where)}
             ORDER BY mc.score_total DESC
             LIMIT ?""",
@@ -1277,6 +1337,86 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     ).fetchall()
     conn.close()
     return _cap_per_song([dict(r) for r in rows], max_per_song, limit)
+
+
+# ── T3.5 filter vocabularies ─────────────────────────────────────────────────
+#
+# Bands rather than free ranges: "2010s", "125-134" and "high energy" are how
+# the user already thinks about a library, and a chip that cycles four values is
+# faster to drive than two number inputs.
+
+ERA_BANDS: Dict[str, tuple] = {
+    "2020s": (2020, 2099),
+    "2010s": (2010, 2019),
+    "2000s": (2000, 2009),
+    "1990s": (1990, 1999),
+    # Lower bound 1, not 0: release_year is 0 for a track whose upload date
+    # never resolved, and "unknown" is not "old".
+    "pre-1990": (1, 1989),
+}
+
+# Half-open [lo, hi). The break points are DJ conventions, not arithmetic:
+# 124-128 is house, 140/174 is where dubstep and drum & bass live.
+BPM_BANDS: Dict[str, tuple] = {
+    "<100": (0.0, 100.0),
+    "100-124": (100.0, 125.0),
+    "125-134": (125.0, 135.0),
+    "135-149": (135.0, 150.0),
+    "150+": (150.0, 1000.0),
+}
+
+# Percentile bands of the bed's energy within the library.
+ENERGY_BANDS: Dict[str, tuple] = {
+    "low": (0.0, 0.34),
+    "mid": (0.34, 0.67),
+    "high": (0.67, 1.01),
+}
+
+# A section the separator found this much voice in is one you can hear over a
+# bed. Matches the vocal-presence scale sections are scored on.
+VOCAL_FORWARD_MIN = 0.6
+
+
+def era_bounds(era: str) -> tuple:
+    return ERA_BANDS.get(era, (None, None))
+
+
+def bpm_bounds(band: str) -> tuple:
+    return BPM_BANDS.get(band, (None, None))
+
+
+def candidate_filter_options(combo_type: str = "",
+                             db_path: Path = DB_PATH) -> Dict[str, list]:
+    """Which filter values actually match something, so the chips only offer
+    what this library contains. A Genre chip listing 40 genres the user has none
+    of is worse than no chip."""
+    conn = get_conn(db_path)
+    where = "WHERE mc.combo_type = ?" if combo_type else ""
+    args = (combo_type,) if combo_type else ()
+    genres = conn.execute(
+        f"""SELECT g AS genre, COUNT(*) AS n FROM (
+                SELECT sv.genre AS g FROM mashup_candidates mc
+                  JOIN songs sv ON sv.id = mc.vocal_song_id {where}
+                UNION ALL
+                SELECT si.genre AS g FROM mashup_candidates mc
+                  JOIN songs si ON si.id = mc.inst_song_id {where}
+            )
+            WHERE g IS NOT NULL AND g != ''
+            GROUP BY g ORDER BY n DESC, g""",
+        args * 2).fetchall()
+    years = conn.execute(
+        """SELECT MIN(release_year) AS lo, MAX(release_year) AS hi
+           FROM songs WHERE release_year > 0""").fetchone()
+    conn.close()
+    lo, hi = (years["lo"], years["hi"]) if years else (None, None)
+    eras = [name for name, (a, b) in ERA_BANDS.items()
+            if lo is not None and not (hi < a or lo > b)]
+    return {
+        "genres": [dict(r) for r in genres],
+        "eras": eras,
+        "bpm_bands": list(BPM_BANDS),
+        "energy_bands": list(ENERGY_BANDS),
+    }
 
 
 def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int) -> List[Dict]:

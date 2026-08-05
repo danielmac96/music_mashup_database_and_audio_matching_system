@@ -112,6 +112,11 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
   const [maxPerSong, setMaxPerSong] = useState(3);
   const [grouped, setGrouped] = useState(false);
   const [hiddenCount, setHiddenCount] = useState(0);
+  // ── T3.5 filters. "" / false is off; they compose, and all of them are
+  // applied by the server over the whole table, not over the visible 50.
+  const [filters, setFilters] = useState(
+    { genre: "", era: "", energy: "", bpmBand: "", vocalForward: false });
+  const [filterOpts, setFilterOpts] = useState(null);
 
   // ── T1.7 triage: highlighted row, verdicts, shortlist, shortcut legend ────
   const [cursor, setCursor] = useState(0);
@@ -138,7 +143,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
   }, []);
 
   const refresh = async (type = comboType, activeSeed = seed, min = minMatch,
-                        cap = maxPerSong, group = grouped) => {
+                        cap = maxPerSong, group = grouped, f = filters) => {
     setLoading(true);
     setError(null);
     try {
@@ -151,7 +156,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
         return;
       }
       const opts = { comboType: type, minScore: min / 100, limit: 50,
-                     maxPerSong: cap };
+                     maxPerSong: cap, ...f };
       if (activeSeed?.songId != null) {
         if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
         else opts.vocalSongId = activeSeed.songId;
@@ -171,8 +176,14 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
   }, [seed]);
 
   useEffect(() => {
-    onStatus?.({ text: `${candidates.length} scored pair${candidates.length === 1 ? "" : "s"}` });
-  }, [candidates.length, onStatus]);
+    const n = candidates.length;
+    const filtered = Object.values(filters).some(Boolean);
+    onStatus?.({
+      text: `${n} ${filtered ? "matching" : "scored"} pair${n === 1 ? "" : "s"}`
+        + (filtered ? ` · ${activeFilters} filter${activeFilters === 1 ? "" : "s"}` : ""),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [candidates.length, onStatus, filters]);
 
   const seedTitle = useMemo(() => {
     if (seed?.songId == null) return null;
@@ -322,6 +333,35 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
     refresh(comboType, seed, minMatch, maxPerSong, next);
   };
 
+  // Only offer values this library actually contains — a Genre chip cycling
+  // through forty genres you own none of is worse than no chip.
+  useEffect(() => {
+    api.getMashupFilters(comboType).then(setFilterOpts).catch(() => setFilterOpts(null));
+  }, [comboType]);
+
+  // Chips cycle: "" (off) → each value → back to off.
+  const cycleFilter = (key, values) => {
+    const list = ["", ...(values || [])];
+    const next = list[(list.indexOf(filters[key]) + 1) % list.length];
+    const f = { ...filters, [key]: next };
+    setFilters(f);
+    refresh(comboType, seed, minMatch, maxPerSong, grouped, f);
+  };
+
+  const toggleVocalForward = () => {
+    const f = { ...filters, vocalForward: !filters.vocalForward };
+    setFilters(f);
+    refresh(comboType, seed, minMatch, maxPerSong, grouped, f);
+  };
+
+  const clearFilters = () => {
+    const f = { genre: "", era: "", energy: "", bpmBand: "", vocalForward: false };
+    setFilters(f);
+    refresh(comboType, seed, minMatch, maxPerSong, grouped, f);
+  };
+
+  const activeFilters = Object.entries(filters).filter(([, v]) => v).length;
+
   const refreshHiddenCount = useCallback(() => {
     api.getHidden()
       .then((d) => setHiddenCount((d.pairs?.length || 0) + (d.tracks?.length || 0)))
@@ -424,6 +464,43 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
             <span className="caret">▾</span>
           </div>
         )}
+        {!grouped && (
+          <>
+            <div className="chip" onClick={() => cycleFilter(
+              "genre", (filterOpts?.genres || []).map((g) => g.genre))}
+              title="Pairs containing a track of this genre, on either side">
+              <span className="k">Genre</span>
+              <span>{filters.genre || "Any"}</span><span className="caret">▾</span>
+            </div>
+            <div className="chip" onClick={() => cycleFilter("era", filterOpts?.eras)}
+              title="Pairs containing a record from this era, on either side">
+              <span className="k">Era</span>
+              <span>{filters.era || "Any"}</span><span className="caret">▾</span>
+            </div>
+            <div className="chip" onClick={() => cycleFilter("bpmBand", filterOpts?.bpm_bands)}
+              title="Target tempo — the vocal's BPM, which the bed is conformed to">
+              <span className="k">BPM</span>
+              <span className="mono">{filters.bpmBand || "Any"}</span><span className="caret">▾</span>
+            </div>
+            <div className="chip" onClick={() => cycleFilter("energy", filterOpts?.energy_bands)}
+              title="How hard the bed hits, ranked within your library">
+              <span className="k">Energy</span>
+              <span>{filters.energy || "Any"}</span><span className="caret">▾</span>
+            </div>
+            <div className={`chip${filters.vocalForward ? " active" : ""}`}
+              onClick={toggleVocalForward}
+              title="Only pairs whose vocal section is properly sung, not an ad-lib">
+              <span className="k">Vocal-forward</span>
+              <span>{filters.vocalForward ? "On" : "Off"}</span>
+            </div>
+            {activeFilters > 0 && (
+              <div className="chip" onClick={clearFilters} title="Clear every filter">
+                <span className="k">Filters</span>
+                <span className="mono">{activeFilters}</span><span className="x">✕</span>
+              </div>
+            )}
+          </>
+        )}
         {hiddenCount > 0 && (
           <div className="chip" onClick={unhideAll}
             title="Restore every pair you hid and every track you excluded">
@@ -484,7 +561,9 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
 
       {sortedCandidates.length === 0 && !loading ? (
         <p className="empty">
-          {minMatch > MIN_MATCHES[0]
+          {activeFilters > 0
+            ? "No pairs match every filter — clear one, or lower Min match."
+            : minMatch > MIN_MATCHES[0]
             ? `No pairs score ${minMatch}% or better — click "Min match" to lower the bar, or re-score after analyzing more tracks.`
             : "No scored pairs yet. Analyze your tracks (Library tab), then click “Score library”."}
         </p>
