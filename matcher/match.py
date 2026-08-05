@@ -699,12 +699,14 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     full        = get_all_features(stem_type="full",          db_path=db)
     full_by_song = {f["song_id"]: f for f in full}
 
-    # Section lookups are only needed for the model's pair features.
+    # Sections feed two things: the model's pair features, and the winning
+    # section pair stored on every vocal-over-instrumental row (T3.3). Read once
+    # per song — the alternative is one query per candidate.
     _sections_cache: Dict[int, list] = {}
 
     def _sections(song_id):
         if song_id not in _sections_cache:
-            _sections_cache[song_id] = get_sections(song_id, db_path=db) if use_model else []
+            _sections_cache[song_id] = get_sections(song_id, db_path=db)
         return _sections_cache[song_id]
 
     # Read the library's normalisation constants ONCE for this run — timbre and
@@ -750,13 +752,36 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                 on_block=on_block)
         ]
 
-    def _emit(pairs, combo_type, row_scorer, row_version):
+    # The sections each side would actually contribute, filtered and ordered
+    # once per song. best_section_pair then only walks the survivors.
+    _usable_cache: Dict[tuple, list] = {}
+
+    def _usable(song_id: int, vocal_side: bool) -> list:
+        key = (song_id, vocal_side)
+        if key not in _usable_cache:
+            from matcher.sections import usable_sections
+            _usable_cache[key] = usable_sections(_sections(song_id), vocal_side)
+        return _usable_cache[key]
+
+    def _section_pair(top: dict, bed: dict) -> Optional[dict]:
+        """Which sections this pair is really about — None until both sides have
+        structure, in which case readers fall back to each track's hook."""
+        from matcher.sections import best_section_pair
+        v_use = _usable(top["song_id"], True)
+        i_use = _usable(bed["song_id"], False)
+        if not v_use or not i_use:
+            return None
+        stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
+        return best_section_pair(v_use, i_use, stretch, prefiltered=True)
+
+    def _emit(pairs, combo_type, row_scorer, row_version, with_sections=False):
         nonlocal scored
         out = results[combo_type]
         for top, bed, scores in pairs:
+            section_pair = _section_pair(top, bed) if with_sections else None
             rows.append(candidate_row(top, bed, scores, combo_type,
-                                      row_scorer, row_version))
-            out.append(_build_row(top, bed, scores))
+                                      row_scorer, row_version, section_pair))
+            out.append(_build_row(top, bed, scores, section_pair))
         scored += len(pairs)
 
     # ── vocal over instrumental ───────────────────────────────────────────────
@@ -770,7 +795,8 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     if use_model:
         _apply_model_scores(voi, bundle, _sections, lib_stats,
                             _report(55, 10, "Applying the learned model"))
-    _emit(voi, "vocal_over_instrumental", active_scorer, model_version)
+    _emit(voi, "vocal_over_instrumental", active_scorer, model_version,
+          with_sections=True)
     voi = None                      # release before the second pass allocates
 
     # ── instrumental over instrumental ────────────────────────────────────────
@@ -778,6 +804,8 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     # has no training signal for instrumental↔instrumental transitions. Only
     # lower id over higher, so A/B and B/A are not both scored.
     # Reuse vocal/inst columns: vocal_* = the "top" layer, inst_* = the "bed".
+    # No section pair: the top layer here is an instrumental, and the vocal-side
+    # filter (vocal_presence ≥ 0.25) would be asking the wrong question of it.
     _emit(_run(i_block, i_block, key_gate=key_min, upper_triangle=True,
                on_block=_report(65, 25, "Scoring instrumental over instrumental")),
           "instrumental_over_instrumental", "heuristic", None)
@@ -797,8 +825,10 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     return {**results, "_scorer": active_scorer, "_model_version": model_version}
 
 
-def _build_row(feat_a: dict, feat_b: dict, scores: dict) -> dict:
+def _build_row(feat_a: dict, feat_b: dict, scores: dict,
+               section_pair: Optional[dict] = None) -> dict:
     return {
+        **(section_pair or {}),
         "vocal_song_id":  feat_a["song_id"],
         "vocal_title":    feat_a.get("title", "?"),
         "vocal_artist":   feat_a.get("artist", "?"),

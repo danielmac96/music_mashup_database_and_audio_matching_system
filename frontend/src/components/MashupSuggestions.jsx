@@ -51,6 +51,16 @@ function PlanDetails({ vocalId, instId, candidate }) {
           {" · timbre "}{pc(sc.score_timbre)}
         </div>
       )}
+      {sc.score_section != null && (
+        <div className="raw-scores mono"
+          title="The section pair this candidate was chosen for — what the preview plays">
+          plays <b>{sc.vocal_section_label || "vocal"}</b>{" "}
+          {fmtTime(sc.vocal_section_start)}–{fmtTime(sc.vocal_section_end)}
+          {" over "}<b>{sc.inst_section_label || "bed"}</b>{" "}
+          {fmtTime(sc.inst_section_start)}–{fmtTime(sc.inst_section_end)}
+          {" · fit "}{pc(sc.score_section)}
+        </div>
+      )}
       <strong>Recipe</strong>
       <ol>
         {plan.steps.map((s, i) => <li key={i}>{s.replace(/^\d+\.\s*/, "")}</li>)}
@@ -205,6 +215,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus }) {
     try {
       await api.savePairFeedback({
         vocalSongId: c.vocal_song_id, instSongId: c.inst_song_id, verdict,
+        // The verdict is about the sections that were actually playing (T3.3),
+        // so record which ones — a "no" on one chorus is not a "no" on the song.
+        vocalSection: c.vocal_section_idx ?? null,
+        instSection: c.inst_section_idx ?? null,
       });
     } catch (e) {
       setVerdicts((v) => ({ ...v, [k]: prev }));    // put it back if it didn't stick

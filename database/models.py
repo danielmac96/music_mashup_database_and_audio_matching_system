@@ -363,6 +363,18 @@ def _migrate_mashuppairs_columns(conn: sqlite3.Connection) -> None:
 _CANDIDATES_OPTIONAL_COLUMNS = (
     ("scorer", "TEXT DEFAULT 'heuristic'"),  # 'heuristic' | 'model'
     ("model_version", "TEXT"),               # e.g. 'pairwise_bbm_v1' when scorer='model'
+    # T3.3 — the winning (vocal section × bed section), so the preview and the
+    # Studio hand-off play the exact moment the pair was chosen for rather than
+    # each track's generic hook. Times are stored alongside the indices because
+    # every reader wants seconds and the table is rebuilt on each re-score
+    # anyway, so they cannot go stale against the sections they came from.
+    ("vocal_section_idx", "INTEGER"),
+    ("inst_section_idx", "INTEGER"),
+    ("vocal_section_start", "REAL"),
+    ("vocal_section_end", "REAL"),
+    ("inst_section_start", "REAL"),
+    ("inst_section_end", "REAL"),
+    ("score_section", "REAL"),               # selection fit, NOT part of score_total
 )
 
 
@@ -964,10 +976,22 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        inst_bpm, inst_key, inst_mode, inst_camelot,
        inst_loudness_rms, inst_energy,
        score_total, score_bpm, score_key, score_energy, score_timbre,
-       scorer, model_version, scored_at
-   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+       scorer, model_version,
+       vocal_section_idx, inst_section_idx,
+       vocal_section_start, vocal_section_end,
+       inst_section_start, inst_section_end, score_section,
+       scored_at
+   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+             ?,?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
        score_total=excluded.score_total,
+       vocal_section_idx=excluded.vocal_section_idx,
+       inst_section_idx=excluded.inst_section_idx,
+       vocal_section_start=excluded.vocal_section_start,
+       vocal_section_end=excluded.vocal_section_end,
+       inst_section_start=excluded.inst_section_start,
+       inst_section_end=excluded.inst_section_end,
+       score_section=excluded.score_section,
        score_bpm=excluded.score_bpm,
        score_key=excluded.score_key,
        score_energy=excluded.score_energy,
@@ -989,15 +1013,28 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        scored_at=datetime('now')"""
 
 
+SECTION_PAIR_COLUMNS = (
+    "vocal_section_idx", "inst_section_idx",
+    "vocal_section_start", "vocal_section_end",
+    "inst_section_start", "inst_section_end", "score_section",
+)
+
+
 def candidate_row(vocal: dict, inst: dict, scores: dict,
                   combo_type: str = "vocal_over_instrumental",
                   scorer: str = "heuristic",
-                  model_version: Optional[str] = None) -> tuple:
+                  model_version: Optional[str] = None,
+                  section_pair: Optional[dict] = None) -> tuple:
     """The parameter tuple for one mashup_candidates row.
 
     Split out so the bulk writer and upsert_candidate bind the same columns in
     the same order — a scoring run inserts hundreds of thousands of these, and
-    two copies of a 26-placeholder tuple would drift."""
+    two copies of a 33-placeholder tuple would drift.
+
+    `section_pair` is matcher.sections.best_section_pair's result, or None when
+    either side has no usable structure yet (the columns then stay NULL and
+    readers fall back to the track's hook)."""
+    sp = section_pair or {}
     return (
         combo_type,
         vocal["song_id"], vocal.get("title"), vocal.get("artist"),
@@ -1009,6 +1046,7 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
         scores["total"], scores["bpm_score"], scores["key_score"],
         scores["energy_score"], scores["timbre_score"],
         scorer, model_version,
+        *(sp.get(col) for col in SECTION_PAIR_COLUMNS),
     )
 
 
@@ -1158,6 +1196,17 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                        AS vocal_section_count,
                    (SELECT COUNT(*) FROM sections WHERE song_id = mc.inst_song_id)
                        AS inst_section_count,
+                   -- Labels for the winning section pair (T3.3). Joined rather
+                   -- than stored: the row already pins the times the preview
+                   -- plays, and the label is only there to read.
+                   (SELECT label FROM sections
+                     WHERE song_id = mc.vocal_song_id
+                       AND section_index = mc.vocal_section_idx)
+                       AS vocal_section_label,
+                   (SELECT label FROM sections
+                     WHERE song_id = mc.inst_song_id
+                       AND section_index = mc.inst_section_idx)
+                       AS inst_section_label,
                    -- Joined live rather than frozen onto the candidate row, so a
                    -- re-analysis updates the ⚠ flag without needing a re-score.
                    -- Prefer the stem the match was scored on, fall back to full.

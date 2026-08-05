@@ -135,3 +135,50 @@ def test_unknown_stem_raises(tmp_path, monkeypatch):
     sid = _seed(tmp_path, models)
     with pytest.raises(hook_worker.HookRenderError):
         hook_worker.render_hook(sid, "banjo")
+
+
+# ── T3.3: an arbitrary section window, not just the track's own hook ─────────
+
+def test_window_render_cuts_exactly_that_span(tmp_path, monkeypatch):
+    config, models, hook_worker = _setup(tmp_path, monkeypatch)
+    sid = _seed(tmp_path, models, hook=(0.0, 32.0))
+
+    out = hook_worker.render_hook(sid, "vocals", start=12.5, end=30.5)
+
+    assert sf.info(out).duration == pytest.approx(18.0, abs=0.05)
+    # A distinct file from the track's own hook — both stay cached side by side.
+    assert Path(out) != Path(hook_worker.hook_clip_path(sid, "vocals"))
+    assert Path(hook_worker.render_hook(sid, "vocals")) != Path(out)
+
+
+def test_window_render_is_cached_by_the_window(tmp_path, monkeypatch):
+    config, models, hook_worker = _setup(tmp_path, monkeypatch)
+    sid = _seed(tmp_path, models)
+
+    first = Path(hook_worker.render_hook(sid, "vocals", start=5.0, end=25.0))
+    stamp = first.stat().st_mtime_ns
+    again = Path(hook_worker.render_hook(sid, "vocals", start=5.0, end=25.0))
+    other = Path(hook_worker.render_hook(sid, "vocals", start=6.0, end=26.0))
+
+    assert again == first and again.stat().st_mtime_ns == stamp
+    assert other != first
+
+
+def test_a_windowed_track_needs_no_stored_hook(tmp_path, monkeypatch):
+    """Section windows come from the candidate row, so a track whose own hook was
+    never chosen can still be previewed."""
+    config, models, hook_worker = _setup(tmp_path, monkeypatch)
+    sid = models.upsert_song("T", "A", "https://sc/win", 200, "Pop",
+                             status="analysed")
+    models.upsert_stem(sid, "vocals", str(_write_stem(tmp_path / "stems" / "v.wav")))
+    models.upsert_features(sid, "vocals", {"bpm": 120.0})
+
+    out = hook_worker.render_hook(sid, "vocals", start=1.0, end=11.0)
+    assert sf.info(out).duration == pytest.approx(10.0, abs=0.05)
+
+
+def test_empty_window_raises(tmp_path, monkeypatch):
+    config, models, hook_worker = _setup(tmp_path, monkeypatch)
+    sid = _seed(tmp_path, models)
+    with pytest.raises(hook_worker.HookRenderError):
+        hook_worker.render_hook(sid, "vocals", start=20.0, end=20.0)

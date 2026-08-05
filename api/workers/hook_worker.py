@@ -35,9 +35,19 @@ class HookRenderError(RuntimeError):
     or 501 with the message intact — never a bare 500."""
 
 
-def hook_clip_path(song_id: int, stem: str) -> Path:
-    """Stable on-disk location for a rendered clip."""
-    return HOOKS_DIR / f"{stem}_{song_id}_hook.wav"
+def hook_clip_path(song_id: int, stem: str,
+                   window: Optional[tuple] = None) -> Path:
+    """Stable on-disk location for a rendered clip.
+
+    Without a window this is the track's own hook (T1.5/T1.6). With one it is an
+    arbitrary section — the pair-specific clip a candidate row points at (T3.3).
+    Windows are keyed in milliseconds so the same section always resolves to the
+    same file and the cache actually hits; a track has at most a handful of
+    usable sections, so this stays a small bounded set per stem."""
+    if window is None:
+        return HOOKS_DIR / f"{stem}_{song_id}_hook.wav"
+    start_ms, end_ms = (int(round(v * 1000)) for v in window)
+    return HOOKS_DIR / f"{stem}_{song_id}_{start_ms}_{end_ms}.wav"
 
 
 def _stem_file(song_id: int, stem: str) -> Optional[str]:
@@ -50,8 +60,15 @@ def _stem_file(song_id: int, stem: str) -> Optional[str]:
     return row["file_path"] if row else None
 
 
-def render_hook(song_id: int, stem: str = "vocals", force: bool = False) -> str:
-    """Render (or reuse) this track's hook clip. Returns the file path."""
+def render_hook(song_id: int, stem: str = "vocals", force: bool = False,
+                start: Optional[float] = None,
+                end: Optional[float] = None) -> str:
+    """Render (or reuse) a clip of this track. Returns the file path.
+
+    With no window this is the track's stored hook. With `start`/`end` it is
+    that exact span — how a candidate's winning section pair (T3.3) gets
+    previewed instead of each track's generic hook. Either way it is a
+    seek-and-copy, so a cold render is cheap enough for the request path."""
     if stem not in HOOK_STEMS:
         raise HookRenderError(f"stem must be one of {sorted(HOOK_STEMS)}")
 
@@ -63,24 +80,33 @@ def render_hook(song_id: int, stem: str = "vocals", force: bool = False) -> str:
             "Install it to enable instant audition."
         ) from exc
 
-    out = hook_clip_path(song_id, stem)
+    windowed = start is not None and end is not None
+    if windowed:
+        start = max(0.0, float(start))
+        end = float(end)
+        if end <= start:
+            raise HookRenderError(
+                f"requested window is empty for song {song_id} stem '{stem}'")
+
+    out = hook_clip_path(song_id, stem, (start, end) if windowed else None)
     if out.exists() and not force:
         return str(out)
 
-    feat = get_features_for_song(song_id, stem)
-    if not feat or feat.get("hook_start") is None or feat.get("hook_end") is None:
-        raise HookRenderError(
-            f"no hook chosen for song {song_id} stem '{stem}' — "
-            "run structure detection, or GET /api/tracks/{id}/hook to backfill")
+    if not windowed:
+        feat = get_features_for_song(song_id, stem)
+        if not feat or feat.get("hook_start") is None or feat.get("hook_end") is None:
+            raise HookRenderError(
+                f"no hook chosen for song {song_id} stem '{stem}' — "
+                "run structure detection, or GET /api/tracks/{id}/hook to backfill")
+        start = max(0.0, float(feat["hook_start"]))
+        end = float(feat["hook_end"])
+        if end <= start:
+            raise HookRenderError(
+                f"hook window is empty for song {song_id} stem '{stem}'")
 
     src = _stem_file(song_id, stem)
     if not src or not Path(src).exists():
         raise HookRenderError(f"stem '{stem}' audio is missing for song {song_id}")
-
-    start = max(0.0, float(feat["hook_start"]))
-    end = float(feat["hook_end"])
-    if end <= start:
-        raise HookRenderError(f"hook window is empty for song {song_id} stem '{stem}'")
 
     HOOKS_DIR.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".part")
@@ -92,7 +118,7 @@ def render_hook(song_id: int, stem: str = "vocals", force: bool = False) -> str:
             want = max(0, min(int(end * sr), len(f)) - begin)
             if want == 0:
                 raise HookRenderError(
-                    f"hook window starts past the end of the audio for song {song_id}")
+                    f"clip window starts past the end of the audio for song {song_id}")
             f.seek(begin)
             # format is explicit because the temp name ends in .part, and
             # soundfile otherwise infers the container from the extension.

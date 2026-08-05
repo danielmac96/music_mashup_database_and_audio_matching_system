@@ -308,16 +308,26 @@ def get_hook(song_id: int, role: str = "vocal") -> dict:
 
 
 @router.get("/{song_id}/hook/audio")
-def stream_hook(song_id: int, stem: str = "vocals"):
+def stream_hook(song_id: int, stem: str = "vocals",
+                start: Optional[float] = None, end: Optional[float] = None):
     """Serve the pre-rendered 16-bar hook clip, rendering it on a cache miss.
 
     This is the request the ranked list makes on every keypress, so a warm hit
     is a plain file serve. A cold one is a seek-and-copy of a byte range that
     already exists on disk — no DSP, no decode.
+
+    `start`/`end` (seconds) serve that exact span instead — the ranked list
+    sends the candidate's winning section pair (T3.3) so the preview is the
+    moment the pair was chosen for, not each track's generic hook. Windowed
+    clips cache under their own name, so stepping back to a row is still a
+    file serve.
     """
     from api.workers.hook_worker import HookRenderError, render_hook
+    if (start is None) != (end is None):
+        raise HTTPException(status_code=400,
+                            detail="pass both start and end, or neither")
     try:
-        path = Path(render_hook(song_id, stem))
+        path = Path(render_hook(song_id, stem, start=start, end=end))
     except HookRenderError as exc:
         # Missing dependency is a capability gap (501); everything else is a
         # missing artefact (404). Neither is ever a bare 500.

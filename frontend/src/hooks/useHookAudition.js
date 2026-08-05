@@ -16,13 +16,28 @@ import { decodeStem } from "../engine/decode";
 
 const PREFETCH_AHEAD = 2;
 
-export const hookUrl = (songId, stem) =>
-  `/api/tracks/${songId}/hook/audio?stem=${stem}`;
+// start/end (seconds) ask for that exact span instead of the track's own hook.
+// Rounded to milliseconds so two rows naming the same section produce the same
+// URL, which is what keeps both the server's clip cache and decodeStem's
+// AudioBuffer cache hitting.
+export const hookUrl = (songId, stem, start, end) => {
+  const base = `/api/tracks/${songId}/hook/audio?stem=${stem}`;
+  if (start == null || end == null || !(end > start)) return base;
+  return `${base}&start=${start.toFixed(3)}&end=${end.toFixed(3)}`;
+};
 
-/** The two clips a candidate needs: the vocal on top, the instrumental beneath. */
+/** The two clips a candidate needs: the vocal on top, the instrumental beneath.
+ *
+ * Scoring stores the winning (vocal section x bed section) on the row (T3.3),
+ * so the preview plays the moment the pair was actually chosen for. Rows scored
+ * before that existed — or whose tracks have no structure yet — have no section
+ * columns and fall back to each track's 16-bar hook. */
 export function hookUrlsFor(c) {
   if (!c) return [];
-  return [hookUrl(c.vocal_song_id, "vocals"), hookUrl(c.inst_song_id, "instrumental")];
+  return [
+    hookUrl(c.vocal_song_id, "vocals", c.vocal_section_start, c.vocal_section_end),
+    hookUrl(c.inst_song_id, "instrumental", c.inst_section_start, c.inst_section_end),
+  ];
 }
 
 export function useHookAudition() {
