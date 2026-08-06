@@ -5,7 +5,8 @@ import { KeyChip } from "./KeyChip";
 import { TrackArt } from "./TrackArt";
 import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
-import { fmtTime } from "../theme";
+import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
+import { fmtTime, keyRel } from "../theme";
 import { toast } from "../toast";
 
 // ── Studio: multi-track DAW-style arrangement view ───────────────────────────
@@ -14,6 +15,21 @@ import { toast } from "../toast";
 // lane, all locked to a single AudioContext clock). Per lane: tempo-sync to the
 // project BPM (decoupled stretch), pitch shift, gain/mute/solo, drag with
 // snap-to-grid. Export renders the same clip math server-side to a WAV.
+//
+// This is the ONLY arranger (T4.1). It absorbed the two-deck Audition view,
+// which was a near-duplicate over the same engine and meant two export payload
+// shapes and two playback sync paths. What came across from it:
+//   * the A/B crossfader, which now rides the first two lanes;
+//   * switching a lane's stem in place, instead of removing and re-adding it;
+//   * a manual stretch factor for a lane that is not tempo-synced;
+//   * "match key to lane 1" and "align to the bar grid" as one-click moves;
+//   * loop lengths of 1/2/4/8 bars rather than only 8.
+// Audition's nudge buttons did not come across as buttons: the arrow keys here
+// already nudge the selected lane by a beat, and shift+arrow by 10 ms, which is
+// what those buttons did.
+//
+// `seed` ({ vocalId, instId, ... }) opens the arranger on one pair straight
+// from Discover — that is what the Audition tab used to be.
 
 const SECTION_COLORS = {
   intro: "#6b7280", verse: "#3b82f6", chorus: "#ec4899", drop: "#f59e0b",
@@ -163,10 +179,12 @@ function paintLane(canvas, lane, viewStart, pps, selected) {
       const x = Math.round((t - viewStart) * pps) + 0.5;
       if (x < 0) continue;
       if (x > W) break;
-      const isBar = i % 4 === 0;
+      const isBar = isDownbeat(i, lane.beatPhase);
       if (!isBar && pps < 24) continue;
-      ctx.strokeStyle = `rgba(${rgb},${isBar ? 0.5 : 0.18})`;
-      ctx.lineWidth = isBar ? 1.4 : 1;
+      // Downbeats are drawn well clear of beat lines so a wrong phase is
+      // obvious by eye — that is the only way to catch a bad detection.
+      ctx.strokeStyle = `rgba(${rgb},${isBar ? 0.75 : 0.15})`;
+      ctx.lineWidth = isBar ? 2 : 1;
       ctx.beginPath();
       ctx.moveTo(x, isBar ? 9 : H * 0.45);
       ctx.lineTo(x, H);
@@ -266,13 +284,17 @@ function snapToGrid(rawOffset, lane, projectBpm, snapMode, viewStart, viewSecs, 
 
 // ── main component ────────────────────────────────────────────────────────────
 
-export function MixStudio({ onStatus }) {
+export function MixStudio({ onStatus, seed, onSeedConsumed }) {
   const [tracks, setTracks] = useState([]);
   const [lanes, setLanes] = useState([]);
   const [projectBpm, setProjectBpm] = useState(null);
   const [snapMode, setSnapMode] = useState("bar"); // "bar" | "beat" | "off"
   const [selectedId, setSelectedId] = useState(null);
   const [soloId, setSoloId] = useState(null);
+  // Crossfader between the first two lanes (from Audition). 0.5 is a no-op, so
+  // a project that never touches it behaves exactly as before.
+  const [cross, setCross] = useState(0.5);
+  const [loopBars, setLoopBars] = useState(8);
 
   // Viewport (zoom + horizontal scroll, in seconds/px-per-second).
   const [pps, setPps] = useState(28);
@@ -337,6 +359,30 @@ export function MixStudio({ onStatus }) {
   }, [lanes]);
 
   // ── lane loading ────────────────────────────────────────────────────────
+  // Waveform, structure and decoded audio for one (song, stem). Shared by
+  // addLane and the in-place stem switch so both land in the same state — a
+  // second copy is how a lane ends up drawing one stem and playing another.
+  const loadLaneMedia = useCallback(async (laneId, songId, stem) => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const patch = (p) => setLanes((ls) => ls.map((l) => (l.id === laneId ? { ...l, ...p } : l)));
+
+    api.getWaveform(songId, stem)
+      .then((d) => patch({ waveform: d.waveform || [], beatTimes: d.beat_times || [],
+                           beatPhase: d.beat_phase || 0 }))
+      .catch(() => {});
+    api.getSections(songId)
+      .then((d) => patch({ sections: d.sections }))
+      .catch(() => {});
+    try {
+      await engine.init();
+      const buf = await decodeStem(engine.ctx, api.audioUrl(songId, stem));
+      patch({ buffer: buf, loading: false, loadError: null });
+    } catch (e) {
+      patch({ loading: false, loadError: `audio: ${e.message}` });
+    }
+  }, []);
+
   const addLane = useCallback(async (track, stem, saved = {}) => {
     const engine = engineRef.current;
     if (!engine) return;
@@ -357,30 +403,30 @@ export function MixStudio({ onStatus }) {
       gain: saved.gain ?? 0.8,
       muted: saved.muted ?? false,
       synced: saved.synced ?? false,
-      waveform: [], beatTimes: [], sections: [],
+      waveform: [], beatTimes: [], beatPhase: 0, sections: [],
       buffer: null, rawDur: track.duration_secs || 0,
       loading: true, loadError: null,
     };
     setLanes((ls) => [...ls, lane]);
     setSelectedId(id);
+    await loadLaneMedia(id, track.id, stem);
+    return id;
+  }, [loadLaneMedia]);
 
-    api.getWaveform(track.id, stem)
-      .then((d) => setLanes((ls) => ls.map((l) =>
-        l.id === id ? { ...l, waveform: d.waveform || [], beatTimes: d.beat_times || [] } : l)))
-      .catch(() => {});
-    api.getSections(track.id)
-      .then((d) => setLanes((ls) => ls.map((l) => (l.id === id ? { ...l, sections: d.sections } : l))))
-      .catch(() => {});
-
-    try {
-      await engine.init();
-      const buf = await decodeStem(engine.ctx, api.audioUrl(track.id, stem));
-      setLanes((ls) => ls.map((l) => (l.id === id ? { ...l, buffer: buf, loading: false } : l)));
-    } catch (e) {
-      setLanes((ls) => ls.map((l) =>
-        l.id === id ? { ...l, loading: false, loadError: `audio: ${e.message}` } : l));
-    }
-  }, []);
+  // Switch a lane's stem without losing its placement (from Audition, where the
+  // stem picker sat on the deck). Offset/rate/pitch/gain all survive, because
+  // the point of the switch is to hear the same arrangement with a different
+  // layer — dropping the lane and re-adding it would reset all of that.
+  const setLaneStem = useCallback((lane, stem) => {
+    if (stem === lane.stem) return;
+    engineRef.current?.removeVoice(lane.id);
+    setLanes((ls) => ls.map((l) => (l.id === lane.id
+      ? { ...l, stem, buffer: null, waveform: [], beatTimes: [], beatPhase: 0,
+          sections: [], loading: true, loadError: null,
+          bpm: laneBpmFor(tracks.find((t) => t.id === l.songId), stem) }
+      : l)));
+    loadLaneMedia(lane.id, lane.songId, stem);
+  }, [loadLaneMedia, tracks]);
 
   const removeLane = (id) => {
     engineRef.current?.removeVoice(id);
@@ -421,23 +467,34 @@ export function MixStudio({ onStatus }) {
   }, [projectBpm]);
 
   // ── engine sync (structure: buffers/offsets/rates/pitch/gain) ───────────
-  const gainFor = useCallback((l) => {
+  // The crossfader rides the first two lanes only — with N lanes there is no
+  // single "other side" to fade towards, and the two-lane case is the pair the
+  // Discover hand-off opens. At 0.5 both factors are 1, so it is inert until
+  // touched. Lanes 3+ are never attenuated by it.
+  const crossFactor = useCallback((idx) => {
+    if (lanes.length < 2) return 1;
+    if (idx === 0) return Math.min(1, 2 * (1 - cross));
+    if (idx === 1) return Math.min(1, 2 * cross);
+    return 1;
+  }, [cross, lanes.length]);
+
+  const gainFor = useCallback((l, idx) => {
     if (soloId) return l.id === soloId ? l.gain : 0;
-    return l.muted ? 0 : l.gain;
-  }, [soloId]);
+    return l.muted ? 0 : l.gain * crossFactor(idx);
+  }, [soloId, crossFactor]);
 
   useEffect(() => {
     const engine = engineRef.current;
     if (!engine || !engine.ctx) return;
     const seen = new Set();
     let structural = false;
-    for (const l of lanes) {
-      if (!l.buffer) continue;
+    lanes.forEach((l, idx) => {
+      if (!l.buffer) return;
       seen.add(l.id);
       if (!engine.voices.has(l.id)) {
         engine.setVoice(l.id, {
           buffer: l.buffer, offsetSec: l.offsetSec, rate: l.rate,
-          semitones: l.semitones, gain: gainFor(l),
+          semitones: l.semitones, gain: gainFor(l, idx),
         });
         structural = true; // new voice needs arming if we're mid-playback
       } else {
@@ -446,10 +503,10 @@ export function MixStudio({ onStatus }) {
         // and metadata refreshes never stutter playback.
         engine.updateVoiceParams(l.id, {
           rate: l.rate, offsetSec: l.offsetSec,
-          semitones: l.semitones, gain: gainFor(l),
+          semitones: l.semitones, gain: gainFor(l, idx),
         });
       }
-    }
+    });
     for (const role of [...engine.voices.keys()]) {
       if (!seen.has(role)) { engine.removeVoice(role); structural = true; }
     }
@@ -458,13 +515,60 @@ export function MixStudio({ onStatus }) {
 
   useEffect(() => { engineRef.current?.setLoop(loop); }, [loop]);
 
+  // ── lane moves ported from Audition ─────────────────────────────────────
+  // Audition's "match key to the other deck" and "align downbeats" were its two
+  // one-click alignment moves. With N lanes the reference is lane 1: it is the
+  // first thing you added and, from Discover, the vocal everything else sits
+  // under.
+  const referenceLane = lanes[0] || null;
+
+  const matchKeyToReference = (lane) => {
+    if (!referenceLane || lane.id === referenceLane.id) return;
+    const ref = shiftCamelot(referenceLane.camelot, referenceLane.semitones);
+    if (!ref || !lane.camelot) { toast("Key data missing — analyze both tracks"); return; }
+    // keyRel().suggest is the shift that takes the second key to the first, so
+    // it is applied on top of whatever this lane is already shifted by.
+    const suggest = keyRel(ref, shiftCamelot(lane.camelot, lane.semitones)).suggest ?? 0;
+    const next = Math.max(-12, Math.min(12, lane.semitones + suggest));
+    patchLane(lane.id, { semitones: next });
+    toast(suggest ? `Pitched to ${ref} (${next > 0 ? "+" : ""}${next} st)` : "Already in key");
+  };
+
+  // Snap the lane so its nearest downbeat lands on the nearest project bar line.
+  // Dragging already snaps, but only while you drag — this fixes a lane that
+  // arrived pre-placed (from Discover) or drifted after a tempo change.
+  const alignLaneToGrid = (lane) => {
+    if (!projectBpm) { toast("Set a project BPM first"); return; }
+    const downs = downbeatsOf(lane.beatTimes || [], lane.beatPhase)
+      .map((t) => lane.offsetSec + t / lane.rate);
+    if (!downs.length) { toast("No beat grid — analyze this track first"); return; }
+    const bar = (60 / projectBpm) * 4;
+    const anchor = downs.reduce((best, t) =>
+      (Math.abs(t - position) < Math.abs(best - position) ? t : best), downs[0]);
+    const delta = Math.round(anchor / bar) * bar - anchor;
+    patchLane(lane.id, { offsetSec: lane.offsetSec + delta });
+    toast(`Aligned to bar ${Math.round(anchor / bar) + 1}`);
+  };
+
+  const resetLane = (lane) => {
+    patchLane(lane.id, { offsetSec: 0, rate: 1, semitones: 0, gain: 0.8,
+                         muted: false, synced: false });
+    toast("Lane reset");
+  };
+
   // ── persistence (localStorage, debounced) ───────────────────────────────
   // Saving stays OFF until the restore finishes — otherwise the empty initial
   // state could overwrite the stored project before the async restore lands.
   const restoreRan = useRef(false);
+  const seedAtMount = useRef(seed);
   useEffect(() => {
     if (restoreRan.current) return; // StrictMode double-invoke guard
     restoreRan.current = true;
+    // Arriving with a PAIR from Discover means the user asked for that pair —
+    // restoring the previous project first would only be thrown away. A single
+    // track is added to the existing project, so that one still restores.
+    const s = seedAtMount.current;
+    if (s?.vocalId != null && s?.instId != null) { setRestored(true); return; }
     let saved = null;
     try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"); } catch { /* corrupt */ }
     if (!saved?.lanes?.length) { setRestored(true); return; }
@@ -498,6 +602,81 @@ export function MixStudio({ onStatus }) {
     }, 400);
     return () => clearTimeout(t);
   }, [lanes, projectBpm, snapMode, restored]);
+
+  // ── Discover hand-off — what the Audition tab used to be (T4.1) ─────────
+  // Open on one pair: vocal over bed, bed conformed to the vocal's tempo and
+  // pitched by the shift the ranked list already computed, both lanes placed so
+  // the winning section pair (T3.3) starts at the same instant.
+  const seededFor = useRef(null);
+  useEffect(() => {
+    if (!tracks.length) return;
+    if (seed?.vocalId == null && seed?.instId == null) return;
+    const isPair = seed.vocalId != null && seed.instId != null;
+    // A single track is appended to the saved project, so it has to wait for
+    // the restore — otherwise it lands at index 0 and the restored lanes queue
+    // up behind it, which silently reassigns the crossfader's A side and the
+    // key reference. A pair replaces the project, so it never waits.
+    if (!isPair && !restored) return;
+    // `at` is a timestamp the sender bumps, so re-sending the SAME pair still
+    // re-seeds instead of being swallowed as a no-op.
+    const token = `${seed.vocalId ?? ""}:${seed.instId ?? ""}:${seed.at ?? ""}`;
+    if (seededFor.current === token) return;
+    seededFor.current = token;
+
+    // One id only — "send this track to Studio" from Library. Add it as a lane
+    // alongside whatever is already arranged; replacing the project would throw
+    // away work the user never asked to lose.
+    if (!isPair) {
+      const only = seed.vocalId ?? seed.instId;
+      const track = tracks.find((t) => t.id === only);
+      if (!track) { toast("That track is not in the library"); return; }
+      const want = seed.vocalId != null ? "vocals" : "instrumental";
+      addLane(track, track.stems?.[want] ? want : "full");
+      setRestored(true);
+      onSeedConsumed?.();
+      return;
+    }
+
+    const vTrack = tracks.find((t) => t.id === seed.vocalId);
+    const bTrack = tracks.find((t) => t.id === seed.instId);
+    if (!vTrack || !bTrack) { toast("Those tracks are not in the library"); return; }
+
+    const vStem = vTrack.stems?.vocals ? "vocals" : "full";
+    const bStem = bTrack.stems?.instrumental ? "instrumental" : "full";
+    const vBpm = laneBpmFor(vTrack, vStem);
+    const bBpm = laneBpmFor(bTrack, bStem);
+    // The vocal sets the project tempo: it is the layer whose timing the ear
+    // holds on to, and it is what stretch_factor on the row is relative to.
+    const bpm = vBpm ? Math.round(vBpm) : projectBpm;
+    const vRate = (bpm && vBpm && syncRateFor(vBpm, bpm)) || 1;
+    const bRate = (bpm && bBpm && syncRateFor(bBpm, bpm)) || 1;
+
+    // Line the two chosen sections up on the same project instant. Both offsets
+    // stay ≥ 0 by pushing the pair forward instead of hanging one lane off the
+    // front of the timeline, where the viewport cannot scroll to it.
+    const vAt = (seed.vocalSectionStart ?? 0) / vRate;
+    const bAt = (seed.instSectionStart ?? 0) / bRate;
+    const base = Math.max(vAt, bAt);
+
+    engineRef.current?.stop();
+    for (const l of lanesRef.current) engineRef.current?.removeVoice(l.id);
+    setLanes([]);
+    setLoop(null); setSoloId(null); setCross(0.5);
+    if (bpm) setProjectBpm(bpm);
+    setPosition(base);
+    engineRef.current?.seek(base);
+
+    addLane(vTrack, vStem, { offsetSec: base - vAt, rate: vRate, semitones: 0,
+                             gain: 0.85, synced: Boolean(bpm && vBpm), colorIdx: 0 });
+    addLane(bTrack, bStem, { offsetSec: base - bAt, rate: bRate,
+                             semitones: seed.semitoneShift ?? 0,
+                             gain: 0.8, synced: Boolean(bpm && bBpm), colorIdx: 1 });
+    setRestored(true);
+    // Hand the seed back: leaving it live would re-seed — and throw away the
+    // user's edits — every time they leave Studio and come back.
+    onSeedConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed, tracks, addLane, restored]);
 
   const clearProject = () => {
     engineRef.current?.stop();
@@ -569,11 +748,14 @@ export function MixStudio({ onStatus }) {
     engineRef.current?.seek(pos);
   };
 
+  // Audition looped 1/2/4/8 bars per deck; here the loop is the project's, so
+  // the length is a project setting. Clicking the armed length disarms it.
   const toggleLoopBars = (bars) => {
-    if (loop) { setLoop(null); return; }
+    if (loop && bars === loopBars) { setLoop(null); return; }
     if (!projectBpm) { toast("Set a project BPM first"); return; }
     const bar = (60 / projectBpm) * 4;
     const start = Math.round(position / bar) * bar;
+    setLoopBars(bars);
     setLoop({ start, end: start + bars * bar });
   };
 
@@ -607,9 +789,31 @@ export function MixStudio({ onStatus }) {
   };
 
   // Lane drag: horizontal move with snap; click selects.
+  // alt+click a beat line to declare it bar 1. Onset-strength phase detection
+  // is fooled by syncopation and quiet intros; the ear is not, so the manual
+  // value wins and is persisted against the stem the lane is showing.
+  const claimDownbeat = (e, lane) => {
+    const beats = lane.beatTimes || [];
+    if (!beats.length) { toast("No beat grid — analyze this track first"); return; }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const t = viewStart + (e.clientX - rect.left) / pps;
+    // Lane beats are stored raw; the canvas draws them warped by rate + offset.
+    const rawT = (t - lane.offsetSec) * lane.rate;
+    let nearest = 0;
+    for (let i = 1; i < beats.length; i++) {
+      if (Math.abs(beats[i] - rawT) < Math.abs(beats[nearest] - rawT)) nearest = i;
+    }
+    const phase = phaseForDownbeatAt(nearest);
+    patchLane(lane.id, { beatPhase: phase });
+    api.setBeatPhase(lane.songId, lane.stem, phase)
+      .then(() => toast(`Bar 1 set to beat ${nearest + 1} (phase ${phase})`))
+      .catch((err) => toast(err.message || "Could not save downbeat"));
+  };
+
   const handleLaneDown = (e, lane) => {
     e.preventDefault();
     setSelectedId(lane.id);
+    if (e.altKey) { claimDownbeat(e, lane); return; }
     const startX = e.clientX;
     const startOffset = lane.offsetSec;
     const onMove = (me) => {
@@ -645,7 +849,7 @@ export function MixStudio({ onStatus }) {
         const beat = projectBpm ? 60 / projectBpm : 0.1;
         patchLane(selectedId, { offsetSec: lane.offsetSec + dir * (e.shiftKey ? 0.01 : beat) });
       } else if (e.key === "l" || e.key === "L") {
-        toggleLoopBars(8);
+        toggleLoopBars(loopBars);
       } else if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
         removeLane(selectedId);
       }
@@ -751,12 +955,34 @@ export function MixStudio({ onStatus }) {
           ))}
         </div>
 
-        <button className={`loop-btn${loop ? " on" : ""}`} onClick={() => toggleLoopBars(8)}
-          title="Toggle an 8-bar loop at the playhead (L) · shift-drag the ruler for a custom loop">
-          ⟲ loop 8
-        </button>
+        <span className="micro-label">LOOP</span>
+        <div className="snap-seg">
+          {[1, 2, 4, 8].map((n) => (
+            <button key={n} className={loop && loopBars === n ? "active" : ""}
+              onClick={() => toggleLoopBars(n)}
+              title={`${n}-bar loop at the playhead — click again to clear · shift-drag the ruler for a custom loop`}>
+              {n}
+            </button>
+          ))}
+        </div>
 
         <span className="studio-sep" />
+
+        {lanes.length >= 2 && (
+          <>
+            <span className="micro-label" title={`${lanes[0].title} ⟷ ${lanes[1].title}`}>
+              A/B
+            </span>
+            <input className="studio-cross" type="range" min={0} max={1} step={0.01}
+              value={cross} onChange={(e) => setCross(Number(e.target.value))}
+              title="Crossfade between the first two lanes. Centred = both at full level." />
+            {cross !== 0.5 && (
+              <button className="studio-btn" onClick={() => setCross(0.5)}
+                title="Centre the crossfader">·|·</button>
+            )}
+            <span className="studio-sep" />
+          </>
+        )}
 
         <span className="micro-label">ZOOM</span>
         <button className="studio-btn" onClick={() => zoom(1 / 1.4)} title="Zoom out (or ctrl+wheel)">−</button>
@@ -817,7 +1043,24 @@ export function MixStudio({ onStatus }) {
                         {l.title}
                       </div>
                       <div className="lh-meta">
-                        <span className="lh-stem" style={{ color: `rgb(${rgb})` }}>{STEM_LABEL[l.stem]}</span>
+                        {/* Stem switch in place (from Audition's deck picker):
+                            the lane keeps its placement, so you can hear the
+                            same arrangement with a different layer. */}
+                        <span className="lh-stem-seg" onClick={(e) => e.stopPropagation()}>
+                          {["vocals", "instrumental", "full"].map((s) => {
+                            const src = tracks.find((t) => t.id === l.songId);
+                            const ok = Boolean(src?.stems?.[s]);
+                            return (
+                              <button key={s} disabled={!ok || l.stem === s}
+                                className={l.stem === s ? "active" : ""}
+                                style={l.stem === s ? { color: `rgb(${rgb})`, borderColor: `rgba(${rgb},0.6)` } : undefined}
+                                title={ok ? `Play the ${s} stem in this lane` : `No ${s} audio for this track`}
+                                onClick={() => setLaneStem(l, s)}>
+                                {STEM_LABEL[s]}
+                              </button>
+                            );
+                          })}
+                        </span>
                         {effBpm ? <span className="mono">{effBpm.toFixed(1)}</span> : <span className="faint">no BPM</span>}
                         <KeyChip camelot={shiftCamelot(l.camelot, l.semitones)} fallback="?"
                           style={{ fontSize: 10, padding: "1px 5px" }} />
@@ -860,7 +1103,19 @@ export function MixStudio({ onStatus }) {
                         : "Needs BPM analysis to sync"}>
                       SYNC
                     </button>
-                    <span className="lh-rate mono" title="Stretch factor (speed)">×{l.rate.toFixed(3)}</span>
+                    {/* Editable while unsynced — Audition let you type a target
+                        BPM per deck, and SYNC alone cannot express "play this
+                        at 0.97× because it drags". */}
+                    <input className="lh-rate mono" type="number" step={0.005}
+                      min={0.5} max={2} value={Number(l.rate.toFixed(3))}
+                      disabled={l.synced}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (Number.isFinite(v) && v >= 0.5 && v <= 2) patchLane(l.id, { rate: v });
+                      }}
+                      title={l.synced ? "Synced to the project tempo — turn SYNC off to set this by hand"
+                                      : "Stretch factor (speed). 1 = original tempo."} />
                     <span className="lh-pitch">
                       <button className="lh-btn" title="Pitch −1 st"
                         onClick={(e) => { e.stopPropagation(); patchLane(l.id, { semitones: Math.max(-12, l.semitones - 1) }); }}>−</button>
@@ -870,6 +1125,26 @@ export function MixStudio({ onStatus }) {
                       <button className="lh-btn" title="Pitch +1 st"
                         onClick={(e) => { e.stopPropagation(); patchLane(l.id, { semitones: Math.min(12, l.semitones + 1) }); }}>+</button>
                     </span>
+                  </div>
+                  <div className="lh-row lh-controls">
+                    <button className="lh-btn"
+                      disabled={!referenceLane || l.id === referenceLane.id || !l.camelot}
+                      onClick={(e) => { e.stopPropagation(); matchKeyToReference(l); }}
+                      title={referenceLane && l.id !== referenceLane.id
+                        ? `Pitch this lane into ${referenceLane.title}'s key`
+                        : "The first lane is the key reference"}>
+                      ⚡ key
+                    </button>
+                    <button className="lh-btn"
+                      onClick={(e) => { e.stopPropagation(); alignLaneToGrid(l); }}
+                      title="Snap this lane's nearest downbeat onto the bar grid">
+                      ⇥ grid
+                    </button>
+                    <button className="lh-btn"
+                      onClick={(e) => { e.stopPropagation(); resetLane(l); }}
+                      title="Reset this lane's position, tempo, pitch and level">
+                      ↺
+                    </button>
                   </div>
                   {(l.loading || l.loadError) && (
                     <div className="lh-note">{l.loadError || "decoding…"}</div>

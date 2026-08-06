@@ -7,6 +7,10 @@ __pycache__/
 .venv/
 venv/
 env/
+# ...including one created in-place at the repo root
+Lib/
+Scripts/
+pyvenv.cfg
 
 # Database (generated at runtime)
 mashup.db
@@ -38,3 +42,10 @@ frontend/dist/
 
 # Test cache
 .pytest_cache/
+
+# UVR MDX-Net weights (downloaded on first "Fast" separation, ~50-300MB each)
+uvr_models/
+
+# Tool scratch output
+graphify-out/
+.playwright-mcp/

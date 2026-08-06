@@ -160,6 +160,49 @@ input, select { font-family: inherit; }
   color: var(--muted);
 }
 
+/* ── Settings drawer (T4.3) ────────────────────────────────────────────── */
+/* The database browser used to be a top-level tab. It is a debugging window,
+   not a step in the workflow, so it lives behind this alongside the view
+   preferences. */
+.settings-btn {
+  margin-left: 12px; cursor: pointer; font-size: 15px; line-height: 1;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border-ctrl); border-radius: 7px; padding: 5px 9px;
+}
+.settings-btn:hover { color: var(--text); border-color: var(--accent); }
+.settings-btn.on { color: var(--accent-light); border-color: var(--accent); }
+
+.drawer-scrim {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40;
+}
+.settings-drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 41;
+  width: min(1080px, 92vw); overflow-y: auto;
+  background: var(--bg); border-left: 1px solid var(--border);
+  box-shadow: -18px 0 48px rgba(0,0,0,0.45);
+  padding: 18px 22px 40px;
+}
+.drawer-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.drawer-head h2 { font-size: 18px; margin: 0; }
+.drawer-x {
+  cursor: pointer; font-size: 14px; background: transparent; color: var(--muted);
+  border: 1px solid var(--border-ctrl); border-radius: 7px; padding: 4px 9px;
+}
+.drawer-x:hover { color: var(--text); }
+.drawer-pref {
+  display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 9px;
+  background: var(--panel); padding: 12px 14px; margin-bottom: 18px;
+}
+.drawer-pref input { margin-top: 3px; accent-color: var(--accent); }
+.drawer-pref b { display: block; font-size: 13px; margin-bottom: 3px; }
+.drawer-pref .hint { display: block; }
+.drawer-section h3 { font-size: 13px; margin: 0 0 3px; }
+.drawer-body { margin-top: 6px; }
+/* The browser already wraps itself in .page; inside the drawer that padding
+   and centring would fight the drawer's own. */
+.drawer-body .page { max-width: none; margin: 0; padding: 0; }
+
 /* ── Page containers ───────────────────────────────────────────────────── */
 .page {
   max-width: 1560px;
@@ -583,6 +626,48 @@ input, select { font-family: inherit; }
   padding: 14px 16px;
 }
 .pair.top { border-color: var(--border-accent); }
+
+/* ── T1.7 keyboard triage ───────────────────────────────────────────────── */
+/* The highlighted row has to be findable at a glance while arrowing fast, so
+   it gets a solid left rail rather than a subtle tint. */
+.pair { cursor: pointer; transition: border-color 120ms, box-shadow 120ms; }
+.pair.cursor {
+  border-color: var(--accent, #38bdf8);
+  box-shadow: inset 3px 0 0 var(--accent, #38bdf8), 0 0 0 1px var(--accent, #38bdf8);
+}
+.pair.playing { box-shadow: inset 3px 0 0 #22c55e, 0 0 0 1px #22c55e; border-color: #22c55e; }
+/* Judged rows recede — you have already spent attention on them. */
+.pair.judged-no { opacity: 0.45; }
+.pair.judged-love { border-color: #22c55e55; }
+.verdict-chip { display: block; font-size: 12px; line-height: 1.4; }
+.verdict-chip.love { color: #22c55e; }
+.verdict-chip.ok { color: var(--amber-light, #fbbf24); }
+.verdict-chip.no { color: #ff9b9b; }
+
+.key-legend {
+  display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
+  background: var(--panel); border: 1px solid var(--border-accent);
+  border-radius: 9px; padding: 10px 14px; margin-bottom: 11px;
+  font-size: 0.82rem; color: var(--faint);
+}
+.key-legend b { color: var(--text, #e6edf3); }
+.key-legend kbd {
+  font-family: var(--font-mono); font-size: 0.78rem;
+  background: var(--bg, #0d1117); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 5px; margin: 0 1px;
+}
+.key-legend .faint { flex-basis: 100%; opacity: 0.7; }
+
+/* T2.2: the row headline is a library percentile; the raw composite and its
+   four sub-scores live in the Plan expander. */
+.pct-suffix { font-size: 0.6rem; letter-spacing: 0.06em; color: var(--faint); margin-left: 2px; }
+.raw-scores {
+  font-size: 0.78rem; color: var(--faint);
+  padding-bottom: 8px; margin-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+.raw-scores b { color: var(--text, #e6edf3); }
+
 .pair-rank { font-family: var(--font-mono); font-size: 18px; color: var(--faint); text-align: center; }
 .pair-side { display: flex; gap: 11px; align-items: center; min-width: 0; }
 .pair-side.bed { justify-content: flex-end; text-align: right; }
@@ -1320,12 +1405,34 @@ input, select { font-family: inherit; }
   color: var(--faint); padding: 2px 4px;
 }
 .lh-x:hover { color: var(--red, #f87171); }
-.lh-rate { font-size: 10.5px; color: var(--muted); min-width: 46px; }
+.lh-rate {
+  font-size: 10.5px; color: var(--muted); width: 58px; padding: 1px 3px;
+  background: transparent; border: 1px solid transparent; border-radius: 4px;
+}
+.lh-rate:not(:disabled):hover, .lh-rate:focus {
+  border-color: var(--border-ctrl); color: var(--text); outline: none;
+}
+.lh-rate:disabled { opacity: 0.55; }
+
+/* In-place stem switch on a lane (ported from Audition's deck picker). */
+.lh-stem-seg { display: inline-flex; gap: 2px; }
+.lh-stem-seg button {
+  cursor: pointer; font-size: 8.5px; font-weight: 700; letter-spacing: 0.05em;
+  padding: 1px 4px; border-radius: 3px; background: transparent;
+  color: var(--faint); border: 1px solid transparent;
+}
+.lh-stem-seg button:hover:not(:disabled) { color: var(--text); border-color: var(--border-ctrl); }
+.lh-stem-seg button.active { border-color: var(--border-ctrl); }
+.lh-stem-seg button:disabled:not(.active) { opacity: 0.3; cursor: not-allowed; }
+
+/* Crossfader in the Studio toolbar — rides the first two lanes. */
+.studio-cross { width: 118px; accent-color: var(--accent); height: 14px; }
 .lh-pitch { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--text-2); }
 .lh-note { font-size: 10.5px; color: var(--amber-light, #f5a623); }
 
+/* Matches the four-row lane header (T4.1 added the key/grid/reset row). */
 .studio-lane {
-  position: relative; height: 96px; cursor: grab;
+  position: relative; height: 118px; cursor: grab;
   border-bottom: 1px solid var(--border-top);
 }
 .studio-lane:active { cursor: grabbing; }

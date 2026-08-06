@@ -128,6 +128,45 @@ CREATE INDEX IF NOT EXISTS idx_candidates_type   ON mashup_candidates(combo_type
 CREATE INDEX IF NOT EXISTS idx_candidates_vocal  ON mashup_candidates(vocal_song_id);
 CREATE INDEX IF NOT EXISTS idx_candidates_inst   ON mashup_candidates(inst_song_id);
 
+-- ── The user's own ✓/✗ judgments on pairs (T2.1) ─────────────────────────────
+-- The highest-signal training data in the system: a pair rejected by ear is a
+-- far better negative than a randomly sampled one. Deliberately NOT part of
+-- mashup_candidates — 'Score library' truncates that table, and a re-score must
+-- never destroy the user's taste. UNIQUE(vocal, inst) + upsert so re-judging a
+-- pair corrects it instead of adding a second, contradictory training row.
+CREATE TABLE IF NOT EXISTS pair_feedback (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    vocal_song_id   INTEGER NOT NULL,
+    inst_song_id    INTEGER NOT NULL,
+    vocal_section   INTEGER,
+    inst_section    INTEGER,
+    verdict         TEXT NOT NULL CHECK(verdict IN ('love','ok','no')),
+    created_at      TEXT DEFAULT (datetime('now')),
+    UNIQUE(vocal_song_id, inst_song_id)
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_verdict ON pair_feedback(verdict);
+
+-- ── Pairs and tracks the user does not want to see again (T3.4) ──────────────
+-- Same reasoning as pair_feedback: these outlive 'Score library'. Kept apart
+-- from it because they are not training data — "don't show me this" is a
+-- display preference, and folding it into the verdict would teach the model
+-- that a track the user is simply bored of is a bad pairing.
+-- Two tables rather than one with a sentinel: hiding one pair and excluding a
+-- track from every pair are different keys, and SQLite's UNIQUE treats NULLs as
+-- distinct, so a nullable inst_song_id would not actually dedupe.
+CREATE TABLE IF NOT EXISTS pair_hidden (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    vocal_song_id   INTEGER NOT NULL,
+    inst_song_id    INTEGER NOT NULL,
+    created_at      TEXT DEFAULT (datetime('now')),
+    UNIQUE(vocal_song_id, inst_song_id)
+);
+
+CREATE TABLE IF NOT EXISTS track_excluded (
+    song_id         INTEGER PRIMARY KEY,
+    created_at      TEXT DEFAULT (datetime('now'))
+);
+
 -- ── Documented mixes (1001tracklists ingestion, Phase 3) ─────────────────────
 CREATE TABLE IF NOT EXISTS mixes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -270,6 +309,11 @@ _SONGS_OPTIONAL_COLUMNS = (
 _FEATURES_OPTIONAL_COLUMNS = (
     ("beat_times_json", "TEXT"),
     ("waveform_rms_json", "TEXT"),
+    ("key_confidence", "REAL"),
+    ("beat_phase", "INTEGER DEFAULT 0"),
+    ("hook_start", "REAL"),
+    ("hook_end", "REAL"),
+    ("hook_role", "TEXT"),
 )
 
 
@@ -340,6 +384,18 @@ def _migrate_mashuppairs_columns(conn: sqlite3.Connection) -> None:
 _CANDIDATES_OPTIONAL_COLUMNS = (
     ("scorer", "TEXT DEFAULT 'heuristic'"),  # 'heuristic' | 'model'
     ("model_version", "TEXT"),               # e.g. 'pairwise_bbm_v1' when scorer='model'
+    # T3.3 — the winning (vocal section × bed section), so the preview and the
+    # Studio hand-off play the exact moment the pair was chosen for rather than
+    # each track's generic hook. Times are stored alongside the indices because
+    # every reader wants seconds and the table is rebuilt on each re-score
+    # anyway, so they cannot go stale against the sections they came from.
+    ("vocal_section_idx", "INTEGER"),
+    ("inst_section_idx", "INTEGER"),
+    ("vocal_section_start", "REAL"),
+    ("vocal_section_end", "REAL"),
+    ("inst_section_start", "REAL"),
+    ("inst_section_end", "REAL"),
+    ("score_section", "REAL"),               # selection fit, NOT part of score_total
 )
 
 
@@ -577,30 +633,62 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
     conn.execute(
         """INSERT INTO features
                (song_id, stem_type, bpm, bpm_confidence, key, mode, camelot,
-                loudness_rms, energy, mfcc_json,
+                key_confidence, beat_phase, loudness_rms, energy, mfcc_json,
                 spectral_centroid, spectral_rolloff, zero_crossing_rate,
-                beat_times_json, waveform_rms_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                beat_times_json, waveform_rms_json,
+                hook_start, hook_end, hook_role)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(song_id, stem_type) DO UPDATE SET
                bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
                key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
+               key_confidence=excluded.key_confidence,
+               beat_phase=excluded.beat_phase,
                loudness_rms=excluded.loudness_rms, energy=excluded.energy,
                mfcc_json=excluded.mfcc_json,
                spectral_centroid=excluded.spectral_centroid,
                spectral_rolloff=excluded.spectral_rolloff,
                zero_crossing_rate=excluded.zero_crossing_rate,
                beat_times_json=excluded.beat_times_json,
-               waveform_rms_json=excluded.waveform_rms_json""",
+               waveform_rms_json=excluded.waveform_rms_json,
+               hook_start=excluded.hook_start, hook_end=excluded.hook_end,
+               hook_role=excluded.hook_role""",
         (song_id, stem_type,
          features.get("bpm"), features.get("bpm_confidence"),
          features.get("key"), features.get("mode"), features.get("camelot"),
+         features.get("key_confidence"), features.get("beat_phase") or 0,
          features.get("loudness_rms"), features.get("energy"), mfcc_json,
          features.get("spectral_centroid"), features.get("spectral_rolloff"),
          features.get("zero_crossing_rate"),
-         beat_times_json, waveform_rms_json)
+         beat_times_json, waveform_rms_json,
+         features.get("hook_start"), features.get("hook_end"),
+         features.get("hook_role"))
     )
     conn.commit()
     conn.close()
+
+
+def update_hook(song_id: int, stem_type: str, hook: Optional[Dict],
+                db_path: Path = DB_PATH) -> int:
+    """Write just the hook window for one stem.
+
+    Deliberately NOT upsert_features: that statement overwrites every column
+    from the row it is given, so calling it with only hook fields would blank
+    out bpm, key and the rest. Hooks are computed after sections exist, one
+    stage later than the features they sit beside.
+    """
+    if not hook:
+        return 0
+    conn = get_conn(db_path)
+    cur = conn.execute(
+        """UPDATE features SET hook_start=?, hook_end=?, hook_role=?
+           WHERE song_id=? AND stem_type=?""",
+        (hook.get("hook_start"), hook.get("hook_end"), hook.get("hook_role"),
+         song_id, stem_type),
+    )
+    conn.commit()
+    updated = cur.rowcount
+    conn.close()
+    return updated
 
 
 def get_song(song_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
@@ -889,65 +977,170 @@ def upsert_candidate(vocal: dict, inst: dict, scores: dict,
     Insert or update a mashup_candidates row for a vocal+instrumental pair.
     combo_type: 'vocal_over_instrumental' | 'instrumental_over_instrumental'
     scorer:     'heuristic' | 'model'  (which scorer produced score_total)
+
+    One pair, one commit. Library-wide scoring uses bulk_upsert_candidates.
     """
     conn = get_conn(db_path)
+    conn.execute(_CANDIDATE_INSERT_SQL,
+                 candidate_row(vocal, inst, scores, combo_type,
+                               scorer, model_version))
+    conn.commit()
+    conn.close()
+
+
+_CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
+       combo_type,
+       vocal_song_id, vocal_title, vocal_artist,
+       vocal_bpm, vocal_key, vocal_mode, vocal_camelot,
+       vocal_loudness_rms, vocal_energy,
+       inst_song_id, inst_title, inst_artist,
+       inst_bpm, inst_key, inst_mode, inst_camelot,
+       inst_loudness_rms, inst_energy,
+       score_total, score_bpm, score_key, score_energy, score_timbre,
+       scorer, model_version,
+       vocal_section_idx, inst_section_idx,
+       vocal_section_start, vocal_section_end,
+       inst_section_start, inst_section_end, score_section,
+       scored_at
+   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+             ?,?,?,?,?,?,?,datetime('now'))
+   ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
+       score_total=excluded.score_total,
+       vocal_section_idx=excluded.vocal_section_idx,
+       inst_section_idx=excluded.inst_section_idx,
+       vocal_section_start=excluded.vocal_section_start,
+       vocal_section_end=excluded.vocal_section_end,
+       inst_section_start=excluded.inst_section_start,
+       inst_section_end=excluded.inst_section_end,
+       score_section=excluded.score_section,
+       score_bpm=excluded.score_bpm,
+       score_key=excluded.score_key,
+       score_energy=excluded.score_energy,
+       score_timbre=excluded.score_timbre,
+       scorer=excluded.scorer,
+       model_version=excluded.model_version,
+       vocal_bpm=excluded.vocal_bpm,
+       vocal_key=excluded.vocal_key,
+       vocal_mode=excluded.vocal_mode,
+       vocal_camelot=excluded.vocal_camelot,
+       vocal_loudness_rms=excluded.vocal_loudness_rms,
+       vocal_energy=excluded.vocal_energy,
+       inst_bpm=excluded.inst_bpm,
+       inst_key=excluded.inst_key,
+       inst_mode=excluded.inst_mode,
+       inst_camelot=excluded.inst_camelot,
+       inst_loudness_rms=excluded.inst_loudness_rms,
+       inst_energy=excluded.inst_energy,
+       scored_at=datetime('now')"""
+
+
+SECTION_PAIR_COLUMNS = (
+    "vocal_section_idx", "inst_section_idx",
+    "vocal_section_start", "vocal_section_end",
+    "inst_section_start", "inst_section_end", "score_section",
+)
+
+
+def candidate_row(vocal: dict, inst: dict, scores: dict,
+                  combo_type: str = "vocal_over_instrumental",
+                  scorer: str = "heuristic",
+                  model_version: Optional[str] = None,
+                  section_pair: Optional[dict] = None) -> tuple:
+    """The parameter tuple for one mashup_candidates row.
+
+    Split out so the bulk writer and upsert_candidate bind the same columns in
+    the same order — a scoring run inserts hundreds of thousands of these, and
+    two copies of a 33-placeholder tuple would drift.
+
+    `section_pair` is matcher.sections.best_section_pair's result, or None when
+    either side has no usable structure yet (the columns then stay NULL and
+    readers fall back to the track's hook)."""
+    sp = section_pair or {}
+    return (
+        combo_type,
+        vocal["song_id"], vocal.get("title"), vocal.get("artist"),
+        vocal.get("bpm"), vocal.get("key"), vocal.get("mode"), vocal.get("camelot"),
+        vocal.get("loudness_rms"), vocal.get("energy"),
+        inst["song_id"], inst.get("title"), inst.get("artist"),
+        inst.get("bpm"), inst.get("key"), inst.get("mode"), inst.get("camelot"),
+        inst.get("loudness_rms"), inst.get("energy"),
+        scores["total"], scores["bpm_score"], scores["key_score"],
+        scores["energy_score"], scores["timbre_score"],
+        scorer, model_version,
+        *(sp.get(col) for col in SECTION_PAIR_COLUMNS),
+    )
+
+
+def bulk_upsert_candidates(rows, db_path: Path = DB_PATH,
+                           chunk_size: int = 5000) -> int:
+    """Write many candidate rows (from candidate_row) in one transaction.
+
+    upsert_candidate opens a connection, commits and closes per pair — fine for
+    a one-off, ruinous for a library-wide re-score where every commit is an
+    fsync. Scoring ~900 songs produces on the order of 100k rows; batching them
+    into executemany chunks inside a single transaction turns hours of disk
+    sync into seconds. Returns the number of rows written."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    conn = get_conn(db_path)
+    try:
+        for start in range(0, len(rows), chunk_size):
+            conn.executemany(_CANDIDATE_INSERT_SQL, rows[start:start + chunk_size])
+        conn.commit()
+    finally:
+        conn.close()
+    return len(rows)
+
+
+def clear_candidates(db_path: Path = DB_PATH) -> None:
+    """Wipe all scored pairs so a re-score reflects exactly the current features
+    and pre-filter thresholds (no stale pairs left over from a looser run).
+
+    Note this does NOT touch pair_feedback: the user's judgments are training
+    data, not derived output, and must outlive any number of re-scores."""
+    conn = get_conn(db_path)
+    conn.execute("DELETE FROM mashup_candidates")
+    conn.commit()
+    conn.close()
+
+
+VERDICTS = ("love", "ok", "no")
+
+
+def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int, verdict: str,
+                         vocal_section: Optional[int] = None,
+                         inst_section: Optional[int] = None,
+                         db_path: Path = DB_PATH) -> None:
+    """Record (or correct) the user's verdict on one pair."""
+    conn = get_conn(db_path)
     conn.execute(
-        """INSERT INTO mashup_candidates (
-               combo_type,
-               vocal_song_id, vocal_title, vocal_artist,
-               vocal_bpm, vocal_key, vocal_mode, vocal_camelot,
-               vocal_loudness_rms, vocal_energy,
-               inst_song_id, inst_title, inst_artist,
-               inst_bpm, inst_key, inst_mode, inst_camelot,
-               inst_loudness_rms, inst_energy,
-               score_total, score_bpm, score_key, score_energy, score_timbre,
-               scorer, model_version, scored_at
-           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-           ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
-               score_total=excluded.score_total,
-               score_bpm=excluded.score_bpm,
-               score_key=excluded.score_key,
-               score_energy=excluded.score_energy,
-               score_timbre=excluded.score_timbre,
-               scorer=excluded.scorer,
-               model_version=excluded.model_version,
-               vocal_bpm=excluded.vocal_bpm,
-               vocal_key=excluded.vocal_key,
-               vocal_mode=excluded.vocal_mode,
-               vocal_camelot=excluded.vocal_camelot,
-               vocal_loudness_rms=excluded.vocal_loudness_rms,
-               vocal_energy=excluded.vocal_energy,
-               inst_bpm=excluded.inst_bpm,
-               inst_key=excluded.inst_key,
-               inst_mode=excluded.inst_mode,
-               inst_camelot=excluded.inst_camelot,
-               inst_loudness_rms=excluded.inst_loudness_rms,
-               inst_energy=excluded.inst_energy,
-               scored_at=datetime('now')""",
-        (
-            combo_type,
-            vocal["song_id"], vocal.get("title"), vocal.get("artist"),
-            vocal.get("bpm"), vocal.get("key"), vocal.get("mode"), vocal.get("camelot"),
-            vocal.get("loudness_rms"), vocal.get("energy"),
-            inst["song_id"],  inst.get("title"),  inst.get("artist"),
-            inst.get("bpm"),  inst.get("key"),  inst.get("mode"),  inst.get("camelot"),
-            inst.get("loudness_rms"),  inst.get("energy"),
-            scores["total"], scores["bpm_score"], scores["key_score"],
-            scores["energy_score"], scores["timbre_score"],
-            scorer, model_version,
-        )
+        """INSERT INTO pair_feedback
+               (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict)
+           VALUES (?,?,?,?,?)
+           ON CONFLICT(vocal_song_id, inst_song_id) DO UPDATE SET
+               verdict=excluded.verdict,
+               vocal_section=excluded.vocal_section,
+               inst_section=excluded.inst_section,
+               created_at=datetime('now')""",
+        (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict),
     )
     conn.commit()
     conn.close()
 
 
-def clear_candidates(db_path: Path = DB_PATH) -> None:
-    """Wipe all scored pairs so a re-score reflects exactly the current features
-    and pre-filter thresholds (no stale pairs left over from a looser run)."""
+def get_pair_feedback(verdict: str = "", db_path: Path = DB_PATH) -> List[Dict]:
+    """Every judgment, newest first. Pass a verdict to filter."""
     conn = get_conn(db_path)
-    conn.execute("DELETE FROM mashup_candidates")
-    conn.commit()
+    sql = "SELECT * FROM pair_feedback"
+    params: list = []
+    if verdict:
+        sql += " WHERE verdict = ?"
+        params.append(verdict)
+    sql += " ORDER BY created_at DESC, id DESC"
+    rows = conn.execute(sql, params).fetchall()
     conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_candidates(min_score: float = 0.0, limit: int = 100,
@@ -968,6 +1161,11 @@ def get_candidates(min_score: float = 0.0, limit: int = 100,
 def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             limit: int = 100, vocal_song_id: Optional[int] = None,
                             inst_song_id: Optional[int] = None,
+                            max_per_song: int = 0,
+                            include_hidden: bool = False,
+                            genre: str = "", era: str = "",
+                            energy: str = "", bpm_band: str = "",
+                            vocal_forward: bool = False,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -975,7 +1173,19 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     sections each side has (0 = structure not analysed yet).
 
     Pass vocal_song_id and/or inst_song_id to do a directed search — e.g.
-    'which beds work under this acapella?' (vocal_song_id set)."""
+    'which beds work under this acapella?' (vocal_song_id set).
+
+    max_per_song > 0 caps how many times any one song may appear in the result,
+    counting both sides (T3.4). One vocal that sits at 128 BPM in 8A otherwise
+    owns the whole page, which makes a 50-row list worth about 8 real choices.
+    include_hidden returns rows the user has hidden or excluded, for the UI that
+    manages them.
+
+    genre / era / energy / bpm_band / vocal_forward are the T3.5 filters, and
+    they compose. All of them run in SQL: client-filtering a truncated 50 would
+    search the top of the list rather than the library, which is the opposite of
+    what a filter is for. See ERA_BANDS / BPM_BANDS / ENERGY_BANDS for the
+    accepted values."""
     conn = get_conn(db_path)
     where = ["mc.score_total >= ?"]
     params: list = [min_score]
@@ -988,14 +1198,93 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     if inst_song_id is not None:
         where.append("mc.inst_song_id = ?")
         params.append(inst_song_id)
-    params.append(limit)
+    if not include_hidden:
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM pair_hidden h "
+            "            WHERE h.vocal_song_id = mc.vocal_song_id "
+            "              AND h.inst_song_id = mc.inst_song_id)")
+        where.append(
+            "NOT EXISTS (SELECT 1 FROM track_excluded x "
+            "            WHERE x.song_id IN (mc.vocal_song_id, mc.inst_song_id))")
+
+    # ── T3.5 filters ──────────────────────────────────────────────────────────
+    # Genre and era match EITHER side: "show me the 2010s pairs" means a pair
+    # with a 2010s record in it, not one where both tracks happen to be.
+    if genre:
+        where.append("(sv.genre LIKE ? OR si.genre LIKE ?)")
+        params += [f"%{genre}%", f"%{genre}%"]
+    if era:
+        lo, hi = era_bounds(era)
+        if lo is None:
+            raise ValueError(f"era must be one of {sorted(ERA_BANDS)}")
+        where.append(
+            "((sv.release_year BETWEEN ? AND ?) OR (si.release_year BETWEEN ? AND ?))")
+        params += [lo, hi, lo, hi]
+    if bpm_band:
+        lo, hi = bpm_bounds(bpm_band)
+        if lo is None:
+            raise ValueError(f"bpm_band must be one of {sorted(BPM_BANDS)}")
+        # The vocal sets the target tempo — the bed is conformed to it.
+        where.append("mc.vocal_bpm >= ? AND mc.vocal_bpm < ?")
+        params += [lo, hi]
+    if energy:
+        lo, hi = ENERGY_BANDS.get(energy, (None, None))
+        if lo is None:
+            raise ValueError(f"energy must be one of {sorted(ENERGY_BANDS)}")
+        # Ranked within the library rather than thresholded on a raw number:
+        # spectral energy has no absolute meaning across masters.
+        where.append("ne.energy_pct >= ? AND ne.energy_pct < ?")
+        params += [lo, hi]
+    if vocal_forward:
+        # The vocal presence of the section that will actually play, falling
+        # back to the track's most vocal section when no pair was stored.
+        where.append(
+            f"""COALESCE(
+                    (SELECT vocal_presence FROM sections
+                      WHERE song_id = mc.vocal_song_id
+                        AND section_index = mc.vocal_section_idx),
+                    (SELECT MAX(vocal_presence) FROM sections
+                      WHERE song_id = mc.vocal_song_id)
+                ) >= {VOCAL_FORWARD_MIN}""")
+
+    # The cap is a greedy pass over the ranked rows, so it needs more rows than
+    # it will return. Fetching everything would mean 90k rows through the join
+    # on a big library; this pool is enough to fill `limit` unless one song
+    # dominates far beyond the cap, and the shortfall is visible as a short page
+    # rather than a wrong one.
+    fetch = limit if max_per_song <= 0 else min(max(limit * 20, 200), 5000)
+    params.append(fetch)
     rows = conn.execute(
         f"""WITH pop AS (
                 SELECT id,
                        PERCENT_RANK() OVER (ORDER BY (plays + 2 * likes)) AS popularity
                 FROM songs
+            ),
+            -- Where this pair sits among the other pairs OF ITS KIND. A raw
+            -- composite reads ~78% for nearly everything, which says nothing
+            -- about whether this pair is good *for this library*; the rank does.
+            -- Computed over the whole table rather than the returned page, so
+            -- filtering does not rescale it, but partitioned by combo_type:
+            -- ranking a vocal-over-bed pair against instrumental-over-
+            -- instrumental pairs would make the best visible row read ~84th.
+            pct AS (
+                SELECT id,
+                       PERCENT_RANK() OVER (PARTITION BY combo_type
+                                            ORDER BY score_total) AS score_percentile
+                FROM mashup_candidates
+            ),
+            -- How hard this pair hits, relative to the rest of the library.
+            -- The bed carries the energy, and a raw spectral figure means
+            -- nothing across differently mastered records, so band on the rank.
+            nrg AS (
+                SELECT id,
+                       PERCENT_RANK() OVER (PARTITION BY combo_type
+                                            ORDER BY inst_energy) AS energy_pct
+                FROM mashup_candidates
             )
             SELECT mc.*,
+                   pc.score_percentile,
+                   ne.energy_pct,
                    sv.genre        AS vocal_genre,
                    sv.release_year AS vocal_year,
                    sv.plays        AS vocal_plays,
@@ -1009,19 +1298,252 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                    (SELECT COUNT(*) FROM sections WHERE song_id = mc.vocal_song_id)
                        AS vocal_section_count,
                    (SELECT COUNT(*) FROM sections WHERE song_id = mc.inst_song_id)
-                       AS inst_section_count
+                       AS inst_section_count,
+                   -- Labels for the winning section pair (T3.3). Joined rather
+                   -- than stored: the row already pins the times the preview
+                   -- plays, and the label is only there to read.
+                   (SELECT label FROM sections
+                     WHERE song_id = mc.vocal_song_id
+                       AND section_index = mc.vocal_section_idx)
+                       AS vocal_section_label,
+                   (SELECT label FROM sections
+                     WHERE song_id = mc.inst_song_id
+                       AND section_index = mc.inst_section_idx)
+                       AS inst_section_label,
+                   -- Joined live rather than frozen onto the candidate row, so a
+                   -- re-analysis updates the ⚠ flag without needing a re-score.
+                   -- Prefer the stem the match was scored on, fall back to full.
+                   (SELECT key_confidence FROM features
+                     WHERE song_id = mc.vocal_song_id
+                       AND stem_type IN ('vocals', 'full')
+                     ORDER BY CASE stem_type WHEN 'vocals' THEN 0 ELSE 1 END
+                     LIMIT 1) AS vocal_key_confidence,
+                   (SELECT key_confidence FROM features
+                     WHERE song_id = mc.inst_song_id
+                       AND stem_type IN ('instrumental', 'full')
+                     ORDER BY CASE stem_type WHEN 'instrumental' THEN 0 ELSE 1 END
+                     LIMIT 1) AS inst_key_confidence
             FROM mashup_candidates mc
             LEFT JOIN songs sv ON sv.id = mc.vocal_song_id
             LEFT JOIN songs si ON si.id = mc.inst_song_id
             LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
             LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
+            LEFT JOIN pct pc   ON pc.id = mc.id
+            LEFT JOIN nrg ne   ON ne.id = mc.id
             WHERE {' AND '.join(where)}
             ORDER BY mc.score_total DESC
             LIMIT ?""",
         params,
     ).fetchall()
     conn.close()
+    return _cap_per_song([dict(r) for r in rows], max_per_song, limit)
+
+
+# ── T3.5 filter vocabularies ─────────────────────────────────────────────────
+#
+# Bands rather than free ranges: "2010s", "125-134" and "high energy" are how
+# the user already thinks about a library, and a chip that cycles four values is
+# faster to drive than two number inputs.
+
+ERA_BANDS: Dict[str, tuple] = {
+    "2020s": (2020, 2099),
+    "2010s": (2010, 2019),
+    "2000s": (2000, 2009),
+    "1990s": (1990, 1999),
+    # Lower bound 1, not 0: release_year is 0 for a track whose upload date
+    # never resolved, and "unknown" is not "old".
+    "pre-1990": (1, 1989),
+}
+
+# Half-open [lo, hi). The break points are DJ conventions, not arithmetic:
+# 124-128 is house, 140/174 is where dubstep and drum & bass live.
+BPM_BANDS: Dict[str, tuple] = {
+    "<100": (0.0, 100.0),
+    "100-124": (100.0, 125.0),
+    "125-134": (125.0, 135.0),
+    "135-149": (135.0, 150.0),
+    "150+": (150.0, 1000.0),
+}
+
+# Percentile bands of the bed's energy within the library.
+ENERGY_BANDS: Dict[str, tuple] = {
+    "low": (0.0, 0.34),
+    "mid": (0.34, 0.67),
+    "high": (0.67, 1.01),
+}
+
+# A section the separator found this much voice in is one you can hear over a
+# bed. Matches the vocal-presence scale sections are scored on.
+VOCAL_FORWARD_MIN = 0.6
+
+
+def era_bounds(era: str) -> tuple:
+    return ERA_BANDS.get(era, (None, None))
+
+
+def bpm_bounds(band: str) -> tuple:
+    return BPM_BANDS.get(band, (None, None))
+
+
+def candidate_filter_options(combo_type: str = "",
+                             db_path: Path = DB_PATH) -> Dict[str, list]:
+    """Which filter values actually match something, so the chips only offer
+    what this library contains. A Genre chip listing 40 genres the user has none
+    of is worse than no chip."""
+    conn = get_conn(db_path)
+    where = "WHERE mc.combo_type = ?" if combo_type else ""
+    args = (combo_type,) if combo_type else ()
+    genres = conn.execute(
+        f"""SELECT g AS genre, COUNT(*) AS n FROM (
+                SELECT sv.genre AS g FROM mashup_candidates mc
+                  JOIN songs sv ON sv.id = mc.vocal_song_id {where}
+                UNION ALL
+                SELECT si.genre AS g FROM mashup_candidates mc
+                  JOIN songs si ON si.id = mc.inst_song_id {where}
+            )
+            WHERE g IS NOT NULL AND g != ''
+            GROUP BY g ORDER BY n DESC, g""",
+        args * 2).fetchall()
+    years = conn.execute(
+        """SELECT MIN(release_year) AS lo, MAX(release_year) AS hi
+           FROM songs WHERE release_year > 0""").fetchone()
+    conn.close()
+    lo, hi = (years["lo"], years["hi"]) if years else (None, None)
+    eras = [name for name, (a, b) in ERA_BANDS.items()
+            if lo is not None and not (hi < a or lo > b)]
+    return {
+        "genres": [dict(r) for r in genres],
+        "eras": eras,
+        "bpm_bands": list(BPM_BANDS),
+        "energy_bands": list(ENERGY_BANDS),
+    }
+
+
+def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int) -> List[Dict]:
+    """Keep the best `limit` rows in which no song appears more than
+    `max_per_song` times, counting appearances on either side.
+
+    Greedy down the ranked list: the top pair is always kept, and a song only
+    loses a row once it already has its share of better ones. Done here rather
+    than with a window function because the cap spans both columns — a song can
+    be the vocal in one row and the bed in the next, and SQL would have to
+    partition by one or the other."""
+    if max_per_song <= 0:
+        return rows[:limit]
+    seen: Dict[int, int] = {}
+    kept: List[Dict] = []
+    for row in rows:
+        v, i = row["vocal_song_id"], row["inst_song_id"]
+        if seen.get(v, 0) >= max_per_song or seen.get(i, 0) >= max_per_song:
+            continue
+        seen[v] = seen.get(v, 0) + 1
+        seen[i] = seen.get(i, 0) + 1
+        kept.append(row)
+        if len(kept) >= limit:
+            break
+    return kept
+
+
+def best_bed_per_vocal(combo_type: str = "vocal_over_instrumental",
+                       per_vocal: int = 1, limit: int = 50,
+                       min_score: float = 0.0,
+                       db_path: Path = DB_PATH) -> List[Dict]:
+    """One (or `per_vocal`) best bed for each vocal — the 'what can I do with
+    each of my acapellas?' view (T3.4).
+
+    A flat ranked list answers "what is the best pair in the library", which is
+    one question asked fifty times. This answers a different one, and it is the
+    view that makes a big library feel navigable: every vocal gets a turn,
+    ordered by how good its best option is.
+
+    Hidden pairs and excluded tracks are filtered out here too."""
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        """WITH ranked AS (
+               SELECT mc.*,
+                      ROW_NUMBER() OVER (PARTITION BY mc.vocal_song_id
+                                         ORDER BY mc.score_total DESC) AS bed_rank,
+                      MAX(mc.score_total) OVER (PARTITION BY mc.vocal_song_id)
+                          AS vocal_best_score
+               FROM mashup_candidates mc
+               WHERE mc.combo_type = ?
+                 AND mc.score_total >= ?
+                 AND NOT EXISTS (SELECT 1 FROM pair_hidden h
+                                  WHERE h.vocal_song_id = mc.vocal_song_id
+                                    AND h.inst_song_id = mc.inst_song_id)
+                 AND NOT EXISTS (SELECT 1 FROM track_excluded x
+                                  WHERE x.song_id IN (mc.vocal_song_id,
+                                                      mc.inst_song_id))
+           )
+           SELECT * FROM ranked
+           WHERE bed_rank <= ?
+           ORDER BY vocal_best_score DESC, vocal_song_id, bed_rank
+           LIMIT ?""",
+        (combo_type, min_score, max(1, per_vocal), max(1, limit)),
+    ).fetchall()
+    conn.close()
     return [dict(r) for r in rows]
+
+
+# ── Hidden pairs / excluded tracks (T3.4) ────────────────────────────────────
+
+def hide_pair(vocal_song_id: int, inst_song_id: int,
+              db_path: Path = DB_PATH) -> None:
+    """Never show this exact pairing again. Survives 'Score library'."""
+    conn = get_conn(db_path)
+    conn.execute(
+        "INSERT OR IGNORE INTO pair_hidden (vocal_song_id, inst_song_id) "
+        "VALUES (?,?)", (vocal_song_id, inst_song_id))
+    conn.commit()
+    conn.close()
+
+
+def unhide_pair(vocal_song_id: int, inst_song_id: int,
+                db_path: Path = DB_PATH) -> None:
+    conn = get_conn(db_path)
+    conn.execute(
+        "DELETE FROM pair_hidden WHERE vocal_song_id=? AND inst_song_id=?",
+        (vocal_song_id, inst_song_id))
+    conn.commit()
+    conn.close()
+
+
+def exclude_track(song_id: int, db_path: Path = DB_PATH) -> None:
+    """Drop this track from Discover entirely, on either side of a pair."""
+    conn = get_conn(db_path)
+    conn.execute("INSERT OR IGNORE INTO track_excluded (song_id) VALUES (?)",
+                 (song_id,))
+    conn.commit()
+    conn.close()
+
+
+def include_track(song_id: int, db_path: Path = DB_PATH) -> None:
+    conn = get_conn(db_path)
+    conn.execute("DELETE FROM track_excluded WHERE song_id=?", (song_id,))
+    conn.commit()
+    conn.close()
+
+
+def list_hidden(db_path: Path = DB_PATH) -> Dict[str, List[Dict]]:
+    """Everything the user has suppressed, with titles so the UI can offer it
+    back. A hidden pair with no title left is a track that has since been
+    deleted; the row stays harmless."""
+    conn = get_conn(db_path)
+    pairs = conn.execute(
+        """SELECT h.vocal_song_id, h.inst_song_id, h.created_at,
+                  sv.title AS vocal_title, si.title AS inst_title
+           FROM pair_hidden h
+           LEFT JOIN songs sv ON sv.id = h.vocal_song_id
+           LEFT JOIN songs si ON si.id = h.inst_song_id
+           ORDER BY h.id DESC""").fetchall()
+    tracks = conn.execute(
+        """SELECT x.song_id, x.created_at, s.title, s.artist
+           FROM track_excluded x
+           LEFT JOIN songs s ON s.id = x.song_id
+           ORDER BY x.rowid DESC""").fetchall()
+    conn.close()
+    return {"pairs": [dict(r) for r in pairs],
+            "tracks": [dict(r) for r in tracks]}
 
 
 def get_candidates_for_song(song_id: int, role: str = "vocal",

@@ -70,6 +70,29 @@ export const api = {
       body: JSON.stringify({ bpm, key, mode }),
     }),
 
+  // ── Pair judgments (T2.1) — the ✓/✗ made while triaging the ranked list.
+  // Survives "Score library", unlike mashup_candidates.
+  getPairFeedback: (verdict = "") =>
+    jsonFetch(`/api/mashups/feedback${verdict ? `?verdict=${verdict}` : ""}`),
+
+  savePairFeedback: ({ vocalSongId, instSongId, verdict,
+                       vocalSection = null, instSection = null }) =>
+    jsonFetch("/api/mashups/feedback", {
+      method: "POST",
+      body: JSON.stringify({
+        vocal_song_id: vocalSongId, inst_song_id: instSongId, verdict,
+        vocal_section: vocalSection, inst_section: instSection,
+      }),
+    }),
+
+  // Which beat of the bar this stem's grid starts on (0-3). Set by alt+clicking
+  // a beat line in Studio when detected bar lines don't match what you hear.
+  setBeatPhase: (id, stem, phase) =>
+    jsonFetch(`/api/tracks/${id}/beat-phase`, {
+      method: "PATCH",
+      body: JSON.stringify({ stem, phase }),
+    }),
+
   // Remove a song from the library — deletes its DB rows AND audio/stem files.
   deleteTrack: (id) => jsonFetch(`/api/tracks/${id}`, { method: "DELETE" }),
 
@@ -138,6 +161,11 @@ export const api = {
     limit = 50,
     vocalSongId = null,
     instSongId = null,
+    // 0 = uncapped. Server-side (T3.4): capping a truncated 50 client-side
+    // would just show fewer rows, not better ones.
+    maxPerSong = 3,
+    // T3.5 filters — also server-side, and for the same reason.
+    genre = "", era = "", energy = "", bpmBand = "", vocalForward = false,
   } = {}) => {
     const params = new URLSearchParams();
     if (comboType) params.set("combo_type", comboType);
@@ -145,46 +173,52 @@ export const api = {
     params.set("limit", String(limit));
     if (vocalSongId != null) params.set("vocal_song_id", String(vocalSongId));
     if (instSongId != null) params.set("inst_song_id", String(instSongId));
+    params.set("max_per_song", String(maxPerSong));
+    if (genre) params.set("genre", genre);
+    if (era) params.set("era", era);
+    if (energy) params.set("energy", energy);
+    if (bpmBand) params.set("bpm_band", bpmBand);
+    if (vocalForward) params.set("vocal_forward", "true");
     return jsonFetch(`/api/mashups?${params}`);
   },
 
+  // Which filter values this library actually contains.
+  getMashupFilters: (comboType = "") =>
+    jsonFetch(`/api/mashups/filters${comboType ? `?combo_type=${comboType}` : ""}`),
+
+  // "The best bed for each of my vocals" — every acapella gets a turn instead
+  // of one well-placed vocal owning the page.
+  getBestBedPerVocal: ({ limit = 50, perVocal = 1, minScore = 0 } = {}) => {
+    const params = new URLSearchParams({
+      limit: String(limit), per_vocal: String(perVocal),
+    });
+    if (minScore) params.set("min_score", String(minScore));
+    return jsonFetch(`/api/mashups/by-vocal?${params}`);
+  },
+
+  // ── Hidden pairs / excluded tracks (T3.4) ─────────────────────────────────
+  // Display preferences, not judgments: they survive "Score library" but are
+  // deliberately not training data.
+  getHidden: () => jsonFetch("/api/mashups/hidden"),
+
+  hidePair: (vocalSongId, instSongId) =>
+    jsonFetch("/api/mashups/hidden", {
+      method: "POST",
+      body: JSON.stringify({ vocal_song_id: vocalSongId, inst_song_id: instSongId }),
+    }),
+
+  unhidePair: (vocalSongId, instSongId) =>
+    jsonFetch(`/api/mashups/hidden?vocal_song_id=${vocalSongId}`
+      + `&inst_song_id=${instSongId}`, { method: "DELETE" }),
+
+  excludeTrack: (songId) =>
+    jsonFetch(`/api/mashups/excluded/${songId}`, { method: "POST" }),
+
+  includeTrack: (songId) =>
+    jsonFetch(`/api/mashups/excluded/${songId}`, { method: "DELETE" }),
+
   getMashupPlan: (vocalId, instId) =>
     jsonFetch(`/api/mashups/plan?vocal_id=${vocalId}&inst_id=${instId}`),
-
-  startPreview: (vocalId, instId, vocalStart = null, instStart = null) => {
-    const params = new URLSearchParams({ vocal_id: vocalId, inst_id: instId });
-    if (vocalStart != null) params.set("vocal_start", vocalStart.toFixed(3));
-    if (instStart  != null) params.set("inst_start",  instStart.toFixed(3));
-    return jsonFetch(`/api/mashups/preview?${params}`, { method: "POST" });
-  },
-
-  previewAudioUrl: (vocalId, instId) =>
-    `/api/mashups/preview/audio?vocal_id=${vocalId}&inst_id=${instId}`,
-
-  startAdjust: (vocalId, instId, anchor, stretch = null, shift = null) => {
-    const params = new URLSearchParams({ vocal_id: vocalId, inst_id: instId, anchor });
-    if (stretch != null) params.set("stretch", String(stretch));
-    if (shift != null) params.set("shift", String(shift));
-    return jsonFetch(`/api/mashups/adjust?${params}`, { method: "POST" });
-  },
-
-  adjustedAudioUrl: (vocalId, instId, anchor) =>
-    `/api/mashups/adjust/audio?vocal_id=${vocalId}&inst_id=${instId}&anchor=${anchor}`,
-
-  startExport: (vocalId, instId, anchor, stretch, shift, vocalOffset, instOffset,
-                vocalGain = null, instGain = null) => {
-    const params = new URLSearchParams({ vocal_id: vocalId, inst_id: instId, anchor });
-    if (stretch != null) params.set("stretch", String(stretch));
-    if (shift != null) params.set("shift", String(shift));
-    if (vocalOffset != null) params.set("vocal_offset", vocalOffset.toFixed(3));
-    if (instOffset != null) params.set("inst_offset", instOffset.toFixed(3));
-    if (vocalGain != null) params.set("vocal_gain", vocalGain.toFixed(3));
-    if (instGain != null) params.set("inst_gain", instGain.toFixed(3));
-    return jsonFetch(`/api/mashups/export?${params}`, { method: "POST" });
-  },
-
-  exportAudioUrl: (vocalId, instId) =>
-    `/api/mashups/export/audio?vocal_id=${vocalId}&inst_id=${instId}`,
 
   // ── Studio (DAW tab) ───────────────────────────────────────────────────────
   // Render the arrangement server-side (decoupled stretch/pitch per clip) to a
@@ -197,23 +231,10 @@ export const api = {
 
   mixdownAudioUrl: (token) => `/api/studio/mixdown/${token}/audio`,
 
-  // ── Audition export ────────────────────────────────────────────────────────
-  // Render the two-deck mashup exactly as it sounds (per-deck stem + rate +
-  // pitch + offset + gain) via the shared offline mixdown renderer. The render
-  // token equals the returned job_id.
-  startAuditionExport: ({ aId, bId, aStem, bStem, aRate, bRate, aShift, bShift,
-                          aOffset, bOffset, aGain, bGain }) =>
-    jsonFetch("/api/studio/mixdown", {
-      method: "POST",
-      body: JSON.stringify({
-        clips: [
-          { song_id: aId, stem: aStem, offset_sec: aOffset, rate: aRate, semitones: aShift, gain: aGain },
-          { song_id: bId, stem: bStem, offset_sec: bOffset, rate: bRate, semitones: bShift, gain: bGain },
-        ],
-      }),
-    }),
-
-  auditionExportAudioUrl: (token) => `/api/studio/mixdown/${token}/audio`,
+  // The Audition tab's export used to live here as startAuditionExport — a
+  // fixed two-clip wrapper over this same endpoint, with its own duplicate of
+  // mixdownAudioUrl. It went with the tab (T4.1): one arranger, one export
+  // payload shape.
 
   // ── Mixes (1001tracklists ingestion) ──────────────────────────────────────
   importMix: (url) =>

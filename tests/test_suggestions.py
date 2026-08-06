@@ -139,6 +139,56 @@ def test_effective_inst_bpm_handles_doubletime():
     assert effective_bpm(120.0, 122.0) == 122.0
 
 
+# ── T1.2 semitone shift, computed from the Camelot pair ──────────────────────
+# The shift must agree with camelot_score by construction: any pair camelot_score
+# rates as compatible must not be handed a destructive transposition.
+
+def test_relative_minor_bed_needs_no_transposition():
+    """C major vocal over A minor bed → 0. They share a scale (8B/8A), which is
+    why camelot_score rates the pair 0.75. Shifting +3 would drag the bed to C
+    minor and clash with the vocal's major third."""
+    from matcher.match import compute_semitone_shift
+    assert compute_semitone_shift("8B", "8A") == 0
+
+
+def test_relative_major_bed_needs_no_transposition():
+    """The inverse direction: A minor vocal over C major bed → 0."""
+    from matcher.match import compute_semitone_shift
+    assert compute_semitone_shift("8A", "8B") == 0
+
+
+def test_identical_key_needs_no_transposition():
+    from matcher.match import compute_semitone_shift
+    assert compute_semitone_shift("8B", "8B") == 0
+    assert compute_semitone_shift("11A", "11A") == 0
+
+
+def test_unrelated_keys_return_minimal_signed_shift():
+    """One Camelot hour = a perfect fifth = 7 semitones, folded into [-6, +6]."""
+    from matcher.match import compute_semitone_shift
+    assert compute_semitone_shift("8B", "9B") == 5    # G major bed → C major
+    assert compute_semitone_shift("8B", "7B") == -5   # F major bed → C major
+    assert compute_semitone_shift("8B", "10B") == -2  # D major bed → C major
+    assert compute_semitone_shift("1A", "11A") == 2   # F# minor bed → G# minor
+
+
+def test_semitone_shift_never_exceeds_a_tritone():
+    from matcher.match import compute_semitone_shift
+    for v in range(1, 13):
+        for i in range(1, 13):
+            for lv in "AB":
+                for li in "AB":
+                    shift = compute_semitone_shift(f"{v}{lv}", f"{i}{li}")
+                    assert shift is not None and -6 <= shift <= 6
+
+
+def test_semitone_shift_unknown_key_returns_none():
+    from matcher.match import compute_semitone_shift
+    assert compute_semitone_shift("?", "8A") is None
+    assert compute_semitone_shift("8B", "?") is None
+    assert compute_semitone_shift("", "") is None
+
+
 def test_build_mashup_plan(seeded):
     db_path, s1, s2 = seeded
     from matcher.plan import build_mashup_plan

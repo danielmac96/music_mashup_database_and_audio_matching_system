@@ -3,6 +3,7 @@ import { api } from "../api";
 import { JobBadge } from "./JobBadge";
 import { KeyChip } from "./KeyChip";
 import { PlayerBar } from "./PlayerBar";
+import { PlaylistImporter } from "./PlaylistImporter";
 import { TrackArt } from "./TrackArt";
 import { SourceBadge } from "./SourceBadge";
 import {
@@ -26,6 +27,17 @@ const JOB_ACTIVE = new Set(["queued", "running"]);
 // (bpm_confidence from librosa is a beats/frame density, not a 0-1 quality, so
 // an out-of-range BPM is the honest signal to flag for a manual sanity-check.)
 const bpmLooksOff = (f) => f?.bpm != null && (f.bpm < 80 || f.bpm > 170);
+
+// key_confidence (T1.3) is margin-over-runner-up x chroma peakiness, so it is
+// low both when two keys are effectively tied and when there is no tonal centre
+// to find. Calibrated against a re-analysed 90-stem library, where it runs
+// p25=0.010, p50=0.023, p90=0.066, max=0.128 — real music simply does not
+// produce confident key estimates very often. The threshold marks the worst
+// ~quartile: flagging the median would put a ⚠ on three tracks in four and
+// train the eye to ignore it. null = analysed before this existed, say nothing.
+const KEY_CONFIDENCE_MIN = 0.012;
+const keyLooksOff = (f) =>
+  f?.key_confidence != null && f.key_confidence < KEY_CONFIDENCE_MIN;
 
 function TrackEditor({ track, onSaved, onCancel }) {
   const feats = track.features?.full || {};
@@ -421,6 +433,12 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
         <span className="sub">{loading ? "refreshing…" : `${readyCount} ready to mash`}</span>
       </div>
 
+      {/* Importing is not a place you go — it is a thing you do to the library
+          (T4.2). Paste, preview, save; the tracks appear in the list below and
+          start processing, with no tab change. The dependency-health banner
+          rides along, so a missing ffmpeg is visible where the work happens. */}
+      <PlaylistImporter embedded onIngested={() => refresh()} />
+
       {/* filter toolbar */}
       <div className="toolbar">
         <div className="search-box">
@@ -448,7 +466,7 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
       {error && <div className="error-text" style={{ marginBottom: 10 }}>{error}</div>}
 
       {filtered.length === 0 && !loading ? (
-        <p className="empty">No tracks match. Import a SoundCloud URL on the Import tab.</p>
+        <p className="empty">No tracks match. Paste a SoundCloud or YouTube link above to add some.</p>
       ) : view === "cards" ? (
         <div className="card-grid">
           {filtered.map((t) => {
@@ -483,6 +501,12 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                     </span>
                   )}
                   <KeyChip camelot={f.camelot} />
+                  {keyLooksOff(f) && (
+                    <span className="bpm-warn"
+                      title={`Key uncertain (${f.key_confidence.toFixed(3)} confidence) — verify before trusting the suggested pitch shift. Key is the heaviest match weight.`}>
+                      ⚠
+                    </span>
+                  )}
                   <div className="bpm-chip" title="Energy (0–100)">
                     <span className="u">EN </span>{f.energy != null ? Math.round(f.energy * 100) : "—"}
                   </div>

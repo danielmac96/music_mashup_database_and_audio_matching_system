@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from database.models import (
     delete_song, get_all_features, get_all_songs, get_conn, get_features_for_song,
-    get_sections, update_features_manual, update_song_url,
+    get_sections, update_features_manual, update_hook, update_song_url,
 )
 from ingest.sources import classify_url, normalize_url
 
@@ -31,8 +31,12 @@ _AUDIO_MEDIA = {
 }
 
 
+# Whitelist of feature columns the UI is allowed to see. A column missing from
+# here is silently undefined in the browser, so anything the frontend reads must
+# be listed — key_confidence drives the ⚠ key chip, beat_phase the bar lines.
 _FEATURE_FIELDS = ("bpm", "key", "mode", "camelot", "energy", "loudness_rms",
-                   "bpm_confidence", "spectral_centroid", "spectral_rolloff",
+                   "bpm_confidence", "key_confidence", "beat_phase",
+                   "spectral_centroid", "spectral_rolloff",
                    "zero_crossing_rate")
 
 # Analysis is organised into independent metric steps (analysis/analyze.py
@@ -262,6 +266,118 @@ def correct_features(song_id: int, body: FeatureCorrection) -> dict:
     return {"updated_rows": updated, "features": get_features_for_song(song_id, "full")}
 
 
+# Each hook role is cut from the stem it will be heard in.
+_HOOK_ROLE_STEMS = {"vocal": "vocals", "bed": "instrumental"}
+
+
+@router.get("/{song_id}/hook")
+def get_hook(song_id: int, role: str = "vocal") -> dict:
+    """The 16 bars of this track worth previewing, for 'vocal' or 'bed'.
+
+    Computes and stores the window on first request when it is absent, so
+    tracks analysed before hooks existed backfill on demand rather than needing
+    a full re-run of the pipeline.
+    """
+    if role not in _HOOK_ROLE_STEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role must be one of {sorted(_HOOK_ROLE_STEMS)}")
+    stem = _HOOK_ROLE_STEMS[role]
+
+    feat = get_features_for_song(song_id, stem) or get_features_for_song(song_id, "full")
+    if not feat:
+        raise HTTPException(
+            status_code=404,
+            detail="track has no analysed features yet — analyze it first")
+
+    if feat.get("hook_start") is not None and feat.get("hook_end") is not None:
+        return {"song_id": song_id, "role": role, "stem": stem,
+                "hook_start": feat["hook_start"], "hook_end": feat["hook_end"],
+                "cached": True}
+
+    from analysis.hooks import pick_hook
+    hook = pick_hook(get_sections(song_id), feat, role=role)
+    if not hook:
+        raise HTTPException(
+            status_code=404,
+            detail="not enough structure or energy data to choose a hook")
+    update_hook(song_id, stem, hook)
+    return {"song_id": song_id, "role": role, "stem": stem,
+            "hook_start": hook["hook_start"], "hook_end": hook["hook_end"],
+            "cached": False}
+
+
+@router.get("/{song_id}/hook/audio")
+def stream_hook(song_id: int, stem: str = "vocals",
+                start: Optional[float] = None, end: Optional[float] = None):
+    """Serve the pre-rendered 16-bar hook clip, rendering it on a cache miss.
+
+    This is the request the ranked list makes on every keypress, so a warm hit
+    is a plain file serve. A cold one is a seek-and-copy of a byte range that
+    already exists on disk — no DSP, no decode.
+
+    `start`/`end` (seconds) serve that exact span instead — the ranked list
+    sends the candidate's winning section pair (T3.3) so the preview is the
+    moment the pair was chosen for, not each track's generic hook. Windowed
+    clips cache under their own name, so stepping back to a row is still a
+    file serve.
+    """
+    from api.workers.hook_worker import HookRenderError, render_hook
+    if (start is None) != (end is None):
+        raise HTTPException(status_code=400,
+                            detail="pass both start and end, or neither")
+    try:
+        path = Path(render_hook(song_id, stem, start=start, end=end))
+    except HookRenderError as exc:
+        # Missing dependency is a capability gap (501); everything else is a
+        # missing artefact (404). Neither is ever a bare 500.
+        status = 501 if "soundfile is not installed" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="audio/wav",
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=3600"},
+        filename=path.name,
+    )
+
+
+class BeatPhaseUpdate(BaseModel):
+    stem: str = "full"
+    phase: int = 0
+
+
+@router.patch("/{song_id}/beat-phase")
+def set_beat_phase(song_id: int, body: BeatPhaseUpdate) -> dict:
+    """Declare which beat of the bar the grid starts on (alt+click in Studio).
+
+    Phase detection is a guess from onset strength and a syncopated or
+    quiet-intro track will fool it. The user's ear is not a guess, so a manual
+    value overrides detection — and it is written only to the stem being
+    viewed, since each stem has its own beat grid.
+    """
+    if body.stem not in _STEM_TYPES:
+        raise HTTPException(status_code=400,
+                            detail=f"stem must be one of {sorted(_STEM_TYPES)}")
+    if body.phase not in (0, 1, 2, 3):
+        raise HTTPException(status_code=400,
+                            detail="phase must be 0, 1, 2 or 3 (position within a 4/4 bar)")
+
+    conn = get_conn()
+    cur = conn.execute(
+        "UPDATE features SET beat_phase=? WHERE song_id=? AND stem_type=?",
+        (body.phase, song_id, body.stem),
+    )
+    conn.commit()
+    updated = cur.rowcount
+    conn.close()
+    if updated == 0:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no analysed '{body.stem}' features for this track — analyze it first",
+        )
+    return {"song_id": song_id, "stem": body.stem, "beat_phase": body.phase}
+
+
 def _unlink_files(paths: list[str]) -> int:
     """Best-effort delete of on-disk audio/stem files. Returns how many were
     actually removed; missing/locked files are skipped silently."""
@@ -353,7 +469,11 @@ def get_waveform(song_id: int, stem: str = "vocals") -> dict:
     feat_stem = get_features_for_song(song_id, stem_type=stem)
     waveform = feat_stem.get("waveform_rms", []) if feat_stem else []
 
+    # beat_phase indexes into beat_times, so it must come from whichever stem
+    # actually supplied the beats — a phase read off a different beat array
+    # points at the wrong beat and moves every bar line.
     beat_times, beat_source = [], stem
+    beat_feat = feat_stem
     if stem == "vocals":
         confidence = (feat_stem or {}).get("bpm_confidence") or 0.0
         stem_beats = (feat_stem or {}).get("beat_times") or []
@@ -362,17 +482,18 @@ def get_waveform(song_id: int, stem: str = "vocals") -> dict:
         else:
             feat_full = get_features_for_song(song_id, stem_type="full")
             beat_times = feat_full.get("beat_times", []) if feat_full else []
-            beat_source = "full"
+            beat_source, beat_feat = "full", feat_full
     else:
         beat_times = (feat_stem or {}).get("beat_times") or []
         if not beat_times and stem == "instrumental":
             feat_full = get_features_for_song(song_id, stem_type="full")
             beat_times = feat_full.get("beat_times", []) if feat_full else []
-            beat_source = "full"
+            beat_source, beat_feat = "full", feat_full
 
     return {
         "song_id": song_id, "stem": stem, "waveform": waveform,
         "beat_times": beat_times, "beat_source": beat_source,
+        "beat_phase": (beat_feat or {}).get("beat_phase") or 0,
     }
 
 

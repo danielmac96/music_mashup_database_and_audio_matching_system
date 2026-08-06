@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      MASHUP_PIPELINE_WORKERS: ${MASHUP_PIPELINE_WORKERS:-1}
+    restart: unless-stopped

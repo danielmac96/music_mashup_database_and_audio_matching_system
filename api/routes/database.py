@@ -9,7 +9,8 @@ router = APIRouter()
 
 # Whitelist — only these tables can be browsed. Prevents SQL injection via the
 # table name (which can't be parameterised in SQLite).
-_TABLES = ("songs", "stems", "features", "sections", "mashup_candidates")
+_TABLES = ("songs", "stems", "features", "sections", "mashup_candidates",
+           "pair_feedback", "pair_hidden", "track_excluded")
 
 
 @router.get("/tables")

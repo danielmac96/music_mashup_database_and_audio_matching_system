@@ -257,4 +257,42 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
         raise StageError("Structure detection found no sections (track may be too short)")
 
     replace_sections(song_id, sections)
-    return {"section_count": len(sections)}
+    hooks = _persist_hooks(song_id, sections)
+    # Cut the clips now so they are warm before the user reaches the ranked list
+    # — a cold hook is the difference between an instant preview and a stall.
+    # force: _persist_hooks has just moved the hook window, and the clip cache is
+    # keyed by (song, stem), so without it a re-run keeps the previous 16 bars.
+    from api.workers.hook_worker import warm_hooks
+    clips = warm_hooks(song_id, force=True)
+    return {"section_count": len(sections), "hooks": hooks, "clips": clips}
+
+
+# Which stem each hook role previews. The vocal hook is cut from the vocal stem
+# and the bed hook from the instrumental, so each is rendered from the audio it
+# will actually be heard in.
+_HOOK_ROLE_STEMS = (("vocal", "vocals"), ("bed", "instrumental"))
+
+
+def _persist_hooks(song_id: int, sections: list) -> dict:
+    """Pick and store the previewable 16 bars for each role (T1.5).
+
+    Runs here rather than in the analysis stage because it needs sections. Never
+    raises: a track without a hook is a slow preview, not a failed pipeline, and
+    do_structure has already done the expensive work by this point.
+    """
+    from analysis.hooks import pick_hook
+    from database.models import get_features_for_song, update_hook
+
+    out = {}
+    for role, stem in _HOOK_ROLE_STEMS:
+        try:
+            feat = get_features_for_song(song_id, stem) \
+                or get_features_for_song(song_id, "full")
+            if not feat:
+                continue
+            hook = pick_hook(sections, feat, role=role)
+            if hook and update_hook(song_id, stem, hook):
+                out[role] = [hook["hook_start"], hook["hook_end"]]
+        except Exception:  # noqa: BLE001
+            log.exception("hook selection failed for song %s stem %s", song_id, stem)
+    return out

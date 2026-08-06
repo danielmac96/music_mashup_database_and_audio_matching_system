@@ -13,11 +13,15 @@ log = logging.getLogger(__name__)
 
 def run(job_id: str, bpm_max_diff: Optional[float] = None,
         key_min_score: Optional[float] = None, scorer: str = "auto") -> None:
-    jobs.update(job_id, status="running",
+    jobs.update(job_id, status="running", progress=0,
                 message="Scoring all vocal/instrumental pairs…")
+    # A 900-song library is minutes of work, so report block-by-block rather
+    # than leaving the badge at 0% until it finishes.
+    on_progress = jobs.progress_updater(job_id)
     try:
         results = score_all_pairs(bpm_max_diff=bpm_max_diff,
-                                  key_min_score=key_min_score, scorer=scorer)
+                                  key_min_score=key_min_score, scorer=scorer,
+                                  progress=on_progress)
     except Exception as exc:  # noqa: BLE001
         log.exception("score_all_pairs raised")
         jobs.fail(job_id, f"Matching error: {type(exc).__name__}: {exc}")

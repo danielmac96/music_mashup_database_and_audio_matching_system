@@ -5,14 +5,19 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
-from database.models import get_candidates_enriched
+from database.models import (
+    BPM_BANDS, ENERGY_BANDS, ERA_BANDS, VERDICTS, best_bed_per_vocal,
+    candidate_filter_options, exclude_track, get_candidates_enriched,
+    get_pair_feedback, hide_pair, include_track, list_hidden, unhide_pair,
+    upsert_pair_feedback,
+)
 
 from api import jobs
-from api.workers import adjust_worker, export_worker, match_worker, preview_worker
+from api.workers import match_worker
+from matcher.match import compute_semitone_shift, compute_stretch_factor
 from matcher.plan import build_mashup_plan
-from render.preview import adjusted_path, export_path, preview_path
 
 router = APIRouter()
 
@@ -59,21 +64,163 @@ def scorer_status() -> dict:
     }
 
 
+def _with_playback_terms(rows: list) -> list:
+    """The instant preview (T1.7) arms the bed at the vocal's tempo and pitch on
+    every keypress. Deriving these here keeps one implementation of the Camelot
+    math — recomputing it in JS would silently drift from the T1.2 fix — and
+    costs the browser no extra round-trip per row."""
+    for r in rows:
+        r["semitone_shift"] = compute_semitone_shift(
+            r.get("vocal_camelot") or "", r.get("inst_camelot") or "")
+        r["stretch_factor"] = compute_stretch_factor(
+            r.get("vocal_bpm") or 0.0, r.get("inst_bpm") or 0.0)
+    return rows
+
+
 @router.get("")
 def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     limit: int = 50, vocal_song_id: Optional[int] = None,
-                    inst_song_id: Optional[int] = None) -> dict:
+                    inst_song_id: Optional[int] = None,
+                    max_per_song: int = 3,
+                    genre: str = "", era: str = "", energy: str = "",
+                    bpm_band: str = "", vocal_forward: bool = False) -> dict:
+    """The ranked list.
+
+    max_per_song caps how often one song may appear (0 = uncapped) so a single
+    well-placed vocal cannot own the page. genre / era / energy / bpm_band /
+    vocal_forward compose, and all of them filter in SQL — narrowing a
+    truncated 50 client-side would search the top of the list, not the library.
+    """
     if combo_type and combo_type not in _COMBO_TYPES:
         raise HTTPException(
             status_code=400,
             detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}",
         )
+    if max_per_song < 0:
+        raise HTTPException(status_code=400,
+                            detail="max_per_song must be 0 or greater")
+    for value, allowed, name in ((era, ERA_BANDS, "era"),
+                                 (energy, ENERGY_BANDS, "energy"),
+                                 (bpm_band, BPM_BANDS, "bpm_band")):
+        if value and value not in allowed:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{name} must be one of {sorted(allowed)}")
     rows = get_candidates_enriched(
         combo_type=combo_type, min_score=min_score,
         limit=max(1, min(limit, 500)),
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
+        max_per_song=max_per_song,
+        genre=genre, era=era, energy=energy, bpm_band=bpm_band,
+        vocal_forward=vocal_forward,
     )
-    return {"count": len(rows), "candidates": rows}
+    return {"count": len(rows), "candidates": _with_playback_terms(rows),
+            "max_per_song": max_per_song}
+
+
+@router.get("/filters")
+def filter_options(combo_type: str = "") -> dict:
+    """Which filter values this library actually contains, so the chips only
+    offer what will match something."""
+    if combo_type and combo_type not in _COMBO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
+    return candidate_filter_options(combo_type=combo_type)
+
+
+@router.get("/by-vocal")
+def list_best_bed_per_vocal(limit: int = 50, per_vocal: int = 1,
+                            min_score: float = 0.0,
+                            combo_type: str = "vocal_over_instrumental") -> dict:
+    """'The best bed for each of my vocals' — every acapella gets a turn,
+    ordered by how good its best option is."""
+    if combo_type not in _COMBO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
+    rows = best_bed_per_vocal(combo_type=combo_type,
+                              per_vocal=max(1, min(per_vocal, 10)),
+                              limit=max(1, min(limit, 500)),
+                              min_score=min_score)
+    return {"count": len(rows), "candidates": _with_playback_terms(rows)}
+
+
+class HiddenPair(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+
+
+@router.post("/hidden")
+def hide_a_pair(body: HiddenPair) -> dict:
+    """Stop showing this exact pairing. Outlives 'Score library' — unlike a
+    verdict it is a display preference, not training data."""
+    hide_pair(body.vocal_song_id, body.inst_song_id)
+    return {"ok": True, **body.model_dump()}
+
+
+@router.delete("/hidden")
+def unhide_a_pair(vocal_song_id: int, inst_song_id: int) -> dict:
+    unhide_pair(vocal_song_id, inst_song_id)
+    return {"ok": True, "vocal_song_id": vocal_song_id,
+            "inst_song_id": inst_song_id}
+
+
+@router.post("/excluded/{song_id}")
+def exclude_a_track(song_id: int) -> dict:
+    """Drop a track out of Discover entirely, on either side of a pair."""
+    exclude_track(song_id)
+    return {"ok": True, "song_id": song_id}
+
+
+@router.delete("/excluded/{song_id}")
+def include_a_track(song_id: int) -> dict:
+    include_track(song_id)
+    return {"ok": True, "song_id": song_id}
+
+
+@router.get("/hidden")
+def list_suppressed() -> dict:
+    """Everything currently hidden or excluded, so the user can undo it."""
+    return list_hidden()
+
+
+class PairVerdict(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+    verdict: str
+    vocal_section: Optional[int] = None
+    inst_section: Optional[int] = None
+
+
+@router.post("/feedback")
+def save_feedback(body: PairVerdict) -> dict:
+    """Record the user's ✓/✗ on a pair from the ranked list.
+
+    This is the highest-signal training data in the system — the user's own
+    taste — so it lives in its own table and survives 'Score library', which
+    truncates mashup_candidates. Re-judging a pair corrects it rather than
+    adding a second, contradictory row.
+    """
+    if body.verdict not in VERDICTS:
+        raise HTTPException(status_code=400,
+                            detail=f"verdict must be one of {sorted(VERDICTS)}")
+    upsert_pair_feedback(
+        body.vocal_song_id, body.inst_song_id, body.verdict,
+        vocal_section=body.vocal_section, inst_section=body.inst_section,
+    )
+    return {"ok": True, "vocal_song_id": body.vocal_song_id,
+            "inst_song_id": body.inst_song_id, "verdict": body.verdict}
+
+
+@router.get("/feedback")
+def list_feedback(verdict: str = "") -> dict:
+    """Every judgment so far, so the ranked list can render ✓/✗ on reload."""
+    if verdict and verdict not in VERDICTS:
+        raise HTTPException(status_code=400,
+                            detail=f"verdict must be one of {sorted(VERDICTS)}")
+    rows = get_pair_feedback(verdict=verdict)
+    return {"count": len(rows), "feedback": rows}
 
 
 @router.get("/plan")
@@ -82,111 +229,3 @@ def get_plan(vocal_id: int, inst_id: int) -> dict:
     if plan is None:
         raise HTTPException(status_code=404, detail="song not found")
     return plan
-
-
-@router.post("/preview")
-def queue_preview(vocal_id: int, inst_id: int,
-                  background: BackgroundTasks,
-                  vocal_start: Optional[float] = None,
-                  inst_start: Optional[float] = None) -> dict:
-    """Render an audible preview of the vocal-over-instrumental pair so the
-    producer can audition it before committing to a DAW.
-
-    vocal_start / inst_start: override the auto-detected alignment; use the
-    marker positions from the Audition Studio timeline when supplied."""
-    job_id = jobs.new_job(kind="preview", message="Queued for preview render")
-    background.add_task(preview_worker.run, job_id, vocal_id, inst_id,
-                        vocal_start, inst_start)
-    return {"job_id": job_id}
-
-
-@router.get("/preview/audio")
-def stream_preview(vocal_id: int, inst_id: int):
-    path = preview_path(vocal_id, inst_id)
-    if not path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="preview not rendered yet — POST /api/mashups/preview first",
-        )
-    return FileResponse(
-        path,
-        media_type="audio/wav",
-        headers={"Accept-Ranges": "bytes"},
-        filename=path.name,
-    )
-
-
-@router.post("/adjust")
-def queue_adjust(vocal_id: int, inst_id: int, anchor: str,
-                 background: BackgroundTasks,
-                 stretch: Optional[float] = None,
-                 shift: Optional[int] = None) -> dict:
-    """Render (once, cached) a full-length tempo/key-matched stem so the
-    Audition Studio can scrub and replay without re-running DSP each time.
-
-    anchor='instrumental': stretch/pitch the instrumental to match the vocal.
-    anchor='vocal': stretch/pitch the vocal to match the instrumental.
-    stretch / shift: optional overrides for the engine-suggested values."""
-    if anchor not in ("vocal", "instrumental"):
-        raise HTTPException(status_code=400,
-                            detail="anchor must be 'vocal' or 'instrumental'")
-    job_id = jobs.new_job(kind="adjust", message="Queued for stem adjustment")
-    background.add_task(adjust_worker.run, job_id, vocal_id, inst_id, anchor,
-                        stretch, shift)
-    return {"job_id": job_id}
-
-
-@router.post("/export")
-def queue_export(vocal_id: int, inst_id: int, anchor: str,
-                 background: BackgroundTasks,
-                 stretch: float = 1.0, shift: int = 0,
-                 vocal_offset: float = 0.0, inst_offset: float = 0.0,
-                 vocal_gain: float = 0.95, inst_gain: float = 0.8) -> dict:
-    """Render the full Audition Studio mashup to a WAV: anchor stem stretched +
-    pitched (decoupled), both stems laid out at their drag offsets, mixed at the
-    live mix-bus levels (vocal_gain/inst_gain). This is the only step that writes
-    audio — source stems stay untouched."""
-    if anchor not in ("vocal", "instrumental"):
-        raise HTTPException(status_code=400,
-                            detail="anchor must be 'vocal' or 'instrumental'")
-    job_id = jobs.new_job(kind="export", message="Queued for mashup export")
-    background.add_task(export_worker.run, job_id, vocal_id, inst_id, anchor,
-                        stretch, shift, vocal_offset, inst_offset,
-                        vocal_gain, inst_gain)
-    return {"job_id": job_id}
-
-
-@router.get("/export/audio")
-def stream_export(vocal_id: int, inst_id: int):
-    path = export_path(vocal_id, inst_id)
-    if not path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="not exported yet — POST /api/mashups/export first",
-        )
-    return FileResponse(
-        path,
-        media_type="audio/wav",
-        headers={"Accept-Ranges": "bytes"},
-        filename=path.name,
-    )
-
-
-@router.get("/adjust/audio")
-def stream_adjusted(vocal_id: int, inst_id: int, anchor: str):
-    if anchor not in ("vocal", "instrumental"):
-        raise HTTPException(status_code=400,
-                            detail="anchor must be 'vocal' or 'instrumental'")
-    path = (adjusted_path(inst_id, vocal_id) if anchor == "instrumental"
-            else adjusted_path(vocal_id, inst_id))
-    if not path.exists():
-        raise HTTPException(
-            status_code=404,
-            detail="not adjusted yet — POST /api/mashups/adjust first",
-        )
-    return FileResponse(
-        path,
-        media_type="audio/wav",
-        headers={"Accept-Ranges": "bytes"},
-        filename=path.name,
-    )

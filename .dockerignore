@@ -1,0 +1,33 @@
+# Runtime data (mounted as a volume at /data instead)
+data/
+audio/
+mashup.db
+mashup.db-wal
+mashup.db-shm
+snapshots/
+datasets/
+models/
+fl_session/
+mashup_report.csv
+mashup_report.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Frontend (built in the frontend-build stage instead)
+frontend/node_modules/
+frontend/dist/
+
+# VCS / IDE / OS
+.git/
+.idea/
+.DS_Store
+
+# Docs (not needed at runtime)
+Claude_next_steps.md
