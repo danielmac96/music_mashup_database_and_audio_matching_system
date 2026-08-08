@@ -87,6 +87,39 @@ function ResolveInput({ track, onResolved }) {
   );
 }
 
+// Where this track's link points, as its own column so the tracklist can be
+// scanned for "which of these came from YouTube?" at a glance.
+function SourceTag({ track }) {
+  if (!track.resolved_url) return null;
+  const source = track.link_platform || classifyUrl(track.resolved_url).source;
+  if (source !== "youtube" && source !== "soundcloud") return null;
+  return (
+    <span className={`mix-src ${source}`}>
+      {source === "youtube" ? "YouTube" : "SoundCloud"}
+    </span>
+  );
+}
+
+// How the link was arrived at and how much to trust it.
+function LinkStatus({ track }) {
+  if (track.song_id) {
+    return <span className="mix-flag ok">in library #{track.song_id}</span>;
+  }
+  if (!track.resolved_url) {
+    return <span className="mix-flag failed">needs link</span>;
+  }
+  if (track.resolve_status === "auto") {
+    return track.trusted
+      ? <span className="mix-flag ok"
+          title="Auto-found, high confidence — counts as training data">auto-linked ✓</span>
+      : <span className="mix-flag auto"
+          title="Auto-found but low confidence — verify it's the right track, then Confirm">
+          auto-linked ⚠
+        </span>;
+  }
+  return <span className="mix-flag ok">linked</span>;
+}
+
 const fmtPlays = (n) =>
   !n ? "" : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M plays`
     : n >= 1e3 ? `${Math.round(n / 1e3)}k plays` : `${n} plays`;
@@ -636,22 +669,13 @@ export function MixImporter() {
                       <span className="mix-title" title={`${t.artist ? `${t.artist} — ` : ""}${t.title}`}>
                         {t.artist ? `${t.artist} — ` : ""}{t.title}
                       </span>
-                      <span className="mix-tags">
-                        {t.song_id ? <span className="mix-flag ok">in library #{t.song_id}</span>
-                          : t.resolved_url && t.resolve_status === "auto" && t.trusted
-                            ? <span className="mix-flag ok" title="Auto-found, high confidence — counts as training data">auto-linked ✓</span>
-                          : t.resolved_url && t.resolve_status === "auto"
-                            ? <span className="mix-flag auto" title="Auto-found but low confidence — verify it's the right track, then Confirm">auto-linked ⚠ verify</span>
-                          : t.resolved_url ? <span className="mix-flag ok">linked</span>
-                          : <span className="mix-flag failed">needs link</span>}
-                        {t.resolved_url && (
-                          <a className="mix-url" href={t.resolved_url} target="_blank"
-                            rel="noreferrer" title={t.resolved_url}>
-                            {t.resolved_url}
-                          </a>
-                        )}
-                      </span>
+                      {t.resolved_url
+                        ? <a className="mix-url" href={t.resolved_url} target="_blank"
+                            rel="noreferrer" title={t.resolved_url}>{t.resolved_url}</a>
+                        : <span className="mix-url none">no link yet</span>}
                     </div>
+                    <span className="mix-status"><LinkStatus track={t} /></span>
+                    <span className="mix-source"><SourceTag track={t} /></span>
                     <div className="mix-actions">
                       {!t.song_id && t.resolved_url && t.resolve_status === "auto" && !t.trusted && (
                         <button
