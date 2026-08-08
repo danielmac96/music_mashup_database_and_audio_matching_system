@@ -18,6 +18,7 @@ raises ``StageError`` on failure so callers can decide whether that is fatal
 from __future__ import annotations
 
 import logging
+import sqlite3
 import threading
 import traceback
 from pathlib import Path
@@ -71,6 +72,36 @@ def _stem_paths(song_id: int) -> dict[str, str]:
 
 # ── Download ──────────────────────────────────────────────────────────────────
 
+def _record_actual_source(song_id: int, old_url: str, new_url: str) -> None:
+    """Point the song row at the URL the audio actually came from.
+
+    SoundCloud can refuse a track (DRM/Go+/geo, or serve a 30s preview) and the
+    downloader then finds it on YouTube instead. Without this the row keeps
+    claiming SoundCloud provenance for YouTube audio, so a re-download or
+    re-verify goes back to the URL that never worked.
+
+    songs.source_url is UNIQUE: if another song already owns the fallback URL,
+    keep the original rather than fail the download — the audio is on disk and
+    the stage succeeded either way."""
+    from ingest.sources import classify_url, normalize_url
+
+    url = normalize_url(new_url) or new_url
+    source = classify_url(url)[0]
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE songs SET source_url=?, source=? WHERE id=?",
+                     (url, source, song_id))
+        conn.commit()
+        log.info("song %s: audio came from %s, not %s — source_url updated",
+                 song_id, url, old_url)
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        log.warning("song %s: fallback URL %s already belongs to another song — "
+                    "leaving source_url as %s", song_id, url, old_url)
+    finally:
+        conn.close()
+
+
 def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
     from downloader.download import DownloadError, download_track
 
@@ -105,6 +136,8 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
         update_song_status(song_id, "downloaded", raw_path=str(result.path))
         if result.duration_secs is not None:
             update_song_duration(song_id, result.duration_secs)
+        if result.source_url and result.source_url != row["source_url"]:
+            _record_actual_source(song_id, row["source_url"], result.source_url)
         return {"path": str(result.path)}
 
     update_song_error(song_id, "error_download",

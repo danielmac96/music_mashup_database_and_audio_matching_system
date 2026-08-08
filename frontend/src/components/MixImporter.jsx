@@ -87,6 +87,91 @@ function ResolveInput({ track, onResolved }) {
   );
 }
 
+const fmtPlays = (n) =>
+  !n ? "" : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M plays`
+    : n >= 1e3 ? `${Math.round(n / 1e3)}k plays` : `${n} plays`;
+
+const fmtDur = (secs) => {
+  if (!secs) return "";
+  const s = Math.round(secs);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+};
+
+// The ranked search hits behind a low-confidence auto link. Auto-link picks the
+// top one; when it picks wrong the right answer is usually right here, so let it
+// be chosen directly instead of making the user hunt down a URL to paste.
+function CandidatePicker({ track, platform, onResolved }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [hits, setHits] = useState(null);
+  const [picking, setPicking] = useState(null);
+
+  // 'both' is a resolve strategy, not a searchable platform — show SoundCloud,
+  // which is what 'both' tries first and what we prefer for audio anyway.
+  const searchPlatform = platform === "youtube" ? "youtube" : "soundcloud";
+
+  const toggle = async () => {
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    if (hits) return;
+    setLoading(true);
+    try {
+      const d = await api.mixTrackCandidates(track.id, searchPlatform, 5);
+      setHits(d.candidates || []);
+    } catch (e) {
+      toast(`Search failed: ${e.message}`);
+      setOpen(false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const pick = async (url) => {
+    setPicking(url);
+    try {
+      onResolved(await api.resolveMixTrack(track.id, url));
+    } catch (e) {
+      toast(`Link failed: ${e.message}`);
+    } finally {
+      setPicking(null);
+    }
+  };
+
+  return (
+    <>
+      <button className="mini-btn" onClick={toggle}
+        title={`Show the top ${searchPlatform} search results for this track`}>
+        {open ? "▴ hide" : "▾ others"}
+      </button>
+      {open && (
+        <div className="mix-candidates">
+          {loading && <span className="faint">searching {searchPlatform}…</span>}
+          {!loading && hits && hits.length === 0 && (
+            <span className="faint">No results — try pasting a link.</span>
+          )}
+          {!loading && (hits || []).map((h) => (
+            <button
+              key={h.url}
+              className={`mix-candidate${h.url === track.resolved_url ? " current" : ""}`}
+              onClick={() => pick(h.url)}
+              disabled={!!picking}
+              title={h.url}
+            >
+              <span className="mix-candidate-title">{h.title || h.url}</span>
+              <span className="faint">
+                {[h.uploader, fmtDur(h.duration_secs), fmtPlays(h.playback_count),
+                  `match ${Math.round((h.score || 0) * 100)}%`]
+                  .filter(Boolean).join(" · ")}
+                {h.url === track.resolved_url ? " · current" : ""}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 export function MixImporter() {
   const [mixes, setMixes] = useState([]);
   const [activeId, setActiveId] = useState(null);
@@ -145,6 +230,13 @@ export function MixImporter() {
   const allLinkableSelected = linkableIds.length > 0 &&
     selectedLinkable.length === linkableIds.length;
 
+  // Auto-linked but low confidence, and not yet ingested — the rows a re-link
+  // can still overwrite (manual/scraped links are off-limits by design).
+  const flaggedIds = (detail?.tracks || [])
+    .filter((t) => !t.song_id && t.resolved_url &&
+                   t.resolve_status === "auto" && !t.trusted)
+    .map((t) => t.id);
+
   const toggleSelectAll = () =>
     setSelectedIds(allLinkableSelected ? new Set() : new Set(linkableIds));
 
@@ -153,7 +245,8 @@ export function MixImporter() {
     if (!resolveJob || !detail) return;
     if (resolveJob.status === "completed") {
       const r = resolveJob.result || {};
-      toast(`Auto-linked ${r.resolved ?? 0} track${r.resolved === 1 ? "" : "s"} on ${r.platform || platform}` +
+      toast(`${r.relink ? "Re-linked" : "Auto-linked"} ${r.resolved ?? 0} ` +
+            `track${r.resolved === 1 ? "" : "s"} on ${r.platform || platform}` +
             (r.failed ? ` · ${r.failed} not found` : ""));
       api.getMix(detail.id).then(setDetail).catch((e) => setError(e.message));
       loadMixes();
@@ -187,6 +280,20 @@ export function MixImporter() {
       const res = await api.autoResolveMix(detail.id, platform, selectedLinkable);
       setResolveJobId(res.job_id);
       toast(`Searching ${res.platform} for ${res.queued} selected track${res.queued === 1 ? "" : "s"}…`);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  // Re-search links a previous auto-link got wrong. `trackIds` narrows it to one
+  // row (the per-row ↻); omitted, it re-links every flagged row in the mix.
+  const relink = async (trackIds = flaggedIds) => {
+    if (!detail || !trackIds.length) return;
+    setError(null);
+    try {
+      const res = await api.autoResolveMix(detail.id, platform, trackIds, true);
+      setResolveJobId(res.job_id);
+      toast(`Re-linking ${res.queued} track${res.queued === 1 ? "" : "s"} on ${res.platform}…`);
     } catch (e) {
       setError(e.message);
     }
@@ -394,6 +501,16 @@ export function MixImporter() {
                   >
                     {resolving ? "Searching…" : `⚡ Auto-link (${selectedLinkable.length})`}
                   </button>
+                  {viewMode === "list" && flaggedIds.length > 0 && (
+                    <button
+                      className="btn ghost"
+                      onClick={() => relink()}
+                      disabled={resolving}
+                      title="Search again for every low-confidence auto link. Links you pasted or confirmed are left alone."
+                    >
+                      ↻ Re-link {flaggedIds.length} flagged
+                    </button>
+                  )}
                   <button
                     className="btn"
                     onClick={ingest}
@@ -490,6 +607,20 @@ export function MixImporter() {
                         >
                           ✓ confirm
                         </button>
+                      )}
+                      {!t.song_id && t.resolved_url && t.resolve_status === "auto" && !t.trusted && (
+                        <>
+                          <button
+                            className="mini-btn"
+                            disabled={resolving}
+                            title="Search again for this track and replace the link"
+                            onClick={() => relink([t.id])}
+                          >
+                            ↻
+                          </button>
+                          <CandidatePicker track={t} platform={platform}
+                            onResolved={onTrackResolved} />
+                        </>
                       )}
                       {!t.song_id && <ResolveInput track={t} onResolved={onTrackResolved} />}
                       {!t.song_id && (

@@ -238,6 +238,12 @@ KEY_MIN_SCORE  = 0.55   # allows perfect + adjacent + relative major/minor match
 # the bar the link is still usable for ingest; it's just flagged for quick review.
 AUTO_LINK_MIN_SCORE    = 0.72
 AUTO_LINK_MIN_DURATION = 60.0   # seconds; guards against preview-length mislinks
+# Fraction of the wanted artist's words that must appear in the hit's title or
+# uploader name. A title-only match with an unrelated artist is the classic
+# mislink ("Take On The World" by You Me At Six for a jeonghyeon track), and it
+# can score well on title alone — so artist agreement is checked separately
+# rather than being averaged away.
+AUTO_LINK_MIN_ARTIST   = 0.5
 
 # ── SoundCloud scrape ─────────────────────────────────────────────────────────
 # Used when you pass a playlist URL rather than a local file list

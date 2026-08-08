@@ -74,6 +74,81 @@ def test_rework_link_tooltip_not_folded_into_title():
     assert "http" not in rows[0]["title"]
 
 
+# What the stealth proxy actually returns when Turnstile does not clear inside
+# the render budget: HTTP 206 and the interstitial, wrapped in success:true.
+_CHALLENGE_MD = (
+    "# Please wait, you will be forwarded to the requested page\n\n"
+    "Checking your Browser…\n\nVerifying...\n\n"
+    "Stuck? [Troubleshoot](https://challenges.cloudflare.com/cdn-cgi/challenge-platform/h/b/"
+    "turnstile/f/av0/rch/76m0l/0x4AAAAAACGccIXqjGsL5W5F/auto/fbE/new/normal?lang=auto#refresh)\n"
+)
+
+
+def _challenge_payload():
+    return {"success": True,
+            "data": {"markdown": _CHALLENGE_MD, "metadata": {"statusCode": 206}}}
+
+
+def _recording_post(payloads):
+    """Serve `payloads` in order, recording each request body."""
+    sent = []
+
+    def _post(url, body, headers):
+        sent.append(body)
+        return payloads[min(len(sent) - 1, len(payloads) - 1)]
+    return _post, sent
+
+
+def test_challenge_page_is_retried_with_a_longer_render_budget():
+    # The bug: a Turnstile interstitial arrives as success:true with zero track
+    # links, so the caller reported "no tracks" on a page that has ~200 of them.
+    post, sent = _recording_post([
+        _challenge_payload(),
+        {"success": True, "data": {"markdown": _MD, "metadata": {"statusCode": 200}}},
+    ])
+    rows = fc.scrape_tracklist("https://www.1001tracklists.com/tracklist/x.html",
+                               api_key="fc-k", _post=post)
+    assert len(rows) == 4
+    assert len(sent) == 2
+    # Second attempt waits longer AND bypasses the cache — Firecrawl caches the
+    # 206 interstitial, so a plain retry just replays the same wall.
+    assert sent[1]["waitFor"] > sent[0]["waitFor"]
+    assert sent[1]["maxAge"] == 0
+
+
+def test_challenge_on_every_attempt_raises_a_challenge_error():
+    post, sent = _recording_post([_challenge_payload()])
+    with pytest.raises(fc.FirecrawlChallenge):
+        fc.scrape_tracklist("https://x", api_key="fc-k", _post=post)
+    assert len(sent) == len(fc._WAIT_SCHEDULE) > 1
+
+
+def test_track_links_scrape_also_retries_the_challenge():
+    # The per-track JSON scrape hits the same wall; it has no markdown to sniff,
+    # so the 206 status is what identifies the interstitial.
+    post, sent = _recording_post([
+        {"success": True, "data": {"json": {}, "metadata": {"statusCode": 206}}},
+        {"success": True, "data": {"json": {"soundcloud_url": "https://soundcloud.com/x"},
+                                   "metadata": {"statusCode": 200}}},
+    ])
+    out = fc.scrape_track_links("https://www.1001tracklists.com/track/2/index.html",
+                                api_key="fc-k", _post=post)
+    assert out["soundcloud_url"] == "https://soundcloud.com/x"
+    assert len(sent) == 2
+
+
+def test_genuinely_empty_page_is_not_retried():
+    # A rendered page we simply can't parse is a parser/markup problem, not a
+    # wall — burning three stealth scrapes on it wastes credits.
+    post, sent = _recording_post([
+        {"success": True, "data": {"markdown": "no tracks here\njust prose\n",
+                                   "metadata": {"statusCode": 200}}},
+    ])
+    with pytest.raises(fc.FirecrawlError):
+        fc.scrape_tracklist("https://x", api_key="fc-k", _post=post)
+    assert len(sent) == 1
+
+
 def test_scrape_tracklist_empty_raises():
     payload = {"success": True, "data": {"markdown": "no tracks here\njust prose\n"}}
     with pytest.raises(fc.FirecrawlError):

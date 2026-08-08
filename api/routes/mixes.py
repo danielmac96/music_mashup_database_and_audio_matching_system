@@ -34,6 +34,9 @@ from api.workers import mix_resolve_worker
 from config import DATA_DIR, FIRECRAWL_API_KEY
 from database.models import get_conn, get_song_by_url, is_trusted_link, upsert_song
 from ingest.firecrawl_scrape import FirecrawlError, scrape_tracklist, scrape_track_links
+from ingest.soundcloud import search_candidates as yt_search_candidates
+from ingest.soundcloud_api import SoundCloudAPIError
+from ingest.soundcloud_api import search_candidates as sc_search_candidates
 from ingest.sources import classify_url, normalize_url
 from ingest.tracklist_parse import parse_line, parse_tracklist
 
@@ -151,7 +154,7 @@ def _track_row(conn, track_id: int) -> dict:
     t = dict(conn.execute(_ONE_TRACK_SELECT, (track_id,)).fetchone())
     t["trusted"] = bool(t["resolved_url"]) and is_trusted_link(
         t.get("resolve_status"), t.get("resolve_score"),
-        t.get("resolve_duration_secs"))
+        t.get("resolve_duration_secs"), t.get("resolve_artist_score"))
     return t
 
 
@@ -166,7 +169,7 @@ def _mix_detail(conn, mix_id: int) -> dict:
         # the auto-linked ✓ vs ⚠ verify distinction in the Mixes tab.
         t["trusted"] = bool(t["resolved_url"]) and is_trusted_link(
             t.get("resolve_status"), t.get("resolve_score"),
-            t.get("resolve_duration_secs"))
+            t.get("resolve_duration_secs"), t.get("resolve_artist_score"))
     mix["tracks"] = tracks
     mix["track_count"] = len(tracks)
     mix["resolved_count"] = sum(1 for t in tracks if t["resolved_url"])
@@ -703,8 +706,12 @@ def resolve_track(track_id: int, req: ResolveRequest) -> dict:
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="mix track not found")
+    # Clear any scores left over from a previous auto attempt — they described a
+    # different URL, and a stale 0.0 artist score next to a human-chosen link is
+    # just misleading.
     conn.execute(
-        "UPDATE mix_tracks SET link_url=?, link_platform=?, resolve_status='manual' "
+        "UPDATE mix_tracks SET link_url=?, link_platform=?, resolve_status='manual', "
+        "resolve_score=NULL, resolve_artist_score=NULL, resolve_duration_secs=NULL "
         "WHERE id=?", (url, source, track_id))
     conn.commit()
     out = _track_row(conn, track_id)
@@ -765,7 +772,8 @@ def scrape_track_link(track_id: int) -> dict:
         platform = classify_url(url)[0]
         conn.execute(
             "UPDATE mix_tracks SET link_url=?, link_platform=?, resolve_status='scraped', "
-            "resolve_score=NULL, resolve_duration_secs=NULL WHERE id=?",
+            "resolve_score=NULL, resolve_artist_score=NULL, resolve_duration_secs=NULL "
+            "WHERE id=?",
             (url, platform, track_id))
         conn.commit()
         return _track_row(conn, track_id)
@@ -773,9 +781,52 @@ def scrape_track_link(track_id: int) -> dict:
         conn.close()
 
 
+@router.get("/tracks/{track_id}/candidates")
+def track_candidates(track_id: int, platform: str = "soundcloud",
+                     limit: int = 5) -> dict:
+    """Ranked search hits for one mix track, so a wrong auto-link can be fixed by
+    picking the right one instead of hunting down and pasting a URL.
+
+    Uses the same query and the same ranking auto-link used, so the list explains
+    what auto-link saw. Pick one by POSTing it to /tracks/{id}/resolve, which
+    stores it as a trusted manual link."""
+    if platform not in ("soundcloud", "youtube"):
+        raise HTTPException(status_code=400,
+                            detail="platform must be 'soundcloud' or 'youtube'")
+    limit = max(1, min(20, int(limit)))
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, artist, title, raw_label FROM mix_tracks WHERE id=?",
+            (track_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="track not found")
+
+    artist, title = row["artist"] or "", row["title"] or ""
+    if mix_resolve_worker._is_id_entry(artist, title):
+        return {"query": "", "platform": platform, "candidates": []}
+    query = mix_resolve_worker.strip_label_prefix(row["raw_label"] or "") or \
+        mix_resolve_worker._clean_query(
+            " - ".join(p for p in (artist.strip(), title.strip()) if p))
+
+    try:
+        if platform == "soundcloud":
+            hits = sc_search_candidates(artist, title, query, limit=limit)
+        else:
+            hits = yt_search_candidates(artist, title, platform="youtube",
+                                        limit=limit, query=query)
+    except SoundCloudAPIError as exc:
+        raise HTTPException(status_code=502,
+                            detail=f"SoundCloud search failed ({exc}).") from exc
+    return {"query": query, "platform": platform, "candidates": hits[:limit]}
+
+
 class AutoResolveRequest(BaseModel):
     platform: str = "both"
     track_ids: list[int] | None = None   # None/empty = every unlinked track
+    relink: bool = False                 # also re-search wrong 'auto' links
 
 
 @router.post("/{mix_id}/auto-resolve")
@@ -784,19 +835,22 @@ def auto_resolve_mix(mix_id: int, req: AutoResolveRequest,
     """Queue a background search that links still-unlinked, non-ID tracks of this
     mix to their best SoundCloud/YouTube hit (resolve_status='auto'). Pass
     ``track_ids`` to resolve only a chosen subset (e.g. test a handful before
-    committing to all ~200); omit it to do every unlinked track. Poll the returned
-    job_id; auto links can be reviewed/overridden before ingest."""
+    committing to all ~200); omit it to do every unlinked track. Set ``relink`` to
+    also re-search tracks a previous auto-link already got wrong — manual, scraped
+    and already-ingested links are never touched. Poll the returned job_id; auto
+    links can be reviewed/overridden before ingest."""
     platform = (req.platform or "both").lower()
     if platform not in ("soundcloud", "youtube", "both"):
         raise HTTPException(status_code=400,
                             detail="platform must be 'soundcloud', 'youtube', or 'both'")
     ids = [int(i) for i in (req.track_ids or [])]
+    relink = bool(req.relink)
     conn = get_conn()
     try:
         if not conn.execute("SELECT id FROM mixes WHERE id=?", (mix_id,)).fetchone():
             raise HTTPException(status_code=404, detail="mix not found")
         sql = ("SELECT COUNT(*) AS n FROM mix_tracks WHERE mix_id=? "
-               "AND (link_url IS NULL OR link_url='')")
+               f"AND {mix_resolve_worker.unresolved_filter(relink)}")
         params: list = [mix_id]
         if ids:
             sql += f" AND id IN ({','.join('?' * len(ids))})"
@@ -807,12 +861,16 @@ def auto_resolve_mix(mix_id: int, req: AutoResolveRequest,
     if not pending:
         raise HTTPException(
             status_code=400,
-            detail="Every selected track is already linked." if ids
+            detail="Nothing to re-link — no auto-linked tracks left to re-search." if relink
+                   else "Every selected track is already linked." if ids
                    else "Every track is already linked.")
     job_id = jobs.new_job(kind="mix_resolve",
-                          message=f"Queued auto-resolve on {platform}")
-    background.add_task(mix_resolve_worker.run, job_id, mix_id, platform, ids or None)
-    return {"job_id": job_id, "queued": pending, "platform": platform}
+                          message=f"Queued {'re-link' if relink else 'auto-resolve'} "
+                                  f"on {platform}")
+    background.add_task(mix_resolve_worker.run, job_id, mix_id, platform,
+                        ids or None, relink)
+    return {"job_id": job_id, "queued": pending, "platform": platform,
+            "relink": relink}
 
 
 @router.post("/{mix_id}/ingest")

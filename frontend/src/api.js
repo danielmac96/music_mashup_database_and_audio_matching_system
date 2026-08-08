@@ -251,12 +251,23 @@ export const api = {
     }),
 
   // trackIds: optional subset to resolve (omit/empty = every unlinked track).
-  autoResolveMix: (id, platform = "both", trackIds = null) =>
+  // relink: also re-search tracks a previous auto-link got wrong. Manual,
+  // scraped and already-ingested links are never overwritten.
+  autoResolveMix: (id, platform = "both", trackIds = null, relink = false) =>
     jsonFetch(`/api/mixes/${id}/auto-resolve`, {
       method: "POST",
-      body: JSON.stringify(
-        trackIds && trackIds.length ? { platform, track_ids: trackIds } : { platform }),
+      body: JSON.stringify({
+        platform,
+        ...(trackIds && trackIds.length ? { track_ids: trackIds } : {}),
+        ...(relink ? { relink: true } : {}),
+      }),
     }),
+
+  // Ranked search hits for one track, so a wrong auto-link can be fixed by
+  // picking the right one rather than hunting down a URL to paste.
+  mixTrackCandidates: (trackId, platform = "soundcloud", limit = 5) =>
+    jsonFetch(`/api/mixes/tracks/${trackId}/candidates`
+      + `?platform=${encodeURIComponent(platform)}&limit=${limit}`),
 
   confirmMixTrack: (trackId) =>
     jsonFetch(`/api/mixes/tracks/${trackId}/confirm`, { method: "POST" }),

@@ -7,7 +7,8 @@ import sqlite3
 import json
 from pathlib import Path
 from config import (
-    AUTO_LINK_MIN_DURATION, AUTO_LINK_MIN_SCORE, DB_PATH, format_duration,
+    AUTO_LINK_MIN_ARTIST, AUTO_LINK_MIN_DURATION, AUTO_LINK_MIN_SCORE,
+    DB_PATH, format_duration,
 )
 
 
@@ -337,7 +338,8 @@ def _migrate_stems_columns(conn: sqlite3.Connection) -> None:
 # rows linked before these columns existed and for manual/ID entries.
 # raw_label…role_assigned_at: manual vocal/instrumental matching (Mixes tab).
 _MIXTRACKS_OPTIONAL_COLUMNS = (
-    ("resolve_score", "REAL"),           # fuzzy search score from _best_search_match
+    ("resolve_score", "REAL"),           # overall match score from ingest.match_score
+    ("resolve_artist_score", "REAL"),    # artist-agreement component (mislink guard)
     ("resolve_duration_secs", "REAL"),   # duration of the resolved upload (preview guard)
     ("raw_label", "TEXT"),
     ("is_id", "INTEGER DEFAULT 0"),
@@ -437,23 +439,31 @@ def init_db(db_path: Path = DB_PATH) -> Path:
 
 def is_trusted_link(resolve_status: Optional[str],
                     resolve_score: Optional[float],
-                    resolve_duration_secs: Optional[float]) -> bool:
+                    resolve_duration_secs: Optional[float],
+                    resolve_artist_score: Optional[float] = None) -> bool:
     """Whether a mix_track's link is trustworthy enough to become a training
     positive.
 
     Manual links, page-scraped links (the exact URL 1001tracklists attributes to
     the track), and already-ingested tracks are trusted outright (a human chose
     them, the page vouches for them, or they made it through ingest). An auto-linked
-    track (yt-dlp search) is trusted only when its fuzzy search score clears
-    AUTO_LINK_MIN_SCORE *and* its resolved upload is a full track, not a ~30s Go+
-    preview (AUTO_LINK_MIN_DURATION). Everything else (unresolved, failed,
-    low-confidence auto) is excluded from training but stays usable for ingest."""
+    track (search) is trusted only when its match score clears AUTO_LINK_MIN_SCORE,
+    its resolved upload is a full track rather than a ~30s Go+ preview
+    (AUTO_LINK_MIN_DURATION), and the artist actually appears in the hit
+    (AUTO_LINK_MIN_ARTIST) — a strong title-only match against a different artist
+    is the mislink this last check exists to catch. ``resolve_artist_score`` is
+    None for rows linked before that column existed, which skips the artist check
+    rather than retroactively distrusting them. Everything else (unresolved,
+    failed, low-confidence auto) is excluded from training but stays usable for
+    ingest."""
     status = (resolve_status or "").lower()
     if status in ("manual", "resolved", "scraped"):
         return True
     if status == "auto":
         score = resolve_score if resolve_score is not None else 0.0
         dur = resolve_duration_secs if resolve_duration_secs is not None else 0.0
+        if resolve_artist_score is not None and resolve_artist_score < AUTO_LINK_MIN_ARTIST:
+            return False
         return score >= AUTO_LINK_MIN_SCORE and dur >= AUTO_LINK_MIN_DURATION
     return False
 

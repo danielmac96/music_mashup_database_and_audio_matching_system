@@ -29,6 +29,34 @@ class FirecrawlError(RuntimeError):
     """Firecrawl was unreachable, unauthenticated, or returned no usable data."""
 
 
+class FirecrawlChallenge(FirecrawlError):
+    """The stealth proxy returned Cloudflare's interstitial instead of the page."""
+
+
+# When Turnstile does not clear inside the render budget, Firecrawl still reports
+# success:true — the payload is just the interstitial, with HTTP 206 and none of
+# the page's track links. Undetected, that reads downstream as "this tracklist has
+# no tracks", which is how two of the Big Bootie mixes appeared permanently
+# unimportable. Sniff the interstitial and retry with a longer budget instead.
+_CHALLENGE_MARKERS = (
+    "checking your browser",
+    "you will be forwarded to the requested page",
+    "challenges.cloudflare.com",
+)
+
+# Escalating render budgets, in ms. 6s clears the wall on most tracklist pages;
+# the heaviest ones (~240 tracks) need appreciably longer.
+_WAIT_SCHEDULE = (6000, 15000, 25000)
+
+
+def _is_challenge(data: dict) -> bool:
+    """True when `data` is Cloudflare's interstitial rather than the real page."""
+    if (data.get("metadata") or {}).get("statusCode") == 206:
+        return True
+    md = (data.get("markdown") or "").lower()
+    return any(marker in md for marker in _CHALLENGE_MARKERS)
+
+
 # A rendered track row: "Artist \- Title[open track page](https://.../track/ID/index.html ...".
 _TRACK_LINE_RE = re.compile(
     r"^(?P<body>.+?)\[open track page\]\((?P<url>https://www\.1001tracklists\.com/track/[^ )]+)")
@@ -73,16 +101,35 @@ def _real_post(url: str, body: dict, headers: dict) -> dict:
 
 
 def _post_scrape(url: str, formats: list, api_key: str, _post) -> dict:
-    """POST a /v2/scrape request and return the `data` object, or raise."""
+    """POST a /v2/scrape request and return the `data` object, or raise.
+
+    Retries a Cloudflare interstitial with a longer render budget. Only the wall
+    is retried — a page that rendered but parsed to nothing is a markup problem
+    and costs credits to re-scrape for no gain.
+    """
     if not api_key:
         raise FirecrawlError("FIRECRAWL_API_KEY is not set — configure it to scrape URLs.")
     post = _post or _real_post
-    body = {"url": url, "formats": formats, "proxy": "stealth", "waitFor": 6000}
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    resp = post(FIRECRAWL_SCRAPE_URL, body, headers)
-    if not resp or not resp.get("success"):
-        raise FirecrawlError("Firecrawl returned no data (challenge or empty page).")
-    return resp.get("data") or {}
+    failure = FirecrawlError("Firecrawl returned no data (challenge or empty page).")
+    for attempt, wait_ms in enumerate(_WAIT_SCHEDULE):
+        body = {"url": url, "formats": formats, "proxy": "stealth", "waitFor": wait_ms}
+        if attempt:
+            # Firecrawl caches the interstitial like any other response (default
+            # ~2 days), so a walled URL keeps replaying its own wall until the
+            # cache is bypassed. That is what made these failures look permanent
+            # and URL-specific rather than transient.
+            body["maxAge"] = 0
+        resp = post(FIRECRAWL_SCRAPE_URL, body, headers)
+        if not resp or not resp.get("success"):
+            continue
+        data = resp.get("data") or {}
+        if not _is_challenge(data):
+            return data
+        failure = FirecrawlChallenge(
+            f"Cloudflare challenge did not clear in {len(_WAIT_SCHEDULE)} attempts "
+            f"(up to {_WAIT_SCHEDULE[-1] // 1000}s) — the site is rate-limiting; retry shortly.")
+    raise failure
 
 
 def _scrape_json(url: str, schema: dict, prompt: str, api_key: str, _post) -> dict:

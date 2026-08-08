@@ -1229,7 +1229,33 @@ input, select { font-family: inherit; }
   min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mix-url:hover { color: var(--accent-light); text-decoration: underline; }
-.mix-actions { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; justify-content: flex-end; }
+.mix-actions {
+  display: flex; align-items: center; gap: 4px; flex-wrap: nowrap;
+  justify-content: flex-end; position: relative;   /* anchors .mix-candidates */
+}
+/* Search hits behind a low-confidence auto link. The tracklist rows are a tight
+   grid, so this hangs off the row's actions as a dropdown rather than pushing
+   the layout around. */
+.mix-candidates {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 420px; max-width: min(560px, 80vw); padding: 6px;
+  background: var(--panel); border: 1px solid var(--border-ctrl);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.mix-candidate {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
+  padding: 5px 8px; border: 1px solid transparent; border-radius: 6px;
+  background: none; color: var(--text); font-size: 12px; text-align: left;
+  cursor: pointer; min-width: 0;
+}
+.mix-candidate:hover:not(:disabled) { background: var(--accent-tint); border-color: var(--accent); }
+.mix-candidate:disabled { opacity: 0.5; cursor: default; }
+.mix-candidate.current { border-color: var(--border-ctrl); background: var(--inset-2); }
+.mix-candidate > span {
+  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mix-candidate-title { font-weight: 500; }
 .mix-flag { font-size: 10px; padding: 1px 5px; border-radius: 4px; }
 .mix-flag.failed { color: var(--amber-light); background: rgba(245,166,35,0.12); }
 .mix-flag.ok { color: var(--green); background: rgba(60,200,120,0.1); }

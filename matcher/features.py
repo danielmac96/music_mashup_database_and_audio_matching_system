@@ -287,10 +287,12 @@ def _documented_pairs(conn) -> tuple[list[tuple[int, int]], set[tuple[int, int]]
                   vt.resolve_status AS v_status,
                   vt.resolve_score AS v_score,
                   vt.resolve_duration_secs AS v_dur,
+                  vt.resolve_artist_score AS v_artist,
                   it.song_id AS inst_song_id,
                   it.resolve_status AS i_status,
                   it.resolve_score AS i_score,
-                  it.resolve_duration_secs AS i_dur
+                  it.resolve_duration_secs AS i_dur,
+                  it.resolve_artist_score AS i_artist
            FROM mashup_pairs p
            JOIN mix_tracks vt ON vt.id = p.vocal_mix_track_id
            JOIN mix_tracks it ON it.id = p.inst_mix_track_id
@@ -305,8 +307,8 @@ def _documented_pairs(conn) -> tuple[list[tuple[int, int]], set[tuple[int, int]]
         all_documented.add(key)
         if key in seen:
             continue
-        if (is_trusted_link(r["v_status"], r["v_score"], r["v_dur"])
-                and is_trusted_link(r["i_status"], r["i_score"], r["i_dur"])):
+        if (is_trusted_link(r["v_status"], r["v_score"], r["v_dur"], r["v_artist"])
+                and is_trusted_link(r["i_status"], r["i_score"], r["i_dur"], r["i_artist"])):
             seen.add(key)
             positives.append(key)
     return positives, all_documented

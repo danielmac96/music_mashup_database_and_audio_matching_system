@@ -7,8 +7,8 @@ registered app is needed — SoundCloud embeds a working ``client_id`` in its pu
 JS bundles, which we scrape once (stdlib urllib, no new dependency) and cache. If a
 cached id expires (HTTP 401), we re-scrape once and retry.
 
-Confidence is the same fuzzy artist+title score the yt-dlp path uses
-(ingest.soundcloud._search_score), plus a play-count tiebreak so a low-play
+Confidence is the same token-set artist+title score the yt-dlp path uses
+(ingest.match_score.score_candidate), plus a play-count tiebreak so a low-play
 re-upload never beats the official upload on an otherwise equal title match.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from ingest.soundcloud import _search_score
+from ingest.match_score import score_candidate
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
@@ -90,44 +90,50 @@ def _search(query: str, limit: int, *, _get=None) -> list[dict]:
 
 
 def _entry_for_scoring(hit: dict) -> dict:
-    """Adapt a v2 search hit to the {title, uploader, duration(secs)} shape that
-    ingest.soundcloud._search_score expects (v2 duration is milliseconds)."""
+    """Adapt a v2 search hit to the {title, uploader, duration(secs), plays}
+    shape ingest.match_score expects (v2 duration is milliseconds)."""
     return {
         "title": hit.get("title") or "",
         "uploader": (hit.get("user") or {}).get("username") or "",
         "duration": (hit.get("duration") or 0) / 1000.0,
+        "plays": hit.get("playback_count") or 0,
     }
+
+
+def search_candidates(artist: str, title: str, query: str | None = None, *,
+                      limit: int = 8, _get=None) -> list[dict]:
+    """Search SoundCloud and return every hit, best first.
+
+    ``query`` is the search string (default "Artist - Title"); ``artist``/``title``
+    drive the confidence score. Each entry is
+    {url, title, uploader, duration_secs, score, artist_score, playback_count}.
+    Ranking is (score, play count), so on an otherwise equal title match the
+    official upload beats a low-play re-upload.
+    """
+    q = (query or " - ".join(p for p in (artist.strip(), title.strip()) if p)).strip()
+    if not q:
+        return []
+    scored = []
+    for h in _search(q, limit, _get=_get):
+        if not isinstance(h, dict) or not h.get("permalink_url"):
+            continue
+        m = score_candidate(artist, title, _entry_for_scoring(h))
+        plays = h.get("playback_count") or 0
+        scored.append(((round(m.score, 3), plays), {
+            "url": h.get("permalink_url") or "",
+            "title": h.get("title") or "",
+            "uploader": (h.get("user") or {}).get("username") or "",
+            "duration_secs": float((h.get("duration") or 0) / 1000.0),
+            "score": round(m.score, 3),
+            "artist_score": round(m.artist, 3),
+            "playback_count": plays,
+        }))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [entry for _key, entry in scored]
 
 
 def find_track(artist: str, title: str, query: str | None = None, *,
                limit: int = 8, _get=None) -> dict | None:
-    """Search SoundCloud and return the best match for a mix entry, or None.
-
-    ``query`` is the search string (default "Artist - Title"); ``artist``/``title``
-    drive the confidence score. Returns
-    {url, title, uploader, duration_secs, score, playback_count} for the best hit —
-    ties on score broken by play count so the official upload wins over re-uploads.
-    """
-    q = (query or " - ".join(p for p in (artist.strip(), title.strip()) if p)).strip()
-    if not q:
-        return None
-    hits = _search(q, limit, _get=_get)
-    best = None
-    best_key = (-2.0, -1)
-    for h in hits:
-        if not isinstance(h, dict) or not h.get("permalink_url"):
-            continue
-        score = _search_score(artist, title, _entry_for_scoring(h))
-        key = (round(score, 3), h.get("playback_count") or 0)
-        if key > best_key:
-            best_key, best = key, h
-    if best is None:
-        return None
-    return {
-        "url": best.get("permalink_url") or "",
-        "title": best.get("title") or "",
-        "uploader": (best.get("user") or {}).get("username") or "",
-        "duration_secs": float((best.get("duration") or 0) / 1000.0),
-        "score": round(best_key[0], 3),
-        "playback_count": best.get("playback_count") or 0,
-    }
+    """Best SoundCloud match for a mix entry, or None. See search_candidates."""
+    hits = search_candidates(artist, title, query, limit=limit, _get=_get)
+    return hits[0] if hits else None

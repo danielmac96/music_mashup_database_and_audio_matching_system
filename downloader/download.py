@@ -19,7 +19,7 @@ Output: MP3 in config.RAW_DIR / "{title}_{artist}.mp3"
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Callable, NamedTuple, Optional, Tuple
+from typing import Callable, NamedTuple, Optional
 import subprocess
 import sys
 import logging
@@ -105,6 +105,11 @@ class DownloadResult(NamedTuple):
     """download_track return value. duration_secs is set when audio came from YouTube fallback."""
     path: Path
     duration_secs: Optional[float] = None  # if set, persist to songs.duration_secs
+    # Set only when the audio came from somewhere other than the URL we were
+    # asked to download — i.e. SoundCloud refused and the YouTube fallback found
+    # the track instead. Callers persist it so the row records where the file
+    # really came from; None means "the recorded source_url still holds".
+    source_url: Optional[str] = None
 
 
 class _YtAttempt(NamedTuple):
@@ -180,8 +185,7 @@ def download_track(song_id: int, title: str, source_url: str,
             path.unlink()
             fb = _fallback_youtube(title, artist, out_path, on_progress=on_progress)
             if fb:
-                yt_path, yt_secs = fb
-                return DownloadResult(yt_path, yt_secs)
+                return DownloadResult(fb.path, fb.duration_secs, fb.url)
             raise DownloadError(
                 "SoundCloud served only a Go+ 30s preview and no full-length "
                 "YouTube match was found.", kind="premium")
@@ -199,8 +203,7 @@ def download_track(song_id: int, title: str, source_url: str,
             on_progress(None, "SoundCloud blocked this track — searching YouTube…")
         fb = _fallback_youtube(title, artist, out_path, on_progress=on_progress)
         if fb:
-            yt_path, yt_secs = fb
-            return DownloadResult(yt_path, yt_secs)
+            return DownloadResult(fb.path, fb.duration_secs, fb.url)
         msg += " No full-length YouTube match was found either."
 
     raise DownloadError(msg, kind=kind)
@@ -276,6 +279,26 @@ def _cleanup_stem_outputs(out_path: Path) -> None:
 class _RunOutcome(NamedTuple):
     ok: bool
     error_lines: list
+    resolved_url: Optional[str] = None
+
+
+# yt-dlp announces the video it actually settled on before downloading it:
+#   [youtube] Extracting URL: https://www.youtube.com/watch?v=<id>
+#   [youtube] <id>: Downloading webpage
+# When a search picked the video, that line is the only record of *which* upload
+# the audio came from — see _resolved_youtube_url.
+_YT_URL_RE = re.compile(
+    r"https?://(?:www\.)?youtube\.com/watch\?v=([A-Za-z0-9_-]{11})")
+_YT_ID_RE = re.compile(r"^\[youtube\]\s+([A-Za-z0-9_-]{11}):", re.MULTILINE)
+
+
+def _resolved_youtube_url(stdout: str) -> Optional[str]:
+    """The canonical watch URL yt-dlp actually downloaded, from its own output.
+
+    Returns None when the id can't be read off — callers must then leave the
+    recorded source URL alone rather than guess at provenance."""
+    m = _YT_URL_RE.search(stdout or "") or _YT_ID_RE.search(stdout or "")
+    return f"https://www.youtube.com/watch?v={m.group(1)}" if m else None
 
 
 def _run_ytdlp(
@@ -342,12 +365,14 @@ def _run_ytdlp(
         )
         return _RunOutcome(False, errors)
 
+    resolved = _resolved_youtube_url(result.stdout)
+
     if out_path.exists():
-        return _RunOutcome(True, [])
+        return _RunOutcome(True, [], resolved)
 
     for candidate in out_path.parent.glob(f"{out_path.stem}.*"):
         candidate.rename(out_path)
-        return _RunOutcome(True, [])
+        return _RunOutcome(True, [], resolved)
 
     log.warning("yt-dlp exited 0 but output file not found")
     return _RunOutcome(False, ["ERROR: yt-dlp exited 0 but produced no output file"])
@@ -356,6 +381,7 @@ def _run_ytdlp(
 class _DlOutcome(NamedTuple):
     path: Optional[Path]
     error_lines: list
+    resolved_url: Optional[str] = None
 
 
 def _download_soundcloud(
@@ -377,7 +403,7 @@ def _download_soundcloud(
     )
     if run.ok and out_path.exists():
         log.info(f"Downloaded from SoundCloud: {out_path.name}")
-        return _DlOutcome(out_path, [])
+        return _DlOutcome(out_path, [], run.resolved_url)
 
     log.error(f"SoundCloud download failed for {url[:120]}")
     return _DlOutcome(None, run.error_lines)
@@ -417,7 +443,7 @@ def _download_ytdlp(
         )
         if run.ok and out_path.exists():
             log.info(f"Downloaded ({att.label}): {out_path.name}")
-            return _DlOutcome(out_path, [])
+            return _DlOutcome(out_path, [], run.resolved_url)
         if run.error_lines:
             last_errors = run.error_lines
 
@@ -438,8 +464,18 @@ def _usable_search_terms(title: str, artist: str) -> bool:
     return bool(t or (artist or "").strip())
 
 
+class _FallbackResult(NamedTuple):
+    """What the YouTube fallback actually fetched. ``url`` is the watch URL of
+    the upload the audio came from, so the caller can record where the file
+    really came from instead of leaving a stale SoundCloud URL on the row. It is
+    None when yt-dlp's output didn't name the video."""
+    path: Path
+    duration_secs: float
+    url: Optional[str]
+
+
 def _fallback_youtube(title: str, artist: str, out_path: Path,
-                       on_progress: ProgressCb = None) -> Optional[Tuple[Path, float]]:
+                       on_progress: ProgressCb = None) -> Optional[_FallbackResult]:
     """
     Search YouTube for the full track using multiple query strategies.
     Strips parenthetical suffixes from title for cleaner search results.
@@ -470,13 +506,15 @@ def _fallback_youtube(title: str, artist: str, out_path: Path,
             log.info(f"YouTube search: {query}  [trying result #{rank}]")
             if on_progress:
                 on_progress(None, f"YT search #{rank}: {clean_title[:40]}")
-            path = _download_ytdlp(query, out_path, playlist_item=rank,
-                                   on_progress=on_progress).path
+            dl = _download_ytdlp(query, out_path, playlist_item=rank,
+                                 on_progress=on_progress)
+            path = dl.path
             if path and path.exists():
                 duration = _get_duration(path)
                 if duration and duration > PREVIEW_MAX_SECS:
-                    log.info(f"YouTube fallback succeeded ({duration:.0f}s): {out_path.name}")
-                    return path, duration
+                    log.info(f"YouTube fallback succeeded ({duration:.0f}s): {out_path.name}"
+                             + (f" from {dl.resolved_url}" if dl.resolved_url else ""))
+                    return _FallbackResult(path, duration, dl.resolved_url)
                 log.warning(
                     f"YouTube result #{rank} too short ({duration or 0:.0f}s), trying next"
                 )
