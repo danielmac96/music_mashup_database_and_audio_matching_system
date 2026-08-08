@@ -171,12 +171,12 @@ def test_yt_find_searches_the_cleaned_query(monkeypatch):
     the raw artist/title columns, bypassing the prefix/URL scrubbing."""
     seen = {}
 
-    def fake_search_track(artist, title, platform="soundcloud", limit=6, query=None):
+    def fake_search(artist, title, platform="soundcloud", limit=6, query=None):
         seen.update(artist=artist, title=title, platform=platform, query=query)
-        return {"url": "https://yt/x", "score": 0.8, "artist_score": 1.0,
-                "duration_secs": 200.0}
+        return [{"url": "https://yt/x", "score": 0.8, "artist_score": 1.0,
+                 "duration_secs": 200.0}]
 
-    monkeypatch.setattr(w, "search_track", fake_search_track)
+    monkeypatch.setattr(w, "yt_search_candidates", fake_search)
     w._yt_find("Artist", "Title", "Artist - Title cleaned")
     assert seen["query"] == "Artist - Title cleaned"
     assert seen["platform"] == "youtube"
@@ -221,6 +221,83 @@ def test_relink_reruns_wrong_auto_links_only(tmp_path, monkeypatch):
     assert linked[ids[1]] == "u://old"      # manual never overwritten
     assert linked[ids[2]] == "u://old"      # scraped never overwritten
     assert linked[ids[3]] == "u://old"      # already ingested, left alone
+
+
+# ── Candidate cache ──────────────────────────────────────────────────────────
+#
+# The search already fetched and scored the whole page, so the runner-ups are
+# free — storing them is what makes "other matches" instant on every row.
+
+def test_finders_carry_the_runner_ups(monkeypatch):
+    hits = [{"url": f"u://{i}", "score": 0.9 - i / 10, "artist_score": 1.0,
+             "duration_secs": 200.0} for i in range(8)]
+    monkeypatch.setattr(w, "sc_search_candidates", lambda *a, **k: hits)
+    out = w._sc_find("A", "B", "A - B")
+    assert out["url"] == "u://0"
+    assert [c["url"] for c in out["candidates"]] == [f"u://{i}" for i in range(5)]
+
+
+def test_finder_with_no_hits_returns_none(monkeypatch):
+    monkeypatch.setattr(w, "sc_search_candidates", lambda *a, **k: [])
+    assert w._sc_find("A", "B", "A - B") is None
+
+
+def test_resolve_one_carries_candidates_from_the_winning_platform():
+    def sc(artist, title, query):
+        return {"url": "https://sc/x", "score": 0.5, "artist_score": 0.0,
+                "candidates": [{"url": "https://sc/x"}]}
+
+    def yt(artist, title, query):
+        return {"url": "https://yt/x", "score": 0.9, "artist_score": 1.0,
+                "candidates": [{"url": "https://yt/x"}, {"url": "https://yt/y"}]}
+
+    out = w.resolve_one("A", "B", "A - B", "both", sc_find=sc, yt_find=yt,
+                        accept_floor=0.72, artist_floor=0.5)
+    assert out["platform"] == "youtube"
+    assert [c["url"] for c in out["candidates"]] == ["https://yt/x", "https://yt/y"]
+
+
+def test_run_stores_the_candidate_cache_as_json(tmp_path, monkeypatch):
+    import json
+    models, detail = _setup_db(tmp_path, monkeypatch, n=1)
+    importlib.reload(w)
+    cands = [{"url": f"u://{i}", "title": f"T{i}", "uploader": "U",
+              "duration_secs": 200.0, "score": 0.9, "artist_score": 1.0,
+              "playback_count": 10} for i in range(8)]
+    monkeypatch.setattr(w, "resolve_one",
+                        lambda a, t, q, p, **kw: {"url": "u://0", "platform": "soundcloud",
+                                                  "score": 0.9, "artist_score": 1.0,
+                                                  "duration_secs": 200.0,
+                                                  "candidates": cands})
+    monkeypatch.setattr(w.jobs, "update", lambda *a, **k: None)
+    monkeypatch.setattr(w.jobs, "done", lambda *a, **k: None)
+    w.run("job-c", detail["id"], "both")
+
+    conn = models.get_conn()
+    raw = conn.execute("SELECT resolve_candidates FROM mix_tracks WHERE mix_id=?",
+                       (detail["id"],)).fetchone()["resolve_candidates"]
+    conn.close()
+    stored = json.loads(raw)
+    assert len(stored) == w.CANDIDATE_CACHE_SIZE
+    assert stored[0]["url"] == "u://0"
+
+
+def test_run_leaves_the_cache_null_when_there_are_no_candidates(tmp_path, monkeypatch):
+    models, detail = _setup_db(tmp_path, monkeypatch, n=1)
+    importlib.reload(w)
+    monkeypatch.setattr(w, "resolve_one",
+                        lambda a, t, q, p, **kw: {"url": "u://0", "platform": "soundcloud",
+                                                  "score": 0.9, "artist_score": 1.0,
+                                                  "duration_secs": 200.0})
+    monkeypatch.setattr(w.jobs, "update", lambda *a, **k: None)
+    monkeypatch.setattr(w.jobs, "done", lambda *a, **k: None)
+    w.run("job-n", detail["id"], "both")
+
+    conn = models.get_conn()
+    row = conn.execute("SELECT resolve_candidates FROM mix_tracks WHERE mix_id=?",
+                       (detail["id"],)).fetchone()
+    conn.close()
+    assert row["resolve_candidates"] is None
 
 
 def test_relink_persists_artist_score(tmp_path, monkeypatch):

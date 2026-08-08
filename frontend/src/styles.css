@@ -1256,6 +1256,13 @@ input, select { font-family: inherit; }
   max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .mix-candidate-title { font-weight: 500; }
+.mix-candidates-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 0 4px 4px; font-size: 11px; border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+.btn.ghost.danger { color: var(--red); border-color: rgba(220,80,80,.35); }
+.btn.ghost.danger:hover:not(:disabled) { background: rgba(220,80,80,.12); }
 .mix-flag { font-size: 10px; padding: 1px 5px; border-radius: 4px; }
 .mix-flag.failed { color: var(--amber-light); background: rgba(245,166,35,0.12); }
 .mix-flag.ok { color: var(--green); background: rgba(60,200,120,0.1); }

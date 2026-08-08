@@ -18,18 +18,24 @@ searching them is noise.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import traceback
 
 from config import AUTO_LINK_MIN_ARTIST, AUTO_LINK_MIN_SCORE
 from database.models import get_conn
-from ingest.soundcloud import search_track
-from ingest.soundcloud_api import find_track as sc_find_track
+from ingest.soundcloud import search_candidates as yt_search_candidates
+from ingest.soundcloud_api import search_candidates as sc_search_candidates
 
 from api import jobs
 
 log = logging.getLogger(__name__)
+
+# How many search hits to keep per track for the "other matches" picker. The
+# search returns ~8; 5 is enough to correct a mislink and keeps a 200-track mix
+# around a quarter of a megabyte.
+CANDIDATE_CACHE_SIZE = 5
 
 # Leading "1." / "12." entry number or a "w/" overlay marker — strip it so the
 # search sees just "Artist - Title".
@@ -66,26 +72,30 @@ def _is_id_entry(artist: str, title: str) -> bool:
     return t == "id" and a in ("", "id")
 
 
-def _sc_find(artist: str, title: str, query: str):
-    """SoundCloud v2 API finder normalised to
-    {url, score, artist_score, duration_secs}."""
-    hit = sc_find_track(artist, title, query=query)
-    if not hit:
+def _as_hit(candidates: list[dict]) -> dict | None:
+    """Best candidate normalised to {url, score, artist_score, duration_secs},
+    carrying the runner-ups along.
+
+    The search fetched and scored the whole page either way, so keeping the rest
+    lets the UI offer "the other matches" later without searching again."""
+    if not candidates:
         return None
-    return {"url": hit["url"], "score": hit.get("score"),
-            "artist_score": hit.get("artist_score"),
-            "duration_secs": hit.get("duration_secs")}
+    best = candidates[0]
+    return {"url": best["url"], "score": best.get("score"),
+            "artist_score": best.get("artist_score"),
+            "duration_secs": best.get("duration_secs"),
+            "candidates": candidates[:CANDIDATE_CACHE_SIZE]}
+
+
+def _sc_find(artist: str, title: str, query: str):
+    """SoundCloud v2 API finder."""
+    return _as_hit(sc_search_candidates(artist, title, query))
 
 
 def _yt_find(artist: str, title: str, query: str):
-    """YouTube (yt-dlp) finder normalised to
-    {url, score, artist_score, duration_secs}."""
-    hit = search_track(artist or "", title or "", platform="youtube", query=query)
-    if not hit:
-        return None
-    return {"url": hit["url"], "score": hit.get("score"),
-            "artist_score": hit.get("artist_score"),
-            "duration_secs": hit.get("duration_secs")}
+    """YouTube (yt-dlp) finder."""
+    return _as_hit(yt_search_candidates(artist or "", title or "",
+                                        platform="youtube", query=query))
 
 
 def _is_confident(hit: dict | None, accept_floor: float, artist_floor: float) -> bool:
@@ -122,7 +132,10 @@ def resolve_one(artist: str, title: str, query: str, platform: str, *,
         return {"url": hit["url"], "platform": plat,
                 "score": hit.get("score"),
                 "artist_score": hit.get("artist_score"),
-                "duration_secs": hit.get("duration_secs")}
+                "duration_secs": hit.get("duration_secs"),
+                # Runner-ups from the platform that actually won, so the picker
+                # offers alternatives to the link we stored.
+                "candidates": hit.get("candidates") or []}
 
     if platform == "youtube":
         return _as(yt_find(artist, title, query), "youtube")
@@ -202,13 +215,17 @@ def run(job_id: str, mix_id: int, platform: str = "both",
             if not hit:
                 failed += 1
                 continue
+            candidates = hit.get("candidates") or []
             conn = get_conn()
             conn.execute(
                 "UPDATE mix_tracks SET link_url=?, link_platform=?, "
                 "resolve_status='auto', resolve_score=?, resolve_artist_score=?, "
-                "resolve_duration_secs=? WHERE id=?",
+                "resolve_duration_secs=?, resolve_candidates=? WHERE id=?",
                 (hit["url"], hit["platform"], hit.get("score"),
-                 hit.get("artist_score"), hit.get("duration_secs"), t["id"]))
+                 hit.get("artist_score"), hit.get("duration_secs"),
+                 json.dumps(candidates[:CANDIDATE_CACHE_SIZE],
+                            separators=(",", ":")) if candidates else None,
+                 t["id"]))
             conn.commit()
             conn.close()
             resolved += 1

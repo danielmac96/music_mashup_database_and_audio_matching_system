@@ -264,10 +264,21 @@ export const api = {
     }),
 
   // Ranked search hits for one track, so a wrong auto-link can be fixed by
-  // picking the right one rather than hunting down a URL to paste.
-  mixTrackCandidates: (trackId, platform = "soundcloud", limit = 5) =>
+  // picking the right one rather than hunting down a URL to paste. Normally
+  // served instantly from what auto-link already fetched; `refresh` forces a
+  // fresh search.
+  mixTrackCandidates: (trackId, platform = "soundcloud", limit = 5, refresh = false) =>
     jsonFetch(`/api/mixes/tracks/${trackId}/candidates`
-      + `?platform=${encodeURIComponent(platform)}&limit=${limit}`),
+      + `?platform=${encodeURIComponent(platform)}&limit=${limit}`
+      + (refresh ? "&refresh=true" : "")),
+
+  // Clear links, returning tracks to "needs link". Omit trackIds to unlink every
+  // linked track. Already-ingested tracks are skipped server-side.
+  unlinkMixTracks: (id, trackIds = null) =>
+    jsonFetch(`/api/mixes/${id}/unlink`, {
+      method: "POST",
+      body: JSON.stringify(trackIds && trackIds.length ? { track_ids: trackIds } : {}),
+    }),
 
   confirmMixTrack: (trackId) =>
     jsonFetch(`/api/mixes/tracks/${trackId}/confirm`, { method: "POST" }),

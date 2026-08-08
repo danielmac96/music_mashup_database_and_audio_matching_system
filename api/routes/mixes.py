@@ -148,14 +148,37 @@ _ONE_TRACK_SELECT = (
     "WHERE mt.id=?")
 
 
-def _track_row(conn, track_id: int) -> dict:
-    """A single mix_track row shaped like the mix-detail rows, with the derived
-    'trusted' flag the UI uses to distinguish confident from low-confidence links."""
-    t = dict(conn.execute(_ONE_TRACK_SELECT, (track_id,)).fetchone())
+def _shape_track(t: dict) -> dict:
+    """Add the derived flags the Mixes tab needs and drop the bulky cache blob.
+
+    'trusted' = the link is confident enough to become training data; it drives
+    the auto-linked ✓ vs ⚠ verify distinction. 'has_candidates' says the
+    other-matches picker can open instantly — the runner-up JSON itself is served
+    by /tracks/{id}/candidates rather than shipped with every row, because on a
+    200-track mix it would add ~250 KB the list view never renders."""
     t["trusted"] = bool(t["resolved_url"]) and is_trusted_link(
         t.get("resolve_status"), t.get("resolve_score"),
         t.get("resolve_duration_secs"), t.get("resolve_artist_score"))
+    t["has_candidates"] = bool(t.pop("resolve_candidates", None))
     return t
+
+
+def _track_row(conn, track_id: int) -> dict:
+    """A single mix_track row shaped like the mix-detail rows."""
+    return _shape_track(dict(conn.execute(_ONE_TRACK_SELECT, (track_id,)).fetchone()))
+
+
+def _load_candidates(raw: Optional[str]) -> list[dict]:
+    """Decode the cached runner-up list, tolerating a malformed blob — a bad
+    cache should degrade to a live search, never 500 the row."""
+    if not raw:
+        return []
+    try:
+        hits = json.loads(raw)
+    except (ValueError, TypeError):
+        log.warning("ignoring unreadable resolve_candidates blob")
+        return []
+    return [h for h in hits if isinstance(h, dict) and h.get("url")]
 
 
 def _mix_detail(conn, mix_id: int) -> dict:
@@ -163,13 +186,8 @@ def _mix_detail(conn, mix_id: int) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="mix not found")
     mix = dict(row)
-    tracks = [dict(r) for r in conn.execute(_TRACK_SELECT, (mix_id,)).fetchall()]
-    for t in tracks:
-        # 'trusted' = link is confident enough to become training data. Drives
-        # the auto-linked ✓ vs ⚠ verify distinction in the Mixes tab.
-        t["trusted"] = bool(t["resolved_url"]) and is_trusted_link(
-            t.get("resolve_status"), t.get("resolve_score"),
-            t.get("resolve_duration_secs"), t.get("resolve_artist_score"))
+    tracks = [_shape_track(dict(r))
+              for r in conn.execute(_TRACK_SELECT, (mix_id,)).fetchall()]
     mix["tracks"] = tracks
     mix["track_count"] = len(tracks)
     mix["resolved_count"] = sum(1 for t in tracks if t["resolved_url"])
@@ -783,13 +801,15 @@ def scrape_track_link(track_id: int) -> dict:
 
 @router.get("/tracks/{track_id}/candidates")
 def track_candidates(track_id: int, platform: str = "soundcloud",
-                     limit: int = 5) -> dict:
+                     limit: int = 5, refresh: bool = False) -> dict:
     """Ranked search hits for one mix track, so a wrong auto-link can be fixed by
     picking the right one instead of hunting down and pasting a URL.
 
-    Uses the same query and the same ranking auto-link used, so the list explains
-    what auto-link saw. Pick one by POSTing it to /tracks/{id}/resolve, which
-    stores it as a trusted manual link."""
+    Served from the cache auto-link left behind (it fetched these hits anyway), so
+    this is normally instant and costs no request. Falls back to a live search for
+    tracks that were never auto-linked; ``refresh`` forces one. Uses the same query
+    and ranking auto-link used, so the list explains what auto-link saw. Pick one by
+    POSTing it to /tracks/{id}/resolve, which stores it as a trusted manual link."""
     if platform not in ("soundcloud", "youtube"):
         raise HTTPException(status_code=400,
                             detail="platform must be 'soundcloud' or 'youtube'")
@@ -797,8 +817,8 @@ def track_candidates(track_id: int, platform: str = "soundcloud",
     conn = get_conn()
     try:
         row = conn.execute(
-            "SELECT id, artist, title, raw_label FROM mix_tracks WHERE id=?",
-            (track_id,)).fetchone()
+            "SELECT id, artist, title, raw_label, link_platform, resolve_candidates "
+            "FROM mix_tracks WHERE id=?", (track_id,)).fetchone()
     finally:
         conn.close()
     if not row:
@@ -806,10 +826,18 @@ def track_candidates(track_id: int, platform: str = "soundcloud",
 
     artist, title = row["artist"] or "", row["title"] or ""
     if mix_resolve_worker._is_id_entry(artist, title):
-        return {"query": "", "platform": platform, "candidates": []}
+        return {"query": "", "platform": platform, "candidates": [], "cached": False}
     query = mix_resolve_worker.strip_label_prefix(row["raw_label"] or "") or \
         mix_resolve_worker._clean_query(
             " - ".join(p for p in (artist.strip(), title.strip()) if p))
+
+    # The cache holds hits from whichever platform auto-link settled on; only
+    # reuse it when that's the platform being asked about.
+    if not refresh and (row["link_platform"] or "soundcloud") == platform:
+        cached = _load_candidates(row["resolve_candidates"])
+        if cached:
+            return {"query": query, "platform": platform,
+                    "candidates": cached[:limit], "cached": True}
 
     try:
         if platform == "soundcloud":
@@ -820,7 +848,64 @@ def track_candidates(track_id: int, platform: str = "soundcloud",
     except SoundCloudAPIError as exc:
         raise HTTPException(status_code=502,
                             detail=f"SoundCloud search failed ({exc}).") from exc
-    return {"query": query, "platform": platform, "candidates": hits[:limit]}
+    return {"query": query, "platform": platform, "candidates": hits[:limit],
+            "cached": False}
+
+
+class UnlinkRequest(BaseModel):
+    track_ids: list[int] | None = None   # None/empty = every linked track
+
+
+# Everything auto-link wrote about a link. Cleared together so an unlinked row is
+# indistinguishable from one that was never resolved.
+_RESOLVE_COLS_RESET = (
+    "link_url=NULL, link_platform=NULL, resolve_status='unresolved', "
+    "resolve_score=NULL, resolve_artist_score=NULL, resolve_duration_secs=NULL, "
+    "resolve_candidates=NULL")
+
+
+@router.post("/{mix_id}/unlink")
+def unlink_tracks(mix_id: int, req: UnlinkRequest) -> dict:
+    """Clear the links on the given tracks (or every linked track in the mix),
+    returning them to 'needs link' so Auto-link will pick them up again.
+
+    Tracks already ingested into the library are skipped: their link is the
+    provenance of a real downloaded file, and clearing it would leave the song row
+    orphaned. The response reports how many were skipped for that reason.
+    Synchronous — this is a DB update, no searching."""
+    ids = [int(i) for i in (req.track_ids or [])]
+    conn = get_conn()
+    try:
+        if not conn.execute("SELECT id FROM mixes WHERE id=?", (mix_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="mix not found")
+
+        where = "mix_id=? AND link_url IS NOT NULL AND link_url != ''"
+        params: list = [mix_id]
+        if ids:
+            where += f" AND id IN ({','.join('?' * len(ids))})"
+            params += ids
+        rows = conn.execute(
+            f"SELECT id, song_id FROM mix_tracks WHERE {where}", params).fetchall()
+
+        skipped = sum(1 for r in rows if r["song_id"] is not None)
+        targets = [r["id"] for r in rows if r["song_id"] is None]
+        if not targets:
+            raise HTTPException(
+                status_code=400,
+                detail=("Those tracks are already in the library — unlinking them "
+                        "would orphan the songs." if skipped
+                        else "Nothing to unlink — none of those tracks have a link."))
+
+        conn.execute(
+            f"UPDATE mix_tracks SET {_RESOLVE_COLS_RESET} "
+            f"WHERE id IN ({','.join('?' * len(targets))})", targets)
+        conn.commit()
+        detail = _mix_detail(conn, mix_id)
+        detail["unlinked"] = len(targets)
+        detail["skipped_ingested"] = skipped
+        return detail
+    finally:
+        conn.close()
 
 
 class AutoResolveRequest(BaseModel):

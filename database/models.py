@@ -341,6 +341,10 @@ _MIXTRACKS_OPTIONAL_COLUMNS = (
     ("resolve_score", "REAL"),           # overall match score from ingest.match_score
     ("resolve_artist_score", "REAL"),    # artist-agreement component (mislink guard)
     ("resolve_duration_secs", "REAL"),   # duration of the resolved upload (preview guard)
+    # JSON: the runner-up search hits auto-link already fetched and would otherwise
+    # discard, so "show me the other matches" costs no extra request. See
+    # api/workers/mix_resolve_worker.run.
+    ("resolve_candidates", "TEXT"),
     ("raw_label", "TEXT"),
     ("is_id", "INTEGER DEFAULT 0"),
     ("remixer", "TEXT"),

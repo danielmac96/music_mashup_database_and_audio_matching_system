@@ -97,33 +97,41 @@ const fmtDur = (secs) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 
-// The ranked search hits behind a low-confidence auto link. Auto-link picks the
-// top one; when it picks wrong the right answer is usually right here, so let it
-// be chosen directly instead of making the user hunt down a URL to paste.
+// The ranked search hits behind a link. Auto-link picks the top one; when it
+// picks wrong the right answer is usually right here, so let it be chosen
+// directly instead of making the user hunt down a URL to paste. Normally served
+// from what auto-link already fetched (track.has_candidates), so it's instant.
 function CandidatePicker({ track, platform, onResolved }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [hits, setHits] = useState(null);
+  const [cached, setCached] = useState(false);
   const [picking, setPicking] = useState(null);
 
   // 'both' is a resolve strategy, not a searchable platform — show SoundCloud,
   // which is what 'both' tries first and what we prefer for audio anyway.
   const searchPlatform = platform === "youtube" ? "youtube" : "soundcloud";
 
+  const load = async (refresh = false) => {
+    setLoading(true);
+    try {
+      const d = await api.mixTrackCandidates(track.id, searchPlatform, 5, refresh);
+      setHits(d.candidates || []);
+      setCached(!!d.cached);
+      return true;
+    } catch (e) {
+      toast(`Search failed: ${e.message}`);
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const toggle = async () => {
     if (open) { setOpen(false); return; }
     setOpen(true);
     if (hits) return;
-    setLoading(true);
-    try {
-      const d = await api.mixTrackCandidates(track.id, searchPlatform, 5);
-      setHits(d.candidates || []);
-    } catch (e) {
-      toast(`Search failed: ${e.message}`);
-      setOpen(false);
-    } finally {
-      setLoading(false);
-    }
+    if (!(await load())) setOpen(false);
   };
 
   const pick = async (url) => {
@@ -140,7 +148,9 @@ function CandidatePicker({ track, platform, onResolved }) {
   return (
     <>
       <button className="mini-btn" onClick={toggle}
-        title={`Show the top ${searchPlatform} search results for this track`}>
+        title={track.has_candidates
+          ? `Show the ${searchPlatform} results auto-link found for this track`
+          : `Search ${searchPlatform} for other matches`}>
         {open ? "▴ hide" : "▾ others"}
       </button>
       {open && (
@@ -148,6 +158,15 @@ function CandidatePicker({ track, platform, onResolved }) {
           {loading && <span className="faint">searching {searchPlatform}…</span>}
           {!loading && hits && hits.length === 0 && (
             <span className="faint">No results — try pasting a link.</span>
+          )}
+          {!loading && hits && (
+            <div className="mix-candidates-head faint">
+              <span>{cached ? "from the last search" : `live ${searchPlatform} search`}</span>
+              <button className="mini-btn" onClick={() => load(true)}
+                title="Search the platform again instead of reusing the last results">
+                ↻ search again
+              </button>
+            </div>
           )}
           {!loading && (hits || []).map((h) => (
             <button
@@ -222,23 +241,30 @@ export function MixImporter() {
       return next;
     });
 
-  // Tracks eligible for auto-linking: not yet in the library and still unlinked.
-  const linkableIds = (detail?.tracks || [])
-    .filter((t) => !t.song_id && !t.resolved_url)
-    .map((t) => t.id);
-  const selectedLinkable = linkableIds.filter((id) => selectedIds.has(id));
-  const allLinkableSelected = linkableIds.length > 0 &&
-    selectedLinkable.length === linkableIds.length;
+  // Anything not yet in the library can be selected. One selection drives all
+  // three bulk actions; each derives its own eligible subset below, so a button's
+  // count always means what it says.
+  const tracks = detail?.tracks || [];
+  const idsWhere = (pred) => tracks.filter(pred).map((t) => t.id);
+  const selected = (ids) => ids.filter((id) => selectedIds.has(id));
 
-  // Auto-linked but low confidence, and not yet ingested — the rows a re-link
-  // can still overwrite (manual/scraped links are off-limits by design).
-  const flaggedIds = (detail?.tracks || [])
-    .filter((t) => !t.song_id && t.resolved_url &&
-                   t.resolve_status === "auto" && !t.trusted)
-    .map((t) => t.id);
+  const selectableIds = idsWhere((t) => !t.song_id);
+  const allSelected = selectableIds.length > 0 &&
+    selected(selectableIds).length === selectableIds.length;
+
+  const selectedLinkable = selected(idsWhere((t) => !t.song_id && !t.resolved_url));
+  const selectedRelinkable = selected(
+    idsWhere((t) => !t.song_id && t.resolved_url && t.resolve_status === "auto"));
+  const selectedUnlinkable = selected(idsWhere((t) => !t.song_id && t.resolved_url));
+
+  // Auto-linked but low confidence, and not yet ingested — what "Re-link" falls
+  // back to when nothing is selected (manual/scraped links are off-limits).
+  const flaggedIds = idsWhere((t) => !t.song_id && t.resolved_url &&
+                                     t.resolve_status === "auto" && !t.trusted);
+  const relinkIds = selectedRelinkable.length ? selectedRelinkable : flaggedIds;
 
   const toggleSelectAll = () =>
-    setSelectedIds(allLinkableSelected ? new Set() : new Set(linkableIds));
+    setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
 
   // When an auto-resolve job finishes, pull the freshly-linked tracks back in.
   useEffect(() => {
@@ -286,14 +312,37 @@ export function MixImporter() {
   };
 
   // Re-search links a previous auto-link got wrong. `trackIds` narrows it to one
-  // row (the per-row ↻); omitted, it re-links every flagged row in the mix.
-  const relink = async (trackIds = flaggedIds) => {
+  // row (the per-row ↻); omitted, it uses the selection, or every flagged row.
+  const relink = async (trackIds = relinkIds) => {
     if (!detail || !trackIds.length) return;
     setError(null);
     try {
       const res = await api.autoResolveMix(detail.id, platform, trackIds, true);
       setResolveJobId(res.job_id);
       toast(`Re-linking ${res.queued} track${res.queued === 1 ? "" : "s"} on ${res.platform}…`);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  // Clear links so the tracks go back to "needs link". Destructive and there's no
+  // undo, so anything beyond a single row asks first.
+  const unlink = async (trackIds = selectedUnlinkable) => {
+    if (!detail || !trackIds.length) return;
+    if (trackIds.length > 1 &&
+        !window.confirm(`Remove the links from ${trackIds.length} tracks? ` +
+                        `They'll go back to "needs link" and you can auto-link them again.`)) {
+      return;
+    }
+    setError(null);
+    try {
+      const res = await api.unlinkMixTracks(detail.id, trackIds);
+      setDetail(res);
+      setSelectedIds(new Set());
+      toast(`Unlinked ${res.unlinked} track${res.unlinked === 1 ? "" : "s"}` +
+            (res.skipped_ingested
+              ? ` · ${res.skipped_ingested} already in the library, left alone` : ""));
+      loadMixes();
     } catch (e) {
       setError(e.message);
     }
@@ -474,12 +523,12 @@ export function MixImporter() {
                         : "no matches yet"}
                     </span>
                   )}
-                  {viewMode === "list" && linkableIds.length > 0 && (
+                  {viewMode === "list" && selectableIds.length > 0 && (
                     <label className="faint" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}
-                      title="Select / deselect every unlinked track">
-                      <input type="checkbox" checked={allLinkableSelected}
+                      title="Select / deselect every track that isn't in the library yet">
+                      <input type="checkbox" checked={allSelected}
                         onChange={toggleSelectAll} disabled={resolving} />
-                      All ({selectedLinkable.length}/{linkableIds.length})
+                      All ({selected(selectableIds).length}/{selectableIds.length})
                     </label>
                   )}
                   <select
@@ -501,14 +550,26 @@ export function MixImporter() {
                   >
                     {resolving ? "Searching…" : `⚡ Auto-link (${selectedLinkable.length})`}
                   </button>
-                  {viewMode === "list" && flaggedIds.length > 0 && (
+                  {viewMode === "list" && relinkIds.length > 0 && (
                     <button
                       className="btn ghost"
                       onClick={() => relink()}
                       disabled={resolving}
-                      title="Search again for every low-confidence auto link. Links you pasted or confirmed are left alone."
+                      title={selectedRelinkable.length
+                        ? "Search again for the selected auto-linked tracks"
+                        : "Search again for every low-confidence auto link. Links you pasted or confirmed are left alone."}
                     >
-                      ↻ Re-link {flaggedIds.length} flagged
+                      ↻ Re-link ({relinkIds.length}){selectedRelinkable.length ? "" : " flagged"}
+                    </button>
+                  )}
+                  {viewMode === "list" && selectedUnlinkable.length > 0 && (
+                    <button
+                      className="btn ghost danger"
+                      onClick={() => unlink()}
+                      disabled={resolving}
+                      title="Clear the links on the selected tracks, returning them to “needs link”. Tracks already in the library are left alone."
+                    >
+                      ✕ Unlink ({selectedUnlinkable.length})
                     </button>
                   )}
                   <button
@@ -558,14 +619,14 @@ export function MixImporter() {
                 <SortableContext items={detail.tracks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
                 {detail.tracks.map((t) => (
                   <SortableRow key={t.id} track={t}>
-                    {!t.song_id && !t.resolved_url ? (
+                    {!t.song_id ? (
                       <input
                         type="checkbox"
                         className="mix-select"
                         checked={selectedIds.has(t.id)}
                         onChange={() => toggleSelected(t.id)}
                         disabled={resolving}
-                        title="Select this track for auto-linking"
+                        title="Select this track for auto-link / re-link / unlink"
                       />
                     ) : (
                       <span className="mix-select" />
@@ -608,19 +669,25 @@ export function MixImporter() {
                           ✓ confirm
                         </button>
                       )}
-                      {!t.song_id && t.resolved_url && t.resolve_status === "auto" && !t.trusted && (
-                        <>
-                          <button
-                            className="mini-btn"
-                            disabled={resolving}
-                            title="Search again for this track and replace the link"
-                            onClick={() => relink([t.id])}
-                          >
-                            ↻
-                          </button>
-                          <CandidatePicker track={t} platform={platform}
-                            onResolved={onTrackResolved} />
-                        </>
+                      {!t.song_id && t.resolved_url && t.resolve_status === "auto" && (
+                        <button
+                          className="mini-btn"
+                          disabled={resolving}
+                          title="Search again for this track and replace the link"
+                          onClick={() => relink([t.id])}
+                        >
+                          ↻
+                        </button>
+                      )}
+                      {/* Available on every row, not just flagged ones: auto-link
+                          already fetched these hits, so opening the list is free.
+                          Keyed on the link so re-linking or unlinking drops the
+                          panel's stale results instead of showing hits for a link
+                          that's gone. */}
+                      {!t.song_id && (
+                        <CandidatePicker key={`cand-${t.id}-${t.resolved_url || ""}`}
+                          track={t} platform={platform}
+                          onResolved={onTrackResolved} />
                       )}
                       {!t.song_id && <ResolveInput track={t} onResolved={onTrackResolved} />}
                       {!t.song_id && (
