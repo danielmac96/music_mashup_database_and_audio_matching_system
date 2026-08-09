@@ -1200,14 +1200,36 @@ input, select { font-family: inherit; }
 .mix-detail { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-height: 200px; }
 .mix-detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .mix-detail-head > div:last-child { flex-wrap: wrap; }
-.mix-rows { display: flex; flex-direction: column; gap: 1px; }
-/* Fixed-width status/source/action columns so the tracklist reads as columns:
-   every row is its own grid, so `auto` widths would drift row to row. */
-.mix-row {
+/* One shared column grid for the whole tracklist, with each row a subgrid item,
+   so status/source/actions line up across every row and take only the width they
+   need — the name/link column keeps the rest. Rows stay real boxes, which
+   dnd-kit's drag transform, the hover state and the candidates dropdown's
+   positioning all depend on. */
+.mix-rows {
   display: grid;
-  grid-template-columns: 16px 16px 30px minmax(0, 1fr) 108px 96px 400px;
-  align-items: center; gap: 8px;
-  padding: 5px 8px; border-radius: 6px; font-size: 13px;
+  /* The name/link column is sized for a URL — wide enough that a typical
+     SoundCloud permalink sits on one line, capped so the rest of the row stays
+     put. Longer links wrap inside it (see .mix-url). The action column takes the
+     slack so it stays pinned right. */
+  grid-template-columns:
+    16px 16px 30px minmax(300px, 560px) 108px 96px minmax(max-content, 1fr);
+  gap: 1px 8px;
+}
+.mix-row {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+  padding: 5px 0; border-radius: 6px; font-size: 13px;
+}
+/* Engines without subgrid keep the old per-row grid; fixed tracks are the only
+   way to align columns there, so long links ellipsise as they used to. */
+@supports not (grid-template-columns: subgrid) {
+  .mix-rows { display: flex; flex-direction: column; gap: 1px; }
+  .mix-row {
+    grid-template-columns: 16px 16px 30px minmax(0, 1fr) 108px 96px 400px;
+    gap: 8px; padding: 5px 8px;
+  }
 }
 .mix-row:hover { background: rgba(255,255,255,0.03); }
 .mix-row.overlay .mix-num { color: var(--accent-light); font-style: italic; }
@@ -1215,16 +1237,21 @@ input, select { font-family: inherit; }
 .mix-select { width: 16px; flex: 0 0 16px; margin: 0; cursor: pointer; justify-self: center; }
 .mix-num { font-weight: 600; color: var(--text-2); text-align: center; font-size: 12px; }
 /* Track name on its own line with its link directly underneath, same font and
-   size, so the pair reads as one unit. Both ellipsise; the full text stays
-   reachable via each element's title attribute. */
+   size, so the pair reads as one unit. The link is never truncated: it gets the
+   full width left over by the columns to its right and wraps onto a second line
+   in the rare case that still isn't enough — better than an ellipsis hiding
+   which upload a track points at, and better than forcing the page sideways. */
 .mix-info {
-  display: flex; flex-direction: column; align-items: stretch;
-  gap: 1px; min-width: 0;
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 1px; min-width: 0; width: 100%;
 }
-.mix-title, .mix-url {
-  min-width: 0; line-height: 1.35; font-size: 13px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+.mix-title, .mix-url { min-width: 0; line-height: 1.35; font-size: 13px; }
+.mix-title {
+  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Breaks land on the <wbr>s BreakableUrl puts after each "/"; break-word is the
+   safety net for a single path segment too long to fit on its own. */
+.mix-url { max-width: 100%; overflow-wrap: break-word; }
 .mix-url { color: var(--text-2); text-decoration: none; }
 .mix-url:hover { color: var(--accent-light); text-decoration: underline; }
 .mix-url.none { color: var(--text-2); opacity: 0.5; font-style: italic; }
@@ -1297,6 +1324,7 @@ input, select { font-family: inherit; }
 
 /* Manual "+ Add track" row at the foot of the tracklist. */
 .mix-add-track {
+  grid-column: 1 / -1;   /* sits in .mix-rows' grid — span it, don't become a cell */
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   margin-top: 10px; padding: 8px 9px;
   border: 1px dashed var(--border-ctrl); border-radius: 8px; background: var(--inset-2);

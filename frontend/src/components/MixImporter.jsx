@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -84,6 +84,25 @@ function ResolveInput({ track, onResolved }) {
         {busy ? "…" : "link"}
       </button>
     </div>
+  );
+}
+
+// A URL that wraps at path boundaries instead of mid-word. <wbr> marks each "/"
+// as a break opportunity, so a long link continues on the next line at a
+// readable seam rather than splitting a slug in half. The "//" after the scheme
+// is skipped so it never breaks inside "https://".
+function BreakableUrl({ url }) {
+  const parts = String(url).split("/");
+  return (
+    <>
+      {parts.map((part, i) => (
+        <Fragment key={i}>
+          {i > 0 && "/"}
+          {i > 0 && part !== "" && parts[i - 1] !== "" && <wbr />}
+          {part}
+        </Fragment>
+      ))}
+    </>
   );
 }
 
@@ -671,7 +690,9 @@ export function MixImporter() {
                       </span>
                       {t.resolved_url
                         ? <a className="mix-url" href={t.resolved_url} target="_blank"
-                            rel="noreferrer" title={t.resolved_url}>{t.resolved_url}</a>
+                            rel="noreferrer" title={t.resolved_url}>
+                            <BreakableUrl url={t.resolved_url} />
+                          </a>
                         : <span className="mix-url none">no link yet</span>}
                     </div>
                     <span className="mix-status"><LinkStatus track={t} /></span>
