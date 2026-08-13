@@ -659,8 +659,11 @@ Arithmetic at ~65 tracks/mix: ~1,100 `mix_tracks` → **850–1,000 unique songs
    - `stem_separator` → `mdx` (`config.py:185`, 2–4× faster than `htdemucs` on CPU). At
      ~1.5–3 min/track with `pipeline_workers=1`, Demucs would be ~**30 hours**.
    - Raise `MASHUP_STEM_WORKERS` to match core count.
-   - Point `audio_root` at a drive with **80–100 GB** free — stems are WAV
-     (`stems/separate.py:60`), ~42 MB per stem, ~90 MB per track including the source.
+   - Point `audio_root` at a drive with **80–100 GB** free in two-stem mode.
+     Stems are now FLAC rather than WAV (Phase D, `config.STEM_FORMAT`), roughly
+     halving that to **40–50 GB**; four-stem mode writes five stems instead of
+     two, which puts it back at **100–120 GB**. Pick the stem mode BEFORE the
+     import: switching afterwards re-separates the whole library.
 2. **Import in batches of 3–4 mixes**, not all 17 at once. The queue is bounded and resumable,
    so a restart is safe.
 3. **Per mix:** import → auto-resolve → fix unresolved by hand → tag pairs on the match board

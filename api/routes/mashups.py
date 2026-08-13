@@ -67,10 +67,36 @@ def scorer_status() -> dict:
     if not bundle:
         return {"scorer": "heuristic", "model_version": None, "auc": None}
     metrics = bundle.get("metrics") or {}
+    cv = metrics.get("cv") or {}
+
+    # What the model was actually trained on, so the badge is a claim and not a
+    # decoration. An AUC with no idea how many judgments or mixes are behind it
+    # invites more trust than it has earned.
+    counts: dict = {}
+    try:
+        from database.models import get_conn
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT config_json FROM datasets WHERE id=?",
+            (bundle.get("dataset_id"),)).fetchone()
+        n_judged = conn.execute("SELECT COUNT(*) FROM pair_feedback").fetchone()[0]
+        conn.close()
+        import json as _json
+        cfg = _json.loads((row["config_json"] if row else None) or "{}")
+        counts = {
+            "n_judgments": n_judged,
+            "n_mixes": max(0, (cfg.get("n_groups") or 0) - 1),  # "user" is one
+        }
+    except Exception:  # noqa: BLE001 — the badge is never worth a 500
+        counts = {}
+
     return {
         "scorer": "model",
         "model_version": bundle.get("version"),
         "auc": metrics.get("roc_auc"),
+        "in_sample": metrics.get("in_sample"),
+        "cv_scheme": cv.get("scheme"),
+        **counts,
     }
 
 

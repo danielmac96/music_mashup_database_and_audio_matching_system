@@ -218,6 +218,39 @@ def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
     }
 
 
+def choose_section_pair(vocal_sections: List[Dict], inst_sections: List[Dict],
+                        stretch: float = 1.0, prefiltered: bool = False,
+                        bpm: Optional[float] = None):
+    """The winning (vocal section, bed section) as the DICTS themselves.
+
+    Returns (vocal, bed, vocal_pos, bed_pos, score) or (None, None, 0, 0, 0.0).
+
+    Separate from best_section_pair because callers that need to READ the
+    chosen sections — the feature builder wants energy and vocal_presence —
+    cannot reliably resolve them back from the stored row: section_index is a
+    database column, and a caller working with sections that never came from
+    the database (a test fixture, an un-persisted analysis) has none to match
+    on. Handing back the objects removes the lookup entirely.
+    """
+    v_use = vocal_sections if prefiltered else usable_sections(vocal_sections, True)
+    i_use = inst_sections if prefiltered else usable_sections(inst_sections, False)
+    if not v_use or not i_use:
+        return None, None, 0, 0, 0.0
+
+    best, best_score = None, -1.0
+    for vi, v in enumerate(v_use):
+        for ii, i in enumerate(i_use):
+            sc = score_section_pair(v, i, stretch, bpm)
+            # Strictly greater: the lists arrive in priority order, so a tie
+            # keeps the more-wanted labels and higher energy.
+            if sc > best_score:
+                best, best_score = (v, i, vi, ii), sc
+    if best is None:
+        return None, None, 0, 0, 0.0
+    v, i, vi, ii = best
+    return v, i, vi, ii, best_score
+
+
 def best_section_pair(vocal_sections: List[Dict], inst_sections: List[Dict],
                       stretch: float = 1.0,
                       prefiltered: bool = False,
@@ -228,25 +261,10 @@ def best_section_pair(vocal_sections: List[Dict], inst_sections: List[Dict],
     usable_sections. Returns section_index values as stored in the `sections`
     table, so the row can be resolved back without re-running the filter.
     """
-    v_use = vocal_sections if prefiltered else usable_sections(vocal_sections, True)
-    i_use = inst_sections if prefiltered else usable_sections(inst_sections, False)
-    if not v_use or not i_use:
+    v, i, vi, ii, best_score = choose_section_pair(
+        vocal_sections, inst_sections, stretch, prefiltered, bpm)
+    if v is None or i is None:
         return None
-
-    best = None
-    best_score = -1.0
-    for vi, v in enumerate(v_use):
-        for ii, i in enumerate(i_use):
-            s = score_section_pair(v, i, stretch, bpm)
-            # Strictly greater: the lists arrive in priority order, so a tie
-            # keeps the more-wanted labels and higher energy.
-            if s > best_score:
-                best_score = s
-                best = (v, i, vi, ii)
-    if best is None:
-        return None
-
-    v, i, vi, ii = best
     return {
         "vocal_section_idx": _index_of(v, vi),
         "inst_section_idx": _index_of(i, ii),

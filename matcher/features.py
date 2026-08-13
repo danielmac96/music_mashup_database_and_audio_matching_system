@@ -20,6 +20,7 @@ stays heuristic (see matcher.match.score_all_pairs).
 """
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import random
@@ -37,10 +38,9 @@ from matcher.match import (
     compute_semitone_shift, compute_stretch_factor, effective_bpm,
     get_library_stats, sub_scores,
 )
-from matcher.plan import build_pairings
 from analysis.quality import collision_score
 from matcher.effort import effort_components
-from matcher.sections import duration_fit
+from matcher.sections import choose_section_pair, duration_fit
 
 log = logging.getLogger(__name__)
 
@@ -75,8 +75,10 @@ FEATURE_NAMES: list[str] = [
     "spectral_rolloff_diff",
     "zcr_diff",
     "loudness_diff",
-    # ── Section-level terms, from the sections build_pairings would actually
-    # pair. A whole-track average often describes a moment that never occurs.
+    # ── Section-level terms, describing the exact section pair the SCORER
+    # would choose. A whole-track average often describes a moment that never
+    # occurs in the song, and a differently-chosen section describes the wrong
+    # one — so this uses matcher.sections' chooser, not the Plan's.
     "top_section_vocal_presence",
     "hook_energy_delta",
     "duration_fit",
@@ -160,8 +162,8 @@ def _terms_from_sections(v_sec: dict, b_sec: dict, stretch: float,
                          n_top: int, n_bed: int) -> dict:
     """The section terms for one explicit (vocal section, bed section) pair.
 
-    Shared by the build_pairings path and the pinned path below so a feature
-    vector means the same thing however the section pair was chosen.
+    Shared by the chooser path and the pinned path below so a feature vector
+    means the same thing however the section pair was chosen.
     """
     v_dur = _num(v_sec.get("end_sec")) - _num(v_sec.get("start_sec"))
     i_dur = (_num(b_sec.get("end_sec")) - _num(b_sec.get("start_sec"))) \
@@ -181,9 +183,14 @@ def _section_terms(top: dict, bed: dict,
                    bed_section_idx: Optional[int] = None) -> dict:
     """Terms describing the sections that would actually be layered.
 
-    Uses build_pairings so this agrees with the Plan the user reads: the same
-    label priority, the same duration-fit rule, the same chosen pair. Scoring a
-    whole-track average often describes a moment that never occurs in the song.
+    Uses the SAME chooser the scorer uses (matcher.sections.best_section_pair),
+    so the model trains on the section pair a candidate row would actually be.
+    This used to call matcher.plan.build_pairings, which ranks by label priority
+    and a seconds-based duration fit, while scoring ranks by label, vocal
+    presence and a BARS-based fit — the two disagree, so the model was learning
+    about a moment the scorer would not have picked. Scoring a whole-track
+    average describes a moment that never occurs; scoring the wrong section is
+    only marginally better.
 
     When ``top_section_idx``/``bed_section_idx`` are given (a pair_feedback row
     records the exact sections that were auditioned), those sections are used
@@ -203,6 +210,7 @@ def _section_terms(top: dict, bed: dict,
         return blank
 
     stretch = compute_stretch_factor(_num(top.get("bpm")), _num(bed.get("bpm"))) or 1.0
+    bpm = _num(top.get("bpm")) or None
 
     if top_section_idx is not None and bed_section_idx is not None:
         v_pin = next((s for s in top_sections
@@ -214,35 +222,18 @@ def _section_terms(top: dict, bed: dict,
                                         len(top_sections), len(bed_sections))
 
     try:
-        pairings = build_pairings(top_sections, bed_sections, stretch, max_pairings=1)
+        v_sec, b_sec, _vi, _ii, _sc = choose_section_pair(
+            top_sections, bed_sections, stretch, bpm=bpm)
     except (KeyError, TypeError):
-        # build_pairings indexes start_sec/end_sec directly. Real rows always
+        # score_section_pair indexes start_sec/end_sec directly. Real rows always
         # have them, but a dataset build sweeps the whole library and one
         # malformed row must not take down the run.
         log.warning("malformed sections while building pair features", exc_info=True)
         return blank
-    if not pairings:
+    if v_sec is None or b_sec is None:
         return blank
-    p = pairings[0]
-
-    # Resolve back to the section rows so we can read energy / vocal_presence,
-    # which build_pairings does not carry.
-    v_sec = next((s for s in top_sections
-                  if _num(s.get("start_sec")) == _num(p.get("vocal_start"))), None)
-    b_sec = next((s for s in bed_sections
-                  if _num(s.get("start_sec")) == _num(p.get("inst_start"))), None)
-
-    v_dur = _num(p.get("vocal_duration"))
-    i_dur = _num(p.get("inst_duration_stretched"))
-
-    return {
-        "top_section_vocal_presence": _num((v_sec or {}).get("vocal_presence")),
-        "hook_energy_delta": abs(_num((v_sec or {}).get("energy"))
-                                 - _num((b_sec or {}).get("energy"))),
-        "duration_fit": duration_fit(v_dur, i_dur),
-        "top_section_count": float(len(top_sections)),
-        "bed_section_count": float(len(bed_sections)),
-    }
+    return _terms_from_sections(v_sec, b_sec, stretch,
+                                len(top_sections), len(bed_sections))
 
 
 def surprise_terms(top: dict, bed: dict) -> dict:
@@ -643,9 +634,16 @@ def build_dataset(name: str = "bbm", neg_ratio: int = 5, seed: int = 42,
             "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM datasets WHERE name=?",
             (name,)).fetchone()
         version = row["v"]
-        file_path = DATASETS_DIR / f"{name}_v{version}.npz"
-        np.savez(file_path, X=X_arr, y=y_arr, groups=groups_arr,
-                 feature_names=np.asarray(FEATURE_NAMES))
+        # CSV, per T2.5. A dataset is the one artifact a human might want to
+        # open: to check the label balance, to sort by a feature and see what
+        # the model is being told, or to load it in anything that is not this
+        # program. An .npz answers none of those without a Python session.
+        file_path = DATASETS_DIR / f"{name}_v{version}.csv"
+        with open(file_path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow([*FEATURE_NAMES, "label", "group"])
+            for row, label, group in zip(X, y, groups):
+                writer.writerow([*row, label, group])
 
         counts = {
             "n_pos_mixes": n_pos_mixes, "n_pos_user": n_pos_user,

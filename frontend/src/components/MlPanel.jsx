@@ -13,6 +13,21 @@ function srcOf(d) {
   return parts.length ? parts.join(" · ") : "—";
 }
 
+// The scorer badge: what the model was trained on, not just its version.
+// "Model v3 · 240 judgments + 17 mixes · AUC 0.78" is a claim; "Model" is a
+// decoration, and invites more trust than it has earned.
+function badgeText(st) {
+  const parts = [`Model ${st.model_version || ""}`.trim()];
+  const trained = [];
+  if (st.n_judgments) trained.push(`${st.n_judgments} judgments`);
+  if (st.n_mixes) trained.push(`${st.n_mixes} mixes`);
+  if (trained.length) parts.push(trained.join(" + "));
+  if (st.auc != null) {
+    parts.push(`AUC ${st.auc}${st.in_sample ? " (in-sample)" : ""}`);
+  }
+  return parts.join(" · ");
+}
+
 // How the AUC beside it was measured. "in-sample" and "GroupKFold over 17
 // mixes" are very different claims and the badge should not blur them.
 function cvOf(m) {
@@ -69,9 +84,7 @@ export function MlPanel() {
           Learned scorer{" "}
           {status && (
             <span className="scorer-badge" style={{ marginLeft: 8 }}>
-              {status.scorer === "model"
-                ? `Model ${status.model_version || ""}${status.auc != null ? ` · AUC ${status.auc}` : ""}`
-                : "Heuristic"}
+              {status.scorer === "model" ? badgeText(status) : "Heuristic"}
             </span>
           )}
         </h3>

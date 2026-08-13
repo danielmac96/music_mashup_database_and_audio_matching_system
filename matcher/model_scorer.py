@@ -97,12 +97,7 @@ def train(dataset_id: int, algo: str = "logreg", db_path: Path = DB_PATH) -> dic
         if not path.exists():
             raise ValueError(f"dataset file missing: {path}")
 
-        data = np.load(path, allow_pickle=True)
-        X = np.asarray(data["X"], dtype=np.float64)
-        y = np.asarray(data["y"], dtype=np.int64)
-        feature_names = [str(n) for n in data["feature_names"].tolist()]
-        groups = ([str(g) for g in data["groups"].tolist()]
-                  if "groups" in data.files else None)
+        X, y, feature_names, groups = _load_dataset(path)
 
         n_pos, n_neg = int((y == 1).sum()), int((y == 0).sum())
         if n_pos < 1 or n_neg < 1:
@@ -390,3 +385,38 @@ def feature_contributions(feats: dict, bundle: dict, top_n: int = 3) -> list:
          "weight": round(float(abs(contrib[i])), 4)}
         for i in order if abs(contrib[i]) > 1e-9
     ]
+
+
+def _load_dataset(path: Path):
+    """(X, y, feature_names, groups) from a dataset artifact.
+
+    CSV is what build_dataset writes now (T2.5). .npz is still read so datasets
+    built before that keep training — a stored artifact is a record of what a
+    model was trained on, and silently refusing to load one would strand it.
+    """
+    import numpy as np
+
+    if path.suffix == ".npz":
+        data = np.load(path, allow_pickle=True)
+        return (np.asarray(data["X"], dtype=np.float64),
+                np.asarray(data["y"], dtype=np.int64),
+                [str(n) for n in data["feature_names"].tolist()],
+                ([str(g) for g in data["groups"].tolist()]
+                 if "groups" in data.files else None))
+
+    import csv
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    if len(rows) < 2:
+        raise ValueError(f"dataset {path.name} has no rows")
+    header = rows[0]
+    if header[-2:] != ["label", "group"]:
+        raise ValueError(f"dataset {path.name} is missing the label/group columns")
+    feature_names = header[:-2]
+    X, y, groups = [], [], []
+    for r in rows[1:]:
+        X.append([float(v) for v in r[:len(feature_names)]])
+        y.append(int(float(r[-2])))
+        groups.append(r[-1])
+    return (np.asarray(X, dtype=np.float64), np.asarray(y, dtype=np.int64),
+            feature_names, groups)

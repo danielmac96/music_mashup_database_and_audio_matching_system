@@ -318,13 +318,20 @@ def test_rejected_pair_is_never_a_positive(seeded):
     assert ds["n_neg_user"] == 1
 
 
+def _read_dataset(path):
+    """The dataset as a list of dicts. T2.5 writes CSV: a human can open it,
+    check the label balance and sort by a feature without a Python session."""
+    import csv
+    with open(path, newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
 def test_judged_pairs_never_sampled_as_negatives(seeded):
     """A pair with a real label must not also be drawn as a random negative.
 
     neg_ratio is set high enough to exhaust the pool, so n_neg_sampled reports
     the pool size exactly: 6×6 − 6 self − 4 documented = 26, and one more comes
     off for the judged pair."""
-    import numpy as np
     from database.models import upsert_pair_feedback
     from matcher.features import build_dataset
     db_path, ids = seeded
@@ -336,22 +343,20 @@ def test_judged_pairs_never_sampled_as_negatives(seeded):
     ds = build_dataset(name="b", neg_ratio=100, seed=1, db_path=db_path)
     assert ds["n_neg_sampled"] == 25
 
-    data = np.load(ds["file_path"], allow_pickle=False)
-    assert len(data["X"]) == len(data["y"]) == ds["n_pos"] + ds["n_neg"]
-    assert data["groups"].shape[0] == len(data["y"])
+    rows = _read_dataset(ds["file_path"])
+    assert len(rows) == ds["n_pos"] + ds["n_neg"]
 
 
 def test_groups_identify_mix_and_user_sources(seeded):
     """GroupKFold needs a group per row: mashups from one mix are not
     independent samples, and neither are the user's own judgments."""
-    import numpy as np
     from database.models import upsert_pair_feedback
     from matcher.features import build_dataset
     db_path, ids = seeded
     upsert_pair_feedback(ids[2], ids[1], "love", db_path=db_path)
 
     ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
-    groups = np.load(ds["file_path"], allow_pickle=False)["groups"]
+    groups = [r["group"] for r in _read_dataset(ds["file_path"])]
     assert any(g.startswith("mix:") for g in groups)
     assert "user" in set(groups)
 
@@ -520,3 +525,41 @@ def test_model_path_widens_the_tempo_gate(seeded):
     to learn. A pair the heuristic rejects on tempo must still reach the model."""
     from config import BPM_MAX_DIFF, BPM_MAX_DIFF_MODEL
     assert BPM_MAX_DIFF_MODEL > BPM_MAX_DIFF
+
+
+def test_dataset_is_csv_with_a_readable_header(seeded):
+    """T2.5 — a dataset is the one artifact a human might want to open."""
+    from matcher.features import FEATURE_NAMES, build_dataset
+    db_path, _ = seeded
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    assert Path(ds["file_path"]).suffix == ".csv"
+    rows = _read_dataset(ds["file_path"])
+    assert list(rows[0].keys()) == [*FEATURE_NAMES, "label", "group"]
+    assert {r["label"] for r in rows} == {"0", "1"}
+
+
+def test_legacy_npz_datasets_still_train(seeded, tmp_path):
+    """A stored artifact is the record of what a model was trained on; silently
+    refusing to load a pre-CSV one would strand it."""
+    import numpy as np
+    from database.models import get_conn
+    from matcher.features import FEATURE_NAMES, build_dataset
+    from matcher.model_scorer import train
+    db_path, _ = seeded
+
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    rows = _read_dataset(ds["file_path"])
+    X = np.array([[float(r[n]) for n in FEATURE_NAMES] for r in rows])
+    y = np.array([int(r["label"]) for r in rows])
+    legacy = tmp_path / "legacy.npz"
+    np.savez(legacy, X=X, y=y, groups=np.asarray([r["group"] for r in rows]),
+             feature_names=np.asarray(FEATURE_NAMES))
+
+    conn = get_conn(db_path)
+    conn.execute("UPDATE datasets SET file_path=? WHERE id=?",
+                 (str(legacy), ds["id"]))
+    conn.commit()
+    conn.close()
+
+    model = train(ds["id"], algo="logreg", db_path=db_path)
+    assert model["id"] and "roc_auc" in model["metrics"]
