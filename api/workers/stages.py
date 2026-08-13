@@ -254,6 +254,16 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         raise StageError("Analysis failed for every stem")
 
     update_song_status(song_id, "analysed")
+
+    # Near-duplicate grouping (A.2). Needs the mean MFCC this stage just wrote,
+    # so it runs here rather than at download. Never fatal: a track without a
+    # cluster is one that might pair with its own Extended Mix, not a failure.
+    try:
+        from matcher.dedup import rebuild_variant_clusters
+        rebuild_variant_clusters()
+    except Exception:  # noqa: BLE001
+        log.exception("variant clustering failed for %s", song_id)
+
     return {"analysed_stems": analysed, "failed_stems": failed}
 
 

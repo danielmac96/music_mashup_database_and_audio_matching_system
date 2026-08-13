@@ -488,6 +488,12 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                           partial
                         </span>
                       )}
+                      {t.variant_count > 1 && (
+                        <span className="badge variant-badge"
+                          title={`${t.variant_count} uploads of this track are in the library (Original / Extended / Radio / remix / re-upload). They are never suggested as a pair with each other — they'd match perfectly on every term without being a mashup.`}>
+                          {t.variant_count} versions
+                        </span>
+                      )}
                     </div>
                   </div>
                 </div>

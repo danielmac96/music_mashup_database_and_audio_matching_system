@@ -304,6 +304,13 @@ _SONGS_OPTIONAL_COLUMNS = (
     ("release_year", "INTEGER DEFAULT 0"),
     ("last_error", "TEXT"),
     ("source", "TEXT DEFAULT ''"),
+    # Near-duplicate grouping (A.2): the smallest song_id among this track's
+    # variants — Original/Extended/Radio/remix/re-upload of the same work.
+    # NULL means no known variant. Pair scoring drops pairs whose two sides
+    # share a non-NULL cluster: they are the same record, so they match
+    # perfectly on every sub-score and would otherwise fill the ranked list.
+    # Computed by matcher.dedup.rebuild_variant_clusters.
+    ("variant_cluster", "INTEGER"),
 )
 
 
@@ -929,7 +936,7 @@ def update_features_manual(song_id: int, *, bpm: Optional[float] = None,
 def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[Dict]:
     conn = get_conn(db_path)
     rows = conn.execute(
-        """SELECT f.*, s.title, s.artist
+        """SELECT f.*, s.title, s.artist, s.variant_cluster
            FROM features f JOIN songs s ON s.id=f.song_id
            WHERE f.stem_type=?""",
         (stem_type,)

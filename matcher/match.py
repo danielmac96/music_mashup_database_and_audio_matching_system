@@ -404,7 +404,7 @@ class _StemBlock:
     table. Doing it once turns the per-pair work into pure array arithmetic."""
 
     __slots__ = ("feats", "song_id", "bpm", "code", "loud_z", "loud_raw",
-                 "mfcc_v", "mfcc_norm", "mfcc_ok")
+                 "mfcc_v", "mfcc_norm", "mfcc_ok", "variant")
 
 
 def _camelot_index(feat_lists) -> tuple:
@@ -437,6 +437,12 @@ def _prepare_block(feats: List[dict], code_index: Dict[str, int],
     b.bpm = np.array([_bpm(f.get("bpm")) for f in feats], dtype=np.float64)
     b.code = np.array([code_index[str(f.get("camelot") or "")] for f in feats],
                       dtype=np.intp)
+
+    # Near-duplicate group (A.2). 0 means "no known variant" — sentinel rather
+    # than NaN so the comparison stays an integer equality, and chosen as 0
+    # because cluster ids are real song_ids and sqlite AUTOINCREMENT starts at 1.
+    b.variant = np.array([int(f.get("variant_cluster") or 0) for f in feats],
+                         dtype=np.int64)
 
     # Energy: the z-score when the library has a reference for this stem kind,
     # otherwise NaN — which selects the raw-ratio fallback, exactly as
@@ -572,6 +578,14 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
         ids_a = top.song_id[rows][:, None]
         ids_b = bed.song_id[None, :]
         keep &= (ids_a < ids_b) if upper_triangle else (ids_a != ids_b)
+
+        # Same work, different upload (Original/Extended/Radio/remix/re-upload).
+        # These agree on every sub-score by construction, so without this they
+        # take the top of the list with pairings that are not mashups. 0 is the
+        # "no known variant" sentinel and must never match itself.
+        va = top.variant[rows][:, None]
+        vb = bed.variant[None, :]
+        keep &= ~((va == vb) & (va > 0))
 
         if keep.any():
             bpm_s = _bpm_score_block(diff)

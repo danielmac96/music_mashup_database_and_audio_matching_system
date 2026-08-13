@@ -553,6 +553,9 @@ input, select { font-family: inherit; }
 .badge.completed { background: rgba(46,204,113,.15); color: var(--green); }
 .badge.failed    { background: rgba(248,113,113,.15); color: var(--red); }
 .badge.metadata-partial { background: rgba(245,166,35,.15); color: var(--amber-light); font-size: 0.62rem; }
+/* Near-duplicate uploads of the same work (A.2) — informational, not a warning:
+   the pairs are already suppressed, this just explains why. */
+.badge.variant-badge { background: rgba(120,144,180,.16); color: var(--text-dim, #9aa7bd); font-size: 0.62rem; }
 
 .progress-bar {
   margin-top: 6px;

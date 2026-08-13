@@ -105,6 +105,15 @@ def list_tracks() -> dict:
     features_inst   = _features_by_song("instrumental")
     section_counts  = _section_counts_by_song()
 
+    # How many uploads of the same work each track has (A.2). Sent as a count
+    # rather than the raw cluster id so the UI can say "3 versions" without a
+    # second request.
+    variant_sizes: dict = {}
+    for s in songs:
+        cid = s.get("variant_cluster")
+        if cid:
+            variant_sizes[cid] = variant_sizes.get(cid, 0) + 1
+
     rows = []
     for s in songs:
         sid = s["id"]
@@ -129,6 +138,7 @@ def list_tracks() -> dict:
             },
             "features": feats or None,
             "section_count": section_counts.get(sid, 0),
+            "variant_count": variant_sizes.get(s.get("variant_cluster"), 0),
         })
     return {"count": len(rows), "tracks": rows}
 
