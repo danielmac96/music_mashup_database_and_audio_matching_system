@@ -29,7 +29,10 @@ RENDER_SR = 44100
 MAX_RENDER_SECS = 900.0   # 15 min safety cap so a runaway render can't fill the disk
 MAX_CLIPS = 16
 
-STEM_TYPES = {"full", "vocals", "instrumental"}
+# Playable stems. drums/bass/other exist only when the track was separated in
+# four-stem mode (Phase D); resolve_stem_path returns None otherwise, and the
+# caller reports a fixable reason.
+STEM_TYPES = {"full", "vocals", "instrumental", "drums", "bass", "other"}
 
 # Tokens land in filenames, so refuse anything but plain hex.
 TOKEN_RE = re.compile(r"^[0-9a-f]{8,64}$")
