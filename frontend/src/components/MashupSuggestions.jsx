@@ -147,6 +147,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   // constraint rather than a taste one, and it is the chip most worth reaching
   // for on a day with no patience for beatgridding.
   const [freeOnly, setFreeOnly] = useState(false);
+  // Phase F — Safe ↔ Adventurous. Every sub-score rewards sameness, so the top
+  // of the list drifts towards same-genre, same-era, same-production pairs.
+  // This trades that against contrast, without ever relaxing a technical gate.
+  const [adventure, setAdventure] = useState(0);
   const [filterOpts, setFilterOpts] = useState(null);
 
   // ── T1.7 triage: highlighted row, verdicts, shortlist, shortcut legend ────
@@ -175,7 +179,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
 
   const refresh = async (type = comboType, activeSeed = seed, min = minMatch,
                         cap = maxPerSong, group = grouped, f = filters,
-                        free = freeOnly, sort = sortMode) => {
+                        free = freeOnly, sort = sortMode, adv = adventure) => {
     setLoading(true);
     setError(null);
     try {
@@ -191,6 +195,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                      maxPerSong: cap, ...f };
       if (free) opts.maxEffort = FREE_BUILD_MAX_EFFORT;
       if (sort === "Uncertain") opts.order = "uncertain";
+      if (adv > 0) opts.adventure = adv;
       if (activeSeed?.songId != null) {
         if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
         else opts.vocalSongId = activeSeed.songId;
@@ -560,6 +565,19 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
         )}
         {!grouped && (
           <>
+            <div className={`chip${adventure > 0 ? " active" : ""}`}
+              title="Safe = the best technical fit first. Adventurous = favour cross-genre and cross-era pairs among the ones that already fit. It never surfaces a pair that does not work; it decides which of the working ones you see first.">
+              <span className="k">Adventurous</span>
+              <input type="range" min={0} max={100} step={25}
+                value={adventure * 100}
+                style={{ width: 64, verticalAlign: "middle" }}
+                onChange={(e) => {
+                  const n = Number(e.target.value) / 100;
+                  setAdventure(n);
+                  refresh(comboType, seed, minMatch, maxPerSong, grouped,
+                          filters, freeOnly, sortMode, n);
+                }} />
+            </div>
             <div className={`chip${freeOnly ? " active" : ""}`}
               onClick={() => { const n = !freeOnly; setFreeOnly(n);
                                refresh(comboType, seed, minMatch, maxPerSong,

@@ -171,6 +171,9 @@ export const api = {
     // Phase F — "score" (best first) or "uncertain" (the model's blind spots,
     // where a verdict buys the most information per keypress).
     order = "score",
+    // Phase F — 0 = safest fit first, 1 = most adventurous. Only reorders pairs
+    // that already cleared every technical gate; it never surfaces a bad fit.
+    adventure = 0,
   } = {}) => {
     const params = new URLSearchParams();
     if (comboType) params.set("combo_type", comboType);
@@ -181,6 +184,7 @@ export const api = {
     params.set("max_per_song", String(maxPerSong));
     if (maxEffort != null) params.set("max_effort", String(maxEffort));
     if (order && order !== "score") params.set("order", order);
+    if (adventure > 0) params.set("adventure", String(adventure));
     if (genre) params.set("genre", genre);
     if (era) params.set("era", era);
     if (energy) params.set("energy", energy);

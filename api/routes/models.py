@@ -30,6 +30,10 @@ def _row_out(r) -> dict:
         metrics = {}
     # Trainer records ROC-AUC under 'roc_auc'; keep the legacy 'auc' as a fallback.
     d["auc"] = metrics.get("roc_auc", metrics.get("auc"))
+    # The full metrics go out too, so the panel can say HOW the AUC was
+    # measured. "in-sample" and "GroupKFold over 17 mixes" are very different
+    # claims and a bare number blurs them.
+    d["metrics"] = metrics
     d["active"] = bool(d.get("active"))
     return d
 

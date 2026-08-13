@@ -111,7 +111,8 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     genre: str = "", era: str = "", energy: str = "",
                     bpm_band: str = "", vocal_forward: bool = False,
                     max_effort: Optional[float] = None,
-                    order: str = "score") -> dict:
+                    order: str = "score",
+                    adventure: float = 0.0) -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -130,6 +131,9 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     if order not in ("score", "uncertain"):
         raise HTTPException(status_code=400,
                             detail="order must be score|uncertain")
+    if not (0.0 <= adventure <= 1.0):
+        raise HTTPException(status_code=400,
+                            detail="adventure must be in [0, 1]")
     for value, allowed, name in ((era, ERA_BANDS, "era"),
                                  (energy, ENERGY_BANDS, "energy"),
                                  (bpm_band, BPM_BANDS, "bpm_band")):
@@ -145,9 +149,12 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         genre=genre, era=era, energy=energy, bpm_band=bpm_band,
         vocal_forward=vocal_forward, max_effort=max_effort, order=order,
     )
-    return {"count": len(rows), "candidates": _with_reasons(
-                _with_playback_terms(rows)),
-            "max_per_song": max_per_song, "order": order}
+    rows = _with_reasons(_with_playback_terms(rows))
+    if adventure > 0 and order == "score":
+        rows = _reorder_by_surprise(rows, adventure)
+    return {"count": len(rows), "candidates": rows,
+            "max_per_song": max_per_song, "order": order,
+            "adventure": adventure}
 
 
 @router.get("/filters")
@@ -387,4 +394,30 @@ def _with_reasons(rows: list) -> list:
     except Exception:  # noqa: BLE001 — an explanation is a nicety, never a 500
         import logging
         logging.getLogger(__name__).warning("reasons failed", exc_info=True)
+    return rows
+
+
+def _reorder_by_surprise(rows: list, adventure: float) -> list:
+    """Trade compatibility against contrast, under the user's control (F.4).
+
+    Every sub-score rewards sameness, so the top of the list drifts towards the
+    safest possible output: same genre, same era, same production. This blends
+    a surprise term back in — cross-genre, cross-era distance — but ONLY as a
+    reordering of pairs that already cleared every technical gate. It cannot
+    surface a pair that does not fit; it decides which of the fitting ones you
+    see first.
+    """
+    from matcher.features import surprise_terms
+
+    for r in rows:
+        s = surprise_terms(
+            {"genre": r.get("vocal_genre"), "release_year": r.get("vocal_year")},
+            {"genre": r.get("inst_genre"), "release_year": r.get("inst_year")})
+        # Timbre distance is already on the row as its similarity score.
+        surprise = (s["surprise_genre"] + s["surprise_era"]
+                    + (1.0 - (r.get("score_timbre") or 0.5))) / 3.0
+        r["surprise"] = round(float(surprise), 4)
+        r["_rank"] = ((1.0 - adventure) * (r.get("score_total") or 0.0)
+                      + adventure * surprise)
+    rows.sort(key=lambda r: r.pop("_rank", 0.0), reverse=True)
     return rows

@@ -21,10 +21,25 @@ router = APIRouter()
 
 @router.get("")
 def list_datasets() -> dict:
+    import json
+
     conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT id, name, version, n_pos, n_neg, neg_strategy, file_path, created_at "
-        "FROM datasets ORDER BY id DESC").fetchall()]
+    rows = []
+    for r in conn.execute(
+            "SELECT id, name, version, n_pos, n_neg, neg_strategy, config_json, "
+            "file_path, created_at FROM datasets ORDER BY id DESC").fetchall():
+        d = dict(r)
+        # Flatten the per-source counts (A.1) onto the row: how many positives
+        # came from documented mixes versus the user's own verdicts, and how
+        # many negatives were rejected by ear rather than sampled at random.
+        try:
+            cfg = json.loads(d.pop("config_json", None) or "{}")
+        except ValueError:
+            cfg = {}
+        for k in ("n_pos_mixes", "n_pos_user", "n_neg_user", "n_neg_sampled",
+                  "n_groups"):
+            d[k] = cfg.get(k)
+        rows.append(d)
     conn.close()
     return {"count": len(rows), "datasets": rows}
 
