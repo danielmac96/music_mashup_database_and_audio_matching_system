@@ -229,3 +229,54 @@ def get_plan(vocal_id: int, inst_id: int) -> dict:
     if plan is None:
         raise HTTPException(status_code=404, detail="song not found")
     return plan
+
+
+# ── Batch FL session export (B.3) ─────────────────────────────────────────────
+
+class BatchSessionRequest(BaseModel):
+    """Export the top N of the *currently filtered* list.
+
+    The filters are passed through rather than a list of ids so the export
+    matches what the user is looking at — including the diversity cap, which is
+    applied in Python after the SQL and so cannot be reproduced client-side.
+    """
+    top_n: int = 10
+    combo_type: str = "vocal_over_instrumental"
+    min_score: float = 0.0
+    max_per_song: int = 3
+    genre: str = ""
+    era: str = ""
+    energy: str = ""
+    bpm_band: str = ""
+    vocal_forward: bool = False
+
+
+@router.post("/session/batch")
+def queue_session_batch(req: BatchSessionRequest,
+                        background: BackgroundTasks) -> dict:
+    from api.workers import session_worker
+    from render.session import MAX_SESSIONS
+
+    if req.combo_type not in _COMBO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
+    top_n = max(1, min(req.top_n, MAX_SESSIONS))
+
+    rows = get_candidates_enriched(
+        combo_type=req.combo_type, min_score=req.min_score, limit=top_n,
+        max_per_song=req.max_per_song, genre=req.genre, era=req.era,
+        energy=req.energy, bpm_band=req.bpm_band,
+        vocal_forward=req.vocal_forward,
+    )
+    if not rows:
+        raise HTTPException(status_code=404,
+                            detail="no candidates match those filters")
+
+    pairs = [{"vocal_song_id": r["vocal_song_id"],
+              "inst_song_id": r["inst_song_id"]} for r in rows]
+    job_id = jobs.new_job(kind="session",
+                          message=f"Queued {len(pairs)} FL session exports")
+    background.add_task(session_worker.run_batch, job_id, pairs)
+    return {"job_id": job_id, "pair_count": len(pairs),
+            "archive_url": f"/api/studio/session/{job_id}/archive"}

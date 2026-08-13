@@ -22,6 +22,9 @@ const SORTS = ["Score", "Popularity"];
 // How many rows any one song may occupy. 0 = uncapped, which is what the list
 // did before T3.4 — and why a single 128 BPM 8A vocal could hold 40 of 50 rows.
 const PER_SONG_CAPS = [3, 2, 1, 0];
+// Rows exported per "Export top N" click. Each session is two phase-vocoder
+// passes over a full section, so this is a few minutes of CPU, not an afternoon.
+const BATCH_EXPORT_N = 10;
 const popOf = (c) => (c.vocal_popularity || 0) + (c.inst_popularity || 0);
 
 // Key drives 30% of the score and the suggested pitch shift, so an unreliable
@@ -112,6 +115,8 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [scoreJobId, setScoreJobId] = useState(null);
+  const [batchJobId, setBatchJobId] = useState(null);
+  const [batchToken, setBatchToken] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [scorer, setScorer] = useState(null); // { scorer, model_version, auc }
   // ── T3.4 diversity: one 128 BPM 8A vocal otherwise owns the whole page ────
@@ -197,6 +202,30 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     if (!c) return `#${seed.songId}`;
     return seed.role === "instrumental" ? c.inst_title : c.vocal_title;
   }, [seed, candidates]);
+
+  // Export the top rows as FL session folders. The filters go to the server
+  // rather than a list of ids so the export matches what is on screen —
+  // including the diversity cap, which is applied after the SQL.
+  const exportTopSessions = async () => {
+    try {
+      const { job_id, pair_count } = await api.startBatchSessionExport({
+        top_n: BATCH_EXPORT_N,
+        combo_type: comboType,
+        min_score: minMatch / 100,
+        max_per_song: maxPerSong,
+        genre: filters.genre || "",
+        era: filters.era || "",
+        energy: filters.energy || "",
+        bpm_band: filters.bpmBand || "",
+        vocal_forward: !!filters.vocalForward,
+      });
+      setBatchToken(null);
+      setBatchJobId(job_id);
+      toast(`Exporting ${pair_count} FL session${pair_count === 1 ? "" : "s"}…`);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
 
   const startScoring = async () => {
     try {
@@ -540,6 +569,22 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
           title="Keyboard shortcuts for judging by ear">
           <span className="k">Keys</span><span className="mono">?</span>
         </div>
+        {batchJobId ? (
+          <JobBadge jobId={batchJobId} onComplete={(job) => {
+            setBatchJobId(null);
+            if (job.status === "completed") setBatchToken(job.id);
+          }} />
+        ) : batchToken ? (
+          <a className="btn" href={api.sessionArchiveUrl(batchToken)}
+            target="_blank" rel="noreferrer"
+            onClick={() => setBatchToken(null)}>↓ download sessions</a>
+        ) : (
+          <button className="btn" onClick={exportTopSessions}
+            disabled={candidates.length === 0}
+            title="Export the top rows of this list as FL session folders: both stems conformed to the target tempo and key, trimmed to the chosen sections, aligned so bar 1 is at 0:00. Drop into FL at 0:00 with no nudging.">
+            ↓ Export top {Math.min(BATCH_EXPORT_N, candidates.length)}
+          </button>
+        )}
         {scoreJobId ? (
           <JobBadge jobId={scoreJobId} onComplete={() => { setScoreJobId(null); refresh(); }} />
         ) : (

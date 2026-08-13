@@ -231,6 +231,27 @@ export const api = {
 
   mixdownAudioUrl: (token) => `/api/studio/mixdown/${token}/audio`,
 
+  // Export a mashup as an FL Studio session folder: both stems conformed to the
+  // target tempo and key and padded so bar 1 is at 0:00, plus a click, the
+  // recipe, and a session.json in the mixdown clip shape. A mixdown is a bounce;
+  // this is something you can actually mix.
+  startSessionExport: (vocalSongId, instSongId) =>
+    jsonFetch("/api/studio/session", {
+      method: "POST",
+      body: JSON.stringify({ vocal_song_id: vocalSongId, inst_song_id: instSongId }),
+    }),
+
+  // The same, for the top N of the currently filtered ranked list. Filters go to
+  // the server rather than a list of ids so the export matches what is on
+  // screen — including the diversity cap, which is applied after the SQL.
+  startBatchSessionExport: (opts = {}) =>
+    jsonFetch("/api/mashups/session/batch", {
+      method: "POST",
+      body: JSON.stringify(opts),
+    }),
+
+  sessionArchiveUrl: (token) => `/api/studio/session/${token}/archive`,
+
   // The Audition tab's export used to live here as startAuditionExport — a
   // fixed two-clip wrapper over this same endpoint, with its own duplicate of
   // mixdownAudioUrl. It went with the tab (T4.1): one arranger, one export
