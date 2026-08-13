@@ -276,6 +276,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
         _migrate_songs_columns(conn)
         _migrate_features_columns(conn)
         _migrate_candidates_columns(conn)
+        _migrate_sections_columns(conn)
         _migrate_stems_columns(conn)
         _migrate_mixtracks_columns(conn)
         _migrate_mashuppairs_columns(conn)
@@ -431,6 +432,13 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     # against a slightly better match. score_effort discounts score_total; the
     # components are stored so the UI can name the dominant cost.
     ("score_collision", "REAL"),   # spectral complementarity (Phase D)
+    # Phase E — the MEASURED transpose and how much to trust it, from
+    # cross-correlating the two chosen sections' chroma. NULL when either
+    # section has no stored chroma, in which case score_key is still the
+    # Camelot lookup and the plan falls back to the derived shift.
+    ("harmonic_shift", "INTEGER"),
+    ("harmonic_confidence", "REAL"),
+    ("bass_clash", "INTEGER"),
     ("score_effort", "REAL"),
     ("effort_stretch", "REAL"),
     ("effort_pitch", "REAL"),
@@ -444,6 +452,31 @@ EFFORT_COLUMNS = (
     "score_effort", "effort_stretch", "effort_pitch",
     "effort_tempo_fold", "effort_grid", "effort_key_certainty",
 )
+
+# Phase E harmony columns, in the order candidate_row binds them.
+HARMONY_COLUMNS = ("harmonic_shift", "harmonic_confidence", "bass_clash")
+
+
+# Phase E — per-section harmonic data. structure.py already computes a
+# beat-synchronous chroma and then uses it only to count repeats; persisting it
+# is what lets a pair be judged on the harmony of the two SECTIONS that will
+# actually be layered rather than on a whole-track Camelot lookup.
+_SECTIONS_OPTIONAL_COLUMNS = (
+    ("chroma_json", "TEXT"),        # 12 bins, L2-normalised, from the full mix
+    ("bass_chroma_json", "TEXT"),   # same, band-passed 40-250 Hz
+    ("key", "TEXT"),
+    ("mode", "TEXT"),
+    ("camelot", "TEXT"),
+    ("key_confidence", "REAL"),
+)
+
+
+def _migrate_sections_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute(
+        "PRAGMA table_info(sections)").fetchall()}
+    for col, decl in _SECTIONS_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE sections ADD COLUMN {col} {decl}")
 
 
 def _migrate_candidates_columns(conn: sqlite3.Connection) -> None:
@@ -1029,8 +1062,10 @@ def replace_sections(song_id: int, sections: List[Dict],
     conn.executemany(
         """INSERT INTO sections
                (song_id, section_index, start_sec, end_sec, label,
-                energy, vocal_presence, repetition, confidence)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+                energy, vocal_presence, repetition, confidence,
+                chroma_json, bass_chroma_json, key, mode, camelot,
+                key_confidence)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 song_id, idx,
@@ -1038,6 +1073,10 @@ def replace_sections(song_id: int, sections: List[Dict],
                 s.get("label", ""),
                 s.get("energy"), s.get("vocal_presence"),
                 int(s.get("repetition", 1)), s.get("confidence"),
+                json.dumps(s["chroma"]) if s.get("chroma") else None,
+                json.dumps(s["bass_chroma"]) if s.get("bass_chroma") else None,
+                s.get("key"), s.get("mode"), s.get("camelot"),
+                s.get("key_confidence"),
             )
             for idx, s in enumerate(sections)
         ],
@@ -1053,7 +1092,19 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
         (song_id,),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        # Decode the Phase E chroma columns the same way features does, so
+        # callers never see a JSON string where a vector is expected.
+        for src, dest in (("chroma_json", "chroma"),
+                          ("bass_chroma_json", "bass_chroma")):
+            if d.get(src):
+                d[dest] = json.loads(d.pop(src))
+            else:
+                d.pop(src, None)
+        out.append(d)
+    return out
 
 
 def upsert_candidate(vocal: dict, inst: dict, scores: dict,
@@ -1090,9 +1141,10 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        inst_section_start, inst_section_end, score_section,
        score_effort, effort_stretch, effort_pitch,
        effort_tempo_fold, effort_grid, effort_key_certainty,
+       harmonic_shift, harmonic_confidence, bass_clash,
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
        score_total=excluded.score_total,
        vocal_section_idx=excluded.vocal_section_idx,
@@ -1108,6 +1160,9 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        effort_tempo_fold=excluded.effort_tempo_fold,
        effort_grid=excluded.effort_grid,
        effort_key_certainty=excluded.effort_key_certainty,
+       harmonic_shift=excluded.harmonic_shift,
+       harmonic_confidence=excluded.harmonic_confidence,
+       bass_clash=excluded.bass_clash,
        score_bpm=excluded.score_bpm,
        score_key=excluded.score_key,
        score_energy=excluded.score_energy,
@@ -1164,6 +1219,7 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
         scores.get("collision_score"), scorer, model_version,
         *(sp.get(col) for col in SECTION_PAIR_COLUMNS),
         *(scores.get(col) for col in EFFORT_COLUMNS),
+        *(scores.get(col) for col in HARMONY_COLUMNS),
     )
 
 

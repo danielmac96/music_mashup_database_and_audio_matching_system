@@ -935,13 +935,18 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         if not v_use or not i_use:
             return None
         stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
-        return best_section_pair(v_use, i_use, stretch, prefiltered=True)
+        # The vocal sets the target tempo, so bars are counted at its BPM.
+        return best_section_pair(v_use, i_use, stretch, prefiltered=True,
+                                 bpm=top.get("bpm"))
 
     def _emit(pairs, combo_type, row_scorer, row_version, with_sections=False):
         nonlocal scored
         out = results[combo_type]
         for top, bed, scores in pairs:
             section_pair = _section_pair(top, bed) if with_sections else None
+            if section_pair is not None:
+                _apply_measured_harmony(top, bed, scores, section_pair,
+                                        _sections, MATCH_WEIGHTS, EFFORT_WEIGHT)
             rows.append(candidate_row(top, bed, scores, combo_type,
                                       row_scorer, row_version, section_pair))
             out.append(_build_row(top, bed, scores, section_pair))
@@ -1334,3 +1339,40 @@ def prep_fl_session(db_path=None, output_dir: str = "fl_session",
         created += 1
 
     log.info(f"  FL session folders created: {created}  →  {out.resolve()}")
+
+def _apply_measured_harmony(top: dict, bed: dict, scores: dict,
+                            section_pair: dict, sections_of,
+                            weights: Dict, effort_weight: float) -> None:
+    """Replace the Camelot key_score with the MEASURED harmonic fit (Phase E).
+
+    The block scorer works on whole-track Camelot codes because that is what
+    vectorises. Once the winning section pair is known, the two sections'
+    stored chroma give a better answer to the same question: not "are these
+    scales compatible" but "do these notes agree, and at what transposition".
+
+    Mutates `scores` in place — key_score, the total, and the harmony fields the
+    row carries — and does nothing at all when either section has no chroma, so
+    a library analysed before Phase E ranks exactly as before.
+    """
+    from matcher.harmony import section_harmony
+
+    v_idx = section_pair.get("vocal_section_idx")
+    b_idx = section_pair.get("inst_section_idx")
+    if v_idx is None or b_idx is None:
+        return
+    v_sec = next((s for s in sections_of(top["song_id"])
+                  if s.get("section_index") == v_idx), None)
+    b_sec = next((s for s in sections_of(bed["song_id"])
+                  if s.get("section_index") == b_idx), None)
+    h = section_harmony(v_sec, b_sec)
+    if not h["known"]:
+        return
+
+    scores["key_score"] = h["harmonic_fit"]
+    scores["harmonic_shift"] = h["shift"]
+    scores["harmonic_confidence"] = round(h["confidence"], 4)
+    scores["bass_clash"] = 1 if h["bass_clash"] else 0
+
+    fit = sum(scores[k] * weights.get(k, 0) for k in weights)
+    effort = scores.get("score_effort") or 0.0
+    scores["total"] = round(fit * (1.0 - effort_weight * effort), 4)

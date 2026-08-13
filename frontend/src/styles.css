@@ -697,6 +697,9 @@ input, select { font-family: inherit; }
 .rel-chip.bpm { color: var(--cyan-light); background: rgba(56, 189, 248, 0.12); }
 /* Effort (Phase C) — what the pair COSTS to build, next to how well it fits.
    Green reads "drag it in and go"; amber "some work"; red "this will hurt". */
+/* Phase E — the measured transpose, and the bass clash that a high-pass fixes. */
+.rel-chip.harmony    { color: var(--violet, #a78bfa); background: rgba(167,139,250,0.12); }
+.rel-chip.bass-clash { color: var(--amber-light); background: rgba(245,166,35,0.16); }
 .rel-chip.effort.free  { color: var(--green);  background: rgba(52, 211, 153, 0.12); }
 .rel-chip.effort.light { color: var(--amber-light); background: rgba(245, 166, 35, 0.12); }
 .rel-chip.effort.heavy { color: var(--red, #f87171); background: rgba(248, 113, 113, 0.12); }

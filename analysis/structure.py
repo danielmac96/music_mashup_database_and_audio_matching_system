@@ -235,6 +235,32 @@ def _frame_rms(y: np.ndarray) -> np.ndarray:
     return librosa.feature.rms(y=y, hop_length=HOP_LENGTH)[0]
 
 
+# Bass region for the second chroma. Below ~40 Hz is mostly rumble; above
+# ~250 Hz the bassline stops being separable from the rest of the arrangement.
+BASS_LOW_HZ = 40.0
+BASS_HIGH_HZ = 250.0
+
+
+def _bandpass(y: np.ndarray, sr: int, low: float, high: float) -> np.ndarray:
+    """Fourth-order Butterworth band-pass. scipy only, so this stays testable
+    without touching the audio stack twice."""
+    from scipy.signal import butter, sosfiltfilt
+    nyq = sr / 2.0
+    sos = butter(4, [max(low / nyq, 1e-4), min(high / nyq, 0.99)],
+                 btype="band", output="sos")
+    return sosfiltfilt(sos, y).astype(np.float32)
+
+
+def _norm_chroma(vec: np.ndarray) -> list:
+    """L2-normalised 12-bin chroma, rounded for compact JSON. Normalising here
+    means every consumer compares shape rather than loudness."""
+    v = np.asarray(vec, dtype=float)
+    n = float(np.linalg.norm(v))
+    if not np.isfinite(n) or n < 1e-12:
+        return [0.0] * 12
+    return [round(float(x), 6) for x in (v / n)]
+
+
 def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
                     on_progress: ProgressCb = None) -> List[dict]:
     """Analyse the full mix (and the vocal stem when available) and return an
@@ -273,6 +299,19 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=HOP_LENGTH)
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, hop_length=HOP_LENGTH)
     rms = _frame_rms(y)
+
+    # Phase E: a second chroma over the bass region only. Root clash in the low
+    # end is the most common reason a "key-compatible" mashup sounds wrong, and
+    # it is invisible to a full-spectrum chroma dominated by pads and hi-hats.
+    bass_chroma_b = None
+    try:
+        y_bass = _bandpass(y, sr, BASS_LOW_HZ, BASS_HIGH_HZ)
+        bass_chroma = librosa.feature.chroma_cqt(y=y_bass, sr=sr,
+                                                 hop_length=HOP_LENGTH)
+        bass_chroma_b = librosa.util.sync(bass_chroma, beats, aggregate=np.median)
+    except Exception:  # noqa: BLE001
+        log.warning("  bass chroma failed; sections keep the full-mix chroma only",
+                    exc_info=True)
 
     chroma_b = librosa.util.sync(chroma, beats, aggregate=np.median)
     mfcc_b = librosa.util.sync(mfcc, beats, aggregate=np.mean)
@@ -344,14 +383,26 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
             if len(seg_v):
                 vp = float(np.clip(seg_v.mean() / (v_scale + 1e-9), 0, 1))
 
-        chroma_means.append(chroma_b[:, a:b].mean(axis=1))
-        segs.append({
+        seg_chroma = chroma_b[:, a:b].mean(axis=1)
+        chroma_means.append(seg_chroma)
+
+        # Persist the section's own harmony. The whole-track key is an average,
+        # and an average over a record that modulates describes a moment that
+        # never occurs — least of all the chorus you actually want to layer.
+        from analysis.analyze import key_from_chroma
+        section_key = key_from_chroma(seg_chroma)
+        seg = {
             "start_sec": round(start_t, 2),
             "end_sec": round(end_t, 2),
             "energy": round(energy, 4),
             "vocal_presence": round(vp, 4) if vp is not None else None,
             "phrase_aligned": phrase_aligned,
-        })
+            "chroma": _norm_chroma(seg_chroma),
+            **section_key,
+        }
+        if bass_chroma_b is not None:
+            seg["bass_chroma"] = _norm_chroma(bass_chroma_b[:, a:b].mean(axis=1))
+        segs.append(seg)
     # Extend the last section to the true end of the audio.
     segs[-1]["end_sec"] = round(duration, 2)
 

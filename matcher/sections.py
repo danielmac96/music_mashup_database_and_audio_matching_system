@@ -63,7 +63,62 @@ def duration_fit(vocal_secs: float, inst_secs_stretched: float) -> float:
     return min(vocal_secs, inst_secs_stretched) / max(vocal_secs, inst_secs_stretched)
 
 
-def score_section_pair(vocal: Dict, inst: Dict, stretch: float) -> float:
+# Pop and EDM are written in 8- and 16-bar phrases, and structure.py already
+# snaps boundaries to that grid. Measuring the fit in BARS rather than seconds
+# is what turns "0.5" into "loop the drop x2" — a 32-bar vocal over a 16-bar
+# drop is a specific, fixable arrangement, not a half-marks penalty.
+BEATS_PER_BAR = 4
+MAX_LOOP_REPEATS = 4
+
+
+def bars_in(seconds: float, bpm: Optional[float]) -> Optional[float]:
+    """How many bars `seconds` is at `bpm`, or None when the tempo is unknown."""
+    try:
+        b = float(bpm or 0)
+    except (TypeError, ValueError):
+        return None
+    if b <= 0 or seconds <= 0:
+        return None
+    return seconds / (BEATS_PER_BAR * 60.0 / b)
+
+
+def phrase_fit(vocal_secs: float, inst_secs_stretched: float,
+               bpm: Optional[float]) -> Dict:
+    """Duration fit measured in bars, allowing for looping the shorter side.
+
+    Returns {fit, vocal_bars, bed_bars, repeats, note}. `repeats` is how many
+    times the bed is looped to cover the vocal; the fit is then how well the
+    looped bed lines up, so a 32-over-16 pair scores as the clean 2x loop it is
+    rather than as a 0.5 mismatch.
+
+    Falls back to the seconds-based duration_fit when the tempo is unknown, so
+    a track whose tempo step failed still gets a usable number.
+    """
+    v_bars = bars_in(vocal_secs, bpm)
+    b_bars = bars_in(inst_secs_stretched, bpm)
+    if v_bars is None or b_bars is None:
+        return {"fit": duration_fit(vocal_secs, inst_secs_stretched),
+                "vocal_bars": None, "bed_bars": None, "repeats": 1, "note": None}
+
+    best_fit, best_reps = 0.0, 1
+    for reps in range(1, MAX_LOOP_REPEATS + 1):
+        covered = b_bars * reps
+        fit = min(v_bars, covered) / max(v_bars, covered)
+        if fit > best_fit:
+            best_fit, best_reps = fit, reps
+        if covered >= v_bars:
+            break
+
+    note = None
+    if best_reps > 1:
+        note = (f"loop the bed section x{best_reps} to cover "
+                f"{v_bars:.0f} bars of vocal")
+    return {"fit": round(best_fit, 4), "vocal_bars": round(v_bars, 2),
+            "bed_bars": round(b_bars, 2), "repeats": best_reps, "note": note}
+
+
+def score_section_pair(vocal: Dict, inst: Dict, stretch: float,
+                       bpm: Optional[float] = None) -> float:
     """Fit of one (vocal section, bed section) pair, 0-1.
 
     `stretch` is the factor the bed is played at to reach the vocal's tempo
@@ -79,8 +134,11 @@ def score_section_pair(vocal: Dict, inst: Dict, stretch: float) -> float:
     # against it, so it scores neutral rather than zero.
     vp = vocal.get("vocal_presence")
     voice = 0.5 if vp is None else float(vp)
+    # Bars, not seconds, when the tempo is known: looping the bed is a normal
+    # move, and charging full price for it hides good pairs.
+    fit = phrase_fit(v_dur, i_dur, bpm)["fit"] if bpm else duration_fit(v_dur, i_dur)
     return (W_LABEL * label
-            + W_DURATION * duration_fit(v_dur, i_dur)
+            + W_DURATION * fit
             + W_VOCAL * min(max(voice, 0.0), 1.0))
 
 
@@ -102,7 +160,8 @@ def _index_of(section: Dict, fallback: int) -> int:
 
 def best_section_pair(vocal_sections: List[Dict], inst_sections: List[Dict],
                       stretch: float = 1.0,
-                      prefiltered: bool = False) -> Optional[Dict]:
+                      prefiltered: bool = False,
+                      bpm: Optional[float] = None) -> Optional[Dict]:
     """The (vocal section × bed section) pair with the best fit, or None.
 
     Pass `prefiltered=True` when the two lists already came from
@@ -118,7 +177,7 @@ def best_section_pair(vocal_sections: List[Dict], inst_sections: List[Dict],
     best_score = -1.0
     for vi, v in enumerate(v_use):
         for ii, i in enumerate(i_use):
-            s = score_section_pair(v, i, stretch)
+            s = score_section_pair(v, i, stretch, bpm)
             # Strictly greater: the lists arrive in priority order, so a tie
             # keeps the more-wanted labels and higher energy.
             if s > best_score:
@@ -138,4 +197,12 @@ def best_section_pair(vocal_sections: List[Dict], inst_sections: List[Dict],
         "vocal_section_label": v.get("label"),
         "inst_section_label": i.get("label"),
         "score_section": round(best_score, 4),
+        **({k: v for k, v in (
+            ("section_bars_vocal", _pf.get("vocal_bars")),
+            ("section_bars_bed", _pf.get("bed_bars")),
+            ("section_loop_repeats", _pf.get("repeats")),
+        )} if (_pf := phrase_fit(
+            float(v.get("end_sec") or 0) - float(v.get("start_sec") or 0),
+            (float(i.get("end_sec") or 0) - float(i.get("start_sec") or 0))
+            / max(float(stretch or 1.0), 1e-6), bpm)) else {}),
     }

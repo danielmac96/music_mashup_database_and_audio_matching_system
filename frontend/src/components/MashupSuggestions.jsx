@@ -61,6 +61,15 @@ function PlanDetails({ vocalId, instId, candidate }) {
           {" · timbre "}{pc(sc.score_timbre)}
         </div>
       )}
+      {plan.harmony && (
+        <div className="raw-scores mono"
+          title="Measured from the two sections' chroma rather than the Camelot wheel">
+          harmony <b>{pc(plan.harmony.harmonic_fit)}</b>
+          {" · shift "}{plan.harmony.shift >= 0 ? "+" : ""}{plan.harmony.shift} st
+          {" · confidence "}{pc(plan.harmony.confidence)}
+          {plan.harmony.advice ? ` · ${plan.harmony.advice}` : ""}
+        </div>
+      )}
       {sc.score_section != null && (
         <div className="raw-scores mono"
           title="The section pair this candidate was chosen for — what the preview plays">
@@ -729,6 +738,18 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                     <div className="relation-chips">
                       <span className="rel-chip" style={{ color: kr.tagColor, background: kr.tagBg }}>{kr.tag}</span>
                       <span className="rel-chip bpm">{bpmTag(c.vocal_bpm, c.inst_bpm)}</span>
+                      {c.harmonic_confidence != null && (
+                        <span className="rel-chip harmony"
+                          title={`Harmonic fit measured by cross-correlating the two sections' chroma over all 12 transpositions — not inferred from the Camelot wheel. Recommended shift ${c.harmonic_shift >= 0 ? "+" : ""}${c.harmonic_shift} st, confidence ${(c.harmonic_confidence * 100).toFixed(0)}%.`}>
+                          ♪ {c.harmonic_shift >= 0 ? "+" : ""}{c.harmonic_shift}
+                        </span>
+                      )}
+                      {!!c.bass_clash && (
+                        <span className="rel-chip bass-clash"
+                          title="The bed's bass root sits a semitone or tritone from the vocal's tonic. High-pass the bed around 120 Hz and let the vocal track's low end carry it — the most common reason a key-compatible mashup still sounds wrong.">
+                          bass clash
+                        </span>
+                      )}
                       {c.effort_label && (
                         <span className={`rel-chip effort ${EFFORT_TONE[c.effort_label]}`}
                           title={`How much work this costs to build${c.effort_reason ? ` — ${c.effort_reason}` : " — nothing to fix"}. The match percentage says whether it fits; this says what it takes.`}>
