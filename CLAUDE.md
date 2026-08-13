@@ -5,8 +5,9 @@ pair_feedback now trains the model, near-duplicate uploads are suppressed, mashu
 export as drop-in FL session folders, ranking accounts for build effort and spectral
 collision, harmony is measured from per-section chroma rather than looked up on the
 Camelot wheel, and the learned scorer is grouped-CV'd, calibrated and explainable.
-Next: run the §5 runbook (import the ~17 Big Bootie mixes), then make the SECTION
-PAIR the candidate row (E.3, deferred), then the multi-song set builder.
+The candidate row is now the SECTION PAIR, not the song pair. Next: run the §5
+runbook (import the ~17 Big Bootie mixes), then Phase G — the wider combo taxonomy
+(three-way, double-drop, transitions) and the multi-song set builder.
 
 ⚠ `ingest/match_score.py` was missing from the repo and is currently a
 reconstruction (commit 7beb26c) — replace it with your original if you have it.
