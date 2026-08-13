@@ -21,6 +21,7 @@ from typing import Optional, List, Dict
 # it has to be, so the library-stats cache can read features without threading a
 # handle through every scoring call.
 from database.models import DB_PATH, get_all_features
+from analysis.quality import collision_block, collision_score
 from matcher.effort import effort_block
 
 log = logging.getLogger(__name__)
@@ -348,6 +349,8 @@ def sub_scores(feat_a: dict, feat_b: dict,
                                        feat_b.get("camelot", "")),
         "energy_score": energy_match(feat_a, feat_b, stats),
         "timbre_score": timbre_score(feat_a, feat_b, stats),
+        "collision_score": collision_score(feat_a.get("band_energy"),
+                                           feat_b.get("band_energy")),
     }
 
 
@@ -368,8 +371,9 @@ def composite_score(feat_a: dict, feat_b: dict,
         from config import MATCH_WEIGHTS
         weights = weights or MATCH_WEIGHTS
     except ImportError:
-        weights = {"bpm_score": 0.25, "key_score": 0.30,
-                   "energy_score": 0.20, "timbre_score": 0.25}
+        weights = {"bpm_score": 0.22, "key_score": 0.26,
+                   "energy_score": 0.17, "timbre_score": 0.20,
+                   "collision_score": 0.15}
     if effort_weight is None:
         try:
             from config import EFFORT_WEIGHT
@@ -434,7 +438,7 @@ class _StemBlock:
 
     __slots__ = ("feats", "song_id", "bpm", "code", "loud_z", "loud_raw",
                  "mfcc_v", "mfcc_norm", "mfcc_ok", "variant",
-                 "bpm_conf", "key_conf")
+                 "bpm_conf", "key_conf", "bands", "quality")
 
 
 def _conf(value) -> float:
@@ -504,6 +508,21 @@ def _prepare_block(feats: List[dict], code_index: Dict[str, int],
         [_conf(f.get("bpm_confidence")) for f in feats], dtype=np.float64)
     b.key_conf = np.array(
         [_conf(f.get("key_confidence")) for f in feats], dtype=np.float64)
+
+    # Phase D: band occupancy (all-zero row = unmeasured, which collision_block
+    # reads as the neutral 0.5) and this stem's separation quality.
+    from analysis.quality import N_BANDS
+    bands = np.zeros((n, N_BANDS), dtype=np.float64)
+    for idx, f in enumerate(feats):
+        be = f.get("band_energy") or []
+        if len(be) == N_BANDS:
+            bands[idx] = np.asarray(be, dtype=np.float64)
+    b.bands = bands
+    # NULL quality means "not measured", which must not be read as "bad" — a
+    # library analysed before Phase D would otherwise vanish from the list.
+    b.quality = np.array(
+        [1.0 if f.get("stem_quality") is None else float(f["stem_quality"])
+         for f in feats], dtype=np.float64)
 
     # Energy: the z-score when the library has a reference for this stem kind,
     # otherwise NaN — which selects the raw-ratio fallback, exactly as
@@ -637,6 +656,7 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
                        bpm_max: float, key_min: Optional[float],
                        upper_triangle: bool, weights: Dict,
                        effort_weight: float = 0.0,
+                       quality_min: float = 0.0,
                        on_block=None):
     """Yield (top_idx, bed_idx, scores) for every pair that passes the gate.
 
@@ -655,6 +675,7 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
     w_key = weights.get("key_score", 0)
     w_energy = weights.get("energy_score", 0)
     w_timbre = weights.get("timbre_score", 0)
+    w_collision = weights.get("collision_score", 0)
 
     for start in range(0, n_top, _BLOCK_ROWS):
         rows = slice(start, min(start + _BLOCK_ROWS, n_top))
@@ -677,12 +698,24 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
         vb = bed.variant[None, :]
         keep &= ~((va == vb) & (va > 0))
 
+        # An unusable top stem is not a candidate however well it matches: a
+        # bleeding, smeared acapella near the top of the list is what stops the
+        # list being trusted. Unmeasured quality is 1.0, so a pre-Phase-D
+        # library is unaffected.
+        if quality_min > 0:
+            keep &= (top.quality[rows][:, None] >= quality_min)
+
         if keep.any():
             bpm_s = _bpm_score_block(diff)
             energy_s = _energy_block(top, bed, rows)
             timbre_s = _timbre_block(top, bed, rows, stats)
+            # Do the two sides stay out of each other's way in the spectrum?
+            # Four sub-scores of similarity cannot answer that, and a mid-heavy
+            # vocal over a mid-dense bed is inaudible however well they match.
+            collision_s = collision_block(top.bands[rows], bed.bands)
             fit = (bpm_s * w_bpm + key_s * w_key
-                   + energy_s * w_energy + timbre_s * w_timbre)
+                   + energy_s * w_energy + timbre_s * w_timbre
+                   + collision_s * w_collision)
 
             # ── Effort (Phase C) ──────────────────────────────────────────────
             # Similarity says whether the pair fits; this says what building it
@@ -707,6 +740,7 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
                     "key_score": float(key_s[i, j]),
                     "energy_score": float(energy_s[i, j]),
                     "timbre_score": float(timbre_s[i, j]),
+                    "collision_score": float(collision_s[i, j]),
                     "total": round(float(total[i, j]), 4),
                     "score_effort": round(float(effort[i, j]), 4),
                     "effort_stretch": round(float(parts["stretch_cost"][i, j]), 4),
@@ -798,7 +832,8 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         bulk_upsert_candidates, candidate_row, clear_candidates,
         get_all_features, get_sections, DB_PATH,
     )
-    from config import BPM_MAX_DIFF, EFFORT_WEIGHT, KEY_MIN_SCORE, MATCH_WEIGHTS
+    from config import (BPM_MAX_DIFF, EFFORT_WEIGHT, KEY_MIN_SCORE,
+                        MATCH_WEIGHTS, STEM_QUALITY_MIN)
 
     db = db_path or DB_PATH
     bpm_max = float(bpm_max_diff) if bpm_max_diff is not None else BPM_MAX_DIFF
@@ -876,6 +911,7 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                 bpm_max=bpm_max, key_min=key_gate,
                 upper_triangle=upper_triangle, weights=MATCH_WEIGHTS,
                 effort_weight=EFFORT_WEIGHT,
+                quality_min=STEM_QUALITY_MIN,
                 on_block=on_block)
         ]
 

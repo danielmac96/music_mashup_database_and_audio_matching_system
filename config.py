@@ -84,6 +84,11 @@ AUDIO_DIR         = Path(_audio_val)
 RAW_DIR           = AUDIO_DIR / "full_song"
 VOCALS_DIR        = AUDIO_DIR / "vocals"
 INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
+# Four-stem separation (Phase D). `instrumental` is still written as the sum of
+# these three, so every existing consumer keeps working unchanged.
+DRUMS_DIR         = AUDIO_DIR / "drums"
+BASS_DIR          = AUDIO_DIR / "bass"
+OTHER_DIR         = AUDIO_DIR / "other"
 PREVIEWS_DIR      = AUDIO_DIR / "previews"   # rendered Studio mixdowns (render/mixdown.py)
 HOOKS_DIR         = AUDIO_DIR / "hooks"      # 16-bar preview clips (api/workers/hook_worker.py)
 
@@ -108,7 +113,8 @@ CONFIGURED = AUDIO_ROOT_SOURCE in ("env", "settings")
 def ensure_dirs() -> None:
     """Create all working directories. Called at import (best-effort) and again
     after the wizard saves settings, so a freshly-chosen library folder exists."""
-    for d in (RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR, PREVIEWS_DIR, HOOKS_DIR,
+    for d in (RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR, DRUMS_DIR, BASS_DIR,
+              OTHER_DIR, PREVIEWS_DIR, HOOKS_DIR,
               SNAPSHOTS_DIR, DATASETS_DIR, MODELS_DIR):
         d.mkdir(parents=True, exist_ok=True)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -188,6 +194,40 @@ _sep_val, STEM_SEPARATOR_SOURCE = _resolve(
 STEM_SEPARATOR = str(_sep_val).lower() if str(_sep_val).lower() in _SEPARATORS else "demucs"
 
 
+# How many stems to split into (Phase D).
+#   "two"  — vocals + instrumental. What the app shipped with; MDX only does this.
+#   "four" — drums / bass / other / vocals, PLUS a summed instrumental so every
+#            existing consumer is unchanged. Demucs only.
+# Four stems are what make the two arrangement problems visible: a bed that
+# still contains its own topline, and which frequency bands each side occupies.
+# They also unlock the real producer move — drop the bed's bass, keep the
+# vocal track's; swap the drums.
+_STEM_MODES = ("two", "four")
+_mode_val, STEM_MODE_SOURCE = _resolve("MASHUP_STEM_MODE", "stem_mode", "two")
+STEM_MODE = str(_mode_val).lower() if str(_mode_val).lower() in _STEM_MODES else "two"
+
+# Stems are written as FLAC: lossless, and roughly half the size of WAV. At
+# ~900 tracks x 4 stems that is the difference between ~160 GB and ~80 GB.
+STEM_FORMAT = "flac"
+
+# The four Demucs sources, and the three that sum to the instrumental.
+DEMUCS_SOURCES = ("drums", "bass", "other", "vocals")
+INSTRUMENTAL_SOURCES = ("drums", "bass", "other")
+
+
+def current_stem_mode() -> str:
+    """The stem mode to use RIGHT NOW, re-reading settings.json like
+    current_stem_separator. MDX cannot do four stems, so an mdx run is always
+    two regardless of this setting."""
+    env = os.environ.get("MASHUP_STEM_MODE")
+    if env and env.lower() in _STEM_MODES:
+        return env.lower()
+    val = _load_settings().get("stem_mode")
+    if isinstance(val, str) and val.lower() in _STEM_MODES:
+        return val.lower()
+    return STEM_MODE
+
+
 def current_stem_separator() -> str:
     """The separator to use RIGHT NOW. Unlike the import-time constant, this
     re-reads settings.json so the UI toggle applies to the next separation
@@ -217,11 +257,22 @@ SECTION_SIM_THRESHOLD = 0.92   # chroma cosine sim above which two sections
 # ── Matching ──────────────────────────────────────────────────────────────────
 # Weights used in the composite similarity score (must sum to 1.0)
 MATCH_WEIGHTS = {
-    "bpm_score":      0.25,
-    "key_score":      0.30,
-    "energy_score":   0.20,
-    "timbre_score":   0.25,
+    "bpm_score":       0.22,
+    "key_score":       0.26,
+    "energy_score":    0.17,
+    "timbre_score":    0.20,
+    # Phase D — do the two sides stay out of each other's way in the spectrum?
+    # The other four all measure similarity; a mid-heavy vocal over a mid-dense
+    # bed can score well on every one of them and still be inaudible. The other
+    # weights are scaled down proportionally so the total still sums to 1.
+    "collision_score": 0.15,
 }
+
+# A top stem below this quality is not offered at all, however well it matches:
+# a bleeding, smeared acapella near the top of the list is what stops the list
+# being trusted. NULL quality (analysed before Phase D) counts as 1.0, so an
+# existing library is unaffected until it is re-analysed.
+STEM_QUALITY_MIN = 0.35
 TOP_K_RESULTS = 10
 
 # Minimum thresholds — pairs that don't meet BOTH are skipped entirely

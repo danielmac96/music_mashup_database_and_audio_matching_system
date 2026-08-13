@@ -131,14 +131,22 @@ def test_energy_penalises_a_genuine_mismatch(tmp_path, monkeypatch):
 
 # ── the contract sub_scores holds ────────────────────────────────────────────
 
-def test_sub_scores_still_returns_the_four_weighted_terms(tmp_path, monkeypatch):
+def test_sub_scores_returns_exactly_the_weighted_terms(tmp_path, monkeypatch):
+    """sub_scores must produce one value per MATCH_WEIGHTS key and nothing else.
+
+    Asserting against the config rather than a hardcoded list is what makes this
+    a real guard: adding a weight without a sub-score (or the reverse) would
+    otherwise silently contribute zero to every pair in the library.
+    collision_score joined the four in Phase D.
+    """
+    from config import MATCH_WEIGHTS
     models, match = _setup(tmp_path, monkeypatch)
     _seed_library(models)
     a = models.get_all_features(stem_type="vocals")[0]
     b = models.get_all_features(stem_type="instrumental")[0]
 
     s = match.sub_scores(a, b)
-    assert set(s) == {"bpm_score", "key_score", "energy_score", "timbre_score"}
+    assert set(s) == set(MATCH_WEIGHTS)
     assert all(0.0 <= v <= 1.0 for v in s.values())
 
 

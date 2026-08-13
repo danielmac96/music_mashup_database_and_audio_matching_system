@@ -38,6 +38,7 @@ from matcher.match import (
     get_library_stats, sub_scores,
 )
 from matcher.plan import build_pairings
+from analysis.quality import collision_score
 from matcher.effort import effort_components
 from matcher.sections import duration_fit
 
@@ -96,6 +97,14 @@ FEATURE_NAMES: list[str] = [
     "tempo_fold_cost",
     "grid_cost",
     "key_certainty_cost",
+    # ── Phase D: arrangement collision. Whether the two sides stay out of each
+    # other's way in the spectrum, and whether the bed still carries its own
+    # topline — the two things that sink a mashup the four sub-scores like.
+    "collision_score",
+    "bed_residual_vocal",
+    "band_overlap_low",
+    "band_overlap_mid",
+    "band_overlap_high",
 ]
 
 # Deliberately NOT included: raw mfcc_cosine and the raw min/max energy ratio.
@@ -227,6 +236,37 @@ def _section_terms(top: dict, bed: dict,
     }
 
 
+def _collision_terms(top: dict, bed: dict) -> dict:
+    """How much the two sides fight for the same frequency space.
+
+    Beyond the single collision_score, the overlap is reported in three coarse
+    regions so the model can tell a bass clash (fixable with a high-pass) from a
+    mid-range pile-up (not fixable) from two bright records. Unmeasured bands
+    give the neutral 0.5 / 0.0, never a flattering score.
+    """
+    from analysis.quality import N_BANDS
+    a, b = top.get("band_energy") or [], bed.get("band_energy") or []
+    out = {
+        "collision_score": collision_score(a or None, b or None),
+        "bed_residual_vocal": _num(bed.get("residual_vocal_ratio")),
+        "band_overlap_low": 0.0,
+        "band_overlap_mid": 0.0,
+        "band_overlap_high": 0.0,
+    }
+    if len(a) != N_BANDS or len(b) != N_BANDS:
+        return out
+    va, vb = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    if va.sum() <= 0 or vb.sum() <= 0:
+        return out
+    va, vb = va / va.sum(), vb / vb.sum()
+    overlap = np.minimum(va, vb)
+    # BAND_EDGES splits at 60/150/400/1k/2.5k/5k/8k; group as sub+low, mid, high.
+    out["band_overlap_low"] = float(overlap[0:3].sum())
+    out["band_overlap_mid"] = float(overlap[3:6].sum())
+    out["band_overlap_high"] = float(overlap[6:8].sum())
+    return out
+
+
 def pair_features(top: dict, bed: dict,
                   top_sections: Optional[list] = None,
                   bed_sections: Optional[list] = None,
@@ -297,6 +337,7 @@ def pair_features(top: dict, bed: dict,
     # must see the cost the user sees, not a re-derivation of it.
     feats.update(effort_components(
         top, bed, compute_stretch_factor(t_bpm, b_bpm), shift))
+    feats.update(_collision_terms(top, bed))
     return feats
 
 

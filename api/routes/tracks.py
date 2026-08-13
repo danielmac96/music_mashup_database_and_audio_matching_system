@@ -21,7 +21,9 @@ from api.workers import (
 
 router = APIRouter()
 
-_STEM_TYPES = {"full", "vocals", "instrumental"}
+# Four-stem separation (Phase D) adds drums/bass/other. They exist only for
+# tracks separated in four-stem mode; the audio route 404s otherwise.
+_STEM_TYPES = {"full", "vocals", "instrumental", "drums", "bass", "other"}
 _KEY_NAMES = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
 _MODES = {"major", "minor"}
 _AUDIO_MEDIA = {
@@ -68,7 +70,7 @@ def _stems_by_song() -> dict[int, dict[str, str]]:
     separators: dict[int, str] = {}
     for r in rows:
         out.setdefault(r["song_id"], {})[r["stem_type"]] = r["file_path"]
-        if r["separator"] and r["stem_type"] in ("vocals", "instrumental"):
+        if r["separator"] and r["stem_type"] != "full":
             separators[r["song_id"]] = r["separator"]
     for sid, tag in separators.items():
         out[sid]["__separator__"] = tag
@@ -133,6 +135,9 @@ def list_tracks() -> dict:
                 "full": has_full,
                 "vocals": "vocals" in stem_paths,
                 "instrumental": "instrumental" in stem_paths,
+                "drums": "drums" in stem_paths,
+                "bass": "bass" in stem_paths,
+                "other": "other" in stem_paths,
                 # e.g. "demucs:htdemucs" / "mdx:UVR-MDX-NET-Inst_HQ_3"
                 "separator": stem_paths.get("__separator__"),
             },

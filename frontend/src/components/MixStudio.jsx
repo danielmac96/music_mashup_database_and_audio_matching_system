@@ -48,7 +48,16 @@ const LANE_COLORS = [
   { line: "163,230,53" },   // lime
 ];
 
-const STEM_LABEL = { vocals: "VOX", instrumental: "INST", full: "FULL" };
+const STEM_LABEL = {
+  vocals: "VOX", instrumental: "INST", full: "FULL",
+  drums: "DRM", bass: "BAS", other: "OTH",
+};
+// Order the stem switches offer. drums/bass/other only exist for tracks
+// separated in four-stem mode (Phase D); the buttons disable themselves
+// otherwise, which is also how the user discovers the mode exists. They are
+// what make the real producer moves possible — drop the bed's bass and keep the
+// vocal track's, or swap the bed's drums for a tighter kit.
+const STEM_ORDER = ["vocals", "instrumental", "drums", "bass", "other", "full"];
 const VOCAL_BPM_CONFIDENCE_MIN = 0.35; // mirror of backend fallback threshold
 const MIN_PPS = 4, MAX_PPS = 240;
 const SNAP_PX = 12;
@@ -1094,9 +1103,12 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
                             the lane keeps its placement, so you can hear the
                             same arrangement with a different layer. */}
                         <span className="lh-stem-seg" onClick={(e) => e.stopPropagation()}>
-                          {["vocals", "instrumental", "full"].map((s) => {
+                          {STEM_ORDER.map((s) => {
                             const src = tracks.find((t) => t.id === l.songId);
                             const ok = Boolean(src?.stems?.[s]);
+                            // Hide four-stem buttons entirely for two-stem
+                            // tracks rather than showing five dead controls.
+                            if (!ok && !["vocals", "instrumental", "full"].includes(s)) return null;
                             return (
                               <button key={s} disabled={!ok || l.stem === s}
                                 className={l.stem === s ? "active" : ""}
@@ -1261,7 +1273,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
                 <KeyChip camelot={t.features.full.camelot} style={{ fontSize: 11, padding: "2px 6px" }} />
               )}
               <div className="studio-stem-btns">
-                {["vocals", "instrumental", "full"].map((s) => (
+                {STEM_ORDER.filter((s) => t.stems?.[s]
+                    || ["vocals", "instrumental", "full"].includes(s)).map((s) => (
                   <button key={s} disabled={!t.stems?.[s]}
                     title={t.stems?.[s] ? `Add ${s} lane` : `No ${s} audio yet`}
                     onClick={() => { addLane(t, s); setPicker(false); }}>

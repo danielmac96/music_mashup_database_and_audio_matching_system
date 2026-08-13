@@ -315,6 +315,13 @@ _SONGS_OPTIONAL_COLUMNS = (
 
 
 _FEATURES_OPTIONAL_COLUMNS = (
+    # Phase D — where this stem sits in the spectrum (8 log-spaced bands, each a
+    # fraction of total energy) and, on a bed, how much of it is still voice.
+    # The three scalar spectral features cannot express "these two both live in
+    # 400 Hz - 2 kHz", which is why a mid-heavy vocal over a mid-dense bed can
+    # score well on all four sub-scores and still be inaudible.
+    ("band_energy_json", "TEXT"),
+    ("residual_vocal_ratio", "REAL"),
     ("beat_times_json", "TEXT"),
     ("waveform_rms_json", "TEXT"),
     ("key_confidence", "REAL"),
@@ -330,6 +337,15 @@ _FEATURES_OPTIONAL_COLUMNS = (
 # for the "full" pseudo-stem (the original download, not a separation product).
 _STEMS_OPTIONAL_COLUMNS = (
     ("separator", "TEXT"),
+    # Phase D — how well the separator did on THIS file. Provenance says which
+    # engine ran; these say whether the result is usable. Without them a
+    # pristine studio acapella and an artefact-riddled mush rank identically,
+    # and one unusable vocal near the top is all it takes to stop trusting the
+    # list. NULL = not measured (analysed before these existed).
+    ("quality", "REAL"),        # 0-1 roll-up, 1 = clean
+    ("bleed", "REAL"),          # correlation with the complementary stem
+    ("hf_loss", "REAL"),        # top-end lost vs the full mix (the MDX smear)
+    ("noise_floor", "REAL"),    # residue where the stem should be silent
 )
 
 
@@ -414,6 +430,7 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     # 12% stretch and a +5 semitone shift are real costs a producer weighs
     # against a slightly better match. score_effort discounts score_total; the
     # components are stored so the UI can name the dominant cost.
+    ("score_collision", "REAL"),   # spectral complementarity (Phase D)
     ("score_effort", "REAL"),
     ("effort_stretch", "REAL"),
     ("effort_pitch", "REAL"),
@@ -659,6 +676,23 @@ def upsert_stem(song_id: int, stem_type: str, file_path: str,
     conn.close()
 
 
+def update_stem_quality(song_id: int, stem_type: str, metrics: Dict,
+                        db_path: Path = DB_PATH) -> None:
+    """Store separation-quality metrics on an existing stems row (Phase D).
+
+    Deliberately not part of upsert_stem: quality is measured in the analysis
+    stage, long after the file is written, and upsert_stem would need a path it
+    does not have."""
+    conn = get_conn(db_path)
+    conn.execute(
+        """UPDATE stems SET quality=?, bleed=?, hf_loss=?, noise_floor=?
+           WHERE song_id=? AND stem_type=?""",
+        (metrics.get("quality"), metrics.get("bleed"), metrics.get("hf_loss"),
+         metrics.get("noise_floor"), song_id, stem_type))
+    conn.commit()
+    conn.close()
+
+
 def upsert_features(song_id: int, stem_type: str, features: dict,
                     db_path: Path = DB_PATH):
     mfcc = features.pop("mfcc", None)
@@ -667,6 +701,8 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
     beat_times_json = json.dumps(beat_times) if beat_times is not None else None
     waveform_rms = features.pop("waveform_rms", None)
     waveform_rms_json = json.dumps(waveform_rms) if waveform_rms is not None else None
+    band_energy = features.pop("band_energy", None)
+    band_energy_json = json.dumps(band_energy) if band_energy is not None else None
     conn = get_conn(db_path)
     conn.execute(
         """INSERT INTO features
@@ -674,8 +710,9 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
                 key_confidence, beat_phase, loudness_rms, energy, mfcc_json,
                 spectral_centroid, spectral_rolloff, zero_crossing_rate,
                 beat_times_json, waveform_rms_json,
+                band_energy_json, residual_vocal_ratio,
                 hook_start, hook_end, hook_role)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(song_id, stem_type) DO UPDATE SET
                bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
                key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
@@ -688,6 +725,8 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
                zero_crossing_rate=excluded.zero_crossing_rate,
                beat_times_json=excluded.beat_times_json,
                waveform_rms_json=excluded.waveform_rms_json,
+               band_energy_json=excluded.band_energy_json,
+               residual_vocal_ratio=excluded.residual_vocal_ratio,
                hook_start=excluded.hook_start, hook_end=excluded.hook_end,
                hook_role=excluded.hook_role""",
         (song_id, stem_type,
@@ -698,6 +737,7 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
          features.get("spectral_centroid"), features.get("spectral_rolloff"),
          features.get("zero_crossing_rate"),
          beat_times_json, waveform_rms_json,
+         band_energy_json, features.get("residual_vocal_ratio"),
          features.get("hook_start"), features.get("hook_end"),
          features.get("hook_role"))
     )
@@ -876,6 +916,10 @@ def get_features_for_song(song_id: int, stem_type: str = "full",
         d["waveform_rms"] = json.loads(d.pop("waveform_rms_json"))
     else:
         d.pop("waveform_rms_json", None)
+    if d.get("band_energy_json"):
+        d["band_energy"] = json.loads(d.pop("band_energy_json"))
+    else:
+        d.pop("band_energy_json", None)
     return d
 
 
@@ -953,8 +997,11 @@ def update_features_manual(song_id: int, *, bpm: Optional[float] = None,
 def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[Dict]:
     conn = get_conn(db_path)
     rows = conn.execute(
-        """SELECT f.*, s.title, s.artist, s.variant_cluster
-           FROM features f JOIN songs s ON s.id=f.song_id
+        """SELECT f.*, s.title, s.artist, s.variant_cluster,
+                  st.quality AS stem_quality
+           FROM features f
+           JOIN songs s ON s.id=f.song_id
+           LEFT JOIN stems st ON st.song_id=f.song_id AND st.stem_type=f.stem_type
            WHERE f.stem_type=?""",
         (stem_type,)
     ).fetchall()
@@ -964,6 +1011,8 @@ def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[D
         d = dict(r)
         if d.get("mfcc_json"):
             d["mfcc"] = json.loads(d.pop("mfcc_json"))
+        if d.get("band_energy_json"):
+            d["band_energy"] = json.loads(d.pop("band_energy_json"))
         result.append(d)
     return result
 
@@ -1035,7 +1084,7 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        inst_bpm, inst_key, inst_mode, inst_camelot,
        inst_loudness_rms, inst_energy,
        score_total, score_bpm, score_key, score_energy, score_timbre,
-       scorer, model_version,
+       score_collision, scorer, model_version,
        vocal_section_idx, inst_section_idx,
        vocal_section_start, vocal_section_end,
        inst_section_start, inst_section_end, score_section,
@@ -1043,7 +1092,7 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        effort_tempo_fold, effort_grid, effort_key_certainty,
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
        score_total=excluded.score_total,
        vocal_section_idx=excluded.vocal_section_idx,
@@ -1112,7 +1161,7 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
         inst.get("loudness_rms"), inst.get("energy"),
         scores["total"], scores["bpm_score"], scores["key_score"],
         scores["energy_score"], scores["timbre_score"],
-        scorer, model_version,
+        scores.get("collision_score"), scorer, model_version,
         *(sp.get(col) for col in SECTION_PAIR_COLUMNS),
         *(scores.get(col) for col in EFFORT_COLUMNS),
     )

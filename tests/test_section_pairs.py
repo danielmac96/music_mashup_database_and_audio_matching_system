@@ -190,21 +190,26 @@ def test_enriched_rows_expose_the_section_labels(scored):
 
 
 def test_section_pair_does_not_change_score_total(scored):
-    """T3.3 selects and describes; it must not re-rank. score_total is still the
-    weighted composite of the four whole-track sub-scores."""
+    """T3.3 selects and describes; it must not re-rank.
+
+    score_total is the weighted composite of the whole-track sub-scores,
+    discounted by the Phase C effort penalty — and `score_section` appears in
+    neither term. Rebuilding the total from the persisted columns is what proves
+    the section fit stayed out of the ranking."""
     db_path, _ = scored
-    from config import MATCH_WEIGHTS
+    from config import EFFORT_WEIGHT, MATCH_WEIGHTS
     from database.models import get_conn
     conn = get_conn(db_path)
     rows = [dict(r) for r in conn.execute(
         "SELECT * FROM mashup_candidates").fetchall()]
     conn.close()
+    assert rows
     for r in rows:
-        expected = round(
-            r["score_bpm"] * MATCH_WEIGHTS["bpm_score"]
-            + r["score_key"] * MATCH_WEIGHTS["key_score"]
-            + r["score_energy"] * MATCH_WEIGHTS["energy_score"]
-            + r["score_timbre"] * MATCH_WEIGHTS["timbre_score"], 4)
+        fit = sum(r[col] * MATCH_WEIGHTS[name] for name, col in (
+            ("bpm_score", "score_bpm"), ("key_score", "score_key"),
+            ("energy_score", "score_energy"), ("timbre_score", "score_timbre"),
+            ("collision_score", "score_collision")))
+        expected = round(fit * (1.0 - EFFORT_WEIGHT * r["score_effort"]), 4)
         assert r["score_total"] == pytest.approx(expected, abs=1e-9)
 
 
