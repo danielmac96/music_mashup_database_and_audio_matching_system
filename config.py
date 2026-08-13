@@ -308,3 +308,14 @@ def format_duration(secs) -> str:
     if h:
         return f"{h}:{m:02d}:{sec:02d}"
     return f"{m}:{sec:02d}"
+
+# ── Effort penalty (Phase C) ──────────────────────────────────────────────────
+# The four MATCH_WEIGHTS sub-scores all measure similarity; none of them
+# measures what a mashup COSTS to build. score_total is discounted by
+# EFFORT_WEIGHT × effort, where effort is 0 (same tempo, same key, confident
+# grid) to 1 (maximum stretch, maximum transpose, unusable grid).
+#
+# 0.25 is deliberately modest: it lets a free-to-build pair overtake one that is
+# a few points better on paper, without letting convenience beat a genuinely
+# stronger match. Set to 0.0 to rank on similarity alone.
+EFFORT_WEIGHT = 0.25

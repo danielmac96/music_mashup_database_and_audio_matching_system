@@ -16,12 +16,22 @@ from database.models import (
 
 from api import jobs
 from api.workers import match_worker
+from matcher.effort import dominant_component, effort_label
 from matcher.match import compute_semitone_shift, compute_stretch_factor
 from matcher.plan import build_mashup_plan
 
 router = APIRouter()
 
 _COMBO_TYPES = {"vocal_over_instrumental", "instrumental_over_instrumental"}
+
+# What the dominant effort component means in the DAW, for the chip's tooltip.
+_EFFORT_REASONS = {
+    "stretch_cost": "needs a big time-stretch",
+    "pitch_cost": "needs a wide transpose",
+    "tempo_fold_cost": "half/double-time — re-cut the bed's phrases",
+    "grid_cost": "weak beat grid — expect manual beatgridding",
+    "key_certainty_cost": "key is uncertain — the suggested shift is a guess",
+}
 
 
 @router.post("/score")
@@ -74,6 +84,22 @@ def _with_playback_terms(rows: list) -> list:
             r.get("vocal_camelot") or "", r.get("inst_camelot") or "")
         r["stretch_factor"] = compute_stretch_factor(
             r.get("vocal_bpm") or 0.0, r.get("inst_bpm") or 0.0)
+        # Phase C: the effort bucket and the cost that dominates it, derived
+        # here so the chip and its tooltip use one definition of "Heavy".
+        effort = r.get("score_effort")
+        if effort is None:
+            r["effort_label"] = None
+            r["effort_reason"] = None
+            continue
+        r["effort_label"] = effort_label(float(effort))
+        parts = {
+            "stretch_cost": r.get("effort_stretch") or 0.0,
+            "pitch_cost": r.get("effort_pitch") or 0.0,
+            "tempo_fold_cost": r.get("effort_tempo_fold") or 0.0,
+            "grid_cost": r.get("effort_grid") or 0.0,
+            "key_certainty_cost": r.get("effort_key_certainty") or 0.0,
+        }
+        r["effort_reason"] = _EFFORT_REASONS.get(dominant_component(parts))
     return rows
 
 
@@ -83,7 +109,8 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     inst_song_id: Optional[int] = None,
                     max_per_song: int = 3,
                     genre: str = "", era: str = "", energy: str = "",
-                    bpm_band: str = "", vocal_forward: bool = False) -> dict:
+                    bpm_band: str = "", vocal_forward: bool = False,
+                    max_effort: Optional[float] = None) -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -112,7 +139,7 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
         max_per_song=max_per_song,
         genre=genre, era=era, energy=energy, bpm_band=bpm_band,
-        vocal_forward=vocal_forward,
+        vocal_forward=vocal_forward, max_effort=max_effort,
     )
     return {"count": len(rows), "candidates": _with_playback_terms(rows),
             "max_per_song": max_per_song}
@@ -244,6 +271,7 @@ class BatchSessionRequest(BaseModel):
     combo_type: str = "vocal_over_instrumental"
     min_score: float = 0.0
     max_per_song: int = 3
+    max_effort: Optional[float] = None
     genre: str = ""
     era: str = ""
     energy: str = ""
@@ -267,7 +295,7 @@ def queue_session_batch(req: BatchSessionRequest,
         combo_type=req.combo_type, min_score=req.min_score, limit=top_n,
         max_per_song=req.max_per_song, genre=req.genre, era=req.era,
         energy=req.energy, bpm_band=req.bpm_band,
-        vocal_forward=req.vocal_forward,
+        vocal_forward=req.vocal_forward, max_effort=req.max_effort,
     )
     if not rows:
         raise HTTPException(status_code=404,

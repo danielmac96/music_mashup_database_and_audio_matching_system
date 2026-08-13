@@ -409,6 +409,23 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("inst_section_start", "REAL"),
     ("inst_section_end", "REAL"),
     ("score_section", "REAL"),               # selection fit, NOT part of score_total
+    # Phase C — how much WORK this pair costs to build, 0 (free) to 1. The four
+    # sub-scores all measure similarity; none of them measures effort, but a
+    # 12% stretch and a +5 semitone shift are real costs a producer weighs
+    # against a slightly better match. score_effort discounts score_total; the
+    # components are stored so the UI can name the dominant cost.
+    ("score_effort", "REAL"),
+    ("effort_stretch", "REAL"),
+    ("effort_pitch", "REAL"),
+    ("effort_tempo_fold", "REAL"),
+    ("effort_grid", "REAL"),
+    ("effort_key_certainty", "REAL"),
+)
+
+# Effort columns, in the order candidate_row binds them.
+EFFORT_COLUMNS = (
+    "score_effort", "effort_stretch", "effort_pitch",
+    "effort_tempo_fold", "effort_grid", "effort_key_certainty",
 )
 
 
@@ -1022,9 +1039,11 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        vocal_section_idx, inst_section_idx,
        vocal_section_start, vocal_section_end,
        inst_section_start, inst_section_end, score_section,
+       score_effort, effort_stretch, effort_pitch,
+       effort_tempo_fold, effort_grid, effort_key_certainty,
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
        score_total=excluded.score_total,
        vocal_section_idx=excluded.vocal_section_idx,
@@ -1034,6 +1053,12 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        inst_section_start=excluded.inst_section_start,
        inst_section_end=excluded.inst_section_end,
        score_section=excluded.score_section,
+       score_effort=excluded.score_effort,
+       effort_stretch=excluded.effort_stretch,
+       effort_pitch=excluded.effort_pitch,
+       effort_tempo_fold=excluded.effort_tempo_fold,
+       effort_grid=excluded.effort_grid,
+       effort_key_certainty=excluded.effort_key_certainty,
        score_bpm=excluded.score_bpm,
        score_key=excluded.score_key,
        score_energy=excluded.score_energy,
@@ -1089,6 +1114,7 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
         scores["energy_score"], scores["timbre_score"],
         scorer, model_version,
         *(sp.get(col) for col in SECTION_PAIR_COLUMNS),
+        *(scores.get(col) for col in EFFORT_COLUMNS),
     )
 
 
@@ -1187,6 +1213,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             genre: str = "", era: str = "",
                             energy: str = "", bpm_band: str = "",
                             vocal_forward: bool = False,
+                            max_effort: Optional[float] = None,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -1206,7 +1233,11 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     they compose. All of them run in SQL: client-filtering a truncated 50 would
     search the top of the list rather than the library, which is the opposite of
     what a filter is for. See ERA_BANDS / BPM_BANDS / ENERGY_BANDS for the
-    accepted values."""
+    accepted values.
+
+    max_effort (Phase C) keeps only pairs costing at most that much to build,
+    0-1. The "Free builds only" chip passes 0.25 — pairs needing no meaningful
+    stretch, no transpose, and with a trustworthy beat grid."""
     conn = get_conn(db_path)
     where = ["mc.score_total >= ?"]
     params: list = [min_score]
@@ -1256,6 +1287,11 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         # spectral energy has no absolute meaning across masters.
         where.append("ne.energy_pct >= ? AND ne.energy_pct < ?")
         params += [lo, hi]
+    if max_effort is not None:
+        # NULL score_effort means the row predates the column; a re-score fills
+        # it in. Treat it as passing rather than hiding the whole library.
+        where.append("(mc.score_effort IS NULL OR mc.score_effort <= ?)")
+        params.append(float(max_effort))
     if vocal_forward:
         # The vocal presence of the section that will actually play, falling
         # back to the track's most vocal section when no pair was stored.

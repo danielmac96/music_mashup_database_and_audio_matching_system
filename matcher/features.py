@@ -38,6 +38,7 @@ from matcher.match import (
     get_library_stats, sub_scores,
 )
 from matcher.plan import build_pairings
+from matcher.effort import effort_components
 from matcher.sections import duration_fit
 
 log = logging.getLogger(__name__)
@@ -87,6 +88,14 @@ FEATURE_NAMES: list[str] = [
     "bed_bpm_confidence",
     "top_key_confidence",
     "bed_key_confidence",
+    # ── Phase C: what this pair COSTS to build. Every column above measures
+    # similarity; none of them measures effort, and the two are not the same
+    # question. Appended at the END, per the contract note above.
+    "stretch_cost",
+    "pitch_cost",
+    "tempo_fold_cost",
+    "grid_cost",
+    "key_certainty_cost",
 ]
 
 # Deliberately NOT included: raw mfcc_cosine and the raw min/max energy ratio.
@@ -284,6 +293,10 @@ def pair_features(top: dict, bed: dict,
     }
     feats.update(_section_terms(top, bed, top_sections, bed_sections,
                                 top_section_idx, bed_section_idx))
+    # Effort components, from the same function the ranking uses — the model
+    # must see the cost the user sees, not a re-derivation of it.
+    feats.update(effort_components(
+        top, bed, compute_stretch_factor(t_bpm, b_bpm), shift))
     return feats
 
 

@@ -18,7 +18,11 @@ const MATCH_PRESETS = [
   { label: "Balanced", bpm: 10, key: 0.55 },
   { label: "Wide", bpm: 16, key: 0.4 },
 ];
-const SORTS = ["Score", "Popularity"];
+const SORTS = ["Score", "Popularity", "Effort"];
+// Effort chips (Phase C). "Free builds only" keeps pairs needing no meaningful
+// stretch, no transpose, and with a trustworthy beat grid.
+const FREE_BUILD_MAX_EFFORT = 0.25;
+const EFFORT_TONE = { Free: "free", Light: "light", Heavy: "heavy" };
 // How many rows any one song may occupy. 0 = uncapped, which is what the list
 // did before T3.4 — and why a single 128 BPM 8A vocal could hold 40 of 50 rows.
 const PER_SONG_CAPS = [3, 2, 1, 0];
@@ -127,6 +131,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   // applied by the server over the whole table, not over the visible 50.
   const [filters, setFilters] = useState(
     { genre: "", era: "", energy: "", bpmBand: "", vocalForward: false });
+  // Phase C — "Free builds only". Separate from `filters` because it is a cost
+  // constraint rather than a taste one, and it is the chip most worth reaching
+  // for on a day with no patience for beatgridding.
+  const [freeOnly, setFreeOnly] = useState(false);
   const [filterOpts, setFilterOpts] = useState(null);
 
   // ── T1.7 triage: highlighted row, verdicts, shortlist, shortcut legend ────
@@ -154,7 +162,8 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   }, []);
 
   const refresh = async (type = comboType, activeSeed = seed, min = minMatch,
-                        cap = maxPerSong, group = grouped, f = filters) => {
+                        cap = maxPerSong, group = grouped, f = filters,
+                        free = freeOnly) => {
     setLoading(true);
     setError(null);
     try {
@@ -168,6 +177,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       }
       const opts = { comboType: type, minScore: min / 100, limit: 50,
                      maxPerSong: cap, ...f };
+      if (free) opts.maxEffort = FREE_BUILD_MAX_EFFORT;
       if (activeSeed?.songId != null) {
         if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
         else opts.vocalSongId = activeSeed.songId;
@@ -241,6 +251,16 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   const sortedCandidates = useMemo(() => {
     if (sortMode === "Popularity") {
       return [...candidates].sort((a, b) => popOf(b) - popOf(a));
+    }
+    if (sortMode === "Effort") {
+      // Cheapest to build first; ties fall back to the score. Rows scored
+      // before the effort columns existed sort last rather than first — an
+      // unknown cost is not a free one.
+      return [...candidates].sort((a, b) => {
+        const ea = a.score_effort == null ? 2 : a.score_effort;
+        const eb = b.score_effort == null ? 2 : b.score_effort;
+        return ea - eb || (b.score_total || 0) - (a.score_total || 0);
+      });
     }
     return candidates; // server already returns score-descending
   }, [candidates, sortMode]);
@@ -516,6 +536,14 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
         )}
         {!grouped && (
           <>
+            <div className={`chip${freeOnly ? " active" : ""}`}
+              onClick={() => { const n = !freeOnly; setFreeOnly(n);
+                               refresh(comboType, seed, minMatch, maxPerSong,
+                                       grouped, filters, n); }}
+              title="Only pairs that are free to build: no meaningful time-stretch, no transpose, and a beat grid worth trusting. No beatgridding, no formant damage.">
+              <span className="k">Free builds</span>
+              <span>{freeOnly ? "On" : "Off"}</span>
+            </div>
             <div className="chip" onClick={() => cycleFilter(
               "genre", (filterOpts?.genres || []).map((g) => g.genre))}
               title="Pairs containing a track of this genre, on either side">
@@ -701,6 +729,12 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                     <div className="relation-chips">
                       <span className="rel-chip" style={{ color: kr.tagColor, background: kr.tagBg }}>{kr.tag}</span>
                       <span className="rel-chip bpm">{bpmTag(c.vocal_bpm, c.inst_bpm)}</span>
+                      {c.effort_label && (
+                        <span className={`rel-chip effort ${EFFORT_TONE[c.effort_label]}`}
+                          title={`How much work this costs to build${c.effort_reason ? ` — ${c.effort_reason}` : " — nothing to fix"}. The match percentage says whether it fits; this says what it takes.`}>
+                          {c.effort_label}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="pair-side bed">

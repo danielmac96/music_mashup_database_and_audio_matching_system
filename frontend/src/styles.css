@@ -695,6 +695,11 @@ input, select { font-family: inherit; }
 .relation-chips { display: flex; gap: 6px; }
 .rel-chip { font-family: var(--font-mono); font-size: 10px; padding: 2px 7px; border-radius: 4px; }
 .rel-chip.bpm { color: var(--cyan-light); background: rgba(56, 189, 248, 0.12); }
+/* Effort (Phase C) — what the pair COSTS to build, next to how well it fits.
+   Green reads "drag it in and go"; amber "some work"; red "this will hurt". */
+.rel-chip.effort.free  { color: var(--green);  background: rgba(52, 211, 153, 0.12); }
+.rel-chip.effort.light { color: var(--amber-light); background: rgba(245, 166, 35, 0.12); }
+.rel-chip.effort.heavy { color: var(--red, #f87171); background: rgba(248, 113, 113, 0.12); }
 
 .pair-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .pair-actions .plan {

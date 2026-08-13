@@ -166,6 +166,8 @@ export const api = {
     maxPerSong = 3,
     // T3.5 filters — also server-side, and for the same reason.
     genre = "", era = "", energy = "", bpmBand = "", vocalForward = false,
+    // Phase C — cap on how much work a pair costs to build (0-1). null = any.
+    maxEffort = null,
   } = {}) => {
     const params = new URLSearchParams();
     if (comboType) params.set("combo_type", comboType);
@@ -174,6 +176,7 @@ export const api = {
     if (vocalSongId != null) params.set("vocal_song_id", String(vocalSongId));
     if (instSongId != null) params.set("inst_song_id", String(instSongId));
     params.set("max_per_song", String(maxPerSong));
+    if (maxEffort != null) params.set("max_effort", String(maxEffort));
     if (genre) params.set("genre", genre);
     if (era) params.set("era", era);
     if (energy) params.set("energy", energy);
