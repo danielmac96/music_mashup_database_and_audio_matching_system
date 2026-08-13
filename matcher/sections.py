@@ -158,6 +158,66 @@ def _index_of(section: Dict, fallback: int) -> int:
     return int(idx) if idx is not None else fallback
 
 
+def top_section_pairs(vocal_sections: List[Dict], inst_sections: List[Dict],
+                      stretch: float = 1.0, prefiltered: bool = False,
+                      bpm: Optional[float] = None,
+                      limit: int = 3) -> List[Dict]:
+    """The best `limit` (vocal section x bed section) pairs, best first (E.3).
+
+    The candidate row is the section pair now, not the song pair: "chorus over
+    drop" and "verse over breakdown" are different ideas about the same two
+    records and deserve to compete separately. The cap is what stops that
+    multiplying the table by every section pair — two tracks with six usable
+    sections each would otherwise contribute 36 rows and drown everything else.
+
+    Deliberately at most one row per (vocal section), so a single strong chorus
+    cannot take all `limit` slots by pairing with three different bed sections.
+    """
+    v_use = vocal_sections if prefiltered else usable_sections(vocal_sections, True)
+    i_use = inst_sections if prefiltered else usable_sections(inst_sections, False)
+    if not v_use or not i_use:
+        return []
+
+    scored = []
+    for vi, v in enumerate(v_use):
+        best, best_score = None, -1.0
+        for ii, i in enumerate(i_use):
+            sc = score_section_pair(v, i, stretch, bpm)
+            if sc > best_score:
+                best, best_score = (v, i, vi, ii), sc
+        if best is not None:
+            scored.append((best_score, best))
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [_pair_row(v, i, vi, ii, sc, stretch, bpm)
+            for sc, (v, i, vi, ii) in scored[:max(1, limit)]]
+
+
+def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
+              stretch: float, bpm: Optional[float]) -> Dict:
+    """The stored shape of one section pair. Shared by both entry points so a
+    row means the same thing however it was chosen."""
+    pf = phrase_fit(
+        float(v.get("end_sec") or 0) - float(v.get("start_sec") or 0),
+        (float(i.get("end_sec") or 0) - float(i.get("start_sec") or 0))
+        / max(float(stretch or 1.0), 1e-6), bpm)
+    return {
+        "vocal_section_idx": _index_of(v, vi),
+        "inst_section_idx": _index_of(i, ii),
+        "vocal_section_start": round(float(v.get("start_sec") or 0.0), 3),
+        "vocal_section_end": round(float(v.get("end_sec") or 0.0), 3),
+        "inst_section_start": round(float(i.get("start_sec") or 0.0), 3),
+        "inst_section_end": round(float(i.get("end_sec") or 0.0), 3),
+        "vocal_section_label": v.get("label"),
+        "inst_section_label": i.get("label"),
+        "score_section": round(score, 4),
+        "section_bars_vocal": pf.get("vocal_bars"),
+        "section_bars_bed": pf.get("bed_bars"),
+        "section_loop_repeats": pf.get("repeats"),
+        "section_note": pf.get("note"),
+    }
+
+
 def best_section_pair(vocal_sections: List[Dict], inst_sections: List[Dict],
                       stretch: float = 1.0,
                       prefiltered: bool = False,

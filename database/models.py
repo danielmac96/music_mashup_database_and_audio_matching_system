@@ -3,6 +3,7 @@ database/models.py — SQLite schema via raw sqlite3.
 Tables: songs, stems, features, sections, mashup_candidates.
 """
 from typing import Optional, List, Dict
+import re
 import sqlite3
 import json
 from pathlib import Path
@@ -277,6 +278,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
         _migrate_features_columns(conn)
         _migrate_candidates_columns(conn)
         _migrate_sections_columns(conn)
+        _migrate_candidates_unique_key(conn)
         _migrate_stems_columns(conn)
         _migrate_mixtracks_columns(conn)
         _migrate_mashuppairs_columns(conn)
@@ -469,6 +471,62 @@ _SECTIONS_OPTIONAL_COLUMNS = (
     ("camelot", "TEXT"),
     ("key_confidence", "REAL"),
 )
+
+
+# E.3 — the candidate is the SECTION PAIR, not the song pair.
+#
+# The original UNIQUE(combo_type, vocal_song_id, inst_song_id) collapses every
+# section pairing of two songs into one row, so "chorus over drop" and "verse
+# over breakdown" could not both exist. Widening it needs a table rebuild
+# (SQLite cannot drop a table constraint), which is safe here precisely because
+# score_all_pairs truncates this table on every run and every durable thing the
+# user owns — pair_feedback, pair_hidden, track_excluded — deliberately lives
+# elsewhere. Nothing is lost; the next score refills it.
+#
+# COALESCE(-1) in the index because SQLite treats NULLs as distinct in a UNIQUE,
+# so the instrumental-over-instrumental rows (which carry no sections) would
+# otherwise be free to duplicate.
+_CANDIDATE_UNIQUE_INDEX = """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_candidates_section_pair
+        ON mashup_candidates(
+            combo_type, vocal_song_id, inst_song_id,
+            COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
+"""
+
+
+def _migrate_candidates_unique_key(conn: sqlite3.Connection) -> None:
+    """Move the candidate key from (song, song) to (song, section, song, section)."""
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' "
+        "AND name='mashup_candidates'").fetchone()
+    if not sql or "UNIQUE(combo_type, vocal_song_id, inst_song_id)" not in (sql[0] or ""):
+        conn.execute(_CANDIDATE_UNIQUE_INDEX)
+        return
+
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(mashup_candidates)").fetchall()]
+    col_list = ", ".join(cols)
+    new_ddl = sql[0].replace("mashup_candidates", "mashup_candidates_new", 1)
+    # Drop the old table-level constraint, with or without its leading comma.
+    new_ddl = re.sub(r",?\s*UNIQUE\(combo_type,\s*vocal_song_id,\s*inst_song_id\)",
+                     "", new_ddl)
+    # Guard against a trailing comma left behind by that removal.
+    new_ddl = re.sub(r",\s*\)\s*$", "\n)", new_ddl.strip())
+
+    conn.execute("DROP TABLE IF EXISTS mashup_candidates_new")
+    conn.execute(new_ddl)
+    # DISTINCT because the old key allowed only one row per song pair anyway;
+    # this is a straight carry-over, not a merge.
+    conn.execute(f"INSERT INTO mashup_candidates_new ({col_list}) "
+                 f"SELECT {col_list} FROM mashup_candidates")
+    conn.execute("DROP TABLE mashup_candidates")
+    conn.execute("ALTER TABLE mashup_candidates_new RENAME TO mashup_candidates")
+    conn.execute(_CANDIDATE_UNIQUE_INDEX)
+    for idx in ("CREATE INDEX IF NOT EXISTS idx_candidates_score ON mashup_candidates(score_total DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_candidates_type ON mashup_candidates(combo_type)",
+                "CREATE INDEX IF NOT EXISTS idx_candidates_vocal ON mashup_candidates(vocal_song_id)",
+                "CREATE INDEX IF NOT EXISTS idx_candidates_inst ON mashup_candidates(inst_song_id)"):
+        conn.execute(idx)
 
 
 def _migrate_sections_columns(conn: sqlite3.Connection) -> None:
@@ -1145,7 +1203,9 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
-   ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
+   ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
+               COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
+   DO UPDATE SET
        score_total=excluded.score_total,
        vocal_section_idx=excluded.vocal_section_idx,
        inst_section_idx=excluded.inst_section_idx,
@@ -1320,6 +1380,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             vocal_forward: bool = False,
                             max_effort: Optional[float] = None,
                             order: str = "score",
+                            max_per_song_pair: int = 1,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -1515,7 +1576,8 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         params,
     ).fetchall()
     conn.close()
-    return _cap_per_song([dict(r) for r in rows], max_per_song, limit)
+    return _cap_per_song([dict(r) for r in rows], max_per_song, limit,
+                         max_per_song_pair)
 
 
 # ── T3.5 filter vocabularies ─────────────────────────────────────────────────
@@ -1598,7 +1660,8 @@ def candidate_filter_options(combo_type: str = "",
     }
 
 
-def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int) -> List[Dict]:
+def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int,
+                  max_per_song_pair: int = 1) -> List[Dict]:
     """Keep the best `limit` rows in which no song appears more than
     `max_per_song` times, counting appearances on either side.
 
@@ -1606,17 +1669,28 @@ def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int) -> List[Dict]
     loses a row once it already has its share of better ones. Done here rather
     than with a window function because the cap spans both columns — a song can
     be the vocal in one row and the bed in the next, and SQL would have to
-    partition by one or the other."""
-    if max_per_song <= 0:
+    partition by one or the other.
+
+    `max_per_song_pair` caps how many SECTION pairings of the same two songs may
+    appear (E.3). The scorer now emits a row per section pairing, so without
+    this one song pair could take three of the top ten with what is, to a
+    browsing eye, the same suggestion three times. The extra pairings are still
+    in the table and still reachable by seeding on either track."""
+    if max_per_song <= 0 and max_per_song_pair <= 0:
         return rows[:limit]
     seen: Dict[int, int] = {}
+    seen_pair: Dict[tuple, int] = {}
     kept: List[Dict] = []
     for row in rows:
         v, i = row["vocal_song_id"], row["inst_song_id"]
-        if seen.get(v, 0) >= max_per_song or seen.get(i, 0) >= max_per_song:
+        if max_per_song_pair > 0 and seen_pair.get((v, i), 0) >= max_per_song_pair:
+            continue
+        if max_per_song > 0 and (seen.get(v, 0) >= max_per_song
+                                 or seen.get(i, 0) >= max_per_song):
             continue
         seen[v] = seen.get(v, 0) + 1
         seen[i] = seen.get(i, 0) + 1
+        seen_pair[(v, i)] = seen_pair.get((v, i), 0) + 1
         kept.append(row)
         if len(kept) >= limit:
             break

@@ -377,3 +377,16 @@ def format_duration(secs) -> str:
 # a few points better on paper, without letting convenience beat a genuinely
 # stronger match. Set to 0.0 to rank on similarity alone.
 EFFORT_WEIGHT = 0.25
+
+# ── Section-pair ranking (E.3) ────────────────────────────────────────────────
+# The candidate row is the SECTION PAIR now, so how well those two sections fit
+# each other is part of what the row IS, not a post-hoc annotation on it. Before
+# E.3 this was deliberately excluded from score_total (T3.3's "selects and
+# describes; it must not re-rank") — correct while the row was a song pair and
+# the section was chosen afterwards, wrong once the section is the unit.
+SECTION_WEIGHT = 0.25
+
+# How many section pairs one song pair may contribute. Two tracks with six
+# usable sections each would otherwise produce 36 rows and drown everything
+# else; three is enough to show that a pair works in more than one place.
+MAX_SECTION_PAIRS_PER_SONG_PAIR = 3

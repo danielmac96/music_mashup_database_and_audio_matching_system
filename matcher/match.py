@@ -833,7 +833,8 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         get_all_features, get_sections, DB_PATH,
     )
     from config import (BPM_MAX_DIFF, BPM_MAX_DIFF_MODEL, EFFORT_WEIGHT,
-                        KEY_MIN_SCORE, MATCH_WEIGHTS, STEM_QUALITY_MIN)
+                        KEY_MIN_SCORE, MATCH_WEIGHTS,
+                        MAX_SECTION_PAIRS_PER_SONG_PAIR, STEM_QUALITY_MIN)
 
     db = db_path or DB_PATH
     bpm_max = float(bpm_max_diff) if bpm_max_diff is not None else BPM_MAX_DIFF
@@ -928,31 +929,40 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             _usable_cache[key] = usable_sections(_sections(song_id), vocal_side)
         return _usable_cache[key]
 
-    def _section_pair(top: dict, bed: dict) -> Optional[dict]:
-        """Which sections this pair is really about — None until both sides have
-        structure, in which case readers fall back to each track's hook."""
-        from matcher.sections import best_section_pair
+    def _section_pairs(top: dict, bed: dict) -> list:
+        """Every section pairing worth a row for these two songs (E.3).
+
+        Empty until both sides have structure, in which case the caller emits a
+        single section-less row and readers fall back to each track's hook.
+        """
+        from matcher.sections import top_section_pairs
         v_use = _usable(top["song_id"], True)
         i_use = _usable(bed["song_id"], False)
         if not v_use or not i_use:
-            return None
+            return []
         stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
         # The vocal sets the target tempo, so bars are counted at its BPM.
-        return best_section_pair(v_use, i_use, stretch, prefiltered=True,
-                                 bpm=top.get("bpm"))
+        return top_section_pairs(v_use, i_use, stretch, prefiltered=True,
+                                 bpm=top.get("bpm"),
+                                 limit=MAX_SECTION_PAIRS_PER_SONG_PAIR)
 
     def _emit(pairs, combo_type, row_scorer, row_version, with_sections=False):
         nonlocal scored
         out = results[combo_type]
         for top, bed, scores in pairs:
-            section_pair = _section_pair(top, bed) if with_sections else None
-            if section_pair is not None:
-                _apply_measured_harmony(top, bed, scores, section_pair,
-                                        _sections, MATCH_WEIGHTS, EFFORT_WEIGHT)
-            rows.append(candidate_row(top, bed, scores, combo_type,
-                                      row_scorer, row_version, section_pair))
-            out.append(_build_row(top, bed, scores, section_pair))
-        scored += len(pairs)
+            # One row per section pair (E.3): "chorus over drop" and "verse over
+            # breakdown" are different ideas about the same two records.
+            section_pairs = _section_pairs(top, bed) if with_sections else []
+            for sp in (section_pairs or [None]):
+                s = dict(scores)
+                if sp is not None:
+                    _apply_measured_harmony(top, bed, s, sp, _sections,
+                                            MATCH_WEIGHTS, EFFORT_WEIGHT)
+                    _apply_section_fit(s, sp, EFFORT_WEIGHT)
+                rows.append(candidate_row(top, bed, s, combo_type,
+                                          row_scorer, row_version, sp))
+                out.append(_build_row(top, bed, s, sp))
+                scored += 1
 
     # ── vocal over instrumental ───────────────────────────────────────────────
     # This is the only combo the learned model scores (it was trained on
@@ -1386,3 +1396,26 @@ def _apply_measured_harmony(top: dict, bed: dict, scores: dict,
     fit = sum(scores[k] * weights.get(k, 0) for k in weights)
     effort = scores.get("score_effort") or 0.0
     scores["total"] = round(fit * (1.0 - effort_weight * effort), 4)
+
+
+def _apply_section_fit(scores: dict, section_pair: dict,
+                       effort_weight: float) -> None:
+    """Blend the section fit into the total (E.3).
+
+    While the row was a SONG pair and the section was chosen afterwards, folding
+    the section fit in would have been double-counting a post-hoc annotation —
+    which is what T3.3's "selects and describes; it must not re-rank" was
+    protecting against. Now the row IS the section pair, so how well those two
+    sections cover each other is part of what is being ranked.
+
+    Mutates `scores` in place, and does nothing when the pair carries no fit.
+    """
+    from config import MATCH_WEIGHTS, SECTION_WEIGHT
+
+    fit_section = section_pair.get("score_section")
+    if fit_section is None:
+        return
+    whole = sum(scores[k] * MATCH_WEIGHTS.get(k, 0) for k in MATCH_WEIGHTS)
+    blended = (1.0 - SECTION_WEIGHT) * whole + SECTION_WEIGHT * float(fit_section)
+    effort = scores.get("score_effort") or 0.0
+    scores["total"] = round(blended * (1.0 - effort_weight * effort), 4)
