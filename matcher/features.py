@@ -105,6 +105,15 @@ FEATURE_NAMES: list[str] = [
     "band_overlap_low",
     "band_overlap_mid",
     "band_overlap_high",
+    # ── Phase F: CONTRAST. Every column above rewards sameness, and pushed to
+    # its conclusion that ranking converges on the most boring possible output:
+    # same genre, same era, same production. The mashups people react to trade
+    # on contrast — a fragile indie vocal over a hard techno bed. Compatibility
+    # and contrast live on different axes, so these are kept separate: tight on
+    # tempo, harmony and frequency space; FAR on genre, era and sound world.
+    "surprise_genre",
+    "surprise_era",
+    "surprise_timbre",
 ]
 
 # Deliberately NOT included: raw mfcc_cosine and the raw min/max energy ratio.
@@ -236,6 +245,46 @@ def _section_terms(top: dict, bed: dict,
     }
 
 
+def surprise_terms(top: dict, bed: dict) -> dict:
+    """How far apart the two tracks are on the axes where difference is good.
+
+    Deliberately NOT folded into the compatibility score: these must be able to
+    trade against it under user control, and a model that has both can learn
+    where this particular user's taste sits between safe and adventurous.
+    """
+    return {
+        "surprise_genre": _genre_distance(top.get("genre"), bed.get("genre")),
+        "surprise_era": _era_distance(top.get("release_year"),
+                                      bed.get("release_year")),
+        "surprise_timbre": 1.0 - _num(sub_scores(top, bed).get("timbre_score"), 0.5),
+    }
+
+
+def _genre_distance(a: Optional[str], b: Optional[str]) -> float:
+    """0 when the genres match, 1 when they share nothing. Unknown → 0.5.
+
+    Token overlap rather than string equality: SoundCloud genre strings are
+    free text, so "Future House" and "House" are neighbours, not strangers.
+    """
+    ta = {w for w in (a or "").lower().replace("/", " ").split() if w}
+    tb = {w for w in (b or "").lower().replace("/", " ").split() if w}
+    if not ta or not tb:
+        return 0.5
+    return 1.0 - len(ta & tb) / len(ta | tb)
+
+
+# Two decades apart is as cross-era as it gets for ranking purposes; beyond
+# that the term saturates rather than rewarding ever-older pairings.
+_ERA_SATURATION_YEARS = 20.0
+
+
+def _era_distance(a, b) -> float:
+    ya, yb = _num(a), _num(b)
+    if ya <= 0 or yb <= 0:
+        return 0.5
+    return float(min(abs(ya - yb) / _ERA_SATURATION_YEARS, 1.0))
+
+
 def _collision_terms(top: dict, bed: dict) -> dict:
     """How much the two sides fight for the same frequency space.
 
@@ -338,6 +387,7 @@ def pair_features(top: dict, bed: dict,
     feats.update(effort_components(
         top, bed, compute_stretch_factor(t_bpm, b_bpm), shift))
     feats.update(_collision_terms(top, bed))
+    feats.update(surprise_terms(top, bed))
     return feats
 
 
@@ -557,8 +607,17 @@ def build_dataset(name: str = "bbm", neg_ratio: int = 5, seed: int = 42,
 
         want_neg = min(len(pool), neg_ratio * n_pos)
         sampled = rng.sample(pool, want_neg) if want_neg else []
-        for (v, i) in sampled:
-            rows.append((v, i, 0, "sampled", None, None))
+
+        # Sampled negatives are spread ROUND-ROBIN across the positive groups
+        # rather than pooled into a group of their own. A random negative is not
+        # tied to any mix, so it cannot leak — but isolating them in one group
+        # means GroupKFold produces folds that are entirely negative and folds
+        # that are entirely positive, none of which can be scored. Spreading
+        # them is what makes every fold trainable.
+        pos_groups = sorted({g for (_v, _i, lbl, g, _vs, _is) in rows if lbl == 1})
+        for n, (v, i) in enumerate(sampled):
+            group = pos_groups[n % len(pos_groups)] if pos_groups else "sampled"
+            rows.append((v, i, 0, group, None, None))
         n_neg_sampled = len(sampled)
         n_neg = n_neg_user + n_neg_sampled
 

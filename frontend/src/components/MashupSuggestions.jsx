@@ -18,7 +18,10 @@ const MATCH_PRESETS = [
   { label: "Balanced", bpm: 10, key: 0.55 },
   { label: "Wide", bpm: 16, key: 0.4 },
 ];
-const SORTS = ["Score", "Popularity", "Effort"];
+// "Uncertain" is server-side: it asks for the pairs the model is least sure
+// about. With hundreds of thousands of viable pairs and maybe 200 keypresses of
+// patience, spending them where the model is already confident buys nothing.
+const SORTS = ["Score", "Popularity", "Effort", "Uncertain"];
 // Effort chips (Phase C). "Free builds only" keeps pairs needing no meaningful
 // stretch, no transpose, and with a trustworthy beat grid.
 const FREE_BUILD_MAX_EFFORT = 0.25;
@@ -172,7 +175,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
 
   const refresh = async (type = comboType, activeSeed = seed, min = minMatch,
                         cap = maxPerSong, group = grouped, f = filters,
-                        free = freeOnly) => {
+                        free = freeOnly, sort = sortMode) => {
     setLoading(true);
     setError(null);
     try {
@@ -187,6 +190,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       const opts = { comboType: type, minScore: min / 100, limit: 50,
                      maxPerSong: cap, ...f };
       if (free) opts.maxEffort = FREE_BUILD_MAX_EFFORT;
+      if (sort === "Uncertain") opts.order = "uncertain";
       if (activeSeed?.songId != null) {
         if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
         else opts.vocalSongId = activeSeed.songId;
@@ -261,6 +265,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     if (sortMode === "Popularity") {
       return [...candidates].sort((a, b) => popOf(b) - popOf(a));
     }
+    if (sortMode === "Uncertain") return candidates;  // server-ordered
     if (sortMode === "Effort") {
       // Cheapest to build first; ties fall back to the score. Rows scored
       // before the effort columns existed sort last rather than first — an
@@ -527,7 +532,17 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
           title="Pre-filter width used by 'Score library' — re-score to apply">
           <span className="k">Match width</span><span>{MATCH_PRESETS[presetIdx].label}</span><span className="caret">▾</span>
         </div>
-        <div className="chip" onClick={() => setSortMode(SORTS[(SORTS.indexOf(sortMode) + 1) % SORTS.length])}>
+        <div className="chip" onClick={() => {
+            const next = SORTS[(SORTS.indexOf(sortMode) + 1) % SORTS.length];
+            setSortMode(next);
+            // Uncertain changes WHICH rows come back, not just their order, so
+            // it needs a refetch — the others are client-side sorts.
+            if (next === "Uncertain" || sortMode === "Uncertain") {
+              refresh(comboType, seed, minMatch, maxPerSong, grouped, filters,
+                      freeOnly, next);
+            }
+          }}
+          title="Score = best first. Effort = cheapest to build. Uncertain = the pairs the model is least sure about, where your verdict teaches it the most.">
           <span className="k">Sort</span><span>{sortMode}</span><span className="caret">▾</span>
         </div>
         <div className="chip" onClick={cycleCap}
@@ -750,6 +765,12 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                           bass clash
                         </span>
                       )}
+                      {(c.reasons || []).slice(0, 3).map((r, i) => (
+                        <span key={i} className={`rel-chip reason ${r.direction}`}
+                          title="Why the learned scorer placed this row here. Without a why, a plausible-looking list is indistinguishable from a good one.">
+                          {r.direction === "up" ? "+" : "−"} {r.label}
+                        </span>
+                      ))}
                       {c.effort_label && (
                         <span className={`rel-chip effort ${EFFORT_TONE[c.effort_label]}`}
                           title={`How much work this costs to build${c.effort_reason ? ` — ${c.effort_reason}` : " — nothing to fix"}. The match percentage says whether it fits; this says what it takes.`}>

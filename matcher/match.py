@@ -832,8 +832,8 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         bulk_upsert_candidates, candidate_row, clear_candidates,
         get_all_features, get_sections, DB_PATH,
     )
-    from config import (BPM_MAX_DIFF, EFFORT_WEIGHT, KEY_MIN_SCORE,
-                        MATCH_WEIGHTS, STEM_QUALITY_MIN)
+    from config import (BPM_MAX_DIFF, BPM_MAX_DIFF_MODEL, EFFORT_WEIGHT,
+                        KEY_MIN_SCORE, MATCH_WEIGHTS, STEM_QUALITY_MIN)
 
     db = db_path or DB_PATH
     bpm_max = float(bpm_max_diff) if bpm_max_diff is not None else BPM_MAX_DIFF
@@ -901,14 +901,16 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                 progress(pct, f"{label}: {done}/{total} tracks")
         return _on_block
 
-    def _run(top_block, bed_block, *, key_gate, upper_triangle, on_block):
+    def _run(top_block, bed_block, *, key_gate, upper_triangle, on_block,
+             bpm_gate=None):
         """Every surviving pair of one pass, as (top_feat, bed_feat, scores)."""
         return [
             (top_block.feats[ti], bed_block.feats[bi], scores)
             for ti, bi, scores in _iter_scored_pairs(
                 top_block, bed_block, stats=lib_stats, key_table=key_table,
                 shift_table=shift_table, shift_known=shift_known,
-                bpm_max=bpm_max, key_min=key_gate,
+                bpm_max=bpm_gate if bpm_gate is not None else bpm_max,
+                key_min=key_gate,
                 upper_triangle=upper_triangle, weights=MATCH_WEIGHTS,
                 effort_weight=EFFORT_WEIGHT,
                 quality_min=STEM_QUALITY_MIN,
@@ -957,8 +959,16 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     # documented vocal-over-bed mashups). The model path widens the gate to the
     # BPM window alone, then replaces total with the model's probability — the
     # four heuristic sub-scores stay for display either way.
+    # The gate bounds the matrix; it must not express taste the model is
+    # supposed to learn. On the model path the key half is already off, and the
+    # tempo half widens too — otherwise the model can never see, let alone
+    # learn, a pair the heuristic rejected on tempo alone. An explicit
+    # bpm_max_diff from the caller always wins.
+    model_bpm_gate = (max(bpm_max, BPM_MAX_DIFF_MODEL)
+                      if use_model and bpm_max_diff is None else None)
     voi = _run(v_block, i_block,
                key_gate=None if use_model else key_min, upper_triangle=False,
+               bpm_gate=model_bpm_gate,
                on_block=_report(0, 55, "Scoring vocal over instrumental"))
     if use_model:
         _apply_model_scores(voi, bundle, _sections, lib_stats,

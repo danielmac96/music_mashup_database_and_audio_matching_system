@@ -110,7 +110,8 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     max_per_song: int = 3,
                     genre: str = "", era: str = "", energy: str = "",
                     bpm_band: str = "", vocal_forward: bool = False,
-                    max_effort: Optional[float] = None) -> dict:
+                    max_effort: Optional[float] = None,
+                    order: str = "score") -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -126,6 +127,9 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     if max_per_song < 0:
         raise HTTPException(status_code=400,
                             detail="max_per_song must be 0 or greater")
+    if order not in ("score", "uncertain"):
+        raise HTTPException(status_code=400,
+                            detail="order must be score|uncertain")
     for value, allowed, name in ((era, ERA_BANDS, "era"),
                                  (energy, ENERGY_BANDS, "energy"),
                                  (bpm_band, BPM_BANDS, "bpm_band")):
@@ -139,10 +143,11 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
         max_per_song=max_per_song,
         genre=genre, era=era, energy=energy, bpm_band=bpm_band,
-        vocal_forward=vocal_forward, max_effort=max_effort,
+        vocal_forward=vocal_forward, max_effort=max_effort, order=order,
     )
-    return {"count": len(rows), "candidates": _with_playback_terms(rows),
-            "max_per_song": max_per_song}
+    return {"count": len(rows), "candidates": _with_reasons(
+                _with_playback_terms(rows)),
+            "max_per_song": max_per_song, "order": order}
 
 
 @router.get("/filters")
@@ -308,3 +313,78 @@ def queue_session_batch(req: BatchSessionRequest,
     background.add_task(session_worker.run_batch, job_id, pairs)
     return {"job_id": job_id, "pair_count": len(pairs),
             "archive_url": f"/api/studio/session/{job_id}/archive"}
+
+
+# ── Why a row ranks where it does (Phase F.3) ────────────────────────────────
+
+# Feature name → what it means on a row. Without this the chips would read
+# "bed_residual_vocal", which explains nothing to the person judging the pair.
+_REASON_LABELS = {
+    "bpm_score": "tempo agrees", "key_score": "keys agree",
+    "energy_score": "levels sit right", "timbre_score": "similar production",
+    "collision_score": "leaves room for the vocal",
+    "bed_residual_vocal": "bed has a residual lead",
+    "band_overlap_low": "low ends overlap", "band_overlap_mid": "mids overlap",
+    "band_overlap_high": "top ends overlap",
+    "duration_fit": "sections cover each other",
+    "top_section_vocal_presence": "vocal is forward in its section",
+    "hook_energy_delta": "energy gap between the sections",
+    "stretch_cost": "needs a time-stretch", "pitch_cost": "needs a transpose",
+    "tempo_fold_cost": "half/double-time", "grid_cost": "weak beat grid",
+    "key_certainty_cost": "key is uncertain",
+    "abs_semitone_shift": "transpose distance",
+    "camelot_distance": "key distance", "bpm_min_diff": "tempo distance",
+    "surprise_genre": "cross-genre", "surprise_era": "cross-era",
+    "surprise_timbre": "different sound world",
+}
+
+
+def _with_reasons(rows: list) -> list:
+    """Attach the top contributing features to each model-scored row.
+
+    Without a "why", you cannot tell a well-ranked list from a plausible-looking
+    one — and you will not trust it enough to skip auditioning. Silently a no-op
+    on the heuristic path and whenever the model shape exposes no usable
+    coefficients: a fabricated explanation is worse than none.
+    """
+    if not rows or not any(r.get("scorer") == "model" for r in rows):
+        return rows
+    try:
+        from database.models import get_all_features, get_sections
+        from matcher.features import pair_features
+        from matcher.match import _with_full_bpm, get_library_stats
+        from matcher.model_scorer import feature_contributions, load_active_model
+        bundle = load_active_model()
+        if not bundle:
+            return rows
+        stats = get_library_stats()
+        full = {f["song_id"]: f for f in get_all_features(stem_type="full")}
+        vocals = {f["song_id"]: _with_full_bpm(f, full)
+                  for f in get_all_features(stem_type="vocals")}
+        inst = {f["song_id"]: _with_full_bpm(f, full)
+                for f in get_all_features(stem_type="instrumental")}
+        sec_cache: dict = {}
+
+        def sections(sid):
+            if sid not in sec_cache:
+                sec_cache[sid] = get_sections(sid)
+            return sec_cache[sid]
+
+        for r in rows:
+            if r.get("scorer") != "model":
+                continue
+            top, bed = vocals.get(r["vocal_song_id"]), inst.get(r["inst_song_id"])
+            if not top or not bed:
+                continue
+            feats = pair_features(top, bed, sections(r["vocal_song_id"]),
+                                  sections(r["inst_song_id"]), stats,
+                                  top_section_idx=r.get("vocal_section_idx"),
+                                  bed_section_idx=r.get("inst_section_idx"))
+            r["reasons"] = [
+                {**c, "label": _REASON_LABELS.get(c["feature"], c["feature"])}
+                for c in feature_contributions(feats, bundle)
+            ]
+    except Exception:  # noqa: BLE001 — an explanation is a nicety, never a 500
+        import logging
+        logging.getLogger(__name__).warning("reasons failed", exc_info=True)
+    return rows

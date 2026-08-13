@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from database.models import get_conn
+
+from api import jobs
+from api.workers import ml_worker
 
 router = APIRouter()
 
@@ -47,9 +50,12 @@ class TrainRequest(BaseModel):
 
 
 @router.post("/train")
-def train_model(req: TrainRequest) -> dict:
+def train_model(req: TrainRequest, background: BackgroundTasks) -> dict:
+    """Queue a training run (T2.6). Cross-validates grouped by mix, so the
+    reported AUC is a claim about ranking a pair rather than about recognising
+    which mix it came from."""
     try:
-        from matcher.model_scorer import train as _train
+        import matcher.model_scorer  # noqa: F401
     except Exception as exc:  # noqa: BLE001 — stack absent: explain, don't trace
         raise HTTPException(
             status_code=501,
@@ -58,10 +64,49 @@ def train_model(req: TrainRequest) -> dict:
                    f"({type(exc).__name__}: {exc}). Mashup scoring uses the "
                    "built-in heuristic scorer.",
         )
-    try:
-        return _train(dataset_id=req.dataset_id, algo=req.algo)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    job_id = jobs.new_job(kind="train", message="Queued for training")
+    background.add_task(ml_worker.train, job_id, req.dataset_id, req.algo)
+    return {"job_id": job_id}
+
+
+@router.post("/{model_id}/deactivate")
+def deactivate_model(model_id: int) -> dict:
+    """Fall back to the heuristic without deleting the model."""
+    conn = get_conn()
+    row = conn.execute("SELECT id FROM models WHERE id=?", (model_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="model not found")
+    conn.execute("UPDATE models SET active=0 WHERE id=?", (model_id,))
+    conn.commit()
+    out = _row_out(conn.execute(
+        "SELECT id, name, version, dataset_id, algo, metrics_json, file_path, "
+        "active, created_at FROM models WHERE id=?", (model_id,)).fetchone())
+    conn.close()
+    return out
+
+
+@router.delete("/{model_id}")
+def delete_model(model_id: int) -> dict:
+    """Remove a model and its artifact. Scoring falls back to the heuristic if
+    this was the active one."""
+    from pathlib import Path
+
+    conn = get_conn()
+    row = conn.execute("SELECT id, file_path FROM models WHERE id=?",
+                       (model_id,)).fetchone()
+    if not row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="model not found")
+    conn.execute("DELETE FROM models WHERE id=?", (model_id,))
+    conn.commit()
+    conn.close()
+    if row["file_path"]:
+        try:
+            Path(row["file_path"]).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {"deleted": model_id}
 
 
 @router.post("/{model_id}/activate")

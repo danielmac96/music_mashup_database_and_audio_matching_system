@@ -281,6 +281,13 @@ BPM_MAX_DIFF   = 10.0   # e.g. 120 BPM pairs with anything 110–130 (or half/do
 # Key: minimum Camelot score to qualify (0.0–1.0)
 KEY_MIN_SCORE  = 0.55   # allows perfect + adjacent + relative major/minor matches
 
+# The gate exists to bound the matrix, not to express taste. On the MODEL path
+# the key half is already dropped (documented mashups sometimes break it); this
+# widens the tempo half too, so the model can learn that you happily halftime a
+# 150 BPM vocal over a 75 BPM bed. Candidate generation stays tractable because
+# bucketing, not this threshold, is what keeps the matrix small.
+BPM_MAX_DIFF_MODEL = 20.0
+
 # ── Mix training-data quality gate ────────────────────────────────────────────
 # A mix-track auto-linked by yt-dlp search (resolve_status='auto') only counts as
 # a trusted ground-truth link — i.e. eligible to become a training positive — when

@@ -1319,6 +1319,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             energy: str = "", bpm_band: str = "",
                             vocal_forward: bool = False,
                             max_effort: Optional[float] = None,
+                            order: str = "score",
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -1342,7 +1343,13 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
 
     max_effort (Phase C) keeps only pairs costing at most that much to build,
     0-1. The "Free builds only" chip passes 0.25 — pairs needing no meaningful
-    stretch, no transpose, and with a trustworthy beat grid."""
+    stretch, no transpose, and with a trustworthy beat grid.
+
+    order (Phase F) is "score" (best first) or "uncertain" — the pairs the
+    scorer is least sure about, i.e. closest to a coin flip. With hundreds of
+    thousands of viable pairs and maybe 200 keypresses of patience per session,
+    spending them on rows the model is already confident about buys nothing;
+    the uncertain ones are where a verdict carries the most information."""
     conn = get_conn(db_path)
     where = ["mc.score_total >= ?"]
     params: list = [min_score]
@@ -1408,6 +1415,16 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                     (SELECT MAX(vocal_presence) FROM sections
                       WHERE song_id = mc.vocal_song_id)
                 ) >= {VOCAL_FORWARD_MIN}""")
+
+    # "uncertain" ranks by distance from a coin flip. Rows scored by the
+    # heuristic have no probability to be uncertain about, so they sort last —
+    # asking for the model's blind spots when there is no model should return
+    # nothing useful, not an arbitrary order dressed up as one.
+    if order == "uncertain":
+        order_sql = ("CASE WHEN mc.scorer='model' THEN ABS(mc.score_total - 0.5) "
+                     "ELSE 9 END ASC, mc.score_total DESC")
+    else:
+        order_sql = "mc.score_total DESC"
 
     # The cap is a greedy pass over the ranked rows, so it needs more rows than
     # it will return. Fetching everything would mean 90k rows through the join
@@ -1493,7 +1510,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             LEFT JOIN pct pc   ON pc.id = mc.id
             LEFT JOIN nrg ne   ON ne.id = mc.id
             WHERE {' AND '.join(where)}
-            ORDER BY mc.score_total DESC
+            ORDER BY {order_sql}
             LIMIT ?""",
         params,
     ).fetchall()

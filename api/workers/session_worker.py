@@ -36,10 +36,34 @@ def run(job_id: str, vocal_song_id: int, inst_song_id: int) -> None:
         jobs.fail(job_id, last_msg["text"] or "Session export failed")
         return
 
+    _record_implicit_positive(vocal_song_id, inst_song_id)
     jobs.done(job_id, {
         "folder": str(out),
         "archive_url": f"/api/studio/session/{job_id}/archive",
     })
+
+
+def _record_implicit_positive(vocal_song_id: int, inst_song_id: int) -> None:
+    """Exporting a pair to FL is the strongest signal the app ever gets.
+
+    A ✓ in Discover means "worth a listen"; carrying a pair all the way to a
+    session folder means the user intends to BUILD it. That was being thrown
+    away. Recorded as 'ok' rather than 'love' — deciding to build something is
+    not the same as loving the result — and never over an explicit verdict the
+    user already gave, including a rejection.
+    """
+    try:
+        from database.models import get_conn, upsert_pair_feedback
+        conn = get_conn()
+        existing = conn.execute(
+            "SELECT verdict FROM pair_feedback WHERE vocal_song_id=? "
+            "AND inst_song_id=?", (vocal_song_id, inst_song_id)).fetchone()
+        conn.close()
+        if existing:
+            return
+        upsert_pair_feedback(vocal_song_id, inst_song_id, "ok")
+    except Exception:  # noqa: BLE001 — never fail an export over a label
+        log.warning("could not record implicit positive", exc_info=True)
 
 
 def run_batch(job_id: str, pairs: list[dict]) -> None:

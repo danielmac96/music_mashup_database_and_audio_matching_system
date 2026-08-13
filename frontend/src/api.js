@@ -168,6 +168,9 @@ export const api = {
     genre = "", era = "", energy = "", bpmBand = "", vocalForward = false,
     // Phase C — cap on how much work a pair costs to build (0-1). null = any.
     maxEffort = null,
+    // Phase F — "score" (best first) or "uncertain" (the model's blind spots,
+    // where a verdict buys the most information per keypress).
+    order = "score",
   } = {}) => {
     const params = new URLSearchParams();
     if (comboType) params.set("combo_type", comboType);
@@ -177,6 +180,7 @@ export const api = {
     if (instSongId != null) params.set("inst_song_id", String(instSongId));
     params.set("max_per_song", String(maxPerSong));
     if (maxEffort != null) params.set("max_effort", String(maxEffort));
+    if (order && order !== "score") params.set("order", order);
     if (genre) params.set("genre", genre);
     if (era) params.set("era", era);
     if (energy) params.set("energy", energy);
@@ -354,6 +358,11 @@ export const api = {
     }),
 
   getModels: () => jsonFetch("/api/models"),
+
+  deactivateModel: (id) =>
+    jsonFetch(`/api/models/${id}/deactivate`, { method: "POST" }),
+
+  deleteModel: (id) => jsonFetch(`/api/models/${id}`, { method: "DELETE" }),
 
   trainModel: (datasetId) =>
     jsonFetch("/api/models/train", {

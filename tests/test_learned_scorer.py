@@ -412,3 +412,111 @@ def test_unresolvable_pin_falls_back_to_default_pick():
     stale = pair_features(top, bed, top_sections, bed_sections,
                           top_section_idx=99, bed_section_idx=99)
     assert stale == default
+
+
+# ── Phase F: grouped CV, calibration, reasons, wider gate ────────────────────
+
+def test_cv_is_grouped_by_mix_not_random(seeded):
+    """Two mashups from one Big Bootie set are not independent samples: the
+    DJ's taste, era, tempo range and often key are shared. A random split puts
+    siblings on both sides and reports "I recognise this mix", not "I can rank
+    a pair"."""
+    from database.models import get_conn, upsert_pair_feedback
+    from matcher.features import build_dataset
+    from matcher.model_scorer import train
+    db_path, ids = seeded
+    # Enough user rows for a second group and a real held-out split.
+    for v, i in ((ids[2], ids[1]), (ids[4], ids[3]), (ids[6], ids[5])):
+        upsert_pair_feedback(v, i, "love", db_path=db_path)
+
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    model = train(ds["id"], algo="logreg", db_path=db_path)
+    cv = model["metrics"].get("cv")
+    assert cv is not None
+    assert cv["n_groups"] >= 2
+    assert cv["n_folds"] >= 1
+    assert "GroupKFold" in cv["scheme"] or "too few groups" in cv["scheme"]
+
+
+def test_metrics_report_whether_they_are_in_sample(seeded):
+    """An honest badge: "AUC 0.9 in-sample" and "AUC 0.9 cross-validated over
+    17 mixes" are very different claims."""
+    from matcher.features import build_dataset
+    from matcher.model_scorer import train
+    db_path, _ = seeded
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    model = train(ds["id"], algo="logreg", db_path=db_path)
+    assert "in_sample" in model["metrics"]
+
+
+def test_scores_stay_probabilities(seeded):
+    from matcher.features import pair_features
+    from matcher.model_scorer import model_score
+    db_path, _ = seeded
+    bundle = _activate_model(db_path)
+    from database.models import get_all_features
+    v = get_all_features(stem_type="vocals", db_path=db_path)[0]
+    i = get_all_features(stem_type="instrumental", db_path=db_path)[0]
+    p = model_score(pair_features(v, i, [], []), bundle)
+    assert 0.0 <= p <= 1.0
+
+
+def test_feature_contributions_explain_a_row(seeded):
+    """Without a why, a plausible-looking list is indistinguishable from a good
+    one — and you will not trust it enough to skip auditioning."""
+    from matcher.features import pair_features
+    from matcher.model_scorer import feature_contributions
+    db_path, _ = seeded
+    bundle = _activate_model(db_path)
+    from database.models import get_all_features
+    v = get_all_features(stem_type="vocals", db_path=db_path)[0]
+    i = get_all_features(stem_type="instrumental", db_path=db_path)[0]
+    reasons = feature_contributions(pair_features(v, i, [], []), bundle)
+    assert len(reasons) <= 3
+    for r in reasons:
+        assert r["feature"] in bundle["feature_names"]
+        assert r["direction"] in ("up", "down")
+        assert r["weight"] >= 0
+
+
+def test_contributions_are_empty_rather_than_invented():
+    """A model shape with no usable coefficients must produce no explanation
+    rather than a fabricated one."""
+    from matcher.model_scorer import feature_contributions
+    assert feature_contributions({}, {}) == []
+    assert feature_contributions({"a": 1.0}, {"feature_names": ["a"],
+                                              "estimator": object()}) == []
+
+
+def test_surprise_terms_measure_distance_not_similarity():
+    """Compatibility and contrast are different axes: tight on tempo and
+    harmony, far on genre and era."""
+    from matcher.features import surprise_terms
+    same = surprise_terms({"genre": "House", "release_year": 2015},
+                          {"genre": "House", "release_year": 2015})
+    far = surprise_terms({"genre": "Indie Rock", "release_year": 2003},
+                         {"genre": "Techno", "release_year": 2023})
+    assert same["surprise_genre"] == pytest.approx(0.0)
+    assert same["surprise_era"] == pytest.approx(0.0)
+    assert far["surprise_genre"] == pytest.approx(1.0)
+    assert far["surprise_era"] == pytest.approx(1.0)
+
+
+def test_related_genres_are_near_not_far():
+    """Free-text SoundCloud genres: "Future House" and "House" are neighbours."""
+    from matcher.features import surprise_terms
+    s = surprise_terms({"genre": "Future House"}, {"genre": "House"})
+    assert 0.0 < s["surprise_genre"] < 1.0
+
+
+def test_unknown_genre_or_era_is_neutral():
+    from matcher.features import surprise_terms
+    s = surprise_terms({}, {"genre": "House", "release_year": 2015})
+    assert s["surprise_genre"] == 0.5 and s["surprise_era"] == 0.5
+
+
+def test_model_path_widens_the_tempo_gate(seeded):
+    """The gate bounds the matrix; it must not express taste the model is meant
+    to learn. A pair the heuristic rejects on tempo must still reach the model."""
+    from config import BPM_MAX_DIFF, BPM_MAX_DIFF_MODEL
+    assert BPM_MAX_DIFF_MODEL > BPM_MAX_DIFF
