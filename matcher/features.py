@@ -20,6 +20,7 @@ stays heuristic (see matcher.match.score_all_pairs).
 """
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import random
@@ -37,7 +38,9 @@ from matcher.match import (
     compute_semitone_shift, compute_stretch_factor, effective_bpm,
     get_library_stats, sub_scores,
 )
-from matcher.plan import build_pairings
+from analysis.quality import collision_score
+from matcher.effort import effort_components
+from matcher.sections import choose_section_pair, duration_fit
 
 log = logging.getLogger(__name__)
 
@@ -72,8 +75,10 @@ FEATURE_NAMES: list[str] = [
     "spectral_rolloff_diff",
     "zcr_diff",
     "loudness_diff",
-    # ── Section-level terms, from the sections build_pairings would actually
-    # pair. A whole-track average often describes a moment that never occurs.
+    # ── Section-level terms, describing the exact section pair the SCORER
+    # would choose. A whole-track average often describes a moment that never
+    # occurs in the song, and a differently-chosen section describes the wrong
+    # one — so this uses matcher.sections' chooser, not the Plan's.
     "top_section_vocal_presence",
     "hook_energy_delta",
     "duration_fit",
@@ -86,6 +91,31 @@ FEATURE_NAMES: list[str] = [
     "bed_bpm_confidence",
     "top_key_confidence",
     "bed_key_confidence",
+    # ── Phase C: what this pair COSTS to build. Every column above measures
+    # similarity; none of them measures effort, and the two are not the same
+    # question. Appended at the END, per the contract note above.
+    "stretch_cost",
+    "pitch_cost",
+    "tempo_fold_cost",
+    "grid_cost",
+    "key_certainty_cost",
+    # ── Phase D: arrangement collision. Whether the two sides stay out of each
+    # other's way in the spectrum, and whether the bed still carries its own
+    # topline — the two things that sink a mashup the four sub-scores like.
+    "collision_score",
+    "bed_residual_vocal",
+    "band_overlap_low",
+    "band_overlap_mid",
+    "band_overlap_high",
+    # ── Phase F: CONTRAST. Every column above rewards sameness, and pushed to
+    # its conclusion that ranking converges on the most boring possible output:
+    # same genre, same era, same production. The mashups people react to trade
+    # on contrast — a fragile indie vocal over a hard techno bed. Compatibility
+    # and contrast live on different axes, so these are kept separate: tight on
+    # tempo, harmony and frequency space; FAR on genre, era and sound world.
+    "surprise_genre",
+    "surprise_era",
+    "surprise_timbre",
 ]
 
 # Deliberately NOT included: raw mfcc_cosine and the raw min/max energy ratio.
@@ -128,13 +158,46 @@ def _camelot_distance(c1: Optional[str], c2: Optional[str]) -> float:
 _MAX_SHIFT = 6.0
 
 
+def _terms_from_sections(v_sec: dict, b_sec: dict, stretch: float,
+                         n_top: int, n_bed: int) -> dict:
+    """The section terms for one explicit (vocal section, bed section) pair.
+
+    Shared by the chooser path and the pinned path below so a feature vector
+    means the same thing however the section pair was chosen.
+    """
+    v_dur = _num(v_sec.get("end_sec")) - _num(v_sec.get("start_sec"))
+    i_dur = (_num(b_sec.get("end_sec")) - _num(b_sec.get("start_sec"))) \
+        / max(float(stretch or 1.0), 1e-6)
+    return {
+        "top_section_vocal_presence": _num(v_sec.get("vocal_presence")),
+        "hook_energy_delta": abs(_num(v_sec.get("energy")) - _num(b_sec.get("energy"))),
+        "duration_fit": duration_fit(v_dur, i_dur),
+        "top_section_count": float(n_top),
+        "bed_section_count": float(n_bed),
+    }
+
+
 def _section_terms(top: dict, bed: dict,
-                   top_sections: list, bed_sections: list) -> dict:
+                   top_sections: list, bed_sections: list,
+                   top_section_idx: Optional[int] = None,
+                   bed_section_idx: Optional[int] = None) -> dict:
     """Terms describing the sections that would actually be layered.
 
-    Uses build_pairings so this agrees with the Plan the user reads: the same
-    label priority, the same duration-fit rule, the same chosen pair. Scoring a
-    whole-track average often describes a moment that never occurs in the song.
+    Uses the SAME chooser the scorer uses (matcher.sections.best_section_pair),
+    so the model trains on the section pair a candidate row would actually be.
+    This used to call matcher.plan.build_pairings, which ranks by label priority
+    and a seconds-based duration fit, while scoring ranks by label, vocal
+    presence and a BARS-based fit — the two disagree, so the model was learning
+    about a moment the scorer would not have picked. Scoring a whole-track
+    average describes a moment that never occurs; scoring the wrong section is
+    only marginally better.
+
+    When ``top_section_idx``/``bed_section_idx`` are given (a pair_feedback row
+    records the exact sections that were auditioned), those sections are used
+    instead of the default pick — the verdict is about the moment the user
+    heard, so the features must describe that moment and not the one
+    build_pairings would have proposed. Unresolvable indices fall through to the
+    default pick rather than returning blanks.
     """
     blank = {
         "top_section_vocal_presence": 0.0,
@@ -147,43 +210,109 @@ def _section_terms(top: dict, bed: dict,
         return blank
 
     stretch = compute_stretch_factor(_num(top.get("bpm")), _num(bed.get("bpm"))) or 1.0
+    bpm = _num(top.get("bpm")) or None
+
+    if top_section_idx is not None and bed_section_idx is not None:
+        v_pin = next((s for s in top_sections
+                      if s.get("section_index") == top_section_idx), None)
+        b_pin = next((s for s in bed_sections
+                      if s.get("section_index") == bed_section_idx), None)
+        if v_pin is not None and b_pin is not None:
+            return _terms_from_sections(v_pin, b_pin, stretch,
+                                        len(top_sections), len(bed_sections))
+
     try:
-        pairings = build_pairings(top_sections, bed_sections, stretch, max_pairings=1)
+        v_sec, b_sec, _vi, _ii, _sc = choose_section_pair(
+            top_sections, bed_sections, stretch, bpm=bpm)
     except (KeyError, TypeError):
-        # build_pairings indexes start_sec/end_sec directly. Real rows always
+        # score_section_pair indexes start_sec/end_sec directly. Real rows always
         # have them, but a dataset build sweeps the whole library and one
         # malformed row must not take down the run.
         log.warning("malformed sections while building pair features", exc_info=True)
         return blank
-    if not pairings:
+    if v_sec is None or b_sec is None:
         return blank
-    p = pairings[0]
+    return _terms_from_sections(v_sec, b_sec, stretch,
+                                len(top_sections), len(bed_sections))
 
-    # Resolve back to the section rows so we can read energy / vocal_presence,
-    # which build_pairings does not carry.
-    v_sec = next((s for s in top_sections
-                  if _num(s.get("start_sec")) == _num(p.get("vocal_start"))), None)
-    b_sec = next((s for s in bed_sections
-                  if _num(s.get("start_sec")) == _num(p.get("inst_start"))), None)
 
-    v_dur = _num(p.get("vocal_duration"))
-    i_dur = _num(p.get("inst_duration_stretched"))
-    fit = (min(v_dur, i_dur) / max(v_dur, i_dur)) if v_dur > 0 and i_dur > 0 else 0.0
+def surprise_terms(top: dict, bed: dict) -> dict:
+    """How far apart the two tracks are on the axes where difference is good.
 
+    Deliberately NOT folded into the compatibility score: these must be able to
+    trade against it under user control, and a model that has both can learn
+    where this particular user's taste sits between safe and adventurous.
+    """
     return {
-        "top_section_vocal_presence": _num((v_sec or {}).get("vocal_presence")),
-        "hook_energy_delta": abs(_num((v_sec or {}).get("energy"))
-                                 - _num((b_sec or {}).get("energy"))),
-        "duration_fit": fit,
-        "top_section_count": float(len(top_sections)),
-        "bed_section_count": float(len(bed_sections)),
+        "surprise_genre": _genre_distance(top.get("genre"), bed.get("genre")),
+        "surprise_era": _era_distance(top.get("release_year"),
+                                      bed.get("release_year")),
+        "surprise_timbre": 1.0 - _num(sub_scores(top, bed).get("timbre_score"), 0.5),
     }
+
+
+def _genre_distance(a: Optional[str], b: Optional[str]) -> float:
+    """0 when the genres match, 1 when they share nothing. Unknown → 0.5.
+
+    Token overlap rather than string equality: SoundCloud genre strings are
+    free text, so "Future House" and "House" are neighbours, not strangers.
+    """
+    ta = {w for w in (a or "").lower().replace("/", " ").split() if w}
+    tb = {w for w in (b or "").lower().replace("/", " ").split() if w}
+    if not ta or not tb:
+        return 0.5
+    return 1.0 - len(ta & tb) / len(ta | tb)
+
+
+# Two decades apart is as cross-era as it gets for ranking purposes; beyond
+# that the term saturates rather than rewarding ever-older pairings.
+_ERA_SATURATION_YEARS = 20.0
+
+
+def _era_distance(a, b) -> float:
+    ya, yb = _num(a), _num(b)
+    if ya <= 0 or yb <= 0:
+        return 0.5
+    return float(min(abs(ya - yb) / _ERA_SATURATION_YEARS, 1.0))
+
+
+def _collision_terms(top: dict, bed: dict) -> dict:
+    """How much the two sides fight for the same frequency space.
+
+    Beyond the single collision_score, the overlap is reported in three coarse
+    regions so the model can tell a bass clash (fixable with a high-pass) from a
+    mid-range pile-up (not fixable) from two bright records. Unmeasured bands
+    give the neutral 0.5 / 0.0, never a flattering score.
+    """
+    from analysis.quality import N_BANDS
+    a, b = top.get("band_energy") or [], bed.get("band_energy") or []
+    out = {
+        "collision_score": collision_score(a or None, b or None),
+        "bed_residual_vocal": _num(bed.get("residual_vocal_ratio")),
+        "band_overlap_low": 0.0,
+        "band_overlap_mid": 0.0,
+        "band_overlap_high": 0.0,
+    }
+    if len(a) != N_BANDS or len(b) != N_BANDS:
+        return out
+    va, vb = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    if va.sum() <= 0 or vb.sum() <= 0:
+        return out
+    va, vb = va / va.sum(), vb / vb.sum()
+    overlap = np.minimum(va, vb)
+    # BAND_EDGES splits at 60/150/400/1k/2.5k/5k/8k; group as sub+low, mid, high.
+    out["band_overlap_low"] = float(overlap[0:3].sum())
+    out["band_overlap_mid"] = float(overlap[3:6].sum())
+    out["band_overlap_high"] = float(overlap[6:8].sum())
+    return out
 
 
 def pair_features(top: dict, bed: dict,
                   top_sections: Optional[list] = None,
                   bed_sections: Optional[list] = None,
-                  stats: Optional[LibraryStats] = None) -> dict:
+                  stats: Optional[LibraryStats] = None,
+                  top_section_idx: Optional[int] = None,
+                  bed_section_idx: Optional[int] = None) -> dict:
     """Fixed-order feature dict for a (vocal-top, instrumental-bed) pair.
 
     ``top`` = the vocal/top layer's features, ``bed`` = the instrumental/bed's.
@@ -191,6 +320,9 @@ def pair_features(top: dict, bed: dict,
     ``stats`` supplies the library normalisation for the repaired timbre/energy
     terms; it is resolved from the cache when omitted, so train and serve
     normalise identically either way.
+    ``*_section_idx`` pin the section pair the features describe (used for
+    pair_feedback rows, which record the sections that were auditioned); omitted
+    everywhere else, where build_pairings makes the choice.
 
     Every value is a finite float keyed by an entry in FEATURE_NAMES. Missing
     inputs degrade to a neutral number rather than a NaN — a NaN propagates
@@ -239,7 +371,14 @@ def pair_features(top: dict, bed: dict,
         "top_key_confidence": _num(top.get("key_confidence")),
         "bed_key_confidence": _num(bed.get("key_confidence")),
     }
-    feats.update(_section_terms(top, bed, top_sections, bed_sections))
+    feats.update(_section_terms(top, bed, top_sections, bed_sections,
+                                top_section_idx, bed_section_idx))
+    # Effort components, from the same function the ranking uses — the model
+    # must see the cost the user sees, not a re-derivation of it.
+    feats.update(effort_components(
+        top, bed, compute_stretch_factor(t_bpm, b_bpm), shift))
+    feats.update(_collision_terms(top, bed))
+    feats.update(surprise_terms(top, bed))
     return feats
 
 
@@ -272,18 +411,21 @@ _assert_contract()
 
 # ── Dataset builder ───────────────────────────────────────────────────────────
 
-def _documented_pairs(conn) -> tuple[list[tuple[int, int]], set[tuple[int, int]]]:
+def _documented_pairs(conn) -> tuple[list[tuple[int, int, int]], set[tuple[int, int]]]:
     """Documented w/ mashups whose two tracks are both ingested.
 
     Returns (positives, all_documented):
-      * positives — deduped (vocal_song_id, inst_song_id) that also pass the
-        training-data trust gate (become label-1 examples).
+      * positives — deduped (vocal_song_id, inst_song_id, mix_id) that also pass
+        the training-data trust gate (become label-1 examples). mix_id is the
+        cross-validation group: two mashups lifted from the same mix are not
+        independent samples, so they must never straddle a CV fold.
       * all_documented — every documented pair regardless of link confidence.
         These are excluded from the negative pool: a documented mashup is a
         known-good pairing, so it must never be sampled as a negative even when
         its link wasn't confident enough to be a positive."""
     rows = conn.execute(
-        """SELECT vt.song_id AS vocal_song_id,
+        """SELECT p.mix_id AS mix_id,
+                  vt.song_id AS vocal_song_id,
                   vt.resolve_status AS v_status,
                   vt.resolve_score AS v_score,
                   vt.resolve_duration_secs AS v_dur,
@@ -297,7 +439,7 @@ def _documented_pairs(conn) -> tuple[list[tuple[int, int]], set[tuple[int, int]]
            JOIN mix_tracks vt ON vt.id = p.vocal_mix_track_id
            JOIN mix_tracks it ON it.id = p.inst_mix_track_id
            WHERE vt.song_id IS NOT NULL AND it.song_id IS NOT NULL""").fetchall()
-    positives: list[tuple[int, int]] = []
+    positives: list[tuple[int, int, int]] = []
     all_documented: set[tuple[int, int]] = set()
     seen: set[tuple[int, int]] = set()
     for r in rows:
@@ -310,24 +452,66 @@ def _documented_pairs(conn) -> tuple[list[tuple[int, int]], set[tuple[int, int]]
         if (is_trusted_link(r["v_status"], r["v_score"], r["v_dur"], r["v_artist"])
                 and is_trusted_link(r["i_status"], r["i_score"], r["i_dur"], r["i_artist"])):
             seen.add(key)
-            positives.append(key)
+            positives.append((r["vocal_song_id"], r["inst_song_id"], r["mix_id"]))
     return positives, all_documented
+
+
+def _feedback_pairs(conn) -> tuple[list[tuple], list[tuple]]:
+    """The user's own ✓/✗ verdicts (T2.1) as training rows.
+
+    A pair judged by ear is the highest-signal label in the system: a 'no' is a
+    far better negative than a randomly sampled pair that merely happens to be
+    undocumented, because it is a pair that looked good enough to score well and
+    still failed. Section indices come along so the feature vector describes the
+    moment that was actually auditioned.
+
+    Returns (positives, negatives), each a list of
+    (vocal_song_id, inst_song_id, vocal_section, inst_section).
+    """
+    rows = conn.execute(
+        """SELECT vocal_song_id, inst_song_id, vocal_section, inst_section, verdict
+           FROM pair_feedback
+           WHERE vocal_song_id IS NOT NULL AND inst_song_id IS NOT NULL""").fetchall()
+    positives: list[tuple] = []
+    negatives: list[tuple] = []
+    for r in rows:
+        if r["vocal_song_id"] == r["inst_song_id"]:
+            continue
+        entry = (r["vocal_song_id"], r["inst_song_id"],
+                 r["vocal_section"], r["inst_section"])
+        if r["verdict"] in ("love", "ok"):
+            positives.append(entry)
+        elif r["verdict"] == "no":
+            negatives.append(entry)
+    return positives, negatives
 
 
 def build_dataset(name: str = "bbm", neg_ratio: int = 5, seed: int = 42,
                   neg_strategy: str = "bpm_window",
                   db_path: Path = DB_PATH) -> dict:
-    """Build and register a labelled training dataset from documented mixes.
+    """Build and register a labelled training dataset from two sources.
 
-    Positives: documented w/ mashups (mashup_pairs) with both tracks ingested,
-    analysed, and trust-gated. Negatives: seeded-random vocal×instrumental
-    cross-song pairs never documented (neg_ratio per positive). 'bpm_window'
-    draws negatives from BPM-compatible pairs (harder), falling back to fully
-    random when too few exist.
+    Positives:
+      * documented w/ mashups (mashup_pairs) with both tracks ingested,
+        analysed, and trust-gated — grouped by mix_id;
+      * the user's own 'love'/'ok' verdicts in pair_feedback — grouped as
+        "user".
+    Negatives:
+      * every 'no' verdict in pair_feedback, as hard negatives;
+      * seeded-random vocal×instrumental cross-song pairs that are neither
+        documented nor judged (neg_ratio per positive). 'bpm_window' draws them
+        from BPM-compatible pairs (harder), falling back to fully random when
+        too few exist.
 
-    Writes an .npz (X, y, feature_names) to DATASETS_DIR and inserts a `datasets`
-    row. Returns the registered dataset dict. Raises ValueError with an
-    actionable message when there are no usable positives yet."""
+    Where the two sources disagree — a documented mashup the user rejected by
+    ear — the user's verdict wins. The point of the model is to rank *this*
+    user's library to *this* user's taste, and a contradictory pair of labels
+    teaches nothing.
+
+    Writes an .npz (X, y, groups, feature_names) to DATASETS_DIR and inserts a
+    `datasets` row whose config_json carries the per-source counts. Returns the
+    registered dataset dict. Raises ValueError with an actionable message when
+    there are no usable positives yet."""
     conn = get_conn(db_path)
     try:
         vocals = get_all_features(stem_type="vocals", db_path=db_path)
@@ -347,48 +531,102 @@ def build_dataset(name: str = "bbm", neg_ratio: int = 5, seed: int = 42,
                 _sections_cache[song_id] = get_sections(song_id, db_path=db_path)
             return _sections_cache[song_id]
 
+        def analysed(v: int, i: int) -> bool:
+            return v in vocals_by_song and i in inst_by_song
+
         doc_positives, doc_all = _documented_pairs(conn)
-        positives = [(v, i) for (v, i) in doc_positives
-                     if v in vocals_by_song and i in inst_by_song]
-        if not positives:
+        fb_positives, fb_negatives = _feedback_pairs(conn)
+
+        # The user's ear is authoritative: a pair they rejected is never a
+        # positive, however well documented it is elsewhere.
+        rejected = {(v, i) for (v, i, _vs, _is) in fb_negatives}
+        judged = rejected | {(v, i) for (v, i, _vs, _is) in fb_positives}
+
+        # rows: (vocal_song_id, inst_song_id, label, group, v_section, i_section)
+        rows: list[tuple] = []
+        seen_pos: set[tuple[int, int]] = set()
+        for (v, i, mix_id) in doc_positives:
+            if not analysed(v, i) or (v, i) in rejected or (v, i) in seen_pos:
+                continue
+            seen_pos.add((v, i))
+            rows.append((v, i, 1, f"mix:{mix_id}", None, None))
+        n_pos_mixes = len(rows)
+
+        for (v, i, v_sec, i_sec) in fb_positives:
+            if not analysed(v, i) or (v, i) in seen_pos:
+                continue
+            seen_pos.add((v, i))
+            rows.append((v, i, 1, "user", v_sec, i_sec))
+        n_pos_user = len(rows) - n_pos_mixes
+
+        if not rows:
             raise ValueError(
                 "No trainable mashup pairs yet — import a mix, auto-link its "
                 "tracks (confirm the flagged ones), ingest them, and let the "
-                "pipeline finish analysis, then build the dataset.")
+                "pipeline finish analysis, then build the dataset. Judging "
+                "pairs in Discover (f / d) also produces training rows.")
+        n_pos = len(rows)
+
+        # ── Hard negatives: pairs the user rejected by ear ────────────────────
+        seen_neg: set[tuple[int, int]] = set()
+        for (v, i, v_sec, i_sec) in fb_negatives:
+            if not analysed(v, i) or (v, i) in seen_neg or (v, i) in seen_pos:
+                continue
+            seen_neg.add((v, i))
+            rows.append((v, i, 0, "user", v_sec, i_sec))
+        n_neg_user = len(seen_neg)
 
         rng = random.Random(seed)
 
         # ── Candidate negative pool ───────────────────────────────────────────
         # Exclude EVERY documented pair (not just the trusted positives) so a
-        # real mashup is never mislabelled negative.
+        # real mashup is never mislabelled negative, and every pair the user has
+        # already judged — those are in the set explicitly, with a real label.
         all_cross = [(v["song_id"], i["song_id"]) for v in vocals for i in inst
                      if v["song_id"] != i["song_id"] and
-                     (v["song_id"], i["song_id"]) not in doc_all]
+                     (v["song_id"], i["song_id"]) not in doc_all and
+                     (v["song_id"], i["song_id"]) not in judged]
         if neg_strategy == "bpm_window":
             pool = [(vs, is_) for (vs, is_) in all_cross
                     if _bpm_min_diff(_num(vocals_by_song[vs].get("bpm")),
                                      _num(inst_by_song[is_].get("bpm"))) <= BPM_MAX_DIFF]
-            if len(pool) < len(positives):  # too tight — widen to fully random
+            if len(pool) < n_pos:  # too tight — widen to fully random
                 pool = all_cross
                 neg_strategy = "random_fallback"
         else:
             pool = all_cross
 
-        want_neg = min(len(pool), neg_ratio * len(positives))
-        negatives = rng.sample(pool, want_neg) if want_neg else []
+        want_neg = min(len(pool), neg_ratio * n_pos)
+        sampled = rng.sample(pool, want_neg) if want_neg else []
+
+        # Sampled negatives are spread ROUND-ROBIN across the positive groups
+        # rather than pooled into a group of their own. A random negative is not
+        # tied to any mix, so it cannot leak — but isolating them in one group
+        # means GroupKFold produces folds that are entirely negative and folds
+        # that are entirely positive, none of which can be scored. Spreading
+        # them is what makes every fold trainable.
+        pos_groups = sorted({g for (_v, _i, lbl, g, _vs, _is) in rows if lbl == 1})
+        for n, (v, i) in enumerate(sampled):
+            group = pos_groups[n % len(pos_groups)] if pos_groups else "sampled"
+            rows.append((v, i, 0, group, None, None))
+        n_neg_sampled = len(sampled)
+        n_neg = n_neg_user + n_neg_sampled
 
         # ── Feature matrix ────────────────────────────────────────────────────
         X: list[list[float]] = []
         y: list[int] = []
-        for (vs, is_), label in ([(p, 1) for p in positives]
-                                 + [(n, 0) for n in negatives]):
+        groups: list[str] = []
+        for (vs, is_, label, group, v_sec, i_sec) in rows:
             feats = pair_features(vocals_by_song[vs], inst_by_song[is_],
-                                  sections(vs), sections(is_))
+                                  sections(vs), sections(is_),
+                                  top_section_idx=v_sec, bed_section_idx=i_sec)
             X.append(features_to_row(feats))
             y.append(label)
+            groups.append(group)
 
         X_arr = np.asarray(X, dtype=np.float64)
         y_arr = np.asarray(y, dtype=np.int64)
+        groups_arr = np.asarray(groups)
 
         # ── Persist + register ────────────────────────────────────────────────
         DATASETS_DIR.mkdir(parents=True, exist_ok=True)
@@ -396,31 +634,46 @@ def build_dataset(name: str = "bbm", neg_ratio: int = 5, seed: int = 42,
             "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM datasets WHERE name=?",
             (name,)).fetchone()
         version = row["v"]
-        file_path = DATASETS_DIR / f"{name}_v{version}.npz"
-        np.savez(file_path, X=X_arr, y=y_arr,
-                 feature_names=np.asarray(FEATURE_NAMES))
+        # CSV, per T2.5. A dataset is the one artifact a human might want to
+        # open: to check the label balance, to sort by a feature and see what
+        # the model is being told, or to load it in anything that is not this
+        # program. An .npz answers none of those without a Python session.
+        file_path = DATASETS_DIR / f"{name}_v{version}.csv"
+        with open(file_path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.writer(fh)
+            writer.writerow([*FEATURE_NAMES, "label", "group"])
+            for row, label, group in zip(X, y, groups):
+                writer.writerow([*row, label, group])
 
+        counts = {
+            "n_pos_mixes": n_pos_mixes, "n_pos_user": n_pos_user,
+            "n_neg_user": n_neg_user, "n_neg_sampled": n_neg_sampled,
+            "n_groups": len(set(groups)),
+        }
         config_json = json.dumps({
             "neg_ratio": neg_ratio, "seed": seed,
             "neg_strategy": neg_strategy, "bpm_max_diff": BPM_MAX_DIFF,
+            **counts,
         })
         cur = conn.execute(
             """INSERT INTO datasets
                    (name, version, n_pos, n_neg, neg_strategy, config_json,
                     feature_names_json, file_path)
                VALUES (?,?,?,?,?,?,?,?)""",
-            (name, version, len(positives), len(negatives), neg_strategy,
+            (name, version, n_pos, n_neg, neg_strategy,
              config_json, json.dumps(FEATURE_NAMES), str(file_path)))
         conn.commit()
         dataset_id = cur.lastrowid
-        log.info("Built dataset %s v%d: %d pos / %d neg (%s) → %s",
-                 name, version, len(positives), len(negatives), neg_strategy,
-                 file_path)
+        log.info("Built dataset %s v%d: %d pos (%d mixes / %d user) / "
+                 "%d neg (%d user / %d sampled, %s) → %s",
+                 name, version, n_pos, n_pos_mixes, n_pos_user,
+                 n_neg, n_neg_user, n_neg_sampled, neg_strategy, file_path)
         return {
             "id": dataset_id, "name": name, "version": version,
-            "n_pos": len(positives), "n_neg": len(negatives),
+            "n_pos": n_pos, "n_neg": n_neg,
             "neg_strategy": neg_strategy, "file_path": str(file_path),
             "feature_names": FEATURE_NAMES,
+            **counts,
         }
     finally:
         conn.close()

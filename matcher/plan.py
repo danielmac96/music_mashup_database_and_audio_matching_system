@@ -132,6 +132,23 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     i_sections = get_sections(inst_song_id, db_path=db)
     pairings = build_pairings(v_sections, i_sections, stretch or 1.0)
 
+    # Phase E: prefer the MEASURED transpose over the Camelot-derived one.
+    # Camelot says whether two scales are compatible; cross-correlating the two
+    # sections' chroma says what actually makes the notes line up, and hands
+    # back a bass-clash warning as a by-product. Falls back to the Camelot
+    # estimate when either section has no stored chroma.
+    harmony = None
+    if pairings:
+        from matcher.harmony import section_harmony
+        v_sec = next((s for s in v_sections
+                      if s.get("start_sec") == pairings[0]["vocal_start"]), None)
+        i_sec = next((s for s in i_sections
+                      if s.get("start_sec") == pairings[0]["inst_start"]), None)
+        h = section_harmony(v_sec, i_sec)
+        if h["known"]:
+            harmony = h
+            shift = h["shift"]
+
     # Stem file paths for drag-and-drop into the DAW.
     conn = get_conn(db)
     stem_rows = conn.execute(
@@ -170,13 +187,17 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
                f"(factor {stretch:.4f}x)." if stretch else
                "Instrumental BPM unknown — beat-match by ear.")
         )
+    measured = " (measured from the two sections' chroma, not inferred " \
+               "from the Camelot wheel)" if harmony else ""
     if shift is not None and shift != 0:
         steps.append(
             f"3. Pitch the instrumental {shift:+d} semitones to match the "
-            f"vocal key ({v_feat.get('key')} {v_feat.get('mode')})."
+            f"vocal key ({v_feat.get('key')} {v_feat.get('mode')}){measured}."
         )
     else:
-        steps.append("3. Keys already align — no pitch shift needed.")
+        steps.append(f"3. Keys already align — no pitch shift needed{measured}.")
+    if harmony and harmony.get("advice"):
+        steps.append(f"3b. {harmony['advice'].capitalize()}.")
     if pairings:
         for n, p in enumerate(pairings, start=4):
             steps.append(f"{n}. {p['note']} "
@@ -195,6 +216,7 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
         "semitone_shift": shift,
         "key_relation": _key_relation(v_feat.get("camelot") or "",
                                       i_feat.get("camelot") or ""),
+        "harmony": harmony,
         "vocal_sections": v_sections,
         "inst_sections": i_sections,
         "pairings": pairings,

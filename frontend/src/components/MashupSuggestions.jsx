@@ -18,10 +18,20 @@ const MATCH_PRESETS = [
   { label: "Balanced", bpm: 10, key: 0.55 },
   { label: "Wide", bpm: 16, key: 0.4 },
 ];
-const SORTS = ["Score", "Popularity"];
+// "Uncertain" is server-side: it asks for the pairs the model is least sure
+// about. With hundreds of thousands of viable pairs and maybe 200 keypresses of
+// patience, spending them where the model is already confident buys nothing.
+const SORTS = ["Score", "Popularity", "Effort", "Uncertain"];
+// Effort chips (Phase C). "Free builds only" keeps pairs needing no meaningful
+// stretch, no transpose, and with a trustworthy beat grid.
+const FREE_BUILD_MAX_EFFORT = 0.25;
+const EFFORT_TONE = { Free: "free", Light: "light", Heavy: "heavy" };
 // How many rows any one song may occupy. 0 = uncapped, which is what the list
 // did before T3.4 — and why a single 128 BPM 8A vocal could hold 40 of 50 rows.
 const PER_SONG_CAPS = [3, 2, 1, 0];
+// Rows exported per "Export top N" click. Each session is two phase-vocoder
+// passes over a full section, so this is a few minutes of CPU, not an afternoon.
+const BATCH_EXPORT_N = 10;
 const popOf = (c) => (c.vocal_popularity || 0) + (c.inst_popularity || 0);
 
 // Key drives 30% of the score and the suggested pitch shift, so an unreliable
@@ -52,6 +62,15 @@ function PlanDetails({ vocalId, instId, candidate }) {
           {" · key "}{pc(sc.score_key)}
           {" · energy "}{pc(sc.score_energy)}
           {" · timbre "}{pc(sc.score_timbre)}
+        </div>
+      )}
+      {plan.harmony && (
+        <div className="raw-scores mono"
+          title="Measured from the two sections' chroma rather than the Camelot wheel">
+          harmony <b>{pc(plan.harmony.harmonic_fit)}</b>
+          {" · shift "}{plan.harmony.shift >= 0 ? "+" : ""}{plan.harmony.shift} st
+          {" · confidence "}{pc(plan.harmony.confidence)}
+          {plan.harmony.advice ? ` · ${plan.harmony.advice}` : ""}
         </div>
       )}
       {sc.score_section != null && (
@@ -112,6 +131,8 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [scoreJobId, setScoreJobId] = useState(null);
+  const [batchJobId, setBatchJobId] = useState(null);
+  const [batchToken, setBatchToken] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [scorer, setScorer] = useState(null); // { scorer, model_version, auc }
   // ── T3.4 diversity: one 128 BPM 8A vocal otherwise owns the whole page ────
@@ -122,6 +143,14 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   // applied by the server over the whole table, not over the visible 50.
   const [filters, setFilters] = useState(
     { genre: "", era: "", energy: "", bpmBand: "", vocalForward: false });
+  // Phase C — "Free builds only". Separate from `filters` because it is a cost
+  // constraint rather than a taste one, and it is the chip most worth reaching
+  // for on a day with no patience for beatgridding.
+  const [freeOnly, setFreeOnly] = useState(false);
+  // Phase F — Safe ↔ Adventurous. Every sub-score rewards sameness, so the top
+  // of the list drifts towards same-genre, same-era, same-production pairs.
+  // This trades that against contrast, without ever relaxing a technical gate.
+  const [adventure, setAdventure] = useState(0);
   const [filterOpts, setFilterOpts] = useState(null);
 
   // ── T1.7 triage: highlighted row, verdicts, shortlist, shortcut legend ────
@@ -149,7 +178,8 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   }, []);
 
   const refresh = async (type = comboType, activeSeed = seed, min = minMatch,
-                        cap = maxPerSong, group = grouped, f = filters) => {
+                        cap = maxPerSong, group = grouped, f = filters,
+                        free = freeOnly, sort = sortMode, adv = adventure) => {
     setLoading(true);
     setError(null);
     try {
@@ -163,6 +193,9 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       }
       const opts = { comboType: type, minScore: min / 100, limit: 50,
                      maxPerSong: cap, ...f };
+      if (free) opts.maxEffort = FREE_BUILD_MAX_EFFORT;
+      if (sort === "Uncertain") opts.order = "uncertain";
+      if (adv > 0) opts.adventure = adv;
       if (activeSeed?.songId != null) {
         if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
         else opts.vocalSongId = activeSeed.songId;
@@ -198,6 +231,30 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     return seed.role === "instrumental" ? c.inst_title : c.vocal_title;
   }, [seed, candidates]);
 
+  // Export the top rows as FL session folders. The filters go to the server
+  // rather than a list of ids so the export matches what is on screen —
+  // including the diversity cap, which is applied after the SQL.
+  const exportTopSessions = async () => {
+    try {
+      const { job_id, pair_count } = await api.startBatchSessionExport({
+        top_n: BATCH_EXPORT_N,
+        combo_type: comboType,
+        min_score: minMatch / 100,
+        max_per_song: maxPerSong,
+        genre: filters.genre || "",
+        era: filters.era || "",
+        energy: filters.energy || "",
+        bpm_band: filters.bpmBand || "",
+        vocal_forward: !!filters.vocalForward,
+      });
+      setBatchToken(null);
+      setBatchJobId(job_id);
+      toast(`Exporting ${pair_count} FL session${pair_count === 1 ? "" : "s"}…`);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const startScoring = async () => {
     try {
       const p = MATCH_PRESETS[presetIdx];
@@ -212,6 +269,17 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   const sortedCandidates = useMemo(() => {
     if (sortMode === "Popularity") {
       return [...candidates].sort((a, b) => popOf(b) - popOf(a));
+    }
+    if (sortMode === "Uncertain") return candidates;  // server-ordered
+    if (sortMode === "Effort") {
+      // Cheapest to build first; ties fall back to the score. Rows scored
+      // before the effort columns existed sort last rather than first — an
+      // unknown cost is not a free one.
+      return [...candidates].sort((a, b) => {
+        const ea = a.score_effort == null ? 2 : a.score_effort;
+        const eb = b.score_effort == null ? 2 : b.score_effort;
+        return ea - eb || (b.score_total || 0) - (a.score_total || 0);
+      });
     }
     return candidates; // server already returns score-descending
   }, [candidates, sortMode]);
@@ -469,7 +537,17 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
           title="Pre-filter width used by 'Score library' — re-score to apply">
           <span className="k">Match width</span><span>{MATCH_PRESETS[presetIdx].label}</span><span className="caret">▾</span>
         </div>
-        <div className="chip" onClick={() => setSortMode(SORTS[(SORTS.indexOf(sortMode) + 1) % SORTS.length])}>
+        <div className="chip" onClick={() => {
+            const next = SORTS[(SORTS.indexOf(sortMode) + 1) % SORTS.length];
+            setSortMode(next);
+            // Uncertain changes WHICH rows come back, not just their order, so
+            // it needs a refetch — the others are client-side sorts.
+            if (next === "Uncertain" || sortMode === "Uncertain") {
+              refresh(comboType, seed, minMatch, maxPerSong, grouped, filters,
+                      freeOnly, next);
+            }
+          }}
+          title="Score = best first. Effort = cheapest to build. Uncertain = the pairs the model is least sure about, where your verdict teaches it the most.">
           <span className="k">Sort</span><span>{sortMode}</span><span className="caret">▾</span>
         </div>
         <div className="chip" onClick={cycleCap}
@@ -487,6 +565,27 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
         )}
         {!grouped && (
           <>
+            <div className={`chip${adventure > 0 ? " active" : ""}`}
+              title="Safe = the best technical fit first. Adventurous = favour cross-genre and cross-era pairs among the ones that already fit. It never surfaces a pair that does not work; it decides which of the working ones you see first.">
+              <span className="k">Adventurous</span>
+              <input type="range" min={0} max={100} step={25}
+                value={adventure * 100}
+                style={{ width: 64, verticalAlign: "middle" }}
+                onChange={(e) => {
+                  const n = Number(e.target.value) / 100;
+                  setAdventure(n);
+                  refresh(comboType, seed, minMatch, maxPerSong, grouped,
+                          filters, freeOnly, sortMode, n);
+                }} />
+            </div>
+            <div className={`chip${freeOnly ? " active" : ""}`}
+              onClick={() => { const n = !freeOnly; setFreeOnly(n);
+                               refresh(comboType, seed, minMatch, maxPerSong,
+                                       grouped, filters, n); }}
+              title="Only pairs that are free to build: no meaningful time-stretch, no transpose, and a beat grid worth trusting. No beatgridding, no formant damage.">
+              <span className="k">Free builds</span>
+              <span>{freeOnly ? "On" : "Off"}</span>
+            </div>
             <div className="chip" onClick={() => cycleFilter(
               "genre", (filterOpts?.genres || []).map((g) => g.genre))}
               title="Pairs containing a track of this genre, on either side">
@@ -540,6 +639,22 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
           title="Keyboard shortcuts for judging by ear">
           <span className="k">Keys</span><span className="mono">?</span>
         </div>
+        {batchJobId ? (
+          <JobBadge jobId={batchJobId} onComplete={(job) => {
+            setBatchJobId(null);
+            if (job.status === "completed") setBatchToken(job.id);
+          }} />
+        ) : batchToken ? (
+          <a className="btn" href={api.sessionArchiveUrl(batchToken)}
+            target="_blank" rel="noreferrer"
+            onClick={() => setBatchToken(null)}>↓ download sessions</a>
+        ) : (
+          <button className="btn" onClick={exportTopSessions}
+            disabled={candidates.length === 0}
+            title="Export the top rows of this list as FL session folders: both stems conformed to the target tempo and key, trimmed to the chosen sections, aligned so bar 1 is at 0:00. Drop into FL at 0:00 with no nudging.">
+            ↓ Export top {Math.min(BATCH_EXPORT_N, candidates.length)}
+          </button>
+        )}
         {scoreJobId ? (
           <JobBadge jobId={scoreJobId} onComplete={() => { setScoreJobId(null); refresh(); }} />
         ) : (
@@ -656,6 +771,30 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                     <div className="relation-chips">
                       <span className="rel-chip" style={{ color: kr.tagColor, background: kr.tagBg }}>{kr.tag}</span>
                       <span className="rel-chip bpm">{bpmTag(c.vocal_bpm, c.inst_bpm)}</span>
+                      {c.harmonic_confidence != null && (
+                        <span className="rel-chip harmony"
+                          title={`Harmonic fit measured by cross-correlating the two sections' chroma over all 12 transpositions — not inferred from the Camelot wheel. Recommended shift ${c.harmonic_shift >= 0 ? "+" : ""}${c.harmonic_shift} st, confidence ${(c.harmonic_confidence * 100).toFixed(0)}%.`}>
+                          ♪ {c.harmonic_shift >= 0 ? "+" : ""}{c.harmonic_shift}
+                        </span>
+                      )}
+                      {!!c.bass_clash && (
+                        <span className="rel-chip bass-clash"
+                          title="The bed's bass root sits a semitone or tritone from the vocal's tonic. High-pass the bed around 120 Hz and let the vocal track's low end carry it — the most common reason a key-compatible mashup still sounds wrong.">
+                          bass clash
+                        </span>
+                      )}
+                      {(c.reasons || []).slice(0, 3).map((r, i) => (
+                        <span key={i} className={`rel-chip reason ${r.direction}`}
+                          title="Why the learned scorer placed this row here. Without a why, a plausible-looking list is indistinguishable from a good one.">
+                          {r.direction === "up" ? "+" : "−"} {r.label}
+                        </span>
+                      ))}
+                      {c.effort_label && (
+                        <span className={`rel-chip effort ${EFFORT_TONE[c.effort_label]}`}
+                          title={`How much work this costs to build${c.effort_reason ? ` — ${c.effort_reason}` : " — nothing to fix"}. The match percentage says whether it fits; this says what it takes.`}>
+                          {c.effort_label}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="pair-side bed">

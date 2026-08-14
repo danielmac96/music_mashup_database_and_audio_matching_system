@@ -28,6 +28,13 @@ log = logging.getLogger(__name__)
 
 _ALGOS = ("logreg", "gbm")
 
+# Two mashups lifted from the same Big Bootie set are not independent samples:
+# the DJ's taste, the era, the tempo range and often the key are shared. A
+# random split puts siblings on both sides of the fold and reports an AUC that
+# says "I recognise this mix", not "I can rank a pair". Grouping by mix is the
+# only honest split, and the same reasoning makes every user judgment one group.
+CV_SPLITS = 5
+
 
 def _build_estimator(algo: str):
     """A fresh, unfitted estimator. logreg is scaled + class-balanced (robust on
@@ -37,8 +44,10 @@ def _build_estimator(algo: str):
     from sklearn.preprocessing import StandardScaler
 
     if algo == "gbm":
-        from sklearn.ensemble import GradientBoostingClassifier
-        return GradientBoostingClassifier(random_state=42)
+        # HistGradientBoosting over the older GradientBoosting: it handles the
+        # NaN-free-but-sparse feature matrix faster and is what T2.4 asks for.
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        return HistGradientBoostingClassifier(random_state=42)
     return Pipeline([
         ("scale", StandardScaler()),
         ("clf", LogisticRegression(class_weight="balanced", max_iter=1000)),
@@ -88,10 +97,7 @@ def train(dataset_id: int, algo: str = "logreg", db_path: Path = DB_PATH) -> dic
         if not path.exists():
             raise ValueError(f"dataset file missing: {path}")
 
-        data = np.load(path, allow_pickle=True)
-        X = np.asarray(data["X"], dtype=np.float64)
-        y = np.asarray(data["y"], dtype=np.int64)
-        feature_names = [str(n) for n in data["feature_names"].tolist()]
+        X, y, feature_names, groups = _load_dataset(path)
 
         n_pos, n_neg = int((y == 1).sum()), int((y == 0).sum())
         if n_pos < 1 or n_neg < 1:
@@ -103,23 +109,25 @@ def train(dataset_id: int, algo: str = "logreg", db_path: Path = DB_PATH) -> dic
                 f"only {len(y)} examples — ingest more documented mixes before "
                 "training (need a handful of positives).")
 
-        # Held-out split when both classes have room to spare; else evaluate
-        # in-sample (small-data regime) and flag it.
+        # Held-out evaluation when both classes have room to spare; else
+        # evaluate in-sample (small-data regime) and flag it honestly.
         in_sample = n_pos < 2 or n_neg < 2 or len(y) < 16
         estimator = _build_estimator(algo)
         if in_sample:
             estimator.fit(X, y)
             metrics = _metrics(estimator, X, y)
             metrics["in_sample"] = True
+            metrics["cv"] = None
         else:
-            from sklearn.model_selection import train_test_split
-            X_tr, X_te, y_tr, y_te = train_test_split(
-                X, y, test_size=0.25, stratify=y, random_state=42)
-            estimator.fit(X_tr, y_tr)
-            metrics = _metrics(estimator, X_te, y_te)
+            metrics = _grouped_cv_metrics(algo, X, y, groups)
             metrics["in_sample"] = False
             # Refit on all data for the deployed artifact (more signal to serve).
             estimator.fit(X, y)
+
+        # Calibrate so the displayed percentage is a real probability. Without
+        # this a "82%" is an arbitrary monotone score and the Min-match slider
+        # means nothing across models.
+        estimator = _calibrate(estimator, X, y, in_sample)
 
         name = f"pairwise_{ds['name']}"
         row = conn.execute(
@@ -262,3 +270,153 @@ def _coerce(val) -> float:
     except (TypeError, ValueError):
         return 0.0
     return f if np.isfinite(f) else 0.0
+
+
+def _grouped_cv_metrics(algo: str, X, y, groups) -> dict:
+    """Cross-validated metrics, grouped so siblings never straddle a fold.
+
+    Falls back to a stratified split when there are too few groups to split on
+    — reported in the returned dict rather than silently, because "AUC 0.9 on
+    two groups" and "AUC 0.9 on seventeen" are very different claims.
+    """
+    import numpy as np
+    from sklearn.model_selection import GroupKFold, StratifiedKFold
+
+    n_groups = len(set(groups)) if groups else 0
+    use_groups = groups is not None and n_groups >= 2
+    n_splits = min(CV_SPLITS, n_groups if use_groups else 5,
+                   int(min((y == 1).sum(), (y == 0).sum())))
+    n_splits = max(2, n_splits)
+
+    if use_groups:
+        splitter = GroupKFold(n_splits=min(n_splits, n_groups))
+        split_iter = splitter.split(X, y, groups=np.asarray(groups))
+        scheme = f"GroupKFold({min(n_splits, n_groups)}) by mix"
+    else:
+        splitter = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        split_iter = splitter.split(X, y)
+        scheme = f"StratifiedKFold({n_splits}) — too few groups to split by mix"
+
+    folds = []
+    for tr, te in split_iter:
+        if len(set(y[te].tolist())) < 2 or len(set(y[tr].tolist())) < 2:
+            continue
+        est = _build_estimator(algo)
+        est.fit(X[tr], y[tr])
+        folds.append(_metrics(est, X[te], y[te]))
+
+    if not folds:
+        est = _build_estimator(algo)
+        est.fit(X, y)
+        out = _metrics(est, X, y)
+        out["cv"] = {"scheme": "none — no fold had both classes", "n_folds": 0,
+                     "n_groups": n_groups}
+        return out
+
+    def _mean(key):
+        vals = [f[key] for f in folds if f.get(key) is not None]
+        return round(float(sum(vals) / len(vals)), 4) if vals else None
+
+    return {
+        "n_eval": sum(f["n_eval"] for f in folds),
+        "precision": _mean("precision"), "recall": _mean("recall"),
+        "f1": _mean("f1"), "roc_auc": _mean("roc_auc"), "pr_auc": _mean("pr_auc"),
+        "cv": {"scheme": scheme, "n_folds": len(folds), "n_groups": n_groups},
+    }
+
+
+def _calibrate(estimator, X, y, in_sample: bool):
+    """Wrap the fitted estimator so predict_proba is a real probability.
+
+    A raw margin is monotone but arbitrary: "82%" from a logistic regression and
+    "82%" from a boosted tree mean different things, and the Min-match slider
+    has to mean the same thing across models. Skipped in the small-data regime,
+    where calibration would fit noise.
+    """
+    if in_sample:
+        return estimator
+    try:
+        from sklearn.calibration import CalibratedClassifierCV
+        calibrated = CalibratedClassifierCV(estimator, method="isotonic", cv=3)
+        calibrated.fit(X, y)
+        return calibrated
+    except Exception:  # noqa: BLE001
+        log.warning("calibration failed; serving the uncalibrated estimator",
+                    exc_info=True)
+        return estimator
+
+
+def feature_contributions(feats: dict, bundle: dict, top_n: int = 3) -> list:
+    """The features pushing this pair up or down, for the row's "why".
+
+    Without this you cannot tell a well-ranked list from a plausible-looking
+    one, and you will not trust it enough to skip auditioning. Returns
+    [{feature, direction, weight}], strongest first. Empty when the model shape
+    does not expose usable coefficients — better nothing than a fabricated
+    explanation.
+    """
+    import numpy as np
+
+    names = bundle.get("feature_names") or []
+    if not names:
+        return []
+    x = np.asarray([float(feats.get(n) or 0.0) for n in names], dtype=np.float64)
+
+    est = bundle.get("estimator")
+    coef = None
+    # Unwrap calibration and pipeline layers to find a linear model.
+    for candidate in (est, getattr(est, "estimator", None)):
+        if candidate is None:
+            continue
+        inner = candidate
+        if hasattr(inner, "named_steps"):
+            inner = list(inner.named_steps.values())[-1]
+        if hasattr(inner, "coef_"):
+            coef = np.asarray(inner.coef_).ravel()
+            break
+    if coef is None or coef.shape[0] != x.shape[0]:
+        return []
+
+    contrib = coef * x
+    order = np.argsort(-np.abs(contrib))[:top_n]
+    return [
+        {"feature": names[i],
+         "direction": "up" if contrib[i] >= 0 else "down",
+         "weight": round(float(abs(contrib[i])), 4)}
+        for i in order if abs(contrib[i]) > 1e-9
+    ]
+
+
+def _load_dataset(path: Path):
+    """(X, y, feature_names, groups) from a dataset artifact.
+
+    CSV is what build_dataset writes now (T2.5). .npz is still read so datasets
+    built before that keep training — a stored artifact is a record of what a
+    model was trained on, and silently refusing to load one would strand it.
+    """
+    import numpy as np
+
+    if path.suffix == ".npz":
+        data = np.load(path, allow_pickle=True)
+        return (np.asarray(data["X"], dtype=np.float64),
+                np.asarray(data["y"], dtype=np.int64),
+                [str(n) for n in data["feature_names"].tolist()],
+                ([str(g) for g in data["groups"].tolist()]
+                 if "groups" in data.files else None))
+
+    import csv
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.reader(fh))
+    if len(rows) < 2:
+        raise ValueError(f"dataset {path.name} has no rows")
+    header = rows[0]
+    if header[-2:] != ["label", "group"]:
+        raise ValueError(f"dataset {path.name} is missing the label/group columns")
+    feature_names = header[:-2]
+    X, y, groups = [], [], []
+    for r in rows[1:]:
+        X.append([float(v) for v in r[:len(feature_names)]])
+        y.append(int(float(r[-2])))
+        groups.append(r[-1])
+    return (np.asarray(X, dtype=np.float64), np.asarray(y, dtype=np.int64),
+            feature_names, groups)

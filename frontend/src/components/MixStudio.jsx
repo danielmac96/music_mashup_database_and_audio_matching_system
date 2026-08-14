@@ -48,7 +48,16 @@ const LANE_COLORS = [
   { line: "163,230,53" },   // lime
 ];
 
-const STEM_LABEL = { vocals: "VOX", instrumental: "INST", full: "FULL" };
+const STEM_LABEL = {
+  vocals: "VOX", instrumental: "INST", full: "FULL",
+  drums: "DRM", bass: "BAS", other: "OTH",
+};
+// Order the stem switches offer. drums/bass/other only exist for tracks
+// separated in four-stem mode (Phase D); the buttons disable themselves
+// otherwise, which is also how the user discovers the mode exists. They are
+// what make the real producer moves possible — drop the bed's bass and keep the
+// vocal track's, or swap the bed's drums for a tighter kit.
+const STEM_ORDER = ["vocals", "instrumental", "drums", "bass", "other", "full"];
 const VOCAL_BPM_CONFIDENCE_MIN = 0.35; // mirror of backend fallback threshold
 const MIN_PPS = 4, MAX_PPS = 240;
 const SNAP_PX = 12;
@@ -311,6 +320,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
   const [error, setError] = useState(null);
   const [exportJobId, setExportJobId] = useState(null);
   const [exportToken, setExportToken] = useState(null);
+  const [sessionJobId, setSessionJobId] = useState(null);
+  const [sessionToken, setSessionToken] = useState(null);
   const [dragSnapped, setDragSnapped] = useState(false);
   const [restored, setRestored] = useState(false);
 
@@ -890,6 +901,32 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
     } catch (e) { setError(e.message); }
   };
 
+  // The FL session export is a vocal-over-instrumental pair, not an arbitrary
+  // arrangement: it bakes one tempo and one transpose into two files. Take the
+  // first audible lane of each kind — which is exactly what "Audition → Studio"
+  // seeds — and leave the button disabled when the arrangement is not that
+  // shape, since there would be no single right answer.
+  const sessionPair = (() => {
+    const audible = lanes.filter((l) => !l.muted && l.gain > 0);
+    const v = audible.find((l) => l.stem === "vocals");
+    const i = audible.find((l) => l.stem === "instrumental");
+    return v && i && v.songId !== i.songId
+      ? { vocalId: v.songId, instId: i.songId }
+      : null;
+  })();
+
+  const handleSessionExport = async () => {
+    if (!sessionPair) return;
+    setError(null);
+    try {
+      const { job_id } = await api.startSessionExport(
+        sessionPair.vocalId, sessionPair.instId);
+      setSessionToken(null);
+      setSessionJobId(job_id);
+      toast("Rendering FL session (conformed stems + click)…");
+    } catch (e) { setError(e.message); }
+  };
+
   // ── derived / picker ────────────────────────────────────────────────────
   const playheadX = (position - viewStart) * pps;
   const pickerList = tracks
@@ -1009,6 +1046,25 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
             ↓ download mixdown
           </a>
         )}
+        <button className="export-btn" onClick={handleSessionExport}
+          disabled={sessionJobId != null || !sessionPair}
+          title={sessionPair
+            ? "Export both stems conformed to the project tempo and key, trimmed to the chosen sections and aligned so bar 1 is at 0:00 — drop into FL at 0:00, no nudging. Includes a click track and the recipe."
+            : "Needs one audible vocal lane and one audible instrumental lane from different tracks."}>
+          ↓ Export FL session
+        </button>
+        {sessionJobId && (
+          <JobBadge jobId={sessionJobId} onComplete={(job) => {
+            setSessionJobId(null);
+            if (job.status === "completed") setSessionToken(job.id);
+          }} />
+        )}
+        {sessionToken && (
+          <a href={api.sessionArchiveUrl(sessionToken)} target="_blank" rel="noreferrer"
+            className="muted" style={{ fontSize: 12 }}>
+            ↓ download session
+          </a>
+        )}
       </div>
 
       {/* ── timeline ── */}
@@ -1047,9 +1103,12 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
                             the lane keeps its placement, so you can hear the
                             same arrangement with a different layer. */}
                         <span className="lh-stem-seg" onClick={(e) => e.stopPropagation()}>
-                          {["vocals", "instrumental", "full"].map((s) => {
+                          {STEM_ORDER.map((s) => {
                             const src = tracks.find((t) => t.id === l.songId);
                             const ok = Boolean(src?.stems?.[s]);
+                            // Hide four-stem buttons entirely for two-stem
+                            // tracks rather than showing five dead controls.
+                            if (!ok && !["vocals", "instrumental", "full"].includes(s)) return null;
                             return (
                               <button key={s} disabled={!ok || l.stem === s}
                                 className={l.stem === s ? "active" : ""}
@@ -1214,7 +1273,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
                 <KeyChip camelot={t.features.full.camelot} style={{ fontSize: 11, padding: "2px 6px" }} />
               )}
               <div className="studio-stem-btns">
-                {["vocals", "instrumental", "full"].map((s) => (
+                {STEM_ORDER.filter((s) => t.stems?.[s]
+                    || ["vocals", "instrumental", "full"].includes(s)).map((s) => (
                   <button key={s} disabled={!t.stems?.[s]}
                     title={t.stems?.[s] ? `Add ${s} lane` : `No ${s} audio yet`}
                     onClick={() => { addLane(t, s); setPicker(false); }}>

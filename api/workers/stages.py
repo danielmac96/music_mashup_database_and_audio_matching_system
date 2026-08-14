@@ -148,7 +148,7 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
 # ── Stem separation ───────────────────────────────────────────────────────────
 
 def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
-    from config import current_stem_separator
+    from config import current_stem_mode, current_stem_separator
     from stems.separate import separate, separator_tag
 
     conn = get_conn()
@@ -170,18 +170,22 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
         update_song_error(song_id, "error_stems", msg)
         raise StageError(msg)
 
-    # If stems on disk were made by a DIFFERENT engine than the one now
-    # configured, re-separate rather than silently reusing the old files.
+    # If stems on disk were made by a DIFFERENT engine — or a different number
+    # of sources — than what is now configured, re-separate rather than silently
+    # reusing the old files. Two-stem output is not wrong, it is just missing
+    # three of the four sources the collision features need.
     requested = current_stem_separator()
+    mode = current_stem_mode()
+    wanted_tag = separator_tag(requested, mode)
     prior_tag = existing_tags.get("vocals") or existing_tags.get("instrumental")
-    force = bool(prior_tag) and not str(prior_tag).startswith(f"{requested}:")
+    force = bool(prior_tag) and str(prior_tag) != wanted_tag
 
     try:
         with _STAGE_GATES["stems"]:
             stems = separate(
                 song_id=row["id"], title=row["title"], audio_path=raw_path,
                 artist=row["artist"] or "", on_progress=on_progress,
-                separator=requested, force=force,
+                separator=requested, force=force, mode=mode,
             )
     except Exception as exc:  # noqa: BLE001
         log.exception("separate raised")
@@ -196,13 +200,16 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
 
     # separator=None means existing files were reused → keep the DB's tag.
     # Untagged reused stems predate the MDX option, so they are Demucs-made.
-    tag = stems.get("separator") or prior_tag or separator_tag("demucs")
-    upsert_stem(song_id, "vocals", str(stems["vocals"]), separator=tag)
-    upsert_stem(song_id, "instrumental", str(stems["instrumental"]), separator=tag)
+    tag = stems.get("separator") or prior_tag or separator_tag("demucs", "two")
+    written = {}
+    for kind in ("vocals", "instrumental", "drums", "bass", "other"):
+        path = stems.get(kind)
+        if path:
+            upsert_stem(song_id, kind, str(path), separator=tag)
+            written[kind] = str(path)
     upsert_stem(song_id, "full", str(raw_path))
     update_song_status(song_id, "stemmed")
-    return {"vocals": str(stems["vocals"]), "instrumental": str(stems["instrumental"]),
-            "separator": tag}
+    return {**written, "separator": tag}
 
 
 # ── Feature analysis ──────────────────────────────────────────────────────────
@@ -246,6 +253,20 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
             if not features:
                 failed.append(stem_type)
                 continue
+            # Phase D: where this stem sits in the spectrum, and — on the
+            # instrumental — how much of it is still voice. A bed that still
+            # carries its own topline is not a usable bed, and nothing in the
+            # four sub-scores can see that.
+            try:
+                from analysis.quality import band_energy, residual_vocal_ratio
+                features["band_energy"] = band_energy(path)
+                if stem_type == "instrumental":
+                    features["residual_vocal_ratio"] = residual_vocal_ratio(
+                        Path(stem_paths["vocals"]) if stem_paths.get("vocals") else None,
+                        path)
+            except Exception:  # noqa: BLE001
+                log.exception("band/residual features failed for %s/%s",
+                              song_id, stem_type)
             upsert_features(song_id, stem_type, features.copy())
             analysed.append(stem_type)
 
@@ -254,6 +275,24 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         raise StageError("Analysis failed for every stem")
 
     update_song_status(song_id, "analysed")
+
+    # Phase D: how well the separator did on this track. Runs after the loop so
+    # every stem path is known, and after sections exist where they do (the
+    # noise floor is measured in the parts with no voice in them).
+    try:
+        _measure_stem_quality(song_id, stem_paths, on_progress)
+    except Exception:  # noqa: BLE001
+        log.exception("stem quality failed for %s", song_id)
+
+    # Near-duplicate grouping (A.2). Needs the mean MFCC this stage just wrote,
+    # so it runs here rather than at download. Never fatal: a track without a
+    # cluster is one that might pair with its own Extended Mix, not a failure.
+    try:
+        from matcher.dedup import rebuild_variant_clusters
+        rebuild_variant_clusters()
+    except Exception:  # noqa: BLE001
+        log.exception("variant clustering failed for %s", song_id)
+
     return {"analysed_stems": analysed, "failed_stems": failed}
 
 
@@ -329,3 +368,38 @@ def _persist_hooks(song_id: int, sections: list) -> dict:
         except Exception:  # noqa: BLE001
             log.exception("hook selection failed for song %s stem %s", song_id, stem)
     return out
+
+
+def _measure_stem_quality(song_id: int, stem_paths: dict,
+                          on_progress: ProgressCb = None) -> None:
+    """Score each separated stem's quality and store it on the stems row.
+
+    Not status-bearing and never fatal: a stem with no quality number is one the
+    hard filter will not demote, which is the safe direction. The complementary
+    stem is passed so bleed can be measured, and the sections with no voice in
+    them are passed so the noise floor is measured where the stem should be
+    silent.
+    """
+    from analysis.quality import quiet_windows_for, stem_quality
+    from database.models import get_sections, update_stem_quality
+
+    full = stem_paths.get("full")
+    if not full or not Path(full).exists():
+        return
+    quiet = quiet_windows_for(get_sections(song_id))
+
+    complements = {"vocals": "instrumental", "instrumental": "vocals"}
+    for stem_type in ("vocals", "instrumental", "drums", "bass", "other"):
+        fp = stem_paths.get(stem_type)
+        if not fp or not Path(fp).exists():
+            continue
+        if on_progress:
+            on_progress(None, f"Measuring {stem_type} stem quality…")
+        other = stem_paths.get(complements.get(stem_type, ""))
+        metrics = stem_quality(
+            Path(fp), Path(full),
+            other_path=Path(other) if other and Path(other).exists() else None,
+            # Only a vocal stem has a defensible "should be silent" region.
+            quiet_windows=quiet if stem_type == "vocals" else None,
+        )
+        update_stem_quality(song_id, stem_type, metrics)

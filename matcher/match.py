@@ -21,6 +21,8 @@ from typing import Optional, List, Dict
 # it has to be, so the library-stats cache can read features without threading a
 # handle through every scoring call.
 from database.models import DB_PATH, get_all_features
+from analysis.quality import collision_block, collision_score
+from matcher.effort import effort_block
 
 log = logging.getLogger(__name__)
 
@@ -347,23 +349,54 @@ def sub_scores(feat_a: dict, feat_b: dict,
                                        feat_b.get("camelot", "")),
         "energy_score": energy_match(feat_a, feat_b, stats),
         "timbre_score": timbre_score(feat_a, feat_b, stats),
+        "collision_score": collision_score(feat_a.get("band_energy"),
+                                           feat_b.get("band_energy")),
     }
 
 
 def composite_score(feat_a: dict, feat_b: dict,
                     weights: Optional[Dict] = None,
-                    stats: Optional[LibraryStats] = None) -> dict:
+                    stats: Optional[LibraryStats] = None,
+                    effort_weight: Optional[float] = None) -> dict:
+    """The four sub-scores, the effort penalty, and the discounted total.
+
+    `total` is the weighted fit discounted by EFFORT_WEIGHT × effort, so a pair
+    that is free to build can outrank one that fits marginally better but needs
+    a destructive stretch or transpose. The effort components come back
+    alongside so callers can show which cost dominates.
+
+    Pass effort_weight=0.0 to rank on similarity alone.
+    """
     try:
         from config import MATCH_WEIGHTS
         weights = weights or MATCH_WEIGHTS
     except ImportError:
-        weights = {"bpm_score": 0.25, "key_score": 0.30,
-                   "energy_score": 0.20, "timbre_score": 0.25}
+        weights = {"bpm_score": 0.22, "key_score": 0.26,
+                   "energy_score": 0.17, "timbre_score": 0.20,
+                   "collision_score": 0.15}
+    if effort_weight is None:
+        try:
+            from config import EFFORT_WEIGHT
+            effort_weight = EFFORT_WEIGHT
+        except ImportError:
+            effort_weight = 0.0
 
     scores = sub_scores(feat_a, feat_b, stats)
-    scores["total"] = round(
-        sum(scores[k] * weights.get(k, 0) for k in scores), 4
-    )
+    fit = sum(scores[k] * weights.get(k, 0) for k in scores)
+
+    from matcher.effort import effort_penalty
+    stretch = compute_stretch_factor(feat_a.get("bpm"), feat_b.get("bpm"))
+    shift = compute_semitone_shift(feat_a.get("camelot") or "",
+                                   feat_b.get("camelot") or "")
+    effort, parts = effort_penalty(feat_a, feat_b, stretch, shift)
+
+    scores["total"] = round(fit * (1.0 - effort_weight * effort), 4)
+    scores["score_effort"] = round(effort, 4)
+    scores["effort_stretch"] = round(parts["stretch_cost"], 4)
+    scores["effort_pitch"] = round(parts["pitch_cost"], 4)
+    scores["effort_tempo_fold"] = round(parts["tempo_fold_cost"], 4)
+    scores["effort_grid"] = round(parts["grid_cost"], 4)
+    scores["effort_key_certainty"] = round(parts["key_certainty_cost"], 4)
     return scores
 
 
@@ -404,7 +437,19 @@ class _StemBlock:
     table. Doing it once turns the per-pair work into pure array arithmetic."""
 
     __slots__ = ("feats", "song_id", "bpm", "code", "loud_z", "loud_raw",
-                 "mfcc_v", "mfcc_norm", "mfcc_ok")
+                 "mfcc_v", "mfcc_norm", "mfcc_ok", "variant",
+                 "bpm_conf", "key_conf", "bands", "quality")
+
+
+def _conf(value) -> float:
+    """A 0-1 confidence, defaulting to 1.0 (certain) when absent or unusable."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(v):
+        return 1.0
+    return float(min(1.0, max(0.0, v)))
 
 
 def _camelot_index(feat_lists) -> tuple:
@@ -425,7 +470,19 @@ def _camelot_index(feat_lists) -> tuple:
                 codes.append(c)
     table = np.array([[camelot_score(a, b) for b in codes] for a in codes],
                      dtype=np.float64).reshape(len(codes), len(codes))
-    return index, table
+
+    # The recommended transpose over the same code pairs, derived from the same
+    # scalar function so the effort penalty charges exactly the shift the plan
+    # will tell the user to dial in. None (unknown key) reads as "not known"
+    # rather than as a free 0.
+    shifts = [[compute_semitone_shift(a, b) for b in codes] for a in codes]
+    shift_table = np.array(
+        [[0 if s is None else s for s in row] for row in shifts],
+        dtype=np.float64).reshape(len(codes), len(codes))
+    known_table = np.array(
+        [[s is not None for s in row] for row in shifts],
+        dtype=bool).reshape(len(codes), len(codes))
+    return index, table, shift_table, known_table
 
 
 def _prepare_block(feats: List[dict], code_index: Dict[str, int],
@@ -437,6 +494,35 @@ def _prepare_block(feats: List[dict], code_index: Dict[str, int],
     b.bpm = np.array([_bpm(f.get("bpm")) for f in feats], dtype=np.float64)
     b.code = np.array([code_index[str(f.get("camelot") or "")] for f in feats],
                       dtype=np.intp)
+
+    # Near-duplicate group (A.2). 0 means "no known variant" — sentinel rather
+    # than NaN so the comparison stays an integer equality, and chosen as 0
+    # because cluster ids are real song_ids and sqlite AUTOINCREMENT starts at 1.
+    b.variant = np.array([int(f.get("variant_cluster") or 0) for f in feats],
+                         dtype=np.int64)
+
+    # Effort inputs (Phase C). A missing confidence means the track was analysed
+    # before the column existed; treat it as certain rather than retroactively
+    # penalising every old track — matching matcher.effort's scalar default.
+    b.bpm_conf = np.array(
+        [_conf(f.get("bpm_confidence")) for f in feats], dtype=np.float64)
+    b.key_conf = np.array(
+        [_conf(f.get("key_confidence")) for f in feats], dtype=np.float64)
+
+    # Phase D: band occupancy (all-zero row = unmeasured, which collision_block
+    # reads as the neutral 0.5) and this stem's separation quality.
+    from analysis.quality import N_BANDS
+    bands = np.zeros((n, N_BANDS), dtype=np.float64)
+    for idx, f in enumerate(feats):
+        be = f.get("band_energy") or []
+        if len(be) == N_BANDS:
+            bands[idx] = np.asarray(be, dtype=np.float64)
+    b.bands = bands
+    # NULL quality means "not measured", which must not be read as "bad" — a
+    # library analysed before Phase D would otherwise vanish from the list.
+    b.quality = np.array(
+        [1.0 if f.get("stem_quality") is None else float(f["stem_quality"])
+         for f in feats], dtype=np.float64)
 
     # Energy: the z-score when the library has a reference for this stem kind,
     # otherwise NaN — which selects the raw-ratio fallback, exactly as
@@ -537,10 +623,40 @@ def _timbre_block(a: _StemBlock, b: _StemBlock, rows: slice,
     return np.where(usable, out, 0.5)
 
 
+def _effective_bpm_block(a_bpm: np.ndarray, b_bpm: np.ndarray):
+    """(effective bed tempo, folded?) over every pair.
+
+    Mirrors effective_bpm's `min((b, b/2, b*2), key=…)`, which resolves ties in
+    that order: the bed as written wins unless halving is strictly closer, and
+    doubling only wins when it beats both."""
+    A = a_bpm[:, None]
+    B = b_bpm[None, :]
+    d0, dh, dd = np.abs(A - B), np.abs(A - B / 2.0), np.abs(A - B * 2.0)
+    eff = np.where(dh < d0, B / 2.0, np.broadcast_to(B, d0.shape).astype(np.float64))
+    eff = np.where(dd < np.minimum(d0, dh), B * 2.0, eff)
+    usable = (A > 0) & (B > 0)
+    eff = np.where(usable, eff, 0.0)
+    folded = usable & (np.abs(eff - B) > 1e-9)
+    return eff, folded
+
+
+def _stretch_block(a_bpm: np.ndarray, eff: np.ndarray) -> np.ndarray:
+    """compute_stretch_factor over every pair, including its rounding — the
+    persisted effort must charge the same stretch the plan prints. 0 marks
+    'unknown', which the effort block charges at full cost."""
+    A = a_bpm[:, None]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        s = np.where((A > 0) & (eff > 0), A / np.where(eff > 0, eff, 1.0), 0.0)
+    return np.round(s, 4)
+
+
 def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
                        stats: LibraryStats, key_table: np.ndarray,
+                       shift_table: np.ndarray, shift_known: np.ndarray,
                        bpm_max: float, key_min: Optional[float],
                        upper_triangle: bool, weights: Dict,
+                       effort_weight: float = 0.0,
+                       quality_min: float = 0.0,
                        on_block=None):
     """Yield (top_idx, bed_idx, scores) for every pair that passes the gate.
 
@@ -559,6 +675,7 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
     w_key = weights.get("key_score", 0)
     w_energy = weights.get("energy_score", 0)
     w_timbre = weights.get("timbre_score", 0)
+    w_collision = weights.get("collision_score", 0)
 
     for start in range(0, n_top, _BLOCK_ROWS):
         rows = slice(start, min(start + _BLOCK_ROWS, n_top))
@@ -573,12 +690,46 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
         ids_b = bed.song_id[None, :]
         keep &= (ids_a < ids_b) if upper_triangle else (ids_a != ids_b)
 
+        # Same work, different upload (Original/Extended/Radio/remix/re-upload).
+        # These agree on every sub-score by construction, so without this they
+        # take the top of the list with pairings that are not mashups. 0 is the
+        # "no known variant" sentinel and must never match itself.
+        va = top.variant[rows][:, None]
+        vb = bed.variant[None, :]
+        keep &= ~((va == vb) & (va > 0))
+
+        # An unusable top stem is not a candidate however well it matches: a
+        # bleeding, smeared acapella near the top of the list is what stops the
+        # list being trusted. Unmeasured quality is 1.0, so a pre-Phase-D
+        # library is unaffected.
+        if quality_min > 0:
+            keep &= (top.quality[rows][:, None] >= quality_min)
+
         if keep.any():
             bpm_s = _bpm_score_block(diff)
             energy_s = _energy_block(top, bed, rows)
             timbre_s = _timbre_block(top, bed, rows, stats)
-            total = (bpm_s * w_bpm + key_s * w_key
-                     + energy_s * w_energy + timbre_s * w_timbre)
+            # Do the two sides stay out of each other's way in the spectrum?
+            # Four sub-scores of similarity cannot answer that, and a mid-heavy
+            # vocal over a mid-dense bed is inaudible however well they match.
+            collision_s = collision_block(top.bands[rows], bed.bands)
+            fit = (bpm_s * w_bpm + key_s * w_key
+                   + energy_s * w_energy + timbre_s * w_timbre
+                   + collision_s * w_collision)
+
+            # ── Effort (Phase C) ──────────────────────────────────────────────
+            # Similarity says whether the pair fits; this says what building it
+            # costs. score_total discounts the fit by it, so a free-to-build 78%
+            # can outrank an 84% that needs a 12% stretch and +5 semitones.
+            eff_bpm, folded = _effective_bpm_block(top.bpm[rows], bed.bpm)
+            stretch = _stretch_block(top.bpm[rows], eff_bpm)
+            semis = shift_table[np.ix_(top.code[rows], bed.code)]
+            known = shift_known[np.ix_(top.code[rows], bed.code)]
+            effort, parts = effort_block(
+                top.bpm[rows][:, None], bed.bpm[None, :], stretch, semis, known,
+                top.bpm_conf[rows][:, None], bed.bpm_conf[None, :],
+                top.key_conf[rows][:, None], bed.key_conf[None, :], folded)
+            total = fit * (1.0 - effort_weight * effort)
 
             # np.nonzero returns row-major index pairs, preserving the original
             # iteration order. round() stays Python's so the persisted total is
@@ -589,7 +740,15 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
                     "key_score": float(key_s[i, j]),
                     "energy_score": float(energy_s[i, j]),
                     "timbre_score": float(timbre_s[i, j]),
+                    "collision_score": float(collision_s[i, j]),
                     "total": round(float(total[i, j]), 4),
+                    "score_effort": round(float(effort[i, j]), 4),
+                    "effort_stretch": round(float(parts["stretch_cost"][i, j]), 4),
+                    "effort_pitch": round(float(parts["pitch_cost"][i, j]), 4),
+                    "effort_tempo_fold": round(float(parts["tempo_fold_cost"][i, j]), 4),
+                    "effort_grid": round(float(parts["grid_cost"][i, j]), 4),
+                    "effort_key_certainty": round(
+                        float(parts["key_certainty_cost"][i, j]), 4),
                 }
         if on_block is not None:
             on_block(rows.stop, n_top)
@@ -673,7 +832,9 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         bulk_upsert_candidates, candidate_row, clear_candidates,
         get_all_features, get_sections, DB_PATH,
     )
-    from config import BPM_MAX_DIFF, KEY_MIN_SCORE, MATCH_WEIGHTS
+    from config import (BPM_MAX_DIFF, BPM_MAX_DIFF_MODEL, EFFORT_WEIGHT,
+                        KEY_MIN_SCORE, MATCH_WEIGHTS,
+                        MAX_SECTION_PAIRS_PER_SONG_PAIR, STEM_QUALITY_MIN)
 
     db = db_path or DB_PATH
     bpm_max = float(bpm_max_diff) if bpm_max_diff is not None else BPM_MAX_DIFF
@@ -722,7 +883,7 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     vocals = [_with_full_bpm(v, full_by_song) for v in vocals]
     inst   = [_with_full_bpm(i, full_by_song) for i in inst]
 
-    code_index, key_table = _camelot_index([vocals, inst])
+    code_index, key_table, shift_table, shift_known = _camelot_index([vocals, inst])
     v_block = _prepare_block(vocals, code_index, lib_stats)
     i_block = _prepare_block(inst, code_index, lib_stats)
 
@@ -741,14 +902,19 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                 progress(pct, f"{label}: {done}/{total} tracks")
         return _on_block
 
-    def _run(top_block, bed_block, *, key_gate, upper_triangle, on_block):
+    def _run(top_block, bed_block, *, key_gate, upper_triangle, on_block,
+             bpm_gate=None):
         """Every surviving pair of one pass, as (top_feat, bed_feat, scores)."""
         return [
             (top_block.feats[ti], bed_block.feats[bi], scores)
             for ti, bi, scores in _iter_scored_pairs(
                 top_block, bed_block, stats=lib_stats, key_table=key_table,
-                bpm_max=bpm_max, key_min=key_gate,
+                shift_table=shift_table, shift_known=shift_known,
+                bpm_max=bpm_gate if bpm_gate is not None else bpm_max,
+                key_min=key_gate,
                 upper_triangle=upper_triangle, weights=MATCH_WEIGHTS,
+                effort_weight=EFFORT_WEIGHT,
+                quality_min=STEM_QUALITY_MIN,
                 on_block=on_block)
         ]
 
@@ -763,34 +929,56 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             _usable_cache[key] = usable_sections(_sections(song_id), vocal_side)
         return _usable_cache[key]
 
-    def _section_pair(top: dict, bed: dict) -> Optional[dict]:
-        """Which sections this pair is really about — None until both sides have
-        structure, in which case readers fall back to each track's hook."""
-        from matcher.sections import best_section_pair
+    def _section_pairs(top: dict, bed: dict) -> list:
+        """Every section pairing worth a row for these two songs (E.3).
+
+        Empty until both sides have structure, in which case the caller emits a
+        single section-less row and readers fall back to each track's hook.
+        """
+        from matcher.sections import top_section_pairs
         v_use = _usable(top["song_id"], True)
         i_use = _usable(bed["song_id"], False)
         if not v_use or not i_use:
-            return None
+            return []
         stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
-        return best_section_pair(v_use, i_use, stretch, prefiltered=True)
+        # The vocal sets the target tempo, so bars are counted at its BPM.
+        return top_section_pairs(v_use, i_use, stretch, prefiltered=True,
+                                 bpm=top.get("bpm"),
+                                 limit=MAX_SECTION_PAIRS_PER_SONG_PAIR)
 
     def _emit(pairs, combo_type, row_scorer, row_version, with_sections=False):
         nonlocal scored
         out = results[combo_type]
         for top, bed, scores in pairs:
-            section_pair = _section_pair(top, bed) if with_sections else None
-            rows.append(candidate_row(top, bed, scores, combo_type,
-                                      row_scorer, row_version, section_pair))
-            out.append(_build_row(top, bed, scores, section_pair))
-        scored += len(pairs)
+            # One row per section pair (E.3): "chorus over drop" and "verse over
+            # breakdown" are different ideas about the same two records.
+            section_pairs = _section_pairs(top, bed) if with_sections else []
+            for sp in (section_pairs or [None]):
+                s = dict(scores)
+                if sp is not None:
+                    _apply_measured_harmony(top, bed, s, sp, _sections,
+                                            MATCH_WEIGHTS, EFFORT_WEIGHT)
+                    _apply_section_fit(s, sp, EFFORT_WEIGHT)
+                rows.append(candidate_row(top, bed, s, combo_type,
+                                          row_scorer, row_version, sp))
+                out.append(_build_row(top, bed, s, sp))
+                scored += 1
 
     # ── vocal over instrumental ───────────────────────────────────────────────
     # This is the only combo the learned model scores (it was trained on
     # documented vocal-over-bed mashups). The model path widens the gate to the
     # BPM window alone, then replaces total with the model's probability — the
     # four heuristic sub-scores stay for display either way.
+    # The gate bounds the matrix; it must not express taste the model is
+    # supposed to learn. On the model path the key half is already off, and the
+    # tempo half widens too — otherwise the model can never see, let alone
+    # learn, a pair the heuristic rejected on tempo alone. An explicit
+    # bpm_max_diff from the caller always wins.
+    model_bpm_gate = (max(bpm_max, BPM_MAX_DIFF_MODEL)
+                      if use_model and bpm_max_diff is None else None)
     voi = _run(v_block, i_block,
                key_gate=None if use_model else key_min, upper_triangle=False,
+               bpm_gate=model_bpm_gate,
                on_block=_report(0, 55, "Scoring vocal over instrumental"))
     if use_model:
         _apply_model_scores(voi, bundle, _sections, lib_stats,
@@ -1171,3 +1359,63 @@ def prep_fl_session(db_path=None, output_dir: str = "fl_session",
         created += 1
 
     log.info(f"  FL session folders created: {created}  →  {out.resolve()}")
+
+def _apply_measured_harmony(top: dict, bed: dict, scores: dict,
+                            section_pair: dict, sections_of,
+                            weights: Dict, effort_weight: float) -> None:
+    """Replace the Camelot key_score with the MEASURED harmonic fit (Phase E).
+
+    The block scorer works on whole-track Camelot codes because that is what
+    vectorises. Once the winning section pair is known, the two sections'
+    stored chroma give a better answer to the same question: not "are these
+    scales compatible" but "do these notes agree, and at what transposition".
+
+    Mutates `scores` in place — key_score, the total, and the harmony fields the
+    row carries — and does nothing at all when either section has no chroma, so
+    a library analysed before Phase E ranks exactly as before.
+    """
+    from matcher.harmony import section_harmony
+
+    v_idx = section_pair.get("vocal_section_idx")
+    b_idx = section_pair.get("inst_section_idx")
+    if v_idx is None or b_idx is None:
+        return
+    v_sec = next((s for s in sections_of(top["song_id"])
+                  if s.get("section_index") == v_idx), None)
+    b_sec = next((s for s in sections_of(bed["song_id"])
+                  if s.get("section_index") == b_idx), None)
+    h = section_harmony(v_sec, b_sec)
+    if not h["known"]:
+        return
+
+    scores["key_score"] = h["harmonic_fit"]
+    scores["harmonic_shift"] = h["shift"]
+    scores["harmonic_confidence"] = round(h["confidence"], 4)
+    scores["bass_clash"] = 1 if h["bass_clash"] else 0
+
+    fit = sum(scores[k] * weights.get(k, 0) for k in weights)
+    effort = scores.get("score_effort") or 0.0
+    scores["total"] = round(fit * (1.0 - effort_weight * effort), 4)
+
+
+def _apply_section_fit(scores: dict, section_pair: dict,
+                       effort_weight: float) -> None:
+    """Blend the section fit into the total (E.3).
+
+    While the row was a SONG pair and the section was chosen afterwards, folding
+    the section fit in would have been double-counting a post-hoc annotation —
+    which is what T3.3's "selects and describes; it must not re-rank" was
+    protecting against. Now the row IS the section pair, so how well those two
+    sections cover each other is part of what is being ranked.
+
+    Mutates `scores` in place, and does nothing when the pair carries no fit.
+    """
+    from config import MATCH_WEIGHTS, SECTION_WEIGHT
+
+    fit_section = section_pair.get("score_section")
+    if fit_section is None:
+        return
+    whole = sum(scores[k] * MATCH_WEIGHTS.get(k, 0) for k in MATCH_WEIGHTS)
+    blended = (1.0 - SECTION_WEIGHT) * whole + SECTION_WEIGHT * float(fit_section)
+    effort = scores.get("score_effort") or 0.0
+    scores["total"] = round(blended * (1.0 - effort_weight * effort), 4)

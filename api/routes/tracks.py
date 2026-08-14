@@ -21,7 +21,9 @@ from api.workers import (
 
 router = APIRouter()
 
-_STEM_TYPES = {"full", "vocals", "instrumental"}
+# Four-stem separation (Phase D) adds drums/bass/other. They exist only for
+# tracks separated in four-stem mode; the audio route 404s otherwise.
+_STEM_TYPES = {"full", "vocals", "instrumental", "drums", "bass", "other"}
 _KEY_NAMES = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"}
 _MODES = {"major", "minor"}
 _AUDIO_MEDIA = {
@@ -68,7 +70,7 @@ def _stems_by_song() -> dict[int, dict[str, str]]:
     separators: dict[int, str] = {}
     for r in rows:
         out.setdefault(r["song_id"], {})[r["stem_type"]] = r["file_path"]
-        if r["separator"] and r["stem_type"] in ("vocals", "instrumental"):
+        if r["separator"] and r["stem_type"] != "full":
             separators[r["song_id"]] = r["separator"]
     for sid, tag in separators.items():
         out[sid]["__separator__"] = tag
@@ -105,6 +107,15 @@ def list_tracks() -> dict:
     features_inst   = _features_by_song("instrumental")
     section_counts  = _section_counts_by_song()
 
+    # How many uploads of the same work each track has (A.2). Sent as a count
+    # rather than the raw cluster id so the UI can say "3 versions" without a
+    # second request.
+    variant_sizes: dict = {}
+    for s in songs:
+        cid = s.get("variant_cluster")
+        if cid:
+            variant_sizes[cid] = variant_sizes.get(cid, 0) + 1
+
     rows = []
     for s in songs:
         sid = s["id"]
@@ -124,11 +135,15 @@ def list_tracks() -> dict:
                 "full": has_full,
                 "vocals": "vocals" in stem_paths,
                 "instrumental": "instrumental" in stem_paths,
+                "drums": "drums" in stem_paths,
+                "bass": "bass" in stem_paths,
+                "other": "other" in stem_paths,
                 # e.g. "demucs:htdemucs" / "mdx:UVR-MDX-NET-Inst_HQ_3"
                 "separator": stem_paths.get("__separator__"),
             },
             "features": feats or None,
             "section_count": section_counts.get(sid, 0),
+            "variant_count": variant_sizes.get(s.get("variant_cluster"), 0),
         })
     return {"count": len(rows), "tracks": rows}
 

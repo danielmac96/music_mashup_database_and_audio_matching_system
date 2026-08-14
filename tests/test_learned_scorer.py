@@ -267,3 +267,299 @@ def test_train_rejects_unknown_dataset(db_path):
     init_db(db_path)
     with pytest.raises(ValueError, match="not found"):
         train(999, db_path=db_path)
+
+
+# ── A.1: pair_feedback as a training source ──────────────────────────────────
+
+def test_feedback_verdicts_become_training_rows(seeded):
+    """The user's ✓/✗ judgments are the highest-signal labels in the system.
+    They must reach the dataset, with 'no' as an explicit hard negative rather
+    than merely being withheld from the negative pool."""
+    from database.models import get_conn, upsert_pair_feedback
+    from matcher.features import build_dataset
+    import json
+
+    db_path, ids = seeded
+    # 3 loves the mixes do not document, and 2 rejections.
+    upsert_pair_feedback(ids[2], ids[1], "love", db_path=db_path)
+    upsert_pair_feedback(ids[4], ids[3], "ok", db_path=db_path)
+    upsert_pair_feedback(ids[6], ids[5], "love", db_path=db_path)
+    upsert_pair_feedback(ids[2], ids[3], "no", db_path=db_path)
+    upsert_pair_feedback(ids[4], ids[5], "no", db_path=db_path)
+
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    # 3 documented + 3 user positives.
+    assert ds["n_pos_mixes"] == 3
+    assert ds["n_pos_user"] == 3
+    assert ds["n_pos"] == 6
+    # Both rejections are carried as hard negatives, on top of the sampled ones.
+    assert ds["n_neg_user"] == 2
+    assert ds["n_neg"] == ds["n_neg_user"] + ds["n_neg_sampled"]
+
+    conn = get_conn(db_path)
+    row = conn.execute("SELECT config_json FROM datasets WHERE id=?",
+                       (ds["id"],)).fetchone()
+    conn.close()
+    cfg = json.loads(row["config_json"])
+    assert cfg["n_pos_user"] == 3 and cfg["n_neg_user"] == 2
+
+
+def test_rejected_pair_is_never_a_positive(seeded):
+    """A documented mashup the user rejected by ear is not a positive. Their
+    taste is the target; a contradictory label pair teaches nothing."""
+    from database.models import upsert_pair_feedback
+    from matcher.features import build_dataset
+    db_path, ids = seeded
+    # ids[1] over ids[2] is a trusted documented positive in the fixture.
+    upsert_pair_feedback(ids[1], ids[2], "no", db_path=db_path)
+
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    assert ds["n_pos_mixes"] == 2          # was 3
+    assert ds["n_neg_user"] == 1
+
+
+def _read_dataset(path):
+    """The dataset as a list of dicts. T2.5 writes CSV: a human can open it,
+    check the label balance and sort by a feature without a Python session."""
+    import csv
+    with open(path, newline="", encoding="utf-8") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_judged_pairs_never_sampled_as_negatives(seeded):
+    """A pair with a real label must not also be drawn as a random negative.
+
+    neg_ratio is set high enough to exhaust the pool, so n_neg_sampled reports
+    the pool size exactly: 6×6 − 6 self − 4 documented = 26, and one more comes
+    off for the judged pair."""
+    from database.models import upsert_pair_feedback
+    from matcher.features import build_dataset
+    db_path, ids = seeded
+
+    baseline = build_dataset(name="a", neg_ratio=100, seed=1, db_path=db_path)
+    assert baseline["n_neg_sampled"] == 26
+
+    upsert_pair_feedback(ids[2], ids[1], "love", db_path=db_path)
+    ds = build_dataset(name="b", neg_ratio=100, seed=1, db_path=db_path)
+    assert ds["n_neg_sampled"] == 25
+
+    rows = _read_dataset(ds["file_path"])
+    assert len(rows) == ds["n_pos"] + ds["n_neg"]
+
+
+def test_groups_identify_mix_and_user_sources(seeded):
+    """GroupKFold needs a group per row: mashups from one mix are not
+    independent samples, and neither are the user's own judgments."""
+    from database.models import upsert_pair_feedback
+    from matcher.features import build_dataset
+    db_path, ids = seeded
+    upsert_pair_feedback(ids[2], ids[1], "love", db_path=db_path)
+
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    groups = [r["group"] for r in _read_dataset(ds["file_path"])]
+    assert any(g.startswith("mix:") for g in groups)
+    assert "user" in set(groups)
+
+
+def test_feedback_only_library_is_trainable(db_path):
+    """No documented mixes at all, but the user has judged pairs — that is a
+    trainable dataset. Previously this raised."""
+    from database.models import init_db, upsert_pair_feedback
+    from matcher.features import build_dataset
+    init_db(db_path)
+    a = _add_song(db_path, 1, bpm=120.0, camelot="8A")
+    b = _add_song(db_path, 2, bpm=121.0, camelot="8A")
+    upsert_pair_feedback(a, b, "love", db_path=db_path)
+
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    assert ds["n_pos"] == 1 and ds["n_pos_user"] == 1 and ds["n_pos_mixes"] == 0
+
+
+def test_pinned_sections_drive_the_feature_vector():
+    """A verdict is about the moment that was auditioned, so the section terms
+    must describe those sections, not the ones build_pairings would pick."""
+    from matcher.features import pair_features
+    top = {"bpm": 120.0, "camelot": "8A"}
+    bed = {"bpm": 120.0, "camelot": "8A"}
+    top_sections = [
+        {"section_index": 0, "start_sec": 0.0, "end_sec": 30.0,
+         "label": "chorus", "energy": 0.9, "vocal_presence": 0.9},
+        {"section_index": 1, "start_sec": 30.0, "end_sec": 60.0,
+         "label": "verse", "energy": 0.2, "vocal_presence": 0.4},
+    ]
+    bed_sections = [
+        {"section_index": 0, "start_sec": 0.0, "end_sec": 30.0,
+         "label": "drop", "energy": 0.9, "vocal_presence": 0.0},
+        {"section_index": 1, "start_sec": 30.0, "end_sec": 60.0,
+         "label": "verse", "energy": 0.1, "vocal_presence": 0.0},
+    ]
+    default = pair_features(top, bed, top_sections, bed_sections)
+    pinned = pair_features(top, bed, top_sections, bed_sections,
+                           top_section_idx=1, bed_section_idx=1)
+    # Default picks chorus-over-drop (vocal_presence 0.9); the pin picks the
+    # quiet verse pair (0.4).
+    assert default["top_section_vocal_presence"] == 0.9
+    assert pinned["top_section_vocal_presence"] == 0.4
+    assert pinned["hook_energy_delta"] != default["hook_energy_delta"]
+
+
+def test_unresolvable_pin_falls_back_to_default_pick():
+    """A stale section index (structure was re-detected since the verdict) must
+    not blank the section terms."""
+    from matcher.features import pair_features
+    top = {"bpm": 120.0, "camelot": "8A"}
+    bed = {"bpm": 120.0, "camelot": "8A"}
+    top_sections = [{"section_index": 0, "start_sec": 0.0, "end_sec": 30.0,
+                     "label": "chorus", "energy": 0.9, "vocal_presence": 0.9}]
+    bed_sections = [{"section_index": 0, "start_sec": 0.0, "end_sec": 30.0,
+                     "label": "drop", "energy": 0.8, "vocal_presence": 0.0}]
+    default = pair_features(top, bed, top_sections, bed_sections)
+    stale = pair_features(top, bed, top_sections, bed_sections,
+                          top_section_idx=99, bed_section_idx=99)
+    assert stale == default
+
+
+# ── Phase F: grouped CV, calibration, reasons, wider gate ────────────────────
+
+def test_cv_is_grouped_by_mix_not_random(seeded):
+    """Two mashups from one Big Bootie set are not independent samples: the
+    DJ's taste, era, tempo range and often key are shared. A random split puts
+    siblings on both sides and reports "I recognise this mix", not "I can rank
+    a pair"."""
+    from database.models import get_conn, upsert_pair_feedback
+    from matcher.features import build_dataset
+    from matcher.model_scorer import train
+    db_path, ids = seeded
+    # Enough user rows for a second group and a real held-out split.
+    for v, i in ((ids[2], ids[1]), (ids[4], ids[3]), (ids[6], ids[5])):
+        upsert_pair_feedback(v, i, "love", db_path=db_path)
+
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    model = train(ds["id"], algo="logreg", db_path=db_path)
+    cv = model["metrics"].get("cv")
+    assert cv is not None
+    assert cv["n_groups"] >= 2
+    assert cv["n_folds"] >= 1
+    assert "GroupKFold" in cv["scheme"] or "too few groups" in cv["scheme"]
+
+
+def test_metrics_report_whether_they_are_in_sample(seeded):
+    """An honest badge: "AUC 0.9 in-sample" and "AUC 0.9 cross-validated over
+    17 mixes" are very different claims."""
+    from matcher.features import build_dataset
+    from matcher.model_scorer import train
+    db_path, _ = seeded
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    model = train(ds["id"], algo="logreg", db_path=db_path)
+    assert "in_sample" in model["metrics"]
+
+
+def test_scores_stay_probabilities(seeded):
+    from matcher.features import pair_features
+    from matcher.model_scorer import model_score
+    db_path, _ = seeded
+    bundle = _activate_model(db_path)
+    from database.models import get_all_features
+    v = get_all_features(stem_type="vocals", db_path=db_path)[0]
+    i = get_all_features(stem_type="instrumental", db_path=db_path)[0]
+    p = model_score(pair_features(v, i, [], []), bundle)
+    assert 0.0 <= p <= 1.0
+
+
+def test_feature_contributions_explain_a_row(seeded):
+    """Without a why, a plausible-looking list is indistinguishable from a good
+    one — and you will not trust it enough to skip auditioning."""
+    from matcher.features import pair_features
+    from matcher.model_scorer import feature_contributions
+    db_path, _ = seeded
+    bundle = _activate_model(db_path)
+    from database.models import get_all_features
+    v = get_all_features(stem_type="vocals", db_path=db_path)[0]
+    i = get_all_features(stem_type="instrumental", db_path=db_path)[0]
+    reasons = feature_contributions(pair_features(v, i, [], []), bundle)
+    assert len(reasons) <= 3
+    for r in reasons:
+        assert r["feature"] in bundle["feature_names"]
+        assert r["direction"] in ("up", "down")
+        assert r["weight"] >= 0
+
+
+def test_contributions_are_empty_rather_than_invented():
+    """A model shape with no usable coefficients must produce no explanation
+    rather than a fabricated one."""
+    from matcher.model_scorer import feature_contributions
+    assert feature_contributions({}, {}) == []
+    assert feature_contributions({"a": 1.0}, {"feature_names": ["a"],
+                                              "estimator": object()}) == []
+
+
+def test_surprise_terms_measure_distance_not_similarity():
+    """Compatibility and contrast are different axes: tight on tempo and
+    harmony, far on genre and era."""
+    from matcher.features import surprise_terms
+    same = surprise_terms({"genre": "House", "release_year": 2015},
+                          {"genre": "House", "release_year": 2015})
+    far = surprise_terms({"genre": "Indie Rock", "release_year": 2003},
+                         {"genre": "Techno", "release_year": 2023})
+    assert same["surprise_genre"] == pytest.approx(0.0)
+    assert same["surprise_era"] == pytest.approx(0.0)
+    assert far["surprise_genre"] == pytest.approx(1.0)
+    assert far["surprise_era"] == pytest.approx(1.0)
+
+
+def test_related_genres_are_near_not_far():
+    """Free-text SoundCloud genres: "Future House" and "House" are neighbours."""
+    from matcher.features import surprise_terms
+    s = surprise_terms({"genre": "Future House"}, {"genre": "House"})
+    assert 0.0 < s["surprise_genre"] < 1.0
+
+
+def test_unknown_genre_or_era_is_neutral():
+    from matcher.features import surprise_terms
+    s = surprise_terms({}, {"genre": "House", "release_year": 2015})
+    assert s["surprise_genre"] == 0.5 and s["surprise_era"] == 0.5
+
+
+def test_model_path_widens_the_tempo_gate(seeded):
+    """The gate bounds the matrix; it must not express taste the model is meant
+    to learn. A pair the heuristic rejects on tempo must still reach the model."""
+    from config import BPM_MAX_DIFF, BPM_MAX_DIFF_MODEL
+    assert BPM_MAX_DIFF_MODEL > BPM_MAX_DIFF
+
+
+def test_dataset_is_csv_with_a_readable_header(seeded):
+    """T2.5 — a dataset is the one artifact a human might want to open."""
+    from matcher.features import FEATURE_NAMES, build_dataset
+    db_path, _ = seeded
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    assert Path(ds["file_path"]).suffix == ".csv"
+    rows = _read_dataset(ds["file_path"])
+    assert list(rows[0].keys()) == [*FEATURE_NAMES, "label", "group"]
+    assert {r["label"] for r in rows} == {"0", "1"}
+
+
+def test_legacy_npz_datasets_still_train(seeded, tmp_path):
+    """A stored artifact is the record of what a model was trained on; silently
+    refusing to load a pre-CSV one would strand it."""
+    import numpy as np
+    from database.models import get_conn
+    from matcher.features import FEATURE_NAMES, build_dataset
+    from matcher.model_scorer import train
+    db_path, _ = seeded
+
+    ds = build_dataset(name="bbm", neg_ratio=5, seed=1, db_path=db_path)
+    rows = _read_dataset(ds["file_path"])
+    X = np.array([[float(r[n]) for n in FEATURE_NAMES] for r in rows])
+    y = np.array([int(r["label"]) for r in rows])
+    legacy = tmp_path / "legacy.npz"
+    np.savez(legacy, X=X, y=y, groups=np.asarray([r["group"] for r in rows]),
+             feature_names=np.asarray(FEATURE_NAMES))
+
+    conn = get_conn(db_path)
+    conn.execute("UPDATE datasets SET file_path=? WHERE id=?",
+                 (str(legacy), ds["id"]))
+    conn.commit()
+    conn.close()
+
+    model = train(ds["id"], algo="logreg", db_path=db_path)
+    assert model["id"] and "roc_auc" in model["metrics"]

@@ -24,9 +24,17 @@ import tempfile
 from pathlib import Path
 
 from config import (
-    DATA_DIR, DEMUCS_MODEL, INSTRUMENTALS_DIR, MDX_MODEL, VOCALS_DIR,
-    current_stem_separator, sanitize_filename_chars,
+    BASS_DIR, DATA_DIR, DEMUCS_MODEL, DEMUCS_SOURCES, DRUMS_DIR,
+    INSTRUMENTALS_DIR, INSTRUMENTAL_SOURCES, MDX_MODEL, OTHER_DIR, STEM_FORMAT,
+    VOCALS_DIR, current_stem_mode, current_stem_separator,
+    sanitize_filename_chars,
 )
+
+# Where each Demucs source is written.
+_SOURCE_DIRS = {
+    "drums": DRUMS_DIR, "bass": BASS_DIR, "other": OTHER_DIR,
+    "vocals": VOCALS_DIR,
+}
 
 log = logging.getLogger(__name__)
 
@@ -39,47 +47,77 @@ ProgressCb = Optional[Callable[[Optional[int], str], None]]
 MDX_MODEL_DIR = DATA_DIR / "uvr_models"
 
 
-def separator_tag(separator: Optional[str] = None) -> str:
-    """Provenance tag for the given (or currently configured) engine."""
+def separator_tag(separator: Optional[str] = None,
+                  mode: Optional[str] = None) -> str:
+    """Provenance tag for the given (or currently configured) engine and mode.
+
+    The mode is part of the tag so stages.do_stems re-separates when the user
+    switches to four stems — the existing two-stem files on disk are not wrong,
+    they are just missing three of the four sources."""
     sep = separator or current_stem_separator()
     if sep == "mdx":
         return f"mdx:{Path(MDX_MODEL).stem}"
-    return f"demucs:{DEMUCS_MODEL}"
+    mode = mode or current_stem_mode()
+    return f"demucs:{DEMUCS_MODEL}:{4 if mode == 'four' else 2}"
 
 
 def separate(song_id: int, title: str, audio_path: Path,
              artist: str = "",
              on_progress: ProgressCb = None,
              separator: Optional[str] = None,
-             force: bool = False) -> Optional[Dict]:
+             force: bool = False,
+             mode: Optional[str] = None) -> Optional[Dict]:
     separator = separator or current_stem_separator()
     safe_title  = sanitize_filename_chars(title)[:40]
     safe_artist = sanitize_filename_chars(artist)[:30]
     safe_name   = f"{safe_title}_{safe_artist}"
 
-    vocals_path       = VOCALS_DIR        / f"{safe_name}_vocals.wav"
-    instrumental_path = INSTRUMENTALS_DIR / f"{safe_name}_instrumental.wav"
+    # MDX is a two-stem model; asking it for four would silently give two.
+    mode = "two" if separator == "mdx" else (mode or current_stem_mode())
 
-    if not force and vocals_path.exists() and instrumental_path.exists():
-        log.info(f"Stems already exist for: {title}")
-        if on_progress:
-            on_progress(100, "Stems already on disk")
-        # separator=None → reused as-is; caller keeps the DB's existing tag.
-        return {"vocals": vocals_path, "instrumental": instrumental_path,
-                "separator": None}
+    def _p(directory: Path, kind: str) -> Path:
+        return directory / f"{safe_name}_{kind}.{STEM_FORMAT}"
 
-    VOCALS_DIR.mkdir(parents=True, exist_ok=True)
-    INSTRUMENTALS_DIR.mkdir(parents=True, exist_ok=True)
+    # Legacy WAV stems from before STEM_FORMAT are still valid audio, so prefer
+    # an existing .wav over re-separating a track that already has one.
+    def _existing(directory: Path, kind: str) -> Optional[Path]:
+        for ext in (STEM_FORMAT, "wav"):
+            cand = directory / f"{safe_name}_{kind}.{ext}"
+            if cand.exists():
+                return cand
+        return None
+
+    wanted = (["vocals", "instrumental"] if mode == "two"
+              else ["vocals", "instrumental", "drums", "bass", "other"])
+    dirs = {"instrumental": INSTRUMENTALS_DIR, **_SOURCE_DIRS}
+
+    if not force:
+        have = {k: _existing(dirs[k], k) for k in wanted}
+        if all(have.values()):
+            log.info(f"Stems already exist for: {title}")
+            if on_progress:
+                on_progress(100, "Stems already on disk")
+            # separator=None → reused as-is; caller keeps the DB's existing tag.
+            return {**have, "separator": None}
+
+    for d in set(dirs.values()):
+        d.mkdir(parents=True, exist_ok=True)
+
+    vocals_path       = _p(VOCALS_DIR, "vocals")
+    instrumental_path = _p(INSTRUMENTALS_DIR, "instrumental")
 
     tmp_dir = Path(tempfile.gettempdir()) / f"mashup_tmp_{song_id:04d}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
 
     if separator == "mdx":
         result = _run_mdx(audio_path, tmp_dir, vocals_path, instrumental_path, on_progress)
+    elif mode == "four":
+        result = _run_demucs_four(audio_path, tmp_dir,
+                                  {k: _p(dirs[k], k) for k in wanted}, on_progress)
     else:
         result = _run_demucs(audio_path, tmp_dir, vocals_path, instrumental_path, on_progress)
     if result is not None:
-        result["separator"] = separator_tag(separator)
+        result["separator"] = separator_tag(separator, mode)
     return result
 
 
@@ -199,3 +237,98 @@ def _run_mdx(audio_path: Path, tmp_dir: Path,
 
     log.info(f"Stems ready: {vocals_path.name}, {instrumental_path.name}")
     return {"vocals": vocals_path, "instrumental": instrumental_path}
+
+
+def _run_demucs_four(audio_path: Path, tmp_dir: Path,
+                     out_paths: Dict[str, Path],
+                     on_progress: ProgressCb = None) -> Optional[Dict]:
+    """Full four-source Demucs: drums / bass / other / vocals.
+
+    Also writes `instrumental` as the sum of drums+bass+other, so every existing
+    consumer — the ranked list, the audition, Studio, the session export — keeps
+    working with no change. The four sources are what make a bed's residual
+    topline and its band occupancy measurable, and they are what let the user do
+    the actual producer move of dropping the bed's bass or swapping its drums.
+    """
+    from api.workers._progress import parse_demucs, stream_subprocess
+    log.info(f"Running Demucs ({DEMUCS_MODEL}, 4 stems) on: {audio_path.name}")
+
+    cmd = [
+        sys.executable, "-m", "demucs",
+        "-n", DEMUCS_MODEL,
+        "--out", str(tmp_dir),
+        str(audio_path),
+    ]
+
+    if on_progress:
+        on_progress(0, "Loading Demucs model (first run downloads ~400MB)…")
+
+    def _on_line(line: str) -> None:
+        if not on_progress:
+            return
+        pct = parse_demucs(line)
+        if pct is not None:
+            on_progress(pct, f"Separating 4 stems: {pct}%")
+        elif line.strip():
+            on_progress(None, line.strip()[:120])
+
+    try:
+        result = stream_subprocess(cmd, _on_line, timeout=3600)
+        if result.returncode != 0:
+            log.error(f"Demucs failed: {result.stdout[-500:]}")
+            return None
+    except FileNotFoundError:
+        log.error("Demucs not found. Install with: pip install demucs")
+        return None
+    except subprocess.TimeoutExpired:
+        log.error("Demucs timed out (>60 min)")
+        return None
+
+    demucs_out = tmp_dir / DEMUCS_MODEL / audio_path.stem
+    raw = {src: demucs_out / f"{src}.wav" for src in DEMUCS_SOURCES}
+    missing = [s for s, p in raw.items() if not p.exists()]
+    if missing:
+        log.error(f"Expected demucs sources missing in {demucs_out}: {missing}")
+        return None
+
+    try:
+        import numpy as np
+        import soundfile as sf
+    except ImportError:
+        log.error("Four-stem separation needs numpy + soundfile")
+        return None
+
+    if on_progress:
+        on_progress(92, "Writing stems…")
+
+    out: Dict[str, Path] = {}
+    try:
+        # Transcode each source to the configured format.
+        for src in DEMUCS_SOURCES:
+            data, sr = sf.read(str(raw[src]))
+            sf.write(str(out_paths[src]), data, sr)
+            out[src] = out_paths[src]
+
+        # instrumental = drums + bass + other, summed at the source sample rate.
+        # Demucs sources sum back to the original mix, so this is the same
+        # signal the two-stem path's no_vocals would have produced.
+        if on_progress:
+            on_progress(96, "Summing instrumental…")
+        mix = None
+        sr = None
+        for src in INSTRUMENTAL_SOURCES:
+            data, sr = sf.read(str(raw[src]))
+            mix = data if mix is None else mix + data
+        peak = float(np.max(np.abs(mix))) if mix is not None else 0.0
+        if peak > 1.0:
+            mix = mix / peak
+        sf.write(str(out_paths["instrumental"]), mix, sr)
+        out["instrumental"] = out_paths["instrumental"]
+    except Exception:  # noqa: BLE001
+        log.exception("failed writing four-stem output")
+        return None
+    finally:
+        shutil.rmtree(str(tmp_dir), ignore_errors=True)
+
+    log.info("Four stems ready: %s", ", ".join(sorted(out)))
+    return out

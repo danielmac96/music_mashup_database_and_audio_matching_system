@@ -1,6 +1,18 @@
 # CLAUDE.md — AI Assistant Guide
 
-current goal: The onboarding flow is built and working. Pasting a SoundCloud link into the
+current goal: Phases A–F of `docs/plans/roadmap/EXECUTION_PLAN_V2.md` are done —
+pair_feedback now trains the model, near-duplicate uploads are suppressed, mashups
+export as drop-in FL session folders, ranking accounts for build effort and spectral
+collision, harmony is measured from per-section chroma rather than looked up on the
+Camelot wheel, and the learned scorer is grouped-CV'd, calibrated and explainable.
+The candidate row is now the SECTION PAIR, not the song pair. Next: run the §5
+runbook (import the ~17 Big Bootie mixes), then Phase G — the wider combo taxonomy
+(three-way, double-drop, transitions) and the multi-song set builder.
+
+⚠ `ingest/match_score.py` was missing from the repo and is currently a
+reconstruction (commit 7beb26c) — replace it with your original if you have it.
+
+Earlier context: The onboarding flow is built and working. Pasting a SoundCloud link into the
 bar at the top of Library auto-processes every track through download → stems → analyze →
 structure via a bounded, resumable job queue (see readme "First run"). Phases 1–4 of
 `docs/plans/roadmap/execution_plan.md` are done: instant keyboard audition, repaired

@@ -89,7 +89,18 @@ def _step_tempo(y: np.ndarray, sr: int, hop_length: int) -> dict:
 def _step_key(y: np.ndarray, sr: int, hop_length: int) -> dict:
     import librosa
     chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length)
-    chroma_mean = chroma.mean(axis=1)
+    return key_from_chroma(chroma.mean(axis=1))
+
+
+def key_from_chroma(chroma_mean: np.ndarray) -> dict:
+    """Krumhansl key estimate + confidence from one 12-bin chroma vector.
+
+    Extracted from _step_key so Phase E can run the identical estimator on a
+    SECTION's chroma. A track has one key only in the sense that an average has
+    one value: real records modulate, and the chorus is frequently not the key
+    the whole-track mean reports.
+    """
+    chroma_mean = np.asarray(chroma_mean, dtype=float)
     major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09,
                                2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
     minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53,

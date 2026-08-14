@@ -16,12 +16,22 @@ from database.models import (
 
 from api import jobs
 from api.workers import match_worker
+from matcher.effort import dominant_component, effort_label
 from matcher.match import compute_semitone_shift, compute_stretch_factor
 from matcher.plan import build_mashup_plan
 
 router = APIRouter()
 
 _COMBO_TYPES = {"vocal_over_instrumental", "instrumental_over_instrumental"}
+
+# What the dominant effort component means in the DAW, for the chip's tooltip.
+_EFFORT_REASONS = {
+    "stretch_cost": "needs a big time-stretch",
+    "pitch_cost": "needs a wide transpose",
+    "tempo_fold_cost": "half/double-time — re-cut the bed's phrases",
+    "grid_cost": "weak beat grid — expect manual beatgridding",
+    "key_certainty_cost": "key is uncertain — the suggested shift is a guess",
+}
 
 
 @router.post("/score")
@@ -57,10 +67,36 @@ def scorer_status() -> dict:
     if not bundle:
         return {"scorer": "heuristic", "model_version": None, "auc": None}
     metrics = bundle.get("metrics") or {}
+    cv = metrics.get("cv") or {}
+
+    # What the model was actually trained on, so the badge is a claim and not a
+    # decoration. An AUC with no idea how many judgments or mixes are behind it
+    # invites more trust than it has earned.
+    counts: dict = {}
+    try:
+        from database.models import get_conn
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT config_json FROM datasets WHERE id=?",
+            (bundle.get("dataset_id"),)).fetchone()
+        n_judged = conn.execute("SELECT COUNT(*) FROM pair_feedback").fetchone()[0]
+        conn.close()
+        import json as _json
+        cfg = _json.loads((row["config_json"] if row else None) or "{}")
+        counts = {
+            "n_judgments": n_judged,
+            "n_mixes": max(0, (cfg.get("n_groups") or 0) - 1),  # "user" is one
+        }
+    except Exception:  # noqa: BLE001 — the badge is never worth a 500
+        counts = {}
+
     return {
         "scorer": "model",
         "model_version": bundle.get("version"),
         "auc": metrics.get("roc_auc"),
+        "in_sample": metrics.get("in_sample"),
+        "cv_scheme": cv.get("scheme"),
+        **counts,
     }
 
 
@@ -74,6 +110,22 @@ def _with_playback_terms(rows: list) -> list:
             r.get("vocal_camelot") or "", r.get("inst_camelot") or "")
         r["stretch_factor"] = compute_stretch_factor(
             r.get("vocal_bpm") or 0.0, r.get("inst_bpm") or 0.0)
+        # Phase C: the effort bucket and the cost that dominates it, derived
+        # here so the chip and its tooltip use one definition of "Heavy".
+        effort = r.get("score_effort")
+        if effort is None:
+            r["effort_label"] = None
+            r["effort_reason"] = None
+            continue
+        r["effort_label"] = effort_label(float(effort))
+        parts = {
+            "stretch_cost": r.get("effort_stretch") or 0.0,
+            "pitch_cost": r.get("effort_pitch") or 0.0,
+            "tempo_fold_cost": r.get("effort_tempo_fold") or 0.0,
+            "grid_cost": r.get("effort_grid") or 0.0,
+            "key_certainty_cost": r.get("effort_key_certainty") or 0.0,
+        }
+        r["effort_reason"] = _EFFORT_REASONS.get(dominant_component(parts))
     return rows
 
 
@@ -83,7 +135,10 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     inst_song_id: Optional[int] = None,
                     max_per_song: int = 3,
                     genre: str = "", era: str = "", energy: str = "",
-                    bpm_band: str = "", vocal_forward: bool = False) -> dict:
+                    bpm_band: str = "", vocal_forward: bool = False,
+                    max_effort: Optional[float] = None,
+                    order: str = "score",
+                    adventure: float = 0.0) -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -99,6 +154,12 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     if max_per_song < 0:
         raise HTTPException(status_code=400,
                             detail="max_per_song must be 0 or greater")
+    if order not in ("score", "uncertain"):
+        raise HTTPException(status_code=400,
+                            detail="order must be score|uncertain")
+    if not (0.0 <= adventure <= 1.0):
+        raise HTTPException(status_code=400,
+                            detail="adventure must be in [0, 1]")
     for value, allowed, name in ((era, ERA_BANDS, "era"),
                                  (energy, ENERGY_BANDS, "energy"),
                                  (bpm_band, BPM_BANDS, "bpm_band")):
@@ -112,10 +173,14 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
         max_per_song=max_per_song,
         genre=genre, era=era, energy=energy, bpm_band=bpm_band,
-        vocal_forward=vocal_forward,
+        vocal_forward=vocal_forward, max_effort=max_effort, order=order,
     )
-    return {"count": len(rows), "candidates": _with_playback_terms(rows),
-            "max_per_song": max_per_song}
+    rows = _with_reasons(_with_playback_terms(rows))
+    if adventure > 0 and order == "score":
+        rows = _reorder_by_surprise(rows, adventure)
+    return {"count": len(rows), "candidates": rows,
+            "max_per_song": max_per_song, "order": order,
+            "adventure": adventure}
 
 
 @router.get("/filters")
@@ -229,3 +294,156 @@ def get_plan(vocal_id: int, inst_id: int) -> dict:
     if plan is None:
         raise HTTPException(status_code=404, detail="song not found")
     return plan
+
+
+# ── Batch FL session export (B.3) ─────────────────────────────────────────────
+
+class BatchSessionRequest(BaseModel):
+    """Export the top N of the *currently filtered* list.
+
+    The filters are passed through rather than a list of ids so the export
+    matches what the user is looking at — including the diversity cap, which is
+    applied in Python after the SQL and so cannot be reproduced client-side.
+    """
+    top_n: int = 10
+    combo_type: str = "vocal_over_instrumental"
+    min_score: float = 0.0
+    max_per_song: int = 3
+    max_effort: Optional[float] = None
+    genre: str = ""
+    era: str = ""
+    energy: str = ""
+    bpm_band: str = ""
+    vocal_forward: bool = False
+
+
+@router.post("/session/batch")
+def queue_session_batch(req: BatchSessionRequest,
+                        background: BackgroundTasks) -> dict:
+    from api.workers import session_worker
+    from render.session import MAX_SESSIONS
+
+    if req.combo_type not in _COMBO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
+    top_n = max(1, min(req.top_n, MAX_SESSIONS))
+
+    rows = get_candidates_enriched(
+        combo_type=req.combo_type, min_score=req.min_score, limit=top_n,
+        max_per_song=req.max_per_song, genre=req.genre, era=req.era,
+        energy=req.energy, bpm_band=req.bpm_band,
+        vocal_forward=req.vocal_forward, max_effort=req.max_effort,
+    )
+    if not rows:
+        raise HTTPException(status_code=404,
+                            detail="no candidates match those filters")
+
+    pairs = [{"vocal_song_id": r["vocal_song_id"],
+              "inst_song_id": r["inst_song_id"]} for r in rows]
+    job_id = jobs.new_job(kind="session",
+                          message=f"Queued {len(pairs)} FL session exports")
+    background.add_task(session_worker.run_batch, job_id, pairs)
+    return {"job_id": job_id, "pair_count": len(pairs),
+            "archive_url": f"/api/studio/session/{job_id}/archive"}
+
+
+# ── Why a row ranks where it does (Phase F.3) ────────────────────────────────
+
+# Feature name → what it means on a row. Without this the chips would read
+# "bed_residual_vocal", which explains nothing to the person judging the pair.
+_REASON_LABELS = {
+    "bpm_score": "tempo agrees", "key_score": "keys agree",
+    "energy_score": "levels sit right", "timbre_score": "similar production",
+    "collision_score": "leaves room for the vocal",
+    "bed_residual_vocal": "bed has a residual lead",
+    "band_overlap_low": "low ends overlap", "band_overlap_mid": "mids overlap",
+    "band_overlap_high": "top ends overlap",
+    "duration_fit": "sections cover each other",
+    "top_section_vocal_presence": "vocal is forward in its section",
+    "hook_energy_delta": "energy gap between the sections",
+    "stretch_cost": "needs a time-stretch", "pitch_cost": "needs a transpose",
+    "tempo_fold_cost": "half/double-time", "grid_cost": "weak beat grid",
+    "key_certainty_cost": "key is uncertain",
+    "abs_semitone_shift": "transpose distance",
+    "camelot_distance": "key distance", "bpm_min_diff": "tempo distance",
+    "surprise_genre": "cross-genre", "surprise_era": "cross-era",
+    "surprise_timbre": "different sound world",
+}
+
+
+def _with_reasons(rows: list) -> list:
+    """Attach the top contributing features to each model-scored row.
+
+    Without a "why", you cannot tell a well-ranked list from a plausible-looking
+    one — and you will not trust it enough to skip auditioning. Silently a no-op
+    on the heuristic path and whenever the model shape exposes no usable
+    coefficients: a fabricated explanation is worse than none.
+    """
+    if not rows or not any(r.get("scorer") == "model" for r in rows):
+        return rows
+    try:
+        from database.models import get_all_features, get_sections
+        from matcher.features import pair_features
+        from matcher.match import _with_full_bpm, get_library_stats
+        from matcher.model_scorer import feature_contributions, load_active_model
+        bundle = load_active_model()
+        if not bundle:
+            return rows
+        stats = get_library_stats()
+        full = {f["song_id"]: f for f in get_all_features(stem_type="full")}
+        vocals = {f["song_id"]: _with_full_bpm(f, full)
+                  for f in get_all_features(stem_type="vocals")}
+        inst = {f["song_id"]: _with_full_bpm(f, full)
+                for f in get_all_features(stem_type="instrumental")}
+        sec_cache: dict = {}
+
+        def sections(sid):
+            if sid not in sec_cache:
+                sec_cache[sid] = get_sections(sid)
+            return sec_cache[sid]
+
+        for r in rows:
+            if r.get("scorer") != "model":
+                continue
+            top, bed = vocals.get(r["vocal_song_id"]), inst.get(r["inst_song_id"])
+            if not top or not bed:
+                continue
+            feats = pair_features(top, bed, sections(r["vocal_song_id"]),
+                                  sections(r["inst_song_id"]), stats,
+                                  top_section_idx=r.get("vocal_section_idx"),
+                                  bed_section_idx=r.get("inst_section_idx"))
+            r["reasons"] = [
+                {**c, "label": _REASON_LABELS.get(c["feature"], c["feature"])}
+                for c in feature_contributions(feats, bundle)
+            ]
+    except Exception:  # noqa: BLE001 — an explanation is a nicety, never a 500
+        import logging
+        logging.getLogger(__name__).warning("reasons failed", exc_info=True)
+    return rows
+
+
+def _reorder_by_surprise(rows: list, adventure: float) -> list:
+    """Trade compatibility against contrast, under the user's control (F.4).
+
+    Every sub-score rewards sameness, so the top of the list drifts towards the
+    safest possible output: same genre, same era, same production. This blends
+    a surprise term back in — cross-genre, cross-era distance — but ONLY as a
+    reordering of pairs that already cleared every technical gate. It cannot
+    surface a pair that does not fit; it decides which of the fitting ones you
+    see first.
+    """
+    from matcher.features import surprise_terms
+
+    for r in rows:
+        s = surprise_terms(
+            {"genre": r.get("vocal_genre"), "release_year": r.get("vocal_year")},
+            {"genre": r.get("inst_genre"), "release_year": r.get("inst_year")})
+        # Timbre distance is already on the row as its similarity score.
+        surprise = (s["surprise_genre"] + s["surprise_era"]
+                    + (1.0 - (r.get("score_timbre") or 0.5))) / 3.0
+        r["surprise"] = round(float(surprise), 4)
+        r["_rank"] = ((1.0 - adventure) * (r.get("score_total") or 0.0)
+                      + adventure * surprise)
+    rows.sort(key=lambda r: r.pop("_rank", 0.0), reverse=True)
+    return rows

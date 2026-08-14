@@ -84,6 +84,11 @@ AUDIO_DIR         = Path(_audio_val)
 RAW_DIR           = AUDIO_DIR / "full_song"
 VOCALS_DIR        = AUDIO_DIR / "vocals"
 INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
+# Four-stem separation (Phase D). `instrumental` is still written as the sum of
+# these three, so every existing consumer keeps working unchanged.
+DRUMS_DIR         = AUDIO_DIR / "drums"
+BASS_DIR          = AUDIO_DIR / "bass"
+OTHER_DIR         = AUDIO_DIR / "other"
 PREVIEWS_DIR      = AUDIO_DIR / "previews"   # rendered Studio mixdowns (render/mixdown.py)
 HOOKS_DIR         = AUDIO_DIR / "hooks"      # 16-bar preview clips (api/workers/hook_worker.py)
 
@@ -108,7 +113,8 @@ CONFIGURED = AUDIO_ROOT_SOURCE in ("env", "settings")
 def ensure_dirs() -> None:
     """Create all working directories. Called at import (best-effort) and again
     after the wizard saves settings, so a freshly-chosen library folder exists."""
-    for d in (RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR, PREVIEWS_DIR, HOOKS_DIR,
+    for d in (RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR, DRUMS_DIR, BASS_DIR,
+              OTHER_DIR, PREVIEWS_DIR, HOOKS_DIR,
               SNAPSHOTS_DIR, DATASETS_DIR, MODELS_DIR):
         d.mkdir(parents=True, exist_ok=True)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -188,6 +194,40 @@ _sep_val, STEM_SEPARATOR_SOURCE = _resolve(
 STEM_SEPARATOR = str(_sep_val).lower() if str(_sep_val).lower() in _SEPARATORS else "demucs"
 
 
+# How many stems to split into (Phase D).
+#   "two"  — vocals + instrumental. What the app shipped with; MDX only does this.
+#   "four" — drums / bass / other / vocals, PLUS a summed instrumental so every
+#            existing consumer is unchanged. Demucs only.
+# Four stems are what make the two arrangement problems visible: a bed that
+# still contains its own topline, and which frequency bands each side occupies.
+# They also unlock the real producer move — drop the bed's bass, keep the
+# vocal track's; swap the drums.
+_STEM_MODES = ("two", "four")
+_mode_val, STEM_MODE_SOURCE = _resolve("MASHUP_STEM_MODE", "stem_mode", "two")
+STEM_MODE = str(_mode_val).lower() if str(_mode_val).lower() in _STEM_MODES else "two"
+
+# Stems are written as FLAC: lossless, and roughly half the size of WAV. At
+# ~900 tracks x 4 stems that is the difference between ~160 GB and ~80 GB.
+STEM_FORMAT = "flac"
+
+# The four Demucs sources, and the three that sum to the instrumental.
+DEMUCS_SOURCES = ("drums", "bass", "other", "vocals")
+INSTRUMENTAL_SOURCES = ("drums", "bass", "other")
+
+
+def current_stem_mode() -> str:
+    """The stem mode to use RIGHT NOW, re-reading settings.json like
+    current_stem_separator. MDX cannot do four stems, so an mdx run is always
+    two regardless of this setting."""
+    env = os.environ.get("MASHUP_STEM_MODE")
+    if env and env.lower() in _STEM_MODES:
+        return env.lower()
+    val = _load_settings().get("stem_mode")
+    if isinstance(val, str) and val.lower() in _STEM_MODES:
+        return val.lower()
+    return STEM_MODE
+
+
 def current_stem_separator() -> str:
     """The separator to use RIGHT NOW. Unlike the import-time constant, this
     re-reads settings.json so the UI toggle applies to the next separation
@@ -217,11 +257,22 @@ SECTION_SIM_THRESHOLD = 0.92   # chroma cosine sim above which two sections
 # ── Matching ──────────────────────────────────────────────────────────────────
 # Weights used in the composite similarity score (must sum to 1.0)
 MATCH_WEIGHTS = {
-    "bpm_score":      0.25,
-    "key_score":      0.30,
-    "energy_score":   0.20,
-    "timbre_score":   0.25,
+    "bpm_score":       0.22,
+    "key_score":       0.26,
+    "energy_score":    0.17,
+    "timbre_score":    0.20,
+    # Phase D — do the two sides stay out of each other's way in the spectrum?
+    # The other four all measure similarity; a mid-heavy vocal over a mid-dense
+    # bed can score well on every one of them and still be inaudible. The other
+    # weights are scaled down proportionally so the total still sums to 1.
+    "collision_score": 0.15,
 }
+
+# A top stem below this quality is not offered at all, however well it matches:
+# a bleeding, smeared acapella near the top of the list is what stops the list
+# being trusted. NULL quality (analysed before Phase D) counts as 1.0, so an
+# existing library is unaffected until it is re-analysed.
+STEM_QUALITY_MIN = 0.35
 TOP_K_RESULTS = 10
 
 # Minimum thresholds — pairs that don't meet BOTH are skipped entirely
@@ -229,6 +280,13 @@ TOP_K_RESULTS = 10
 BPM_MAX_DIFF   = 10.0   # e.g. 120 BPM pairs with anything 110–130 (or half/double)
 # Key: minimum Camelot score to qualify (0.0–1.0)
 KEY_MIN_SCORE  = 0.55   # allows perfect + adjacent + relative major/minor matches
+
+# The gate exists to bound the matrix, not to express taste. On the MODEL path
+# the key half is already dropped (documented mashups sometimes break it); this
+# widens the tempo half too, so the model can learn that you happily halftime a
+# 150 BPM vocal over a 75 BPM bed. Candidate generation stays tractable because
+# bucketing, not this threshold, is what keeps the matrix small.
+BPM_MAX_DIFF_MODEL = 20.0
 
 # ── Mix training-data quality gate ────────────────────────────────────────────
 # A mix-track auto-linked by yt-dlp search (resolve_status='auto') only counts as
@@ -308,3 +366,27 @@ def format_duration(secs) -> str:
     if h:
         return f"{h}:{m:02d}:{sec:02d}"
     return f"{m}:{sec:02d}"
+
+# ── Effort penalty (Phase C) ──────────────────────────────────────────────────
+# The four MATCH_WEIGHTS sub-scores all measure similarity; none of them
+# measures what a mashup COSTS to build. score_total is discounted by
+# EFFORT_WEIGHT × effort, where effort is 0 (same tempo, same key, confident
+# grid) to 1 (maximum stretch, maximum transpose, unusable grid).
+#
+# 0.25 is deliberately modest: it lets a free-to-build pair overtake one that is
+# a few points better on paper, without letting convenience beat a genuinely
+# stronger match. Set to 0.0 to rank on similarity alone.
+EFFORT_WEIGHT = 0.25
+
+# ── Section-pair ranking (E.3) ────────────────────────────────────────────────
+# The candidate row is the SECTION PAIR now, so how well those two sections fit
+# each other is part of what the row IS, not a post-hoc annotation on it. Before
+# E.3 this was deliberately excluded from score_total (T3.3's "selects and
+# describes; it must not re-rank") — correct while the row was a song pair and
+# the section was chosen afterwards, wrong once the section is the unit.
+SECTION_WEIGHT = 0.25
+
+# How many section pairs one song pair may contribute. Two tracks with six
+# usable sections each would otherwise produce 36 rows and drown everything
+# else; three is enough to show that a pair works in more than one place.
+MAX_SECTION_PAIRS_PER_SONG_PAIR = 3

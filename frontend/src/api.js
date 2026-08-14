@@ -166,6 +166,14 @@ export const api = {
     maxPerSong = 3,
     // T3.5 filters — also server-side, and for the same reason.
     genre = "", era = "", energy = "", bpmBand = "", vocalForward = false,
+    // Phase C — cap on how much work a pair costs to build (0-1). null = any.
+    maxEffort = null,
+    // Phase F — "score" (best first) or "uncertain" (the model's blind spots,
+    // where a verdict buys the most information per keypress).
+    order = "score",
+    // Phase F — 0 = safest fit first, 1 = most adventurous. Only reorders pairs
+    // that already cleared every technical gate; it never surfaces a bad fit.
+    adventure = 0,
   } = {}) => {
     const params = new URLSearchParams();
     if (comboType) params.set("combo_type", comboType);
@@ -174,6 +182,9 @@ export const api = {
     if (vocalSongId != null) params.set("vocal_song_id", String(vocalSongId));
     if (instSongId != null) params.set("inst_song_id", String(instSongId));
     params.set("max_per_song", String(maxPerSong));
+    if (maxEffort != null) params.set("max_effort", String(maxEffort));
+    if (order && order !== "score") params.set("order", order);
+    if (adventure > 0) params.set("adventure", String(adventure));
     if (genre) params.set("genre", genre);
     if (era) params.set("era", era);
     if (energy) params.set("energy", energy);
@@ -230,6 +241,27 @@ export const api = {
     }),
 
   mixdownAudioUrl: (token) => `/api/studio/mixdown/${token}/audio`,
+
+  // Export a mashup as an FL Studio session folder: both stems conformed to the
+  // target tempo and key and padded so bar 1 is at 0:00, plus a click, the
+  // recipe, and a session.json in the mixdown clip shape. A mixdown is a bounce;
+  // this is something you can actually mix.
+  startSessionExport: (vocalSongId, instSongId) =>
+    jsonFetch("/api/studio/session", {
+      method: "POST",
+      body: JSON.stringify({ vocal_song_id: vocalSongId, inst_song_id: instSongId }),
+    }),
+
+  // The same, for the top N of the currently filtered ranked list. Filters go to
+  // the server rather than a list of ids so the export matches what is on
+  // screen — including the diversity cap, which is applied after the SQL.
+  startBatchSessionExport: (opts = {}) =>
+    jsonFetch("/api/mashups/session/batch", {
+      method: "POST",
+      body: JSON.stringify(opts),
+    }),
+
+  sessionArchiveUrl: (token) => `/api/studio/session/${token}/archive`,
 
   // The Audition tab's export used to live here as startAuditionExport — a
   // fixed two-clip wrapper over this same endpoint, with its own duplicate of
@@ -330,6 +362,11 @@ export const api = {
     }),
 
   getModels: () => jsonFetch("/api/models"),
+
+  deactivateModel: (id) =>
+    jsonFetch(`/api/models/${id}/deactivate`, { method: "POST" }),
+
+  deleteModel: (id) => jsonFetch(`/api/models/${id}`, { method: "DELETE" }),
 
   trainModel: (datasetId) =>
     jsonFetch("/api/models/train", {

@@ -8,20 +8,38 @@ scoring falls back to the heuristic scorer, which needs no dataset.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from database.models import get_conn
+
+from api import jobs
+from api.workers import ml_worker
 
 router = APIRouter()
 
 
 @router.get("")
 def list_datasets() -> dict:
+    import json
+
     conn = get_conn()
-    rows = [dict(r) for r in conn.execute(
-        "SELECT id, name, version, n_pos, n_neg, neg_strategy, file_path, created_at "
-        "FROM datasets ORDER BY id DESC").fetchall()]
+    rows = []
+    for r in conn.execute(
+            "SELECT id, name, version, n_pos, n_neg, neg_strategy, config_json, "
+            "file_path, created_at FROM datasets ORDER BY id DESC").fetchall():
+        d = dict(r)
+        # Flatten the per-source counts (A.1) onto the row: how many positives
+        # came from documented mixes versus the user's own verdicts, and how
+        # many negatives were rejected by ear rather than sampled at random.
+        try:
+            cfg = json.loads(d.pop("config_json", None) or "{}")
+        except ValueError:
+            cfg = {}
+        for k in ("n_pos_mixes", "n_pos_user", "n_neg_user", "n_neg_sampled",
+                  "n_groups"):
+            d[k] = cfg.get(k)
+        rows.append(d)
     conn.close()
     return {"count": len(rows), "datasets": rows}
 
@@ -33,9 +51,14 @@ class BuildRequest(BaseModel):
 
 
 @router.post("/build")
-def build_dataset(req: BuildRequest) -> dict:
+def build_dataset(req: BuildRequest, background: BackgroundTasks) -> dict:
+    """Queue a dataset build (T2.5).
+
+    Runs as a background job rather than in the request: at the runbook's scale
+    this walks the whole feature table for every positive and every sampled
+    negative."""
     try:
-        from matcher.features import build_dataset as _build
+        import matcher.features  # noqa: F401
     except Exception as exc:  # noqa: BLE001 — stack absent: explain instead of a trace
         raise HTTPException(
             status_code=501,
@@ -44,8 +67,6 @@ def build_dataset(req: BuildRequest) -> dict:
                    f"({type(exc).__name__}: {exc}). Mashup scoring uses the "
                    "heuristic scorer, which needs no dataset.",
         )
-    try:
-        return _build(name=req.name, neg_ratio=req.neg_ratio, seed=req.seed)
-    except ValueError as exc:
-        # No trainable positives yet — an expected, actionable state.
-        raise HTTPException(status_code=400, detail=str(exc))
+    job_id = jobs.new_job(kind="dataset", message="Queued for dataset build")
+    background.add_task(ml_worker.build, job_id, req.name, req.neg_ratio, req.seed)
+    return {"job_id": job_id}

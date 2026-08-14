@@ -3,6 +3,7 @@ database/models.py — SQLite schema via raw sqlite3.
 Tables: songs, stems, features, sections, mashup_candidates.
 """
 from typing import Optional, List, Dict
+import re
 import sqlite3
 import json
 from pathlib import Path
@@ -276,6 +277,8 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
         _migrate_songs_columns(conn)
         _migrate_features_columns(conn)
         _migrate_candidates_columns(conn)
+        _migrate_sections_columns(conn)
+        _migrate_candidates_unique_key(conn)
         _migrate_stems_columns(conn)
         _migrate_mixtracks_columns(conn)
         _migrate_mashuppairs_columns(conn)
@@ -304,10 +307,24 @@ _SONGS_OPTIONAL_COLUMNS = (
     ("release_year", "INTEGER DEFAULT 0"),
     ("last_error", "TEXT"),
     ("source", "TEXT DEFAULT ''"),
+    # Near-duplicate grouping (A.2): the smallest song_id among this track's
+    # variants — Original/Extended/Radio/remix/re-upload of the same work.
+    # NULL means no known variant. Pair scoring drops pairs whose two sides
+    # share a non-NULL cluster: they are the same record, so they match
+    # perfectly on every sub-score and would otherwise fill the ranked list.
+    # Computed by matcher.dedup.rebuild_variant_clusters.
+    ("variant_cluster", "INTEGER"),
 )
 
 
 _FEATURES_OPTIONAL_COLUMNS = (
+    # Phase D — where this stem sits in the spectrum (8 log-spaced bands, each a
+    # fraction of total energy) and, on a bed, how much of it is still voice.
+    # The three scalar spectral features cannot express "these two both live in
+    # 400 Hz - 2 kHz", which is why a mid-heavy vocal over a mid-dense bed can
+    # score well on all four sub-scores and still be inaudible.
+    ("band_energy_json", "TEXT"),
+    ("residual_vocal_ratio", "REAL"),
     ("beat_times_json", "TEXT"),
     ("waveform_rms_json", "TEXT"),
     ("key_confidence", "REAL"),
@@ -323,6 +340,15 @@ _FEATURES_OPTIONAL_COLUMNS = (
 # for the "full" pseudo-stem (the original download, not a separation product).
 _STEMS_OPTIONAL_COLUMNS = (
     ("separator", "TEXT"),
+    # Phase D — how well the separator did on THIS file. Provenance says which
+    # engine ran; these say whether the result is usable. Without them a
+    # pristine studio acapella and an artefact-riddled mush rank identically,
+    # and one unusable vocal near the top is all it takes to stop trusting the
+    # list. NULL = not measured (analysed before these existed).
+    ("quality", "REAL"),        # 0-1 roll-up, 1 = clean
+    ("bleed", "REAL"),          # correlation with the complementary stem
+    ("hf_loss", "REAL"),        # top-end lost vs the full mix (the MDX smear)
+    ("noise_floor", "REAL"),    # residue where the stem should be silent
 )
 
 
@@ -402,7 +428,113 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("inst_section_start", "REAL"),
     ("inst_section_end", "REAL"),
     ("score_section", "REAL"),               # selection fit, NOT part of score_total
+    # Phase C — how much WORK this pair costs to build, 0 (free) to 1. The four
+    # sub-scores all measure similarity; none of them measures effort, but a
+    # 12% stretch and a +5 semitone shift are real costs a producer weighs
+    # against a slightly better match. score_effort discounts score_total; the
+    # components are stored so the UI can name the dominant cost.
+    ("score_collision", "REAL"),   # spectral complementarity (Phase D)
+    # Phase E — the MEASURED transpose and how much to trust it, from
+    # cross-correlating the two chosen sections' chroma. NULL when either
+    # section has no stored chroma, in which case score_key is still the
+    # Camelot lookup and the plan falls back to the derived shift.
+    ("harmonic_shift", "INTEGER"),
+    ("harmonic_confidence", "REAL"),
+    ("bass_clash", "INTEGER"),
+    ("score_effort", "REAL"),
+    ("effort_stretch", "REAL"),
+    ("effort_pitch", "REAL"),
+    ("effort_tempo_fold", "REAL"),
+    ("effort_grid", "REAL"),
+    ("effort_key_certainty", "REAL"),
 )
+
+# Effort columns, in the order candidate_row binds them.
+EFFORT_COLUMNS = (
+    "score_effort", "effort_stretch", "effort_pitch",
+    "effort_tempo_fold", "effort_grid", "effort_key_certainty",
+)
+
+# Phase E harmony columns, in the order candidate_row binds them.
+HARMONY_COLUMNS = ("harmonic_shift", "harmonic_confidence", "bass_clash")
+
+
+# Phase E — per-section harmonic data. structure.py already computes a
+# beat-synchronous chroma and then uses it only to count repeats; persisting it
+# is what lets a pair be judged on the harmony of the two SECTIONS that will
+# actually be layered rather than on a whole-track Camelot lookup.
+_SECTIONS_OPTIONAL_COLUMNS = (
+    ("chroma_json", "TEXT"),        # 12 bins, L2-normalised, from the full mix
+    ("bass_chroma_json", "TEXT"),   # same, band-passed 40-250 Hz
+    ("key", "TEXT"),
+    ("mode", "TEXT"),
+    ("camelot", "TEXT"),
+    ("key_confidence", "REAL"),
+)
+
+
+# E.3 — the candidate is the SECTION PAIR, not the song pair.
+#
+# The original UNIQUE(combo_type, vocal_song_id, inst_song_id) collapses every
+# section pairing of two songs into one row, so "chorus over drop" and "verse
+# over breakdown" could not both exist. Widening it needs a table rebuild
+# (SQLite cannot drop a table constraint), which is safe here precisely because
+# score_all_pairs truncates this table on every run and every durable thing the
+# user owns — pair_feedback, pair_hidden, track_excluded — deliberately lives
+# elsewhere. Nothing is lost; the next score refills it.
+#
+# COALESCE(-1) in the index because SQLite treats NULLs as distinct in a UNIQUE,
+# so the instrumental-over-instrumental rows (which carry no sections) would
+# otherwise be free to duplicate.
+_CANDIDATE_UNIQUE_INDEX = """
+    CREATE UNIQUE INDEX IF NOT EXISTS ux_candidates_section_pair
+        ON mashup_candidates(
+            combo_type, vocal_song_id, inst_song_id,
+            COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
+"""
+
+
+def _migrate_candidates_unique_key(conn: sqlite3.Connection) -> None:
+    """Move the candidate key from (song, song) to (song, section, song, section)."""
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' "
+        "AND name='mashup_candidates'").fetchone()
+    if not sql or "UNIQUE(combo_type, vocal_song_id, inst_song_id)" not in (sql[0] or ""):
+        conn.execute(_CANDIDATE_UNIQUE_INDEX)
+        return
+
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(mashup_candidates)").fetchall()]
+    col_list = ", ".join(cols)
+    new_ddl = sql[0].replace("mashup_candidates", "mashup_candidates_new", 1)
+    # Drop the old table-level constraint, with or without its leading comma.
+    new_ddl = re.sub(r",?\s*UNIQUE\(combo_type,\s*vocal_song_id,\s*inst_song_id\)",
+                     "", new_ddl)
+    # Guard against a trailing comma left behind by that removal.
+    new_ddl = re.sub(r",\s*\)\s*$", "\n)", new_ddl.strip())
+
+    conn.execute("DROP TABLE IF EXISTS mashup_candidates_new")
+    conn.execute(new_ddl)
+    # DISTINCT because the old key allowed only one row per song pair anyway;
+    # this is a straight carry-over, not a merge.
+    conn.execute(f"INSERT INTO mashup_candidates_new ({col_list}) "
+                 f"SELECT {col_list} FROM mashup_candidates")
+    conn.execute("DROP TABLE mashup_candidates")
+    conn.execute("ALTER TABLE mashup_candidates_new RENAME TO mashup_candidates")
+    conn.execute(_CANDIDATE_UNIQUE_INDEX)
+    for idx in ("CREATE INDEX IF NOT EXISTS idx_candidates_score ON mashup_candidates(score_total DESC)",
+                "CREATE INDEX IF NOT EXISTS idx_candidates_type ON mashup_candidates(combo_type)",
+                "CREATE INDEX IF NOT EXISTS idx_candidates_vocal ON mashup_candidates(vocal_song_id)",
+                "CREATE INDEX IF NOT EXISTS idx_candidates_inst ON mashup_candidates(inst_song_id)"):
+        conn.execute(idx)
+
+
+def _migrate_sections_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute(
+        "PRAGMA table_info(sections)").fetchall()}
+    for col, decl in _SECTIONS_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE sections ADD COLUMN {col} {decl}")
 
 
 def _migrate_candidates_columns(conn: sqlite3.Connection) -> None:
@@ -635,6 +767,23 @@ def upsert_stem(song_id: int, stem_type: str, file_path: str,
     conn.close()
 
 
+def update_stem_quality(song_id: int, stem_type: str, metrics: Dict,
+                        db_path: Path = DB_PATH) -> None:
+    """Store separation-quality metrics on an existing stems row (Phase D).
+
+    Deliberately not part of upsert_stem: quality is measured in the analysis
+    stage, long after the file is written, and upsert_stem would need a path it
+    does not have."""
+    conn = get_conn(db_path)
+    conn.execute(
+        """UPDATE stems SET quality=?, bleed=?, hf_loss=?, noise_floor=?
+           WHERE song_id=? AND stem_type=?""",
+        (metrics.get("quality"), metrics.get("bleed"), metrics.get("hf_loss"),
+         metrics.get("noise_floor"), song_id, stem_type))
+    conn.commit()
+    conn.close()
+
+
 def upsert_features(song_id: int, stem_type: str, features: dict,
                     db_path: Path = DB_PATH):
     mfcc = features.pop("mfcc", None)
@@ -643,6 +792,8 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
     beat_times_json = json.dumps(beat_times) if beat_times is not None else None
     waveform_rms = features.pop("waveform_rms", None)
     waveform_rms_json = json.dumps(waveform_rms) if waveform_rms is not None else None
+    band_energy = features.pop("band_energy", None)
+    band_energy_json = json.dumps(band_energy) if band_energy is not None else None
     conn = get_conn(db_path)
     conn.execute(
         """INSERT INTO features
@@ -650,8 +801,9 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
                 key_confidence, beat_phase, loudness_rms, energy, mfcc_json,
                 spectral_centroid, spectral_rolloff, zero_crossing_rate,
                 beat_times_json, waveform_rms_json,
+                band_energy_json, residual_vocal_ratio,
                 hook_start, hook_end, hook_role)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(song_id, stem_type) DO UPDATE SET
                bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
                key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
@@ -664,6 +816,8 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
                zero_crossing_rate=excluded.zero_crossing_rate,
                beat_times_json=excluded.beat_times_json,
                waveform_rms_json=excluded.waveform_rms_json,
+               band_energy_json=excluded.band_energy_json,
+               residual_vocal_ratio=excluded.residual_vocal_ratio,
                hook_start=excluded.hook_start, hook_end=excluded.hook_end,
                hook_role=excluded.hook_role""",
         (song_id, stem_type,
@@ -674,6 +828,7 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
          features.get("spectral_centroid"), features.get("spectral_rolloff"),
          features.get("zero_crossing_rate"),
          beat_times_json, waveform_rms_json,
+         band_energy_json, features.get("residual_vocal_ratio"),
          features.get("hook_start"), features.get("hook_end"),
          features.get("hook_role"))
     )
@@ -852,6 +1007,10 @@ def get_features_for_song(song_id: int, stem_type: str = "full",
         d["waveform_rms"] = json.loads(d.pop("waveform_rms_json"))
     else:
         d.pop("waveform_rms_json", None)
+    if d.get("band_energy_json"):
+        d["band_energy"] = json.loads(d.pop("band_energy_json"))
+    else:
+        d.pop("band_energy_json", None)
     return d
 
 
@@ -929,8 +1088,11 @@ def update_features_manual(song_id: int, *, bpm: Optional[float] = None,
 def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[Dict]:
     conn = get_conn(db_path)
     rows = conn.execute(
-        """SELECT f.*, s.title, s.artist
-           FROM features f JOIN songs s ON s.id=f.song_id
+        """SELECT f.*, s.title, s.artist, s.variant_cluster,
+                  st.quality AS stem_quality
+           FROM features f
+           JOIN songs s ON s.id=f.song_id
+           LEFT JOIN stems st ON st.song_id=f.song_id AND st.stem_type=f.stem_type
            WHERE f.stem_type=?""",
         (stem_type,)
     ).fetchall()
@@ -940,6 +1102,8 @@ def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[D
         d = dict(r)
         if d.get("mfcc_json"):
             d["mfcc"] = json.loads(d.pop("mfcc_json"))
+        if d.get("band_energy_json"):
+            d["band_energy"] = json.loads(d.pop("band_energy_json"))
         result.append(d)
     return result
 
@@ -956,8 +1120,10 @@ def replace_sections(song_id: int, sections: List[Dict],
     conn.executemany(
         """INSERT INTO sections
                (song_id, section_index, start_sec, end_sec, label,
-                energy, vocal_presence, repetition, confidence)
-           VALUES (?,?,?,?,?,?,?,?,?)""",
+                energy, vocal_presence, repetition, confidence,
+                chroma_json, bass_chroma_json, key, mode, camelot,
+                key_confidence)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 song_id, idx,
@@ -965,6 +1131,10 @@ def replace_sections(song_id: int, sections: List[Dict],
                 s.get("label", ""),
                 s.get("energy"), s.get("vocal_presence"),
                 int(s.get("repetition", 1)), s.get("confidence"),
+                json.dumps(s["chroma"]) if s.get("chroma") else None,
+                json.dumps(s["bass_chroma"]) if s.get("bass_chroma") else None,
+                s.get("key"), s.get("mode"), s.get("camelot"),
+                s.get("key_confidence"),
             )
             for idx, s in enumerate(sections)
         ],
@@ -980,7 +1150,19 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
         (song_id,),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        # Decode the Phase E chroma columns the same way features does, so
+        # callers never see a JSON string where a vector is expected.
+        for src, dest in (("chroma_json", "chroma"),
+                          ("bass_chroma_json", "bass_chroma")):
+            if d.get(src):
+                d[dest] = json.loads(d.pop(src))
+            else:
+                d.pop(src, None)
+        out.append(d)
+    return out
 
 
 def upsert_candidate(vocal: dict, inst: dict, scores: dict,
@@ -1011,14 +1193,19 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        inst_bpm, inst_key, inst_mode, inst_camelot,
        inst_loudness_rms, inst_energy,
        score_total, score_bpm, score_key, score_energy, score_timbre,
-       scorer, model_version,
+       score_collision, scorer, model_version,
        vocal_section_idx, inst_section_idx,
        vocal_section_start, vocal_section_end,
        inst_section_start, inst_section_end, score_section,
+       score_effort, effort_stretch, effort_pitch,
+       effort_tempo_fold, effort_grid, effort_key_certainty,
+       harmonic_shift, harmonic_confidence, bass_clash,
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,datetime('now'))
-   ON CONFLICT(combo_type, vocal_song_id, inst_song_id) DO UPDATE SET
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+   ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
+               COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
+   DO UPDATE SET
        score_total=excluded.score_total,
        vocal_section_idx=excluded.vocal_section_idx,
        inst_section_idx=excluded.inst_section_idx,
@@ -1027,6 +1214,15 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        inst_section_start=excluded.inst_section_start,
        inst_section_end=excluded.inst_section_end,
        score_section=excluded.score_section,
+       score_effort=excluded.score_effort,
+       effort_stretch=excluded.effort_stretch,
+       effort_pitch=excluded.effort_pitch,
+       effort_tempo_fold=excluded.effort_tempo_fold,
+       effort_grid=excluded.effort_grid,
+       effort_key_certainty=excluded.effort_key_certainty,
+       harmonic_shift=excluded.harmonic_shift,
+       harmonic_confidence=excluded.harmonic_confidence,
+       bass_clash=excluded.bass_clash,
        score_bpm=excluded.score_bpm,
        score_key=excluded.score_key,
        score_energy=excluded.score_energy,
@@ -1080,8 +1276,10 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
         inst.get("loudness_rms"), inst.get("energy"),
         scores["total"], scores["bpm_score"], scores["key_score"],
         scores["energy_score"], scores["timbre_score"],
-        scorer, model_version,
+        scores.get("collision_score"), scorer, model_version,
         *(sp.get(col) for col in SECTION_PAIR_COLUMNS),
+        *(scores.get(col) for col in EFFORT_COLUMNS),
+        *(scores.get(col) for col in HARMONY_COLUMNS),
     )
 
 
@@ -1180,6 +1378,9 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             genre: str = "", era: str = "",
                             energy: str = "", bpm_band: str = "",
                             vocal_forward: bool = False,
+                            max_effort: Optional[float] = None,
+                            order: str = "score",
+                            max_per_song_pair: int = 1,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -1199,7 +1400,17 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     they compose. All of them run in SQL: client-filtering a truncated 50 would
     search the top of the list rather than the library, which is the opposite of
     what a filter is for. See ERA_BANDS / BPM_BANDS / ENERGY_BANDS for the
-    accepted values."""
+    accepted values.
+
+    max_effort (Phase C) keeps only pairs costing at most that much to build,
+    0-1. The "Free builds only" chip passes 0.25 — pairs needing no meaningful
+    stretch, no transpose, and with a trustworthy beat grid.
+
+    order (Phase F) is "score" (best first) or "uncertain" — the pairs the
+    scorer is least sure about, i.e. closest to a coin flip. With hundreds of
+    thousands of viable pairs and maybe 200 keypresses of patience per session,
+    spending them on rows the model is already confident about buys nothing;
+    the uncertain ones are where a verdict carries the most information."""
     conn = get_conn(db_path)
     where = ["mc.score_total >= ?"]
     params: list = [min_score]
@@ -1249,6 +1460,11 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         # spectral energy has no absolute meaning across masters.
         where.append("ne.energy_pct >= ? AND ne.energy_pct < ?")
         params += [lo, hi]
+    if max_effort is not None:
+        # NULL score_effort means the row predates the column; a re-score fills
+        # it in. Treat it as passing rather than hiding the whole library.
+        where.append("(mc.score_effort IS NULL OR mc.score_effort <= ?)")
+        params.append(float(max_effort))
     if vocal_forward:
         # The vocal presence of the section that will actually play, falling
         # back to the track's most vocal section when no pair was stored.
@@ -1260,6 +1476,16 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                     (SELECT MAX(vocal_presence) FROM sections
                       WHERE song_id = mc.vocal_song_id)
                 ) >= {VOCAL_FORWARD_MIN}""")
+
+    # "uncertain" ranks by distance from a coin flip. Rows scored by the
+    # heuristic have no probability to be uncertain about, so they sort last —
+    # asking for the model's blind spots when there is no model should return
+    # nothing useful, not an arbitrary order dressed up as one.
+    if order == "uncertain":
+        order_sql = ("CASE WHEN mc.scorer='model' THEN ABS(mc.score_total - 0.5) "
+                     "ELSE 9 END ASC, mc.score_total DESC")
+    else:
+        order_sql = "mc.score_total DESC"
 
     # The cap is a greedy pass over the ranked rows, so it needs more rows than
     # it will return. Fetching everything would mean 90k rows through the join
@@ -1345,12 +1571,13 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             LEFT JOIN pct pc   ON pc.id = mc.id
             LEFT JOIN nrg ne   ON ne.id = mc.id
             WHERE {' AND '.join(where)}
-            ORDER BY mc.score_total DESC
+            ORDER BY {order_sql}
             LIMIT ?""",
         params,
     ).fetchall()
     conn.close()
-    return _cap_per_song([dict(r) for r in rows], max_per_song, limit)
+    return _cap_per_song([dict(r) for r in rows], max_per_song, limit,
+                         max_per_song_pair)
 
 
 # ── T3.5 filter vocabularies ─────────────────────────────────────────────────
@@ -1433,7 +1660,8 @@ def candidate_filter_options(combo_type: str = "",
     }
 
 
-def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int) -> List[Dict]:
+def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int,
+                  max_per_song_pair: int = 1) -> List[Dict]:
     """Keep the best `limit` rows in which no song appears more than
     `max_per_song` times, counting appearances on either side.
 
@@ -1441,17 +1669,28 @@ def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int) -> List[Dict]
     loses a row once it already has its share of better ones. Done here rather
     than with a window function because the cap spans both columns — a song can
     be the vocal in one row and the bed in the next, and SQL would have to
-    partition by one or the other."""
-    if max_per_song <= 0:
+    partition by one or the other.
+
+    `max_per_song_pair` caps how many SECTION pairings of the same two songs may
+    appear (E.3). The scorer now emits a row per section pairing, so without
+    this one song pair could take three of the top ten with what is, to a
+    browsing eye, the same suggestion three times. The extra pairings are still
+    in the table and still reachable by seeding on either track."""
+    if max_per_song <= 0 and max_per_song_pair <= 0:
         return rows[:limit]
     seen: Dict[int, int] = {}
+    seen_pair: Dict[tuple, int] = {}
     kept: List[Dict] = []
     for row in rows:
         v, i = row["vocal_song_id"], row["inst_song_id"]
-        if seen.get(v, 0) >= max_per_song or seen.get(i, 0) >= max_per_song:
+        if max_per_song_pair > 0 and seen_pair.get((v, i), 0) >= max_per_song_pair:
+            continue
+        if max_per_song > 0 and (seen.get(v, 0) >= max_per_song
+                                 or seen.get(i, 0) >= max_per_song):
             continue
         seen[v] = seen.get(v, 0) + 1
         seen[i] = seen.get(i, 0) + 1
+        seen_pair[(v, i)] = seen_pair.get((v, i), 0) + 1
         kept.append(row)
         if len(kept) >= limit:
             break
