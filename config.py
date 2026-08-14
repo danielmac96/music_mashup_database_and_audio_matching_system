@@ -22,6 +22,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -287,11 +288,30 @@ MATCH_WEIGHTS = {
 STEM_QUALITY_MIN = 0.35
 TOP_K_RESULTS = 10
 
-# Minimum thresholds — pairs that don't meet BOTH are skipped entirely
-# BPM: maximum difference allowed (accounts for halftime/doubletime)
-BPM_MAX_DIFF   = 10.0   # e.g. 120 BPM pairs with anything 110–130 (or half/double)
-# Key: minimum Camelot score to qualify (0.0–1.0)
-KEY_MIN_SCORE  = 0.55   # allows perfect + adjacent + relative major/minor matches
+# Candidate gate — pairs that don't pass are never scored.
+#
+# BPM: maximum difference allowed (accounts for halftime/doubletime).
+BPM_MAX_DIFF   = 16.0   # e.g. 120 BPM pairs with anything 104–136 (or half/double)
+#
+# Key: minimum Camelot score to qualify (0.0–1.0). DEFAULTS OFF (P1.1).
+#
+# This used to be 0.55, which kept only same / adjacent / relative-major-minor /
+# two-steps — 6 of the 24 Camelot codes, so roughly three quarters of the
+# library was unreachable from any given track. But transposing a bed by a
+# semitone or two is an ordinary move, and matcher/effort.py ALREADY prices it
+# (`pitch_cost`, weighted 0.30, ramping to full cost at ±6). Keeping the gate as
+# well charged for the same thing twice: the pair was deleted before scoring,
+# and had it survived it would have been demoted anyway.
+#
+# Worse, the gate ran on a key estimated from an isolated acapella (see P0.3),
+# and it ran BEFORE Phase E measures the harmony that actually decides the
+# question. Pairs were dying on the least reliable number in the database with
+# no appeal.
+#
+# The gate's job is to bound the matrix, not to express taste. Tempo does that;
+# key is left to the scorer. Set this above 0 to get the old behaviour, or use
+# the Tight preset in the UI.
+KEY_MIN_SCORE  = 0.0
 
 # The gate exists to bound the matrix, not to express taste. On the MODEL path
 # the key half is already dropped (documented mashups sometimes break it); this
@@ -403,6 +423,17 @@ SECTION_WEIGHT = 0.25
 # else; three is enough to show that a pair works in more than one place.
 MAX_SECTION_PAIRS_PER_SONG_PAIR = 3
 
+# Hard ceiling on persisted candidate rows, per combo type. Dropping the key
+# gate (P1.1) multiplies the surviving pair count by roughly four, and each
+# survivor contributes up to MAX_SECTION_PAIRS_PER_SONG_PAIR rows. Without a
+# ceiling a large library turns a re-score into hundreds of megabytes of
+# in-flight dicts and a candidates table nobody will ever read past row 500.
+#
+# The cap keeps the BEST rows by score_total, so raising the gate can only ever
+# add ideas at the top of the list; it cannot push a good pair out in favour of
+# a worse one.
+MAX_CANDIDATE_ROWS = 200_000
+
 
 # ── Live-read scoring knobs (Settings UI) ─────────────────────────────────────
 # The constants above bind at import. score_all_pairs re-imports them per call,
@@ -427,6 +458,8 @@ _TUNABLE_FLOATS = {
 _TUNABLE_INTS = {
     "max_section_pairs": ("MASHUP_MAX_SECTION_PAIRS",
                           "MAX_SECTION_PAIRS_PER_SONG_PAIR", 1, 8),
+    "max_candidate_rows": ("MASHUP_MAX_CANDIDATE_ROWS",
+                           "MAX_CANDIDATE_ROWS", 1, 5_000_000),
 }
 
 # Sub-score weights, tuned as a group. Stored as a dict in settings.json.
@@ -464,7 +497,7 @@ def current_int(name: str) -> int:
     return globals()[const_name]
 
 
-def current_match_weights() -> dict:
+def current_match_weights(combo_type: Optional[str] = None) -> dict:
     """The five sub-score weights, normalised to sum to 1.
 
     Normalised rather than validated: a user dragging five sliders should not
@@ -472,20 +505,54 @@ def current_match_weights() -> dict:
     every score in the library so the Min-match slider stopped meaning anything.
     A saved set that is all zeros falls back to the defaults rather than making
     every pair score 0.
+
+    `combo_type` selects the per-combo adjustment below. Omit it for the generic
+    weights (the CLI, a one-off composite_score call).
     """
     saved = _load_settings().get("match_weights")
     if not isinstance(saved, dict):
-        return dict(MATCH_WEIGHTS)
-    out = {}
-    for k in _WEIGHT_KEYS:
-        try:
-            out[k] = max(0.0, float(saved.get(k, MATCH_WEIGHTS[k])))
-        except (TypeError, ValueError):
-            out[k] = MATCH_WEIGHTS[k]
-    total = sum(out.values())
-    if total <= 0:
-        return dict(MATCH_WEIGHTS)
-    return {k: v / total for k, v in out.items()}
+        out = dict(MATCH_WEIGHTS)
+    else:
+        out = {}
+        for k in _WEIGHT_KEYS:
+            try:
+                out[k] = max(0.0, float(saved.get(k, MATCH_WEIGHTS[k])))
+            except (TypeError, ValueError):
+                out[k] = MATCH_WEIGHTS[k]
+        total = sum(out.values())
+        if total <= 0:
+            out = dict(MATCH_WEIGHTS)
+        else:
+            out = {k: v / total for k, v in out.items()}
+    return _for_combo(out, combo_type)
+
+
+# Timbre similarity asks "do these two sound like the same record". For an
+# instrumental-over-instrumental blend that is the right question: the two beds
+# have to cohere or the result sounds like a crossfade between two songs.
+#
+# For a VOCAL over a bed it is close to the wrong question, and arguably
+# backwards. What decides whether you hear the vocal is whether the bed leaves
+# room for it — which is collision_score, measured on the band occupancy of the
+# two stems. Rewarding timbral sameness on top of that pushes the head of the
+# ranked list towards the safest, most homogeneous pairings in the library,
+# which is the opposite of what the whole thing is for; and it fights the
+# `surprise_timbre` contrast term directly, so the two mostly cancel and leave
+# variance behind.
+#
+# So on the vocal path timbre's weight moves to collision. The sub-score is
+# still computed, stored and displayed — it is informative, it just should not
+# be pulling the ranking towards sameness — and the model still receives both
+# `timbre_score` and `surprise_timbre` as columns, so it can learn where this
+# user's taste actually sits.
+def _for_combo(weights: dict, combo_type: Optional[str]) -> dict:
+    if combo_type != "vocal_over_instrumental":
+        return weights
+    out = dict(weights)
+    out["collision_score"] = out.get("collision_score", 0.0) \
+        + out.get("timbre_score", 0.0)
+    out["timbre_score"] = 0.0
+    return out
 
 
 def current_scoring_settings() -> dict:
@@ -493,6 +560,8 @@ def current_scoring_settings() -> dict:
     is internally consistent even if the file changes mid-run."""
     return {
         "match_weights": current_match_weights(),
+        # The vocal path redistributes timbre onto collision — see _for_combo.
+        "match_weights_vocal": current_match_weights("vocal_over_instrumental"),
         "effort_weight": current_float("effort_weight"),
         "section_weight": current_float("section_weight"),
         "stem_quality_min": current_float("stem_quality_min"),
@@ -500,4 +569,5 @@ def current_scoring_settings() -> dict:
         "key_min_score": current_float("key_min_score"),
         "bpm_max_diff_model": current_float("bpm_max_diff_model"),
         "max_section_pairs": current_int("max_section_pairs"),
+        "max_candidate_rows": current_int("max_candidate_rows"),
     }

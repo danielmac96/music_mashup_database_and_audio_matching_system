@@ -13,10 +13,16 @@ const MIN_MATCHES = [50, 65, 75, 85];
 
 // Pre-filter width presets passed to "Score library" (bpm = max BPM diff,
 // key = min Camelot score). Tight = only clean matches; Wide = more candidates.
+//
+// Balanced and Wide no longer gate on key at all (P1.1). Transposing a bed by a
+// semitone or two is an ordinary move and the effort penalty already prices it,
+// so a key gate on top deleted the pair before scoring AND would have demoted
+// it if it had survived. Tight keeps the gate for the days you only want pairs
+// that need no transpose at all.
 const MATCH_PRESETS = [
-  { label: "Tight", bpm: 6, key: 0.75 },
-  { label: "Balanced", bpm: 10, key: 0.55 },
-  { label: "Wide", bpm: 16, key: 0.4 },
+  { label: "Tight", bpm: 8, key: 0.75 },
+  { label: "Balanced", bpm: 16, key: 0 },
+  { label: "Wide", bpm: 24, key: 0 },
 ];
 // "Uncertain" is server-side: it asks for the pairs the model is least sure
 // about. With hundreds of thousands of viable pairs and maybe 200 keypresses of
