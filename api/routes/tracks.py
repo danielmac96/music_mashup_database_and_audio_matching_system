@@ -555,3 +555,68 @@ def _resolve_audio_path(song_id: int, stem_type: str) -> Optional[Path]:
 
     conn.close()
     return None
+
+
+# ── Bulk reprocessing ─────────────────────────────────────────────────────────
+# Phases D and E added features that only exist on tracks analysed since. An
+# existing library keeps working, but none of it appears until those tracks are
+# re-processed — and doing that one ⟳ at a time across ~900 tracks is not a
+# thing anyone will do.
+
+class BulkRequest(BaseModel):
+    action: str = "analyze"        # analyze | separate | process
+    scope: str = "stale"           # stale | all | ids
+    song_ids: Optional[list[int]] = None
+
+
+@router.get("/staleness")
+def track_staleness() -> dict:
+    """Which generation of features the library is missing, per feature group.
+
+    Reported per group rather than as one number so the UI can say WHAT is
+    missing, and so a user who does not want four-stem is not told their library
+    needs hours of work."""
+    from api.workers.bulk_worker import staleness
+    return staleness()
+
+
+@router.post("/bulk")
+def queue_bulk(req: BulkRequest, background: BackgroundTasks) -> dict:
+    from api.workers import bulk_worker
+
+    if req.action not in bulk_worker.ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"action must be one of {sorted(bulk_worker.ACTIONS)}")
+    if req.scope not in ("stale", "all", "ids"):
+        raise HTTPException(status_code=400,
+                            detail="scope must be stale|all|ids")
+
+    if req.scope == "ids":
+        song_ids = sorted(set(req.song_ids or []))
+        if not song_ids:
+            raise HTTPException(status_code=400,
+                                detail="scope 'ids' needs a non-empty song_ids list")
+        conn = get_conn()
+        known = {r["id"] for r in conn.execute("SELECT id FROM songs").fetchall()}
+        conn.close()
+        missing = sorted(set(song_ids) - known)
+        if missing:
+            raise HTTPException(status_code=404,
+                                detail=f"unknown song id(s): {missing}")
+    elif req.scope == "stale":
+        song_ids = bulk_worker.stale_song_ids(req.action)
+    else:
+        song_ids = bulk_worker.all_song_ids(req.action)
+
+    if not song_ids:
+        raise HTTPException(
+            status_code=404,
+            detail="Nothing to do — no tracks match that scope."
+                   if req.scope != "stale"
+                   else "Nothing stale — every track already has current features.")
+
+    job_id = jobs.new_job(kind="bulk",
+                          message=f"Queued {len(song_ids)} tracks for {req.action}")
+    background.add_task(bulk_worker.run, job_id, req.action, song_ids)
+    return {"job_id": job_id, "count": len(song_ids), "action": req.action}

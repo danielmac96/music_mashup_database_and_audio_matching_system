@@ -1804,3 +1804,15 @@ input, select { font-family: inherit; }
   border: 1px solid var(--hair); border-radius: 6px; padding: 4px 9px;
 }
 .match-checkpoint.ok { color: var(--green); border-color: rgba(46,204,113,.4); }
+
+
+/* Backfill bar (Library) — states what the library is missing and offers to
+   fix it. Amber rather than red: nothing is broken, some features are just
+   asleep until the tracks are re-processed. */
+.bulk-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: 10px 0; padding: 10px 12px; border-radius: 8px;
+  background: rgba(245, 166, 35, 0.07);
+  border: 1px solid rgba(245, 166, 35, 0.28);
+}
+.bulk-bar .btn { white-space: nowrap; }

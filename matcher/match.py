@@ -368,17 +368,15 @@ def composite_score(feat_a: dict, feat_b: dict,
     Pass effort_weight=0.0 to rank on similarity alone.
     """
     try:
-        from config import MATCH_WEIGHTS
-        weights = weights or MATCH_WEIGHTS
+        from config import current_float, current_match_weights
+        weights = weights or current_match_weights()
+        if effort_weight is None:
+            effort_weight = current_float("effort_weight")
     except ImportError:
-        weights = {"bpm_score": 0.22, "key_score": 0.26,
-                   "energy_score": 0.17, "timbre_score": 0.20,
-                   "collision_score": 0.15}
-    if effort_weight is None:
-        try:
-            from config import EFFORT_WEIGHT
-            effort_weight = EFFORT_WEIGHT
-        except ImportError:
+        weights = weights or {"bpm_score": 0.22, "key_score": 0.26,
+                              "energy_score": 0.17, "timbre_score": 0.20,
+                              "collision_score": 0.15}
+        if effort_weight is None:
             effort_weight = 0.0
 
     scores = sub_scores(feat_a, feat_b, stats)
@@ -832,9 +830,18 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         bulk_upsert_candidates, candidate_row, clear_candidates,
         get_all_features, get_sections, DB_PATH,
     )
-    from config import (BPM_MAX_DIFF, BPM_MAX_DIFF_MODEL, EFFORT_WEIGHT,
-                        KEY_MIN_SCORE, MATCH_WEIGHTS,
-                        MAX_SECTION_PAIRS_PER_SONG_PAIR, STEM_QUALITY_MIN)
+    # Read once per run, so a scoring pass is internally consistent even if the
+    # user saves settings while it is going, and so a knob turned in the UI
+    # applies to the very next re-score rather than the next server restart.
+    from config import current_scoring_settings
+    cfg = current_scoring_settings()
+    MATCH_WEIGHTS = cfg["match_weights"]
+    EFFORT_WEIGHT = cfg["effort_weight"]
+    STEM_QUALITY_MIN = cfg["stem_quality_min"]
+    BPM_MAX_DIFF = cfg["bpm_max_diff"]
+    KEY_MIN_SCORE = cfg["key_min_score"]
+    BPM_MAX_DIFF_MODEL = cfg["bpm_max_diff_model"]
+    MAX_SECTION_PAIRS_PER_SONG_PAIR = cfg["max_section_pairs"]
 
     db = db_path or DB_PATH
     bpm_max = float(bpm_max_diff) if bpm_max_diff is not None else BPM_MAX_DIFF
@@ -958,7 +965,8 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                 if sp is not None:
                     _apply_measured_harmony(top, bed, s, sp, _sections,
                                             MATCH_WEIGHTS, EFFORT_WEIGHT)
-                    _apply_section_fit(s, sp, EFFORT_WEIGHT)
+                    _apply_section_fit(s, sp, EFFORT_WEIGHT,
+                                       MATCH_WEIGHTS, cfg["section_weight"])
                 rows.append(candidate_row(top, bed, s, combo_type,
                                           row_scorer, row_version, sp))
                 out.append(_build_row(top, bed, s, sp))
@@ -1399,7 +1407,9 @@ def _apply_measured_harmony(top: dict, bed: dict, scores: dict,
 
 
 def _apply_section_fit(scores: dict, section_pair: dict,
-                       effort_weight: float) -> None:
+                       effort_weight: float,
+                       weights: Optional[Dict] = None,
+                       section_weight: Optional[float] = None) -> None:
     """Blend the section fit into the total (E.3).
 
     While the row was a SONG pair and the section was chosen afterwards, folding
@@ -1410,12 +1420,16 @@ def _apply_section_fit(scores: dict, section_pair: dict,
 
     Mutates `scores` in place, and does nothing when the pair carries no fit.
     """
-    from config import MATCH_WEIGHTS, SECTION_WEIGHT
+    from config import current_match_weights, current_float
+
+    weights = weights if weights is not None else current_match_weights()
+    section_weight = (section_weight if section_weight is not None
+                      else current_float("section_weight"))
 
     fit_section = section_pair.get("score_section")
     if fit_section is None:
         return
-    whole = sum(scores[k] * MATCH_WEIGHTS.get(k, 0) for k in MATCH_WEIGHTS)
-    blended = (1.0 - SECTION_WEIGHT) * whole + SECTION_WEIGHT * float(fit_section)
+    whole = sum(scores[k] * weights.get(k, 0) for k in weights)
+    blended = (1.0 - section_weight) * whole + section_weight * float(fit_section)
     effort = scores.get("score_effort") or 0.0
     scores["total"] = round(blended * (1.0 - effort_weight * effort), 4)

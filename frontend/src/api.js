@@ -129,16 +129,32 @@ export const api = {
       body: JSON.stringify({ path, force }),
     }),
 
-  saveSettings: ({ audioRoot = null, dbPath = null, pipelineWorkers = null,
-                   stemSeparator = null } = {}) =>
-    jsonFetch("/api/settings", {
+  // Pass only the keys you are changing. Paths and worker counts need a
+  // restart; the separator, the stem mode and every scoring knob are re-read on
+  // use, so they apply to the next separation / re-score.
+  saveSettings: (patch = {}) => {
+    const map = {
+      audioRoot: "audio_root", dbPath: "db_path",
+      pipelineWorkers: "pipeline_workers", stemSeparator: "stem_separator",
+      stemMode: "stem_mode",
+    };
+    const body = {};
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === null || v === undefined) continue;
+      body[map[k] || k] = v;
+    }
+    return jsonFetch("/api/settings", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  // Which generation of features the library is missing, per feature group.
+  getStaleness: () => jsonFetch("/api/tracks/staleness"),
+
+  // Re-run a pipeline stage across many tracks. action: analyze | separate |
+  // process. scope: stale (only what needs it) | all | ids.
+  bulkReprocess: ({ action = "analyze", scope = "stale", songIds = null } = {}) =>
+    jsonFetch("/api/tracks/bulk", {
       method: "POST",
-      body: JSON.stringify({
-        audio_root: audioRoot,
-        db_path: dbPath,
-        pipeline_workers: pipelineWorkers,
-        stem_separator: stemSeparator,
-      }),
+      body: JSON.stringify({ action, scope, song_ids: songIds }),
     }),
 
   audioUrl: (id, stemType) => `/api/tracks/${id}/audio/${stemType}`,

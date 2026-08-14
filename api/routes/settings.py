@@ -154,18 +154,40 @@ class SaveSettingsRequest(BaseModel):
     db_path: Optional[str] = None
     pipeline_workers: Optional[int] = None
     stem_separator: Optional[str] = None  # "demucs" (quality) | "mdx" (fast)
+    stem_mode: Optional[str] = None       # "two" | "four" (four needs demucs)
+    # Scoring knobs — all live-read, so saving one applies to the next re-score
+    # rather than the next restart.
+    effort_weight: Optional[float] = None
+    section_weight: Optional[float] = None
+    stem_quality_min: Optional[float] = None
+    bpm_max_diff: Optional[float] = None
+    key_min_score: Optional[float] = None
+    bpm_max_diff_model: Optional[float] = None
+    max_section_pairs: Optional[int] = None
+    match_weights: Optional[dict] = None
 
 
 @router.post("")
 def save_settings(req: SaveSettingsRequest) -> dict:
-    if (req.audio_root is None and req.db_path is None
-            and req.pipeline_workers is None and req.stem_separator is None):
+    fields = req.model_dump(exclude_none=True)
+    if not fields:
         raise HTTPException(status_code=400, detail="nothing to save")
     if req.pipeline_workers is not None and req.pipeline_workers < 1:
         raise HTTPException(status_code=400, detail="pipeline_workers must be >= 1")
     if req.stem_separator is not None and req.stem_separator not in ("demucs", "mdx"):
         raise HTTPException(status_code=400,
                             detail="stem_separator must be 'demucs' or 'mdx'")
+    if req.stem_mode is not None and req.stem_mode not in ("two", "four"):
+        raise HTTPException(status_code=400,
+                            detail="stem_mode must be 'two' or 'four'")
+    # Four stems is a Demucs-only capability. Saving the pair together would
+    # otherwise leave the user with a setting that silently does nothing.
+    separator = req.stem_separator or config.current_stem_separator()
+    if req.stem_mode == "four" and separator == "mdx":
+        raise HTTPException(
+            status_code=400,
+            detail="Four-stem separation needs the 'demucs' separator — MDX is a "
+                   "two-stem model. Switch the separator first.")
 
     new: dict = {}
     if req.audio_root:
@@ -176,6 +198,45 @@ def save_settings(req: SaveSettingsRequest) -> dict:
         new["pipeline_workers"] = str(req.pipeline_workers)
     if req.stem_separator is not None:
         new["stem_separator"] = req.stem_separator
+    if req.stem_mode is not None:
+        new["stem_mode"] = req.stem_mode
+
+    for name in ("effort_weight", "section_weight", "stem_quality_min",
+                 "bpm_max_diff", "key_min_score", "bpm_max_diff_model"):
+        value = getattr(req, name)
+        if value is not None:
+            lo, hi = config._TUNABLE_FLOATS[name][2:]
+            if not (lo <= value <= hi):
+                raise HTTPException(status_code=400,
+                                    detail=f"{name} must be between {lo} and {hi}")
+            new[name] = float(value)
+    if req.max_section_pairs is not None:
+        lo, hi = config._TUNABLE_INTS["max_section_pairs"][2:]
+        if not (lo <= req.max_section_pairs <= hi):
+            raise HTTPException(status_code=400,
+                                detail=f"max_section_pairs must be {lo}-{hi}")
+        new["max_section_pairs"] = int(req.max_section_pairs)
+    if req.match_weights is not None:
+        unknown = set(req.match_weights) - set(config._WEIGHT_KEYS)
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown weight(s): {sorted(unknown)}")
+        try:
+            weights = {k: float(v) for k, v in req.match_weights.items()}
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail="match_weights values must be numbers")
+        if any(v < 0 for v in weights.values()):
+            raise HTTPException(status_code=400,
+                                detail="match_weights cannot be negative")
+        if sum(weights.values()) <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="at least one match weight must be above zero")
+        # Stored as given; current_match_weights normalises on read, so the
+        # sliders do not have to add up to 1.
+        new["match_weights"] = weights
 
     path = config.save_settings(new)
 
@@ -194,7 +255,10 @@ def save_settings(req: SaveSettingsRequest) -> dict:
         "settings_path": str(path),
         # stem_separator is re-read on every separation, so it applies live;
         # paths/worker counts bind at import and need a restart.
+        # Paths and worker counts bind at import. Everything else — the
+        # separator, the stem mode and every scoring knob — is re-read on use.
         "restart_required": any(
             k in new for k in ("audio_root", "db_path", "pipeline_workers")),
+        "saved_keys": sorted(new),
         "settings": _provenance_live(),
     }

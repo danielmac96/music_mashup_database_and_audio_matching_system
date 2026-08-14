@@ -4,6 +4,7 @@ import { TrackList } from "./components/TrackList";
 import { MashupSuggestions } from "./components/MashupSuggestions";
 import { MixStudio } from "./components/MixStudio";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
+import { TuningPanel } from "./components/TuningPanel";
 import { SetupWizard } from "./components/SetupWizard";
 import { api } from "./api";
 import { onToast } from "./toast";
@@ -205,6 +206,10 @@ export default function App() {
                 </span>
               </span>
             </label>
+
+            <div className="drawer-body">
+              <TuningPanel />
+            </div>
 
             <div className="drawer-section">
               <span className="hint">

@@ -152,9 +152,21 @@ def settings_provenance() -> dict:
         "audio_root": {"value": str(AUDIO_DIR), "source": AUDIO_ROOT_SOURCE},
         "db_path":    {"value": str(DB_PATH),   "source": DB_PATH_SOURCE},
         "pipeline_workers": {"value": PIPELINE_WORKERS, "source": PIPELINE_WORKERS_SOURCE},
-        # Live-read: the stem-separator toggle applies without a restart.
+        # Live-read: these apply without a restart.
         "stem_separator": {"value": current_stem_separator(),
                            "source": STEM_SEPARATOR_SOURCE},
+        "stem_mode": {"value": current_stem_mode(), "source": STEM_MODE_SOURCE},
+        # Scoring knobs. `source` is "env" only when pinned by an environment
+        # variable, in which case the UI must show the control as locked rather
+        # than letting the user save a value that will be ignored.
+        **{name: {"value": current_float(name),
+                  "source": "env" if os.environ.get(spec[0]) else "settings"}
+           for name, spec in _TUNABLE_FLOATS.items()},
+        **{name: {"value": current_int(name),
+                  "source": "env" if os.environ.get(spec[0]) else "settings"}
+           for name, spec in _TUNABLE_INTS.items()},
+        "match_weights": {"value": current_match_weights(), "source": "settings"},
+        "stem_format": {"value": STEM_FORMAT, "source": "code"},
         "configured": CONFIGURED,
         "settings_path": str(settings_path()),
         "paths": {
@@ -390,3 +402,102 @@ SECTION_WEIGHT = 0.25
 # usable sections each would otherwise produce 36 rows and drown everything
 # else; three is enough to show that a pair works in more than one place.
 MAX_SECTION_PAIRS_PER_SONG_PAIR = 3
+
+
+# ── Live-read scoring knobs (Settings UI) ─────────────────────────────────────
+# The constants above bind at import. score_all_pairs re-imports them per call,
+# which is enough for a restart but not for a settings save — and every one of
+# these is a knob you want to turn, re-score, and hear the difference, not
+# restart the server over. These read settings.json each time, with the same
+# precedence as the rest: env var wins (Docker/CI pinning), then settings.json,
+# then the module constant.
+#
+# The weights are exposed because they ARE the ranking. Someone who cares more
+# about tempo than timbre should be able to say so without editing Python.
+
+# name -> (env var, module constant, low, high)
+_TUNABLE_FLOATS = {
+    "effort_weight":     ("MASHUP_EFFORT_WEIGHT", "EFFORT_WEIGHT", 0.0, 1.0),
+    "section_weight":    ("MASHUP_SECTION_WEIGHT", "SECTION_WEIGHT", 0.0, 1.0),
+    "stem_quality_min":  ("MASHUP_STEM_QUALITY_MIN", "STEM_QUALITY_MIN", 0.0, 1.0),
+    "bpm_max_diff":      ("MASHUP_BPM_MAX_DIFF", "BPM_MAX_DIFF", 1.0, 60.0),
+    "key_min_score":     ("MASHUP_KEY_MIN_SCORE", "KEY_MIN_SCORE", 0.0, 1.0),
+    "bpm_max_diff_model": ("MASHUP_BPM_MAX_DIFF_MODEL", "BPM_MAX_DIFF_MODEL", 1.0, 60.0),
+}
+_TUNABLE_INTS = {
+    "max_section_pairs": ("MASHUP_MAX_SECTION_PAIRS",
+                          "MAX_SECTION_PAIRS_PER_SONG_PAIR", 1, 8),
+}
+
+# Sub-score weights, tuned as a group. Stored as a dict in settings.json.
+_WEIGHT_KEYS = ("bpm_score", "key_score", "energy_score", "timbre_score",
+                "collision_score")
+
+
+def _clamp(value, lo, hi):
+    return max(lo, min(hi, value))
+
+
+def current_float(name: str) -> float:
+    env_key, const_name, lo, hi = _TUNABLE_FLOATS[name]
+    raw = os.environ.get(env_key)
+    if raw is None:
+        raw = _load_settings().get(name)
+    if raw is not None:
+        try:
+            return _clamp(float(raw), lo, hi)
+        except (TypeError, ValueError):
+            pass
+    return globals()[const_name]
+
+
+def current_int(name: str) -> int:
+    env_key, const_name, lo, hi = _TUNABLE_INTS[name]
+    raw = os.environ.get(env_key)
+    if raw is None:
+        raw = _load_settings().get(name)
+    if raw is not None:
+        try:
+            return int(_clamp(int(raw), lo, hi))
+        except (TypeError, ValueError):
+            pass
+    return globals()[const_name]
+
+
+def current_match_weights() -> dict:
+    """The five sub-score weights, normalised to sum to 1.
+
+    Normalised rather than validated: a user dragging five sliders should not
+    have to make them add up, and an un-normalised set would silently rescale
+    every score in the library so the Min-match slider stopped meaning anything.
+    A saved set that is all zeros falls back to the defaults rather than making
+    every pair score 0.
+    """
+    saved = _load_settings().get("match_weights")
+    if not isinstance(saved, dict):
+        return dict(MATCH_WEIGHTS)
+    out = {}
+    for k in _WEIGHT_KEYS:
+        try:
+            out[k] = max(0.0, float(saved.get(k, MATCH_WEIGHTS[k])))
+        except (TypeError, ValueError):
+            out[k] = MATCH_WEIGHTS[k]
+    total = sum(out.values())
+    if total <= 0:
+        return dict(MATCH_WEIGHTS)
+    return {k: v / total for k, v in out.items()}
+
+
+def current_scoring_settings() -> dict:
+    """Everything score_all_pairs needs, read fresh. One call, so a scoring run
+    is internally consistent even if the file changes mid-run."""
+    return {
+        "match_weights": current_match_weights(),
+        "effort_weight": current_float("effort_weight"),
+        "section_weight": current_float("section_weight"),
+        "stem_quality_min": current_float("stem_quality_min"),
+        "bpm_max_diff": current_float("bpm_max_diff"),
+        "key_min_score": current_float("key_min_score"),
+        "bpm_max_diff_model": current_float("bpm_max_diff_model"),
+        "max_section_pairs": current_int("max_section_pairs"),
+    }
