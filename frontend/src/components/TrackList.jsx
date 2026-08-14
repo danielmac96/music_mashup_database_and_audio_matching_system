@@ -3,6 +3,7 @@ import { api } from "../api";
 import { JobBadge } from "./JobBadge";
 import { KeyChip } from "./KeyChip";
 import { PlayerBar } from "./PlayerBar";
+import { BulkReprocess } from "./BulkReprocess";
 import { PlaylistImporter } from "./PlaylistImporter";
 import { TrackArt } from "./TrackArt";
 import { SourceBadge } from "./SourceBadge";
@@ -438,6 +439,9 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
           start processing, with no tab change. The dependency-health banner
           rides along, so a missing ffmpeg is visible where the work happens. */}
       <PlaylistImporter embedded onIngested={() => refresh()} />
+
+      {/* Backfill bar — renders nothing when the library is already current. */}
+      <BulkReprocess onQueued={() => refresh()} />
 
       {/* filter toolbar */}
       <div className="toolbar">
