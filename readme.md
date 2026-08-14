@@ -109,6 +109,21 @@ cd frontend && npm install && npm run build && cd ..
 uvicorn api.server:app
 ```
 
+> **After every `git pull`, rebuild the frontend.** `frontend/dist/` is
+> gitignored, so a pull updates `frontend/src/` and leaves the built bundle
+> alone — the server keeps serving the interface from before the pull, and
+> restarting does not change that. New controls simply will not be there while
+> the API routes behind them answer perfectly, which is a confusing place to be.
+> The server now detects this and shows a "Stale UI" banner, but the fix is the
+> same either way:
+>
+> ```bash
+> cd frontend && npm run build && cd ..
+> ```
+>
+> No server restart needed — reload the page. (`GET /api/health` reports it too,
+> under `frontend.stale`.)
+
 > **Windows:** there is no bare `python`/`pip`/`uvicorn` on PATH — use the
 > `.\.venv\Scripts\python.exe -m <tool>` form shown in the comments above.
 
