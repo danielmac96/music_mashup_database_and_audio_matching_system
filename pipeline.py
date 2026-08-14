@@ -271,10 +271,16 @@ def run_analysis() -> dict:
         # Non-fatal: matching still works without sections, just less precise.
         full_fp = stems_for_song.get("full", "")
         if per_stem and full_fp and Path(full_fp).exists():
-            vocals_fp = stems_for_song.get("vocals", "")
-            vocals_path = Path(vocals_fp) if vocals_fp else None
+            def _stem_path(name: str):
+                fp = stems_for_song.get(name, "")
+                return Path(fp) if fp and Path(fp).exists() else None
+
             try:
-                sections = detect_sections(Path(full_fp), vocals_path)
+                # Per-stem chroma (P0.2) — see analysis/structure.py.
+                sections = detect_sections(
+                    Path(full_fp), _stem_path("vocals"),
+                    inst_path=_stem_path("instrumental"),
+                    bass_path=_stem_path("bass"))
                 if sections:
                     replace_sections(sid, sections)
                     _track_note(

@@ -21,7 +21,7 @@ exactly, the same way the four sub-scores do, and tests assert they agree.
 from __future__ import annotations
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -89,15 +89,27 @@ def is_tempo_fold(top_bpm: float, bed_bpm: float) -> bool:
 
 def effort_components(top: dict, bed: dict, stretch: Optional[float],
                       semitones: Optional[int],
-                      pitch_side: str = "bed") -> Dict[str, float]:
+                      pitch_side: str = "bed",
+                      conf_norm: Optional[Callable[[str, float], float]] = None
+                      ) -> Dict[str, float]:
     """The five costs for one pair, each 0 (free) to 1 (maximum work).
 
     `stretch` is the factor the bed is played at to reach the top's tempo
     (matcher.match.compute_stretch_factor); `semitones` is the recommended
     transpose. Either being None means "unknown", which is charged as maximum
     cost — an unknown transpose is not a free one.
+
+    `conf_norm(kind, value)` maps a raw beat-grid or key confidence onto its
+    place in the library's distribution — normally
+    `matcher.match.LibraryStats.conf_pct`. Without it the raw stored numbers are
+    used, which is fine for a unit test and wrong for a real library: both
+    estimators produce values on their own arbitrary scale, so an absolute
+    threshold silently becomes a constant. Ranking against the library is what
+    keeps `grid_cost` and `key_certainty_cost` discriminating instead of adding
+    the same offset to every pair.
     """
     top, bed = top or {}, bed or {}
+    norm = conf_norm or (lambda _kind, value: value)
 
     if stretch is None:
         stretch_cost = 1.0
@@ -117,10 +129,10 @@ def effort_components(top: dict, bed: dict, stretch: Optional[float],
     # Confidence is 0-1 where 1 is certain, so the cost is its complement. A
     # missing confidence (analysed before the column existed) is treated as
     # certain rather than retroactively penalising every old track.
-    grid = 1.0 - min(_num(top.get("bpm_confidence"), 1.0),
-                     _num(bed.get("bpm_confidence"), 1.0))
-    key_cost = 1.0 - min(_num(top.get("key_confidence"), 1.0),
-                         _num(bed.get("key_confidence"), 1.0))
+    grid = 1.0 - min(_num(norm("bpm", _num(top.get("bpm_confidence"), 1.0)), 1.0),
+                     _num(norm("bpm", _num(bed.get("bpm_confidence"), 1.0)), 1.0))
+    key_cost = 1.0 - min(_num(norm("key", _num(top.get("key_confidence"), 1.0)), 1.0),
+                         _num(norm("key", _num(bed.get("key_confidence"), 1.0)), 1.0))
 
     return {
         "stretch_cost": float(np.clip(stretch_cost, 0.0, 1.0)),
@@ -133,9 +145,11 @@ def effort_components(top: dict, bed: dict, stretch: Optional[float],
 
 def effort_penalty(top: dict, bed: dict, stretch: Optional[float],
                    semitones: Optional[int],
-                   pitch_side: str = "bed") -> Tuple[float, Dict[str, float]]:
+                   pitch_side: str = "bed",
+                   conf_norm: Optional[Callable[[str, float], float]] = None
+                   ) -> Tuple[float, Dict[str, float]]:
     """(total effort 0-1, components). Higher means more work to build."""
-    parts = effort_components(top, bed, stretch, semitones, pitch_side)
+    parts = effort_components(top, bed, stretch, semitones, pitch_side, conf_norm)
     total = sum(parts[k] * EFFORT_WEIGHTS[k] for k in EFFORT_WEIGHTS)
     return float(np.clip(total, 0.0, 1.0)), parts
 

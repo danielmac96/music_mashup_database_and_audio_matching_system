@@ -465,7 +465,16 @@ HARMONY_COLUMNS = ("harmonic_shift", "harmonic_confidence", "bass_clash")
 # actually be layered rather than on a whole-track Camelot lookup.
 _SECTIONS_OPTIONAL_COLUMNS = (
     ("chroma_json", "TEXT"),        # 12 bins, L2-normalised, from the full mix
-    ("bass_chroma_json", "TEXT"),   # same, band-passed 40-250 Hz
+    ("bass_chroma_json", "TEXT"),   # same, from the bass stem (or a 40-250 Hz
+                                    # band-pass of the mix when there is none)
+    # P0.2 — the two the matcher actually layers. A mashup puts THIS track's
+    # vocal over THAT track's bed, so harmony has to be measured on the stems;
+    # chroma_json above is the full mix, which on the vocal side is dominated by
+    # an arrangement that is about to be discarded. NULL for tracks analysed
+    # before this existed, which matcher/harmony.py reads as "fall back to
+    # chroma_json" rather than as a clash.
+    ("chroma_vocal_json", "TEXT"),
+    ("chroma_bed_json", "TEXT"),
     ("key", "TEXT"),
     ("mode", "TEXT"),
     ("camelot", "TEXT"),
@@ -1121,9 +1130,10 @@ def replace_sections(song_id: int, sections: List[Dict],
         """INSERT INTO sections
                (song_id, section_index, start_sec, end_sec, label,
                 energy, vocal_presence, repetition, confidence,
-                chroma_json, bass_chroma_json, key, mode, camelot,
+                chroma_json, bass_chroma_json,
+                chroma_vocal_json, chroma_bed_json, key, mode, camelot,
                 key_confidence)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 song_id, idx,
@@ -1133,6 +1143,8 @@ def replace_sections(song_id: int, sections: List[Dict],
                 int(s.get("repetition", 1)), s.get("confidence"),
                 json.dumps(s["chroma"]) if s.get("chroma") else None,
                 json.dumps(s["bass_chroma"]) if s.get("bass_chroma") else None,
+                json.dumps(s["chroma_vocal"]) if s.get("chroma_vocal") else None,
+                json.dumps(s["chroma_bed"]) if s.get("chroma_bed") else None,
                 s.get("key"), s.get("mode"), s.get("camelot"),
                 s.get("key_confidence"),
             )
@@ -1156,7 +1168,9 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
         # Decode the Phase E chroma columns the same way features does, so
         # callers never see a JSON string where a vector is expected.
         for src, dest in (("chroma_json", "chroma"),
-                          ("bass_chroma_json", "bass_chroma")):
+                          ("bass_chroma_json", "bass_chroma"),
+                          ("chroma_vocal_json", "chroma_vocal"),
+                          ("chroma_bed_json", "chroma_bed")):
             if d.get(src):
                 d[dest] = json.loads(d.pop(src))
             else:

@@ -262,10 +262,25 @@ def _norm_chroma(vec: np.ndarray) -> list:
 
 
 def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
+                    inst_path: Optional[Path] = None,
+                    bass_path: Optional[Path] = None,
                     on_progress: ProgressCb = None) -> List[dict]:
-    """Analyse the full mix (and the vocal stem when available) and return an
+    """Analyse the full mix (and the stems when available) and return an
     ordered list of section dicts: start_sec, end_sec, label, energy,
-    vocal_presence, repetition, confidence. Returns [] on failure."""
+    vocal_presence, repetition, confidence. Returns [] on failure.
+
+    Boundaries, energy and repetition are measured on the full mix — that is the
+    arrangement, and it is what a listener hears as structure.
+
+    Harmony is measured on the STEMS. A mashup lays this track's *vocal* over
+    that track's *bed*, so "does this vocal fit that bed" has to be asked of the
+    vocal stem's notes and the instrumental stem's chords. Reading both sides off
+    the full mix — which is what this did before — means the vocal side's chroma
+    is dominated by an arrangement that is about to be thrown away, so the
+    measured transposition and the bass-clash tonic describe a record that will
+    never be heard. `chroma` (full mix) is still stored so a library analysed
+    before this change keeps working.
+    """
     def _tick(msg: str) -> None:
         if on_progress:
             on_progress(None, msg)
@@ -300,18 +315,44 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, hop_length=HOP_LENGTH)
     rms = _frame_rms(y)
 
+    # Per-stem chroma on the SAME beat grid. Demucs writes stems sample-aligned
+    # with the mix, so the frame indices in `beats` index all of them.
+    def _stem_chroma(path: Optional[Path], what: str):
+        if not path or not Path(path).exists():
+            return None
+        try:
+            ys, _ = librosa.load(str(path), sr=SAMPLE_RATE, mono=True)
+            # Pad/trim to the mix so sync() cannot run off the end on a stem the
+            # separator emitted a few samples short.
+            if len(ys) < len(y):
+                ys = np.pad(ys, (0, len(y) - len(ys)))
+            c = librosa.feature.chroma_cqt(y=ys[:len(y)], sr=sr,
+                                           hop_length=HOP_LENGTH)
+            return librosa.util.sync(c, beats, aggregate=np.median)
+        except Exception:  # noqa: BLE001
+            log.warning("  %s chroma failed; falling back to the full mix", what,
+                        exc_info=True)
+            return None
+
+    _tick("Measuring per-stem harmony…")
+    vocal_chroma_b = _stem_chroma(vocals_path, "vocal")
+    bed_chroma_b = _stem_chroma(inst_path, "bed")
+
     # Phase E: a second chroma over the bass region only. Root clash in the low
     # end is the most common reason a "key-compatible" mashup sounds wrong, and
     # it is invisible to a full-spectrum chroma dominated by pads and hi-hats.
-    bass_chroma_b = None
-    try:
-        y_bass = _bandpass(y, sr, BASS_LOW_HZ, BASS_HIGH_HZ)
-        bass_chroma = librosa.feature.chroma_cqt(y=y_bass, sr=sr,
-                                                 hop_length=HOP_LENGTH)
-        bass_chroma_b = librosa.util.sync(bass_chroma, beats, aggregate=np.median)
-    except Exception:  # noqa: BLE001
-        log.warning("  bass chroma failed; sections keep the full-mix chroma only",
-                    exc_info=True)
+    # The dedicated bass stem is the better source when four-stem separation ran;
+    # band-passing the mix is the fallback.
+    bass_chroma_b = _stem_chroma(bass_path, "bass stem")
+    if bass_chroma_b is None:
+        try:
+            y_bass = _bandpass(y, sr, BASS_LOW_HZ, BASS_HIGH_HZ)
+            bass_chroma = librosa.feature.chroma_cqt(y=y_bass, sr=sr,
+                                                     hop_length=HOP_LENGTH)
+            bass_chroma_b = librosa.util.sync(bass_chroma, beats, aggregate=np.median)
+        except Exception:  # noqa: BLE001
+            log.warning("  bass chroma failed; sections keep the full-mix chroma only",
+                        exc_info=True)
 
     chroma_b = librosa.util.sync(chroma, beats, aggregate=np.median)
     mfcc_b = librosa.util.sync(mfcc, beats, aggregate=np.mean)
@@ -402,6 +443,13 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         }
         if bass_chroma_b is not None:
             seg["bass_chroma"] = _norm_chroma(bass_chroma_b[:, a:b].mean(axis=1))
+        # The two the matcher actually wants: what this track SINGS, and what it
+        # PLAYS. Absent when the stem was missing, in which case harmony.py
+        # falls back to the full-mix chroma above.
+        if vocal_chroma_b is not None:
+            seg["chroma_vocal"] = _norm_chroma(vocal_chroma_b[:, a:b].mean(axis=1))
+        if bed_chroma_b is not None:
+            seg["chroma_bed"] = _norm_chroma(bed_chroma_b[:, a:b].mean(axis=1))
         segs.append(seg)
     # Extend the last section to the true end of the audio.
     segs[-1]["end_sec"] = round(duration, 2)

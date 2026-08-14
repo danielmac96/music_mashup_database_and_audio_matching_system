@@ -374,9 +374,12 @@ def pair_features(top: dict, bed: dict,
     feats.update(_section_terms(top, bed, top_sections, bed_sections,
                                 top_section_idx, bed_section_idx))
     # Effort components, from the same function the ranking uses — the model
-    # must see the cost the user sees, not a re-derivation of it.
+    # must see the cost the user sees, not a re-derivation of it. That includes
+    # the library-relative confidence normalisation, or the model would train on
+    # raw confidences while the ranking used percentiles.
     feats.update(effort_components(
-        top, bed, compute_stretch_factor(t_bpm, b_bpm), shift))
+        top, bed, compute_stretch_factor(t_bpm, b_bpm), shift,
+        conf_norm=lambda kind, v: float(stats.conf_pct(kind, v))))
     feats.update(_collision_terms(top, bed))
     feats.update(surprise_terms(top, bed))
     return feats

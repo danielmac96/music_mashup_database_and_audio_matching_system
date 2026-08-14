@@ -167,13 +167,16 @@ class LibraryStats:
     measures which stem it is rather than whether the two tracks fit.
     """
 
-    __slots__ = ("mfcc_mean", "mfcc_std", "loudness", "n")
+    __slots__ = ("mfcc_mean", "mfcc_std", "loudness", "n", "conf")
 
-    def __init__(self, mfcc_mean=None, mfcc_std=None, loudness=None, n=0):
+    def __init__(self, mfcc_mean=None, mfcc_std=None, loudness=None, n=0,
+                 conf=None):
         self.mfcc_mean = mfcc_mean
         self.mfcc_std = mfcc_std
         self.loudness = loudness or {}
         self.n = n
+        # Sorted library values for each confidence kind, for conf_pct below.
+        self.conf = conf or {}
 
     @property
     def usable(self) -> bool:
@@ -182,11 +185,43 @@ class LibraryStats:
         by a meaningless std."""
         return self.n >= 4 and self.mfcc_mean is not None
 
+    def conf_pct(self, kind: str, value):
+        """Where `value` sits in the library's distribution of that confidence,
+        0 (worst in the library) to 1 (best). Accepts a scalar or an array.
+
+        The effort penalty asks "will this pair fight me in the DAW", and that
+        is a question about THIS library: a beat-grid confidence of 0.6 is a
+        problem in a library of programmed house and unremarkable in a library
+        of live recordings. Ranking on the absolute number also makes every
+        threshold hostage to the estimator's calibration — which is exactly how
+        the old beats-per-frame `bpm_confidence` put a constant 0.24 floor under
+        every effort score without anyone noticing.
+
+        Falls through to the raw value when the library is too small to have a
+        distribution (fewer than MIN_CONF_SAMPLES), so a handful of tracks still
+        rank sensibly rather than all landing on the same percentile.
+        """
+        ref = self.conf.get(kind)
+        arr = np.asarray(value, dtype=np.float64)
+        if ref is None or len(ref) < MIN_CONF_SAMPLES:
+            return np.clip(np.nan_to_num(arr, nan=1.0), 0.0, 1.0)
+        # Fraction of the library at or below this value. `right` so the best
+        # track in the library scores 1.0 rather than 1 - 1/n.
+        pct = np.searchsorted(ref, arr, side="right") / float(len(ref))
+        return np.clip(pct, 0.0, 1.0)
+
 
 _STATS_CACHE: Dict[str, "LibraryStats"] = {}
 
 # Stems that get matched. 'full' is included so its stats exist for fallbacks.
 _STEM_KINDS = ("vocals", "instrumental", "full")
+
+# Below this many measured tracks there is no distribution to rank against, and
+# conf_pct hands back the raw value instead.
+MIN_CONF_SAMPLES = 8
+
+# The confidence columns conf_pct normalises, and the feature key each reads.
+_CONF_KINDS = {"bpm": "bpm_confidence", "key": "key_confidence"}
 
 
 def compute_library_stats(db_path=None) -> LibraryStats:
@@ -210,7 +245,23 @@ def compute_library_stats(db_path=None) -> LibraryStats:
         if len(vals) >= 2:
             lg = np.log(np.array(vals, dtype=float))
             loudness[stem] = (float(lg.mean()), float(max(lg.std(), 1e-6)))
-    return LibraryStats(mfcc_mean, mfcc_std, loudness, len(mats))
+
+    # Confidence distributions, sorted so conf_pct is a searchsorted away.
+    # Measured over every stem kind together: the question "is this grid worse
+    # than most of what I own" does not change depending on which stem it is.
+    conf: Dict[str, np.ndarray] = {}
+    for kind, key in _CONF_KINDS.items():
+        vals = []
+        for r in rows:
+            try:
+                v = float(r.get(key))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(v):
+                vals.append(v)
+        if len(vals) >= MIN_CONF_SAMPLES:
+            conf[kind] = np.sort(np.asarray(vals, dtype=np.float64))
+    return LibraryStats(mfcc_mean, mfcc_std, loudness, len(mats), conf)
 
 
 def get_library_stats(db_path=None, refresh: bool = False) -> LibraryStats:
@@ -386,7 +437,10 @@ def composite_score(feat_a: dict, feat_b: dict,
     stretch = compute_stretch_factor(feat_a.get("bpm"), feat_b.get("bpm"))
     shift = compute_semitone_shift(feat_a.get("camelot") or "",
                                    feat_b.get("camelot") or "")
-    effort, parts = effort_penalty(feat_a, feat_b, stretch, shift)
+    conf_stats = stats if stats is not None else get_library_stats()
+    effort, parts = effort_penalty(
+        feat_a, feat_b, stretch, shift,
+        conf_norm=lambda kind, v: float(conf_stats.conf_pct(kind, v)))
 
     scores["total"] = round(fit * (1.0 - effort_weight * effort), 4)
     scores["score_effort"] = round(effort, 4)
@@ -502,10 +556,15 @@ def _prepare_block(feats: List[dict], code_index: Dict[str, int],
     # Effort inputs (Phase C). A missing confidence means the track was analysed
     # before the column existed; treat it as certain rather than retroactively
     # penalising every old track — matching matcher.effort's scalar default.
-    b.bpm_conf = np.array(
-        [_conf(f.get("bpm_confidence")) for f in feats], dtype=np.float64)
-    b.key_conf = np.array(
-        [_conf(f.get("key_confidence")) for f in feats], dtype=np.float64)
+    #
+    # Both are then mapped onto their place in the library's own distribution
+    # (LibraryStats.conf_pct). The raw numbers live on incomparable, estimator-
+    # defined scales, so using them directly turns grid_cost and
+    # key_certainty_cost into near-constants — see conf_pct's docstring.
+    b.bpm_conf = stats.conf_pct("bpm", np.array(
+        [_conf(f.get("bpm_confidence")) for f in feats], dtype=np.float64))
+    b.key_conf = stats.conf_pct("key", np.array(
+        [_conf(f.get("key_confidence")) for f in feats], dtype=np.float64))
 
     # Phase D: band occupancy (all-zero row = unmeasured, which collision_block
     # reads as the neutral 0.5) and this stem's separation quality.
@@ -778,16 +837,40 @@ def _apply_model_scores(pairs, bundle, sections_of, stats: LibraryStats,
 # ── Score all qualifying pairs ────────────────────────────────────────────────
 
 def _with_full_bpm(feat: dict, full_by_song: Dict[int, dict]) -> dict:
-    """Return a copy of `feat` with bpm/bpm_confidence swapped to the song's
-    full-mix values when available, so matching uses the more reliable
-    whole-track tempo while key/camelot/timbre stay stem-derived."""
+    """Return a copy of `feat` with tempo AND key swapped to the song's full-mix
+    values when available, leaving timbre, loudness and band occupancy
+    stem-derived.
+
+    Tempo was the original reason: vocal-stem and even instrumental-stem beat
+    tracking picks up octave and onset errors introduced by separation.
+
+    Key belongs here for a stronger version of the same argument (P0.3). The
+    stored key comes from correlating a whole-track mean chroma against
+    Krumhansl profiles — on an isolated acapella that is close to noise, because
+    a sung melody rarely outlines a scale and a mean chroma over one voice is
+    mostly whichever notes were held longest. That estimate then drove the
+    `key_min_score` PRE-FILTER, which runs before Phase E ever measures the real
+    harmony, so pairs were being discarded on the least reliable number in the
+    database and never got a second opinion. The full mix has the chords in it.
+
+    Timbre, loudness and band energy stay stem-derived on purpose: those are
+    what the listener actually hears layered, and they are measured directly
+    rather than estimated.
+    """
     full_feat = full_by_song.get(feat.get("song_id"))
-    if not full_feat or not full_feat.get("bpm"):
+    if not full_feat:
         return feat
     out = dict(feat)
-    out["stem_bpm"] = feat.get("bpm")
-    out["bpm"] = full_feat["bpm"]
-    out["bpm_confidence"] = full_feat.get("bpm_confidence")
+    if full_feat.get("bpm"):
+        out["stem_bpm"] = feat.get("bpm")
+        out["bpm"] = full_feat["bpm"]
+        out["bpm_confidence"] = full_feat.get("bpm_confidence")
+    if full_feat.get("camelot"):
+        out["stem_camelot"] = feat.get("camelot")
+        out["camelot"] = full_feat["camelot"]
+        out["key"] = full_feat.get("key")
+        out["mode"] = full_feat.get("mode")
+        out["key_confidence"] = full_feat.get("key_confidence")
     return out
 
 
