@@ -1,14 +1,17 @@
 """FastAPI app for the mashup web UI (ingest + download + stems)."""
 from __future__ import annotations
 
+import logging
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+
+log = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -64,7 +67,7 @@ app.include_router(studio_routes.router, prefix="/api/studio", tags=["studio"])
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "frontend": frontend_build_state()}
 
 
 def _ytdlp_version_info() -> tuple[str | None, bool]:
@@ -171,17 +174,102 @@ def update_ytdlp() -> dict:
 # :5173 proxying to :8000) is untouched. All /api/* routes are registered above
 # and take precedence; the catch-all below returns index.html for client routes.
 _DIST = ROOT / "frontend" / "dist"
+_SRC = ROOT / "frontend" / "src"
+
+# The banner injected into a stale page. Inline styles and no dependencies,
+# because the bundle it is warning you about is the one that would have styled
+# it. Dismissible: it is a warning, not a modal.
+_STALE_BANNER = """
+<div id="stale-build" style="position:fixed;left:0;right:0;top:0;z-index:99999;
+     background:#7c2d12;color:#fed7aa;font:13px/1.5 system-ui,sans-serif;
+     padding:9px 14px;display:flex;gap:12px;align-items:center;
+     box-shadow:0 2px 8px rgba(0,0,0,.4)">
+  <b style="flex-shrink:0">Stale UI</b>
+  <span style="flex:1">
+    This page was built before the current source. The backend is up to date but
+    you are looking at an old interface &mdash; new controls will be missing.
+    Run <code style="background:rgba(0,0,0,.3);padding:1px 5px;border-radius:3px">
+    npm&nbsp;run&nbsp;build</code> in <code style="background:rgba(0,0,0,.3);
+    padding:1px 5px;border-radius:3px">frontend/</code>, then reload.
+  </span>
+  <button onclick="document.getElementById('stale-build').remove()"
+     style="background:transparent;border:1px solid rgba(254,215,170,.5);
+     color:inherit;border-radius:5px;padding:2px 9px;cursor:pointer">dismiss</button>
+</div>
+"""
+
+
+def _newest_mtime(root: Path, suffixes: tuple = ()) -> float:
+    """Newest modification time under `root`, 0.0 when it does not exist."""
+    if not root.exists():
+        return 0.0
+    newest = 0.0
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        if suffixes and p.suffix not in suffixes:
+            continue
+        try:
+            newest = max(newest, p.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
+def frontend_build_state() -> dict:
+    """Whether the built bundle is older than the source it was built from.
+
+    frontend/dist is gitignored, so `git pull` updates the source and leaves the
+    bundle alone: the server keeps serving an interface from before the pull and
+    nothing says so. Restarting does not help, which is exactly what makes it
+    confusing — the backend is visibly current while the UI is not.
+    """
+    if not _DIST.exists():
+        return {"built": False, "stale": False,
+                "hint": "No frontend/dist — run `npm run build` in frontend/, "
+                        "or use the Vite dev server on :5173."}
+    src = _newest_mtime(_SRC)
+    built = _newest_mtime(_DIST)
+    stale = bool(src and built and src > built)
+    return {
+        "built": True,
+        "stale": stale,
+        "source_mtime": src,
+        "build_mtime": built,
+        "hint": ("Source is newer than the build — run `npm run build` in "
+                 "frontend/ and reload." if stale else None),
+    }
+
+
 if _DIST.exists():
     _ASSETS = _DIST / "assets"
     if _ASSETS.exists():
         app.mount("/assets", StaticFiles(directory=_ASSETS), name="assets")
 
+    state = frontend_build_state()
+    if state["stale"]:
+        log.warning(
+            "frontend/dist is OLDER than frontend/src — serving a stale UI. "
+            "Run `npm run build` in frontend/ and reload. (dist is gitignored, "
+            "so a git pull updates the source but not the bundle.)")
+
     @app.get("/{full_path:path}")
-    def spa_fallback(full_path: str) -> FileResponse:
+    def spa_fallback(full_path: str):
         # An unmatched /api path is a real 404 (a missing endpoint), not the SPA.
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not found")
         candidate = _DIST / full_path
         if full_path and candidate.is_file():
             return FileResponse(candidate)
-        return FileResponse(_DIST / "index.html")
+
+        index = _DIST / "index.html"
+        # Checked per request, not once at startup: rebuilding while the server
+        # runs is the normal fix, and the banner has to disappear on the reload
+        # that follows rather than needing yet another restart.
+        if frontend_build_state()["stale"]:
+            try:
+                html = index.read_text(encoding="utf-8")
+                return HTMLResponse(html.replace("<body>", "<body>" + _STALE_BANNER, 1))
+            except OSError:
+                pass
+        return FileResponse(index)
