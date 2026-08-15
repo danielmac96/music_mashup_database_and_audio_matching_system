@@ -1426,7 +1426,17 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     spending them on rows the model is already confident about buys nothing;
     the uncertain ones are where a verdict carries the most information."""
     conn = get_conn(db_path)
-    where = ["mc.score_total >= ?"]
+    # min_score gates on the PERCENTILE, not the raw composite — the same number
+    # the row displays and the same one `tierFor` colours.
+    #
+    # These had drifted apart. The row has shown `score_percentile` since T3.5,
+    # but "Min match 85%" filtered `score_total >= 0.85` — and the raw composite
+    # is a weighted mean of five sub-scores that each floor at 0.25-0.5, so it
+    # spans roughly [0.45, 0.95] and clusters near 0.78. The result was a control
+    # that did nothing at all between 50 and 75 and then emptied the page,
+    # against a column of percentages that ran the full 0-100. Two scales, one
+    # label.
+    where = ["COALESCE(pc.score_percentile, 0) >= ?"]
     params: list = [min_score]
     if combo_type:
         where.append("mc.combo_type = ?")
@@ -1726,15 +1736,24 @@ def best_bed_per_vocal(combo_type: str = "vocal_over_instrumental",
     Hidden pairs and excluded tracks are filtered out here too."""
     conn = get_conn(db_path)
     rows = conn.execute(
-        """WITH ranked AS (
-               SELECT mc.*,
+        """WITH pct AS (
+               SELECT id,
+                      PERCENT_RANK() OVER (PARTITION BY combo_type
+                                           ORDER BY score_total) AS score_percentile
+               FROM mashup_candidates
+           ),
+           ranked AS (
+               SELECT mc.*, pc.score_percentile,
                       ROW_NUMBER() OVER (PARTITION BY mc.vocal_song_id
                                          ORDER BY mc.score_total DESC) AS bed_rank,
                       MAX(mc.score_total) OVER (PARTITION BY mc.vocal_song_id)
                           AS vocal_best_score
                FROM mashup_candidates mc
+               LEFT JOIN pct pc ON pc.id = mc.id
                WHERE mc.combo_type = ?
-                 AND mc.score_total >= ?
+                 -- Percentile, matching the flat list and the number the row
+                 -- shows. See get_candidates_enriched.
+                 AND COALESCE(pc.score_percentile, 0) >= ?
                  AND NOT EXISTS (SELECT 1 FROM pair_hidden h
                                   WHERE h.vocal_song_id = mc.vocal_song_id
                                     AND h.inst_song_id = mc.inst_song_id)

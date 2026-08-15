@@ -50,6 +50,25 @@ CLICK_FREQ_DOWNBEAT = 1600.0    # Hz
 CLICK_FREQ_BEAT = 800.0
 CLICK_LEN_SECS = 0.02
 
+# The bed's constituent stems, written alongside the summed instrumental when
+# the track was separated in four-stem mode. This is the export that makes the
+# advice the engine already gives actionable: `matcher/harmony.py` tells you to
+# high-pass the bed when its bass root fights the vocal's tonic, and until now
+# the only thing in the folder was a summed instrumental you would have to EQ
+# rather than simply mute. Same for the standard move of keeping the bed's drums
+# and dropping everything else.
+BED_COMPONENT_STEMS = ("drums", "bass", "other")
+
+# How far apart the two conformed stems' onsets may sit before the export is
+# not actually on the grid. 10 ms is around where a doubled transient starts to
+# read as flam rather than as one hit.
+LOCK_TOLERANCE_MS = 10.0
+
+# Widest offset the lock check will look for. Beyond a second the answer is not
+# "a small residual error" but "these are aligned to different bars", which is a
+# different problem and not one a nudge fixes.
+LOCK_MAX_SHIFT_SECS = 1.0
+
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -69,6 +88,24 @@ def _safe(name: str, limit: int = 40) -> str:
     """Filesystem-safe fragment of a title/artist for a folder name."""
     cleaned = _SAFE_NAME_RE.sub("_", (name or "").strip()).strip("_")
     return (cleaned or "untitled")[:limit]
+
+
+def _bpm_key_tag(plan: Optional[dict]) -> str:
+    """`128_8A` for a session folder name, or "" when either is unknown.
+
+    The target tempo and the vocal's Camelot code are what the session IS — the
+    two numbers you match on when picking the next thing to open.
+    """
+    if not plan:
+        return ""
+    bpm = plan.get("target_bpm") or 0
+    cam = ((plan.get("vocal") or {}).get("camelot") or "").strip()
+    parts = []
+    if bpm:
+        parts.append(f"{int(round(float(bpm)))}")
+    if cam and cam != "?":
+        parts.append(_SAFE_NAME_RE.sub("", cam))
+    return "_".join(parts)
 
 
 def _downbeats(feat: dict) -> list[float]:
@@ -100,6 +137,46 @@ def first_downbeat_in(feat: dict, start_sec: float, end_sec: float) -> Optional[
         if d >= start_sec - 1e-9:
             return d if d < end_sec else None
     return None
+
+
+def measure_lock(vocal, bed, sr: int = RENDER_SR,
+                 hop: int = 512) -> Optional[float]:
+    """Residual timing offset between two conformed stems, in milliseconds.
+
+    Positive means the bed sits EARLY and should move later by that much.
+    None when there is not enough onset information on one side to tell.
+
+    Everything upstream of here is an estimate: the beat tracker's grid, the
+    detected phase, the phrase snap, the section boundary. Each is individually
+    reasonable and they compose into an export that can still be half a bar out.
+    Cross-correlating the two rendered onset envelopes is the one check that
+    looks at what was actually written, and it costs a fraction of a second next
+    to the two phase-vocoder passes that produced the files.
+
+    The point is to find out in the README rather than in FL.
+    """
+    np, librosa, _sf = require_audio_stack()
+    if vocal is None or bed is None or len(vocal) < sr or len(bed) < sr:
+        return None
+    ev = librosa.onset.onset_strength(y=vocal, sr=sr, hop_length=hop)
+    eb = librosa.onset.onset_strength(y=bed, sr=sr, hop_length=hop)
+    n = min(len(ev), len(eb))
+    if n < 16:
+        return None
+    a = ev[:n] - ev[:n].mean()
+    b = eb[:n] - eb[:n].mean()
+    if float(np.linalg.norm(a)) < 1e-9 or float(np.linalg.norm(b)) < 1e-9:
+        return None
+
+    # correlate(a, b)[lag] peaks where b shifted LATER by `lag` matches a.
+    corr = np.correlate(a, b, mode="full")
+    lags = np.arange(-(n - 1), n)
+    max_lag = max(1, int(LOCK_MAX_SHIFT_SECS * sr / hop))
+    keep = np.abs(lags) <= max_lag
+    if not keep.any():
+        return None
+    best = int(lags[keep][int(np.argmax(corr[keep]))])
+    return float(best * hop / sr * 1000.0)
 
 
 def render_click(duration_secs: float, bpm: float, sr: int = RENDER_SR):
@@ -274,14 +351,34 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
         _tick(None, f"Instrumental: {i_info}")
         return None
 
+    # The bed's own stems, conformed identically, when four-stem separation ran.
+    # resolve_stem_path returns None on a two-stem library, so this is a no-op
+    # there rather than a failure.
+    _tick(65, "Conforming the bed's stems…")
+    components: dict = {}
+    for name in BED_COMPONENT_STEMS:
+        c_y, c_info = conform_stem(inst_song_id, name,
+                                   start_sec=i_start, end_sec=i_end,
+                                   rate=rate_inst, semitones=semis_inst,
+                                   feat=i_feat, on_progress=on_progress,
+                                   label=f"{name.title()}: ", db_path=db_path)
+        if c_y is not None:
+            components[name] = (c_y, c_info)
+
     # Both start at bar 1 already; pad the shorter to the longer so the two
     # files line up in the playlist and the click covers both.
     _tick(80, "Aligning to the bar grid…")
-    length = max(len(v_y), len(i_y))
+    length = max([len(v_y), len(i_y)] + [len(c) for c, _ in components.values()])
     v_y = np.pad(v_y, (0, length - len(v_y)))
     i_y = np.pad(i_y, (0, length - len(i_y)))
+    components = {k: (np.pad(c, (0, length - len(c))), info)
+                  for k, (c, info) in components.items()}
     click = render_click(length / RENDER_SR, target_bpm)
     click = np.pad(click, (0, max(0, length - len(click))))[:length]
+
+    # Verify what was actually rendered, not what the estimates promised.
+    _tick(84, "Checking the grid lock…")
+    lock_ms = measure_lock(v_y, i_y)
 
     if out.exists():
         shutil.rmtree(out, ignore_errors=True)
@@ -291,10 +388,13 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     sf.write(str(out / "vocals.wav"), v_y.astype("float32"), RENDER_SR)
     sf.write(str(out / "instrumental.wav"), i_y.astype("float32"), RENDER_SR)
     sf.write(str(out / "click.wav"), click.astype("float32"), RENDER_SR)
+    for name, (c_y, _info) in components.items():
+        sf.write(str(out / f"bed_{name}.wav"), c_y.astype("float32"), RENDER_SR)
 
     v_side, i_side = plan.get("vocal") or {}, plan.get("inst") or {}
     target_key = f"{v_side.get('key') or ''}{'m' if v_side.get('mode') == 'minor' else ''}"
-    for fname in ("vocals.wav", "instrumental.wav", "click.wav"):
+    for fname in (["vocals.wav", "instrumental.wav", "click.wav"]
+                  + [f"bed_{n}.wav" for n in components]):
         _write_tags(out / fname, target_bpm, target_key or None)
 
     # session.json uses build_mixdown's exact clip shape, so an exported session
@@ -306,6 +406,8 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
         "stretch_factor": rate_inst,
         "vocal": {**v_side, "conformed": v_info},
         "inst": {**i_side, "conformed": i_info},
+        "bed_stems": {n: info for n, (_y, info) in components.items()},
+        "lock_offset_ms": None if lock_ms is None else round(lock_ms, 1),
         "clips": [
             {"song_id": vocal_song_id, "stem": "vocals", "offset_sec": 0.0,
              "rate": rate_vocal, "semitones": 0, "gain": 0.8},
@@ -314,8 +416,9 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
         ],
     }, indent=2), encoding="utf-8")
 
-    (out / "README.txt").write_text(_readme(plan, v_info, i_info, target_bpm),
-                                    encoding="utf-8")
+    (out / "README.txt").write_text(
+        _readme(plan, v_info, i_info, target_bpm, sorted(components), lock_ms),
+        encoding="utf-8")
 
     _tick(100, f"Session ready: {out.name}")
     log.info("FL session exported: %s", out)
@@ -323,9 +426,11 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
 
 
 def _readme(plan: dict, v_info: dict, i_info: dict,
-            target_bpm: float) -> str:
+            target_bpm: float, component_stems: Optional[list] = None,
+            lock_ms: Optional[float] = None) -> str:
     """The recipe, from build_mashup_plan, plus what this export already did."""
     v, i = plan.get("vocal") or {}, plan.get("inst") or {}
+    component_stems = component_stems or []
     lines = [
         f"{v.get('title')} ({v.get('artist')})  —  vocal",
         f"over",
@@ -343,6 +448,24 @@ def _readme(plan: dict, v_info: dict, i_info: dict,
         "",
         "Do NOT re-stretch or re-pitch these files; that work is baked in.",
         "",
+        _lock_note(lock_ms),
+        "",
+    ]
+    if component_stems:
+        lines += [
+            "=" * 68,
+            "THE BED, IN PARTS",
+            "=" * 68,
+            "instrumental.wav is the sum of these; they are conformed and",
+            "grid-aligned identically, so use EITHER the sum OR the parts.",
+            "",
+        ] + [f"  bed_{n}.wav" for n in component_stems] + [
+            "",
+            "  Bass clashing with the vocal? Mute bed_bass.wav instead of",
+            "  EQ-ing the sum. Want the groove only? Keep bed_drums.wav.",
+            "",
+        ]
+    lines += [
         "=" * 68,
         "WHAT WAS APPLIED",
         "=" * 68,
@@ -381,14 +504,36 @@ def _fmt(secs) -> str:
     return f"{s // 60}:{s % 60:02d}"
 
 
+def _lock_note(lock_ms: Optional[float]) -> str:
+    """What the grid-lock check found, in words the reader can act on."""
+    if lock_ms is None:
+        return ("GRID CHECK: not enough onset detail to verify — trust the "
+                "click and your ears.")
+    if abs(lock_ms) <= LOCK_TOLERANCE_MS:
+        return f"GRID CHECK: locked (residual {lock_ms:+.0f} ms). Nothing to nudge."
+    direction = "later" if lock_ms > 0 else "earlier"
+    return (
+        f"GRID CHECK: ⚠ the bed reads {abs(lock_ms):.0f} ms {'early' if lock_ms > 0 else 'late'} "
+        f"against the vocal.\n"
+        f"  Nudge instrumental.wav {abs(lock_ms):.0f} ms {direction} — or check whether the two\n"
+        f"  sections were snapped to different bars, which a nudge will not fix."
+    )
+
+
 def build_session_batch(token: str, pairs: list[dict],
                         on_progress: ProgressCb = None,
-                        db_path=None) -> Optional[Path]:
+                        db_path=None,
+                        on_exported=None) -> Optional[Path]:
     """Export several mashups into one parent folder, then zip it.
 
     `pairs`: [{vocal_song_id, inst_song_id}, …]. A pair that cannot be rendered
     is skipped with a note in the folder rather than failing the batch — one
-    un-separated track should not cost the other nine exports."""
+    un-separated track should not cost the other nine exports.
+
+    `on_exported(vocal_song_id, inst_song_id)` fires per pair that actually
+    rendered, so the caller can record it. Only the successes: a pair that was
+    skipped for a missing stem is not evidence of anything.
+    """
     def _tick(pct, msg):
         if on_progress:
             on_progress(pct, msg)
@@ -428,9 +573,24 @@ def build_session_batch(token: str, pairs: list[dict],
             continue
         v = (plan or {}).get("vocal") or {}
         i = (plan or {}).get("inst") or {}
-        name = f"{idx:02d}_{_safe(v.get('title'))}_over_{_safe(i.get('title'))}"
+        # Tempo and key in the folder name: the file browser is where you
+        # actually choose what to open next, and "128_8A" is what you are
+        # choosing on. Sorting the folder then groups everything you could mix
+        # together, which the rank prefix alone never did.
+        name = "_".join(x for x in (
+            f"{idx:02d}",
+            _bpm_key_tag(plan),
+            _safe(v.get("title"), 32),
+            "over",
+            _safe(i.get("title"), 32),
+        ) if x)
         shutil.move(str(made_path), str(parent / name))
         made += 1
+        if on_exported is not None:
+            try:
+                on_exported(v_id, i_id)
+            except Exception:  # noqa: BLE001 — never fail an export over a label
+                log.warning("on_exported callback raised", exc_info=True)
 
     if skipped:
         (parent / "SKIPPED.txt").write_text(
