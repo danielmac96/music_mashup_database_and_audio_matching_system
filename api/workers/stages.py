@@ -312,12 +312,20 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
     if not full_fp or not Path(full_fp).exists():
         raise StageError("No audio for this track. Download it first.")
 
-    vocals_fp = stem_paths.get("vocals", "")
+    # Harmony is measured per stem (P0.2), so hand structure detection every
+    # stem it can use: the vocal for what is sung, the instrumental for what is
+    # played under it, and the dedicated bass stem for root-clash detection when
+    # four-stem separation ran. Each is optional and falls back to the full mix.
+    def _stem(name: str) -> Optional[Path]:
+        fp = stem_paths.get(name, "")
+        return Path(fp) if fp and Path(fp).exists() else None
+
     try:
         # Shares the analysis gate — structure is the same librosa-bound work.
         with _STAGE_GATES["analysis"]:
             sections = detect_sections(
-                Path(full_fp), Path(vocals_fp) if vocals_fp else None,
+                Path(full_fp), _stem("vocals"),
+                inst_path=_stem("instrumental"), bass_path=_stem("bass"),
                 on_progress=on_progress,
             )
     except Exception as exc:  # noqa: BLE001

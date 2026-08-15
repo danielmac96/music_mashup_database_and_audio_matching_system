@@ -116,10 +116,25 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     if not v_song or not i_song:
         return None
 
-    v_feat = get_features_for_song(vocal_song_id, "vocals", db_path=db) \
-        or get_features_for_song(vocal_song_id, "full", db_path=db) or {}
+    # Tempo and key come from the full mix where it exists (P0.3) — the same
+    # swap the scorer applies via matcher.match._with_full_bpm. Without it the
+    # recipe would print a target BPM and a semitone shift derived from the
+    # acapella's own key estimate, which is the least reliable number in the
+    # database, while the ranked row above it used the full-mix one. Two
+    # different answers to "what key is this" on the same screen.
+    from matcher.match import _with_full_bpm
+
+    v_full = get_features_for_song(vocal_song_id, "full", db_path=db) or {}
+    i_full = get_features_for_song(inst_song_id, "full", db_path=db) or {}
+    v_feat = get_features_for_song(vocal_song_id, "vocals", db_path=db) or v_full or {}
     i_feat = get_features_for_song(inst_song_id, "instrumental", db_path=db) \
-        or get_features_for_song(inst_song_id, "full", db_path=db) or {}
+        or i_full or {}
+    if v_full:
+        v_feat = _with_full_bpm({**v_feat, "song_id": vocal_song_id},
+                                {vocal_song_id: v_full})
+    if i_full:
+        i_feat = _with_full_bpm({**i_feat, "song_id": inst_song_id},
+                                {inst_song_id: i_full})
 
     v_bpm = v_feat.get("bpm") or 0.0
     i_bpm = i_feat.get("bpm") or 0.0

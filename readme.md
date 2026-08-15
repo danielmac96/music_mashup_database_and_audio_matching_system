@@ -347,14 +347,43 @@ python test_flow.py [options]
 
 ## Scoring model
 
-Matches are scored on four dimensions (weights in `config.py`):
+Matches are scored on five dimensions (weights in `config.py`, tunable live in
+⚙ Settings), then discounted by what the pair **costs to build**:
 
 | Dimension | Weight | Method |
 |---|---|---|
-| BPM compatibility | 25% | Halftime/doubletime aware |
-| Key compatibility | 30% | Camelot wheel adjacency |
-| Energy match | 20% | Gaussian RMS similarity |
-| Timbre similarity | 25% | MFCC cosine similarity |
+| BPM compatibility | 22% | Halftime/doubletime aware |
+| Key compatibility | 26% | Camelot wheel adjacency, replaced by the *measured* harmonic fit once the winning section pair is known |
+| Energy match | 17% | Loudness z-score within each stem kind |
+| Timbre similarity | 20% | MFCC cosine, library-normalised |
+| Spectral collision | 15% | Do the two sides stay out of each other's way across 8 bands |
+
+**Per combo type.** On `vocal_over_instrumental`, timbre's weight moves onto
+collision. Timbre similarity asks "do these sound like the same record" — the
+right question for blending two beds, close to the wrong one for putting a vocal
+over one, where what matters is whether the bed leaves room. The sub-score is
+still measured and shown; it just no longer pulls the ranking toward sameness.
+
+**Effort.** `score_total` is the weighted fit discounted by `EFFORT_WEIGHT` ×
+effort, where effort combines the time-stretch, the transpose, half/double-time
+re-cutting, beat-grid trustworthiness and key certainty. A free-to-build 78% can
+outrank an 84% needing a 12% stretch and +5 semitones. The two confidence terms
+are ranked against your own library's distribution rather than used raw, because
+neither estimator's absolute scale means anything on its own.
+
+### The candidate gate
+
+Only tempo gates. `KEY_MIN_SCORE` defaults to **0** because transposing a bed a
+semitone or two is an ordinary move and `pitch_cost` already prices it — gating
+on key as well deleted the pair *and* would have demoted it.
+
+It also gated on the wrong quantity. Camelot distance measures fifths, so it does
+not order pairs by how much transposition they need: `8A → 9A` is one step around
+the wheel and needs **five** semitones, while `8A → 3B` is far around the wheel
+and needs **one**. The old 0.55 gate admitted the first and threw away the second.
+
+Use the **Tight** preset (or set `key_min_score`) when you only want pairs that
+need no transpose at all.
 
 ---
 
@@ -390,12 +419,28 @@ the `sections` table:
 4. Repetition counting via chroma similarity (the repeated, loud, vocal-heavy
    cluster is the chorus)
 5. Labels: `intro / verse / chorus / drop / breakdown / bridge / outro`
+6. **Per-stem chroma**: each section stores what the track *sings*
+   (`chroma_vocal`, from the vocal stem) and what it *plays* (`chroma_bed`, from
+   the instrumental), plus a bass chroma from the dedicated bass stem in
+   four-stem mode. A mashup lays one track's vocal over another's bed, so the
+   harmonic question has to be asked of those two stems — read off the full mix,
+   the vocal side's chroma is dominated by an arrangement that gets discarded,
+   and the transposition it reports describes a record nobody hears. Sections
+   analysed before this fall back to the full-mix chroma.
 
 Tracks analysed before this feature have no sections — re-run analysis
 (`python test_flow.py --stages analysis` after resetting their status, or the
 **Analyze** button in the web app) to populate them. Note `BEAT_TRIM_SECS` now
 defaults to `None` (full-track analysis) for reliable BPM/key — the old default
 only analysed the first 30 seconds.
+
+> **⚠ Existing libraries want a re-analysis.** Two stored values changed meaning:
+> `features.bpm_confidence` is now a real 0–1 beat-grid confidence (it used to be
+> beats-per-frame, i.e. `bpm / 2580`, which never exceeded 0.07), and sections now
+> carry per-stem chroma. Both degrade safely — old rows are treated as "unknown"
+> rather than "bad" — but until you re-analyse, the effort penalty and the
+> measured harmony are working from the old numbers. Use **⚙ Settings → Bulk
+> reprocess**, or `python test_flow.py --stages analysis`.
 
 ---
 
@@ -429,9 +474,41 @@ The **Mashups** tab in the web app drives the suggestion workflow:
   swaps the flat ranking for the best bed under each of your acapellas.
   **Export mashup WAV** renders exactly what you hear, including the live
   mix-bus levels (vocal/bed faders, mutes, crossfade).
+- **Min match** filters on the **percentile** shown on the row, not the raw
+  composite. (These had drifted apart: the raw composite spans about
+  [0.45, 0.95] and clusters near 0.78, so the old raw filter did nothing between
+  50 and 75 and then emptied the page.)
 
 API endpoints: `POST /api/mashups/score`, `GET /api/mashups`,
 `GET /api/mashups/plan?vocal_id=&inst_id=`, `GET /api/tracks/{id}/sections`.
+
+### Export → FL session folder
+
+**Export top N** writes one drop-in folder per pair, named
+`01_128_8A_vocal_over_bed` so the file browser sorts into things you could mix
+together. Each folder contains:
+
+| File | What it is |
+|---|---|
+| `vocals.wav` | conformed to the target tempo + key, trimmed to its section, padded so **bar 1 is at 0:00** |
+| `instrumental.wav` | same treatment |
+| `bed_drums.wav`, `bed_bass.wav`, `bed_other.wav` | the bed in parts, conformed identically — only in four-stem mode |
+| `click.wav` | bar/beat click at the target tempo |
+| `README.txt` | the recipe, what was already applied, and the **grid check** |
+| `session.json` | the arrangement, round-trips back into Studio |
+
+The bed's parts are what make the engine's own advice actionable: when the
+harmonic check reports a bass clash it tells you to high-pass the bed — with the
+parts you just mute `bed_bass.wav` instead.
+
+The **grid check** cross-correlates the two rendered onset envelopes and reports
+the residual offset in milliseconds. Everything upstream of the export is an
+estimate (beat grid, phase, phrase snap, section boundary), and they compose into
+something that can still be out. This is the one check that looks at what was
+actually written — so you find out in the README rather than in FL.
+
+Set the project tempo, drag both WAVs in at 0:00, done. Do not re-stretch or
+re-pitch them; that work is baked in.
 
 ---
 

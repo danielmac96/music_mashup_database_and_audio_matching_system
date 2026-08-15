@@ -219,13 +219,19 @@ def test_score_all_pairs_with_an_active_model(seeded):
     from matcher.model_scorer import model_score
     db_path, ids = seeded
 
-    # A key-incompatible but tempo-compatible track: 3B against 8A scores 0.25,
-    # under the 0.55 heuristic gate.
+    # A key-incompatible but tempo-compatible track: 3B against 8A scores 0.25.
     odd = _add_song(db_path, 7, bpm=122.0, camelot="3B")
     bundle = _activate_model(db_path)
 
-    heuristic = score_all_pairs(db_path=db_path, scorer="heuristic")
-    modelled = score_all_pairs(db_path=db_path, scorer="model")
+    # The key gate is passed explicitly here. Since P1.1 it defaults OFF for the
+    # heuristic too (effort already prices the transpose, so gating on key as
+    # well charged twice for it), and comparing two ungated runs would not test
+    # anything. The claim under test is that the MODEL path ignores the gate
+    # whatever it is set to.
+    heuristic = score_all_pairs(db_path=db_path, scorer="heuristic",
+                                key_min_score=0.55)
+    modelled = score_all_pairs(db_path=db_path, scorer="model",
+                               key_min_score=0.55)
     assert modelled["_scorer"] == "model"
     assert modelled["_model_version"] == bundle["version"]
     assert len(modelled["vocal_over_instrumental"]) > \

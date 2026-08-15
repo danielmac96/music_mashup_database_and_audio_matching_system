@@ -233,7 +233,7 @@ def test_section_fit_is_part_of_the_total(scored):
     Rows with no section pair (instrumental-over-instrumental, or a track with
     no structure yet) must still be the plain whole-track composite."""
     db_path, _ = scored
-    from config import EFFORT_WEIGHT, MATCH_WEIGHTS, SECTION_WEIGHT
+    from config import EFFORT_WEIGHT, SECTION_WEIGHT, current_match_weights
     from database.models import get_conn
     conn = get_conn(db_path)
     rows = [dict(r) for r in conn.execute(
@@ -242,7 +242,9 @@ def test_section_fit_is_part_of_the_total(scored):
     assert rows
     saw_section, saw_plain = False, False
     for r in rows:
-        whole = sum(r[col] * MATCH_WEIGHTS[name] for name, col in (
+        # Per-combo weights (P1.3): the vocal path moves timbre onto collision.
+        weights = current_match_weights(r["combo_type"])
+        whole = sum(r[col] * weights[name] for name, col in (
             ("bpm_score", "score_bpm"), ("key_score", "score_key"),
             ("energy_score", "score_energy"), ("timbre_score", "score_timbre"),
             ("collision_score", "score_collision")))

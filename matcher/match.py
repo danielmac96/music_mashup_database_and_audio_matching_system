@@ -10,6 +10,8 @@ Combo types scored:
   vocal_over_instrumental        — song A vocals over song B instrumental
   instrumental_over_instrumental — song A instrumental over song B instrumental
 """
+import heapq
+import itertools
 import math
 import logging
 import re
@@ -167,13 +169,16 @@ class LibraryStats:
     measures which stem it is rather than whether the two tracks fit.
     """
 
-    __slots__ = ("mfcc_mean", "mfcc_std", "loudness", "n")
+    __slots__ = ("mfcc_mean", "mfcc_std", "loudness", "n", "conf")
 
-    def __init__(self, mfcc_mean=None, mfcc_std=None, loudness=None, n=0):
+    def __init__(self, mfcc_mean=None, mfcc_std=None, loudness=None, n=0,
+                 conf=None):
         self.mfcc_mean = mfcc_mean
         self.mfcc_std = mfcc_std
         self.loudness = loudness or {}
         self.n = n
+        # Sorted library values for each confidence kind, for conf_pct below.
+        self.conf = conf or {}
 
     @property
     def usable(self) -> bool:
@@ -182,11 +187,43 @@ class LibraryStats:
         by a meaningless std."""
         return self.n >= 4 and self.mfcc_mean is not None
 
+    def conf_pct(self, kind: str, value):
+        """Where `value` sits in the library's distribution of that confidence,
+        0 (worst in the library) to 1 (best). Accepts a scalar or an array.
+
+        The effort penalty asks "will this pair fight me in the DAW", and that
+        is a question about THIS library: a beat-grid confidence of 0.6 is a
+        problem in a library of programmed house and unremarkable in a library
+        of live recordings. Ranking on the absolute number also makes every
+        threshold hostage to the estimator's calibration — which is exactly how
+        the old beats-per-frame `bpm_confidence` put a constant 0.24 floor under
+        every effort score without anyone noticing.
+
+        Falls through to the raw value when the library is too small to have a
+        distribution (fewer than MIN_CONF_SAMPLES), so a handful of tracks still
+        rank sensibly rather than all landing on the same percentile.
+        """
+        ref = self.conf.get(kind)
+        arr = np.asarray(value, dtype=np.float64)
+        if ref is None or len(ref) < MIN_CONF_SAMPLES:
+            return np.clip(np.nan_to_num(arr, nan=1.0), 0.0, 1.0)
+        # Fraction of the library at or below this value. `right` so the best
+        # track in the library scores 1.0 rather than 1 - 1/n.
+        pct = np.searchsorted(ref, arr, side="right") / float(len(ref))
+        return np.clip(pct, 0.0, 1.0)
+
 
 _STATS_CACHE: Dict[str, "LibraryStats"] = {}
 
 # Stems that get matched. 'full' is included so its stats exist for fallbacks.
 _STEM_KINDS = ("vocals", "instrumental", "full")
+
+# Below this many measured tracks there is no distribution to rank against, and
+# conf_pct hands back the raw value instead.
+MIN_CONF_SAMPLES = 8
+
+# The confidence columns conf_pct normalises, and the feature key each reads.
+_CONF_KINDS = {"bpm": "bpm_confidence", "key": "key_confidence"}
 
 
 def compute_library_stats(db_path=None) -> LibraryStats:
@@ -210,7 +247,23 @@ def compute_library_stats(db_path=None) -> LibraryStats:
         if len(vals) >= 2:
             lg = np.log(np.array(vals, dtype=float))
             loudness[stem] = (float(lg.mean()), float(max(lg.std(), 1e-6)))
-    return LibraryStats(mfcc_mean, mfcc_std, loudness, len(mats))
+
+    # Confidence distributions, sorted so conf_pct is a searchsorted away.
+    # Measured over every stem kind together: the question "is this grid worse
+    # than most of what I own" does not change depending on which stem it is.
+    conf: Dict[str, np.ndarray] = {}
+    for kind, key in _CONF_KINDS.items():
+        vals = []
+        for r in rows:
+            try:
+                v = float(r.get(key))
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(v):
+                vals.append(v)
+        if len(vals) >= MIN_CONF_SAMPLES:
+            conf[kind] = np.sort(np.asarray(vals, dtype=np.float64))
+    return LibraryStats(mfcc_mean, mfcc_std, loudness, len(mats), conf)
 
 
 def get_library_stats(db_path=None, refresh: bool = False) -> LibraryStats:
@@ -357,7 +410,8 @@ def sub_scores(feat_a: dict, feat_b: dict,
 def composite_score(feat_a: dict, feat_b: dict,
                     weights: Optional[Dict] = None,
                     stats: Optional[LibraryStats] = None,
-                    effort_weight: Optional[float] = None) -> dict:
+                    effort_weight: Optional[float] = None,
+                    combo_type: Optional[str] = None) -> dict:
     """The four sub-scores, the effort penalty, and the discounted total.
 
     `total` is the weighted fit discounted by EFFORT_WEIGHT × effort, so a pair
@@ -369,7 +423,7 @@ def composite_score(feat_a: dict, feat_b: dict,
     """
     try:
         from config import current_float, current_match_weights
-        weights = weights or current_match_weights()
+        weights = weights or current_match_weights(combo_type)
         if effort_weight is None:
             effort_weight = current_float("effort_weight")
     except ImportError:
@@ -386,7 +440,10 @@ def composite_score(feat_a: dict, feat_b: dict,
     stretch = compute_stretch_factor(feat_a.get("bpm"), feat_b.get("bpm"))
     shift = compute_semitone_shift(feat_a.get("camelot") or "",
                                    feat_b.get("camelot") or "")
-    effort, parts = effort_penalty(feat_a, feat_b, stretch, shift)
+    conf_stats = stats if stats is not None else get_library_stats()
+    effort, parts = effort_penalty(
+        feat_a, feat_b, stretch, shift,
+        conf_norm=lambda kind, v: float(conf_stats.conf_pct(kind, v)))
 
     scores["total"] = round(fit * (1.0 - effort_weight * effort), 4)
     scores["score_effort"] = round(effort, 4)
@@ -502,10 +559,15 @@ def _prepare_block(feats: List[dict], code_index: Dict[str, int],
     # Effort inputs (Phase C). A missing confidence means the track was analysed
     # before the column existed; treat it as certain rather than retroactively
     # penalising every old track — matching matcher.effort's scalar default.
-    b.bpm_conf = np.array(
-        [_conf(f.get("bpm_confidence")) for f in feats], dtype=np.float64)
-    b.key_conf = np.array(
-        [_conf(f.get("key_confidence")) for f in feats], dtype=np.float64)
+    #
+    # Both are then mapped onto their place in the library's own distribution
+    # (LibraryStats.conf_pct). The raw numbers live on incomparable, estimator-
+    # defined scales, so using them directly turns grid_cost and
+    # key_certainty_cost into near-constants — see conf_pct's docstring.
+    b.bpm_conf = stats.conf_pct("bpm", np.array(
+        [_conf(f.get("bpm_confidence")) for f in feats], dtype=np.float64))
+    b.key_conf = stats.conf_pct("key", np.array(
+        [_conf(f.get("key_confidence")) for f in feats], dtype=np.float64))
 
     # Phase D: band occupancy (all-zero row = unmeasured, which collision_block
     # reads as the neutral 0.5) and this stem's separation quality.
@@ -753,22 +815,36 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
 
 
 def _apply_model_scores(pairs, bundle, sections_of, stats: LibraryStats,
-                        on_block=None, batch: int = 4096) -> None:
+                        on_block=None, batch: int = 4096,
+                        pinned_sections=None) -> None:
     """Replace each pair's heuristic total with the learned model's probability.
 
     Mutates the scores dicts in place. Batched because scikit-learn's per-call
     overhead dwarfs the arithmetic for a single row — the model path scores
-    every pair inside the BPM window, which is a lot of single rows."""
+    every pair inside the BPM window, which is a lot of single rows.
+
+    `pinned_sections(top, bed)` supplies the section pair the row will actually
+    be built for. Without it, pair_features falls back to running
+    `choose_section_pair` itself — an O(usable_v x usable_i) scan, per candidate,
+    duplicating a search the caller is about to do anyway when it emits the row.
+    On the widened gate (P1.1) that duplicate scan is the single most expensive
+    thing in a scoring run, and it can disagree with the emitted row's sections
+    when the two searches see different tie-breaks."""
     from matcher.features import pair_features
     from matcher.model_scorer import model_score_batch
 
     n = len(pairs)
     for start in range(0, n, batch):
         chunk = pairs[start:start + batch]
-        feats = [pair_features(top, bed,
-                               sections_of(top.get("song_id")),
-                               sections_of(bed.get("song_id")), stats)
-                 for top, bed, _ in chunk]
+        feats = []
+        for top, bed, _ in chunk:
+            v_idx, i_idx = (pinned_sections(top, bed) if pinned_sections
+                            else (None, None))
+            feats.append(pair_features(
+                top, bed,
+                sections_of(top.get("song_id")),
+                sections_of(bed.get("song_id")), stats,
+                top_section_idx=v_idx, bed_section_idx=i_idx))
         for (_, _, scores), prob in zip(chunk, model_score_batch(feats, bundle)):
             scores["total"] = round(float(prob), 4)
         if on_block is not None:
@@ -778,16 +854,40 @@ def _apply_model_scores(pairs, bundle, sections_of, stats: LibraryStats,
 # ── Score all qualifying pairs ────────────────────────────────────────────────
 
 def _with_full_bpm(feat: dict, full_by_song: Dict[int, dict]) -> dict:
-    """Return a copy of `feat` with bpm/bpm_confidence swapped to the song's
-    full-mix values when available, so matching uses the more reliable
-    whole-track tempo while key/camelot/timbre stay stem-derived."""
+    """Return a copy of `feat` with tempo AND key swapped to the song's full-mix
+    values when available, leaving timbre, loudness and band occupancy
+    stem-derived.
+
+    Tempo was the original reason: vocal-stem and even instrumental-stem beat
+    tracking picks up octave and onset errors introduced by separation.
+
+    Key belongs here for a stronger version of the same argument (P0.3). The
+    stored key comes from correlating a whole-track mean chroma against
+    Krumhansl profiles — on an isolated acapella that is close to noise, because
+    a sung melody rarely outlines a scale and a mean chroma over one voice is
+    mostly whichever notes were held longest. That estimate then drove the
+    `key_min_score` PRE-FILTER, which runs before Phase E ever measures the real
+    harmony, so pairs were being discarded on the least reliable number in the
+    database and never got a second opinion. The full mix has the chords in it.
+
+    Timbre, loudness and band energy stay stem-derived on purpose: those are
+    what the listener actually hears layered, and they are measured directly
+    rather than estimated.
+    """
     full_feat = full_by_song.get(feat.get("song_id"))
-    if not full_feat or not full_feat.get("bpm"):
+    if not full_feat:
         return feat
     out = dict(feat)
-    out["stem_bpm"] = feat.get("bpm")
-    out["bpm"] = full_feat["bpm"]
-    out["bpm_confidence"] = full_feat.get("bpm_confidence")
+    if full_feat.get("bpm"):
+        out["stem_bpm"] = feat.get("bpm")
+        out["bpm"] = full_feat["bpm"]
+        out["bpm_confidence"] = full_feat.get("bpm_confidence")
+    if full_feat.get("camelot"):
+        out["stem_camelot"] = feat.get("camelot")
+        out["camelot"] = full_feat["camelot"]
+        out["key"] = full_feat.get("key")
+        out["mode"] = full_feat.get("mode")
+        out["key_confidence"] = full_feat.get("key_confidence")
     return out
 
 
@@ -836,6 +936,11 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     from config import current_scoring_settings
     cfg = current_scoring_settings()
     MATCH_WEIGHTS = cfg["match_weights"]
+    # P1.3 — the vocal path moves timbre's weight onto collision. See
+    # config._for_combo: "does the bed leave room for the vocal" is the question
+    # that decides a vocal mashup; "do these sound like the same record" is the
+    # one that decides an instrumental blend.
+    VOCAL_WEIGHTS = cfg["match_weights_vocal"]
     EFFORT_WEIGHT = cfg["effort_weight"]
     STEM_QUALITY_MIN = cfg["stem_quality_min"]
     BPM_MAX_DIFF = cfg["bpm_max_diff"]
@@ -898,7 +1003,14 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         "vocal_over_instrumental":        [],
         "instrumental_over_instrumental": [],
     }
-    rows: List[tuple] = []
+    # P1.1 — with the key gate off, the surviving pair count is roughly 4x what
+    # it was, and each survivor contributes up to MAX_SECTION_PAIRS rows. Keep
+    # only the best MAX_CANDIDATE_ROWS per combo type, in a bounded min-heap, so
+    # widening the gate costs a bounded amount of memory instead of an unbounded
+    # one. Nothing good is lost: eviction is always the current worst row.
+    max_rows = cfg["max_candidate_rows"]
+    heaps: Dict[str, list] = {k: [] for k in results}
+    seq = itertools.count()
     scored = 0
 
     def _report(base: int, span: int, label: str):
@@ -910,7 +1022,7 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         return _on_block
 
     def _run(top_block, bed_block, *, key_gate, upper_triangle, on_block,
-             bpm_gate=None):
+             weights, bpm_gate=None):
         """Every surviving pair of one pass, as (top_feat, bed_feat, scores)."""
         return [
             (top_block.feats[ti], bed_block.feats[bi], scores)
@@ -919,7 +1031,7 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                 shift_table=shift_table, shift_known=shift_known,
                 bpm_max=bpm_gate if bpm_gate is not None else bpm_max,
                 key_min=key_gate,
-                upper_triangle=upper_triangle, weights=MATCH_WEIGHTS,
+                upper_triangle=upper_triangle, weights=weights,
                 effort_weight=EFFORT_WEIGHT,
                 quality_min=STEM_QUALITY_MIN,
                 on_block=on_block)
@@ -936,26 +1048,48 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             _usable_cache[key] = usable_sections(_sections(song_id), vocal_side)
         return _usable_cache[key]
 
+    # Memoised per song pair: the model pass and the emit pass both want this
+    # answer for the same two songs, and it is an O(usable_v x usable_i) search.
+    _section_pair_cache: Dict[tuple, list] = {}
+
     def _section_pairs(top: dict, bed: dict) -> list:
         """Every section pairing worth a row for these two songs (E.3).
 
         Empty until both sides have structure, in which case the caller emits a
         single section-less row and readers fall back to each track's hook.
         """
+        key = (top["song_id"], bed["song_id"])
+        if key in _section_pair_cache:
+            return _section_pair_cache[key]
         from matcher.sections import top_section_pairs
         v_use = _usable(top["song_id"], True)
         i_use = _usable(bed["song_id"], False)
         if not v_use or not i_use:
+            _section_pair_cache[key] = []
             return []
         stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
         # The vocal sets the target tempo, so bars are counted at its BPM.
-        return top_section_pairs(v_use, i_use, stretch, prefiltered=True,
-                                 bpm=top.get("bpm"),
-                                 limit=MAX_SECTION_PAIRS_PER_SONG_PAIR)
+        out = top_section_pairs(v_use, i_use, stretch, prefiltered=True,
+                                bpm=top.get("bpm"),
+                                limit=MAX_SECTION_PAIRS_PER_SONG_PAIR)
+        _section_pair_cache[key] = out
+        return out
 
-    def _emit(pairs, combo_type, row_scorer, row_version, with_sections=False):
+    def _best_section_idx(top: dict, bed: dict):
+        """The winning section pair's indices, for the model's feature vector.
+
+        top_section_pairs returns best-first, so [0] is the pair the top-ranked
+        row for these two songs will be built from — which is the moment the
+        model should be judging."""
+        pairs = _section_pairs(top, bed)
+        if not pairs:
+            return None, None
+        return pairs[0].get("vocal_section_idx"), pairs[0].get("inst_section_idx")
+
+    def _emit(pairs, combo_type, row_scorer, row_version, weights,
+              with_sections=False):
         nonlocal scored
-        out = results[combo_type]
+        heap = heaps[combo_type]
         for top, bed, scores in pairs:
             # One row per section pair (E.3): "chorus over drop" and "verse over
             # breakdown" are different ideas about the same two records.
@@ -964,13 +1098,23 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                 s = dict(scores)
                 if sp is not None:
                     _apply_measured_harmony(top, bed, s, sp, _sections,
-                                            MATCH_WEIGHTS, EFFORT_WEIGHT)
+                                            weights, EFFORT_WEIGHT)
                     _apply_section_fit(s, sp, EFFORT_WEIGHT,
-                                       MATCH_WEIGHTS, cfg["section_weight"])
-                rows.append(candidate_row(top, bed, s, combo_type,
-                                          row_scorer, row_version, sp))
-                out.append(_build_row(top, bed, s, sp))
+                                       weights, cfg["section_weight"])
                 scored += 1
+                total = float(s.get("total") or 0.0)
+                # The sequence number is the tiebreak, so equal-scoring rows
+                # keep the row-major emission order the nested loop produced —
+                # and so eviction on a tie drops the LATER row, matching how the
+                # final ranking has always resolved ties.
+                item = (total, next(seq),
+                        candidate_row(top, bed, s, combo_type,
+                                      row_scorer, row_version, sp),
+                        _build_row(top, bed, s, sp))
+                if len(heap) < max_rows:
+                    heapq.heappush(heap, item)
+                elif total > heap[0][0]:
+                    heapq.heapreplace(heap, item)
 
     # ── vocal over instrumental ───────────────────────────────────────────────
     # This is the only combo the learned model scores (it was trained on
@@ -986,13 +1130,14 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                       if use_model and bpm_max_diff is None else None)
     voi = _run(v_block, i_block,
                key_gate=None if use_model else key_min, upper_triangle=False,
-               bpm_gate=model_bpm_gate,
+               bpm_gate=model_bpm_gate, weights=VOCAL_WEIGHTS,
                on_block=_report(0, 55, "Scoring vocal over instrumental"))
     if use_model:
         _apply_model_scores(voi, bundle, _sections, lib_stats,
-                            _report(55, 10, "Applying the learned model"))
+                            _report(55, 10, "Applying the learned model"),
+                            pinned_sections=_best_section_idx)
     _emit(voi, "vocal_over_instrumental", active_scorer, model_version,
-          with_sections=True)
+          VOCAL_WEIGHTS, with_sections=True)
     voi = None                      # release before the second pass allocates
 
     # ── instrumental over instrumental ────────────────────────────────────────
@@ -1003,19 +1148,31 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     # No section pair: the top layer here is an instrumental, and the vocal-side
     # filter (vocal_presence ≥ 0.25) would be asking the wrong question of it.
     _emit(_run(i_block, i_block, key_gate=key_min, upper_triangle=True,
+               weights=MATCH_WEIGHTS,
                on_block=_report(65, 25, "Scoring instrumental over instrumental")),
-          "instrumental_over_instrumental", "heuristic", None)
+          "instrumental_over_instrumental", "heuristic", None, MATCH_WEIGHTS)
+
+    # Drain the heaps in ranked order. Sorting on (-total, seq) rather than
+    # total alone keeps ties in emission order, which is how this function has
+    # always resolved them.
+    rows: List[tuple] = []
+    kept = 0
+    for key, heap in heaps.items():
+        ordered = sorted(heap, key=lambda t: (-t[0], t[1]))
+        rows.extend(t[2] for t in ordered)
+        results[key] = [t[3] for t in ordered]
+        kept += len(ordered)
 
     if progress:
         progress(90, f"Writing {len(rows)} candidates…")
     bulk_upsert_candidates(rows, db_path=db)
 
-    for key in results:
-        results[key].sort(key=lambda x: x["total"], reverse=True)
-
     evaluated = len(vocals) * len(inst) + len(inst) * (len(inst) - 1) // 2
+    dropped = scored - kept
     log.info(f"  Pairs scored: {scored} of {evaluated} possible  "
-             f"|  scorer={active_scorer}"
+             f"|  kept: {kept}"
+             + (f" (capped, {dropped} lowest-scoring dropped)" if dropped else "")
+             + f"  |  scorer={active_scorer}"
              + (f" ({model_version})" if model_version else "")
              + f"  filter: bpm_max_diff={bpm_max} key_min_score={key_min}")
     return {**results, "_scorer": active_scorer, "_model_version": model_version}

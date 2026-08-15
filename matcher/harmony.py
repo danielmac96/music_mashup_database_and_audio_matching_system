@@ -137,6 +137,23 @@ def bass_clash(vocal_chroma: Optional[Sequence[float]],
             "known": True}
 
 
+def _side_chroma(section: Optional[dict], stem_key: str):
+    """The chroma to judge one side of a pair on.
+
+    Prefers the stem that will actually be in the mashup — the vocal stem on the
+    top side, the instrumental stem on the bed side — and falls back to the
+    full-mix chroma for tracks analysed before those were stored.
+
+    This distinction is not cosmetic. Read off the full mix, the "vocal" side's
+    chroma is mostly the original arrangement, so the transposition this module
+    measures is the one that aligns two backing tracks, neither of which survives
+    into the mashup. The whole point of measuring rather than looking up the
+    Camelot wheel is to answer the question about the audio that gets layered.
+    """
+    s = section or {}
+    return s.get(stem_key) or s.get("chroma")
+
+
 def section_harmony(vocal_section: Optional[dict],
                     bed_section: Optional[dict]) -> Dict:
     """The full harmonic verdict for one (vocal section, bed section) pair.
@@ -145,8 +162,8 @@ def section_harmony(vocal_section: Optional[dict],
     through, so the ranked row, the plan and the exported README all describe
     the same problem in the same words.
     """
-    v = (vocal_section or {}).get("chroma")
-    b = (bed_section or {}).get("chroma")
+    v = _side_chroma(vocal_section, "chroma_vocal")
+    b = _side_chroma(bed_section, "chroma_bed")
     fit = harmonic_fit(v, b)
     clash = bass_clash(v, (bed_section or {}).get("bass_chroma"), fit["shift"])
 

@@ -108,7 +108,8 @@ def _reference(db_path):
             if not _passes_filter(v, i, BPM_MAX, KEY_MIN):
                 continue
             voi.append((v["song_id"], i["song_id"],
-                        composite_score(v, i, stats=stats)))
+                        composite_score(v, i, stats=stats,
+                                        combo_type="vocal_over_instrumental")))
 
     ioi = []
     for a in inst:

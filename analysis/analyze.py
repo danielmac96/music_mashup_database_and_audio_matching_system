@@ -73,6 +73,85 @@ def _pick_beat_phase(onset_env: np.ndarray, beat_frames: np.ndarray) -> int:
     return int(np.argmax(strengths))
 
 
+# ── Beat-grid confidence ─────────────────────────────────────────────────────
+#
+# This used to be `len(beats) / n_frames`, which is beats-per-frame — i.e.
+# `bpm / 2580` at our sample rate and hop. It ranged 0.027 (70 BPM) to 0.067
+# (174 BPM), never approached 1.0, and said nothing whatsoever about whether the
+# grid was trustworthy. Everything downstream read it as a 0-1 confidence:
+# `effort.grid_cost` was ~0.95 for every track in the library, which put a
+# constant floor of ~0.24 on the effort penalty and made `effort_label`'s "Free"
+# bucket (<= 0.20) unreachable by construction. The vocal-beat gate in
+# api/routes/tracks.py (VOCAL_BEAT_CONFIDENCE_MIN = 0.35) was likewise dead.
+#
+# What actually predicts "can I trust this grid in a DAW" is two things, and
+# both are physical rather than calibrated guesses:
+#
+#   steadiness — how constant the inter-beat interval is. A programmed record
+#                holds it to a fraction of a percent; a live take, a track with
+#                rubato, or a tracker that lost the beat wanders.
+#   salience   — how much more onset energy lands ON the detected beats than
+#                the track average. A grid that does not sit on the transients
+#                is a grid you will be dragging by hand.
+#
+# They are multiplied because either one failing is disqualifying: a perfectly
+# even grid that sits between the kicks is still wrong.
+
+# Relative std of the inter-beat interval at which the grid carries no
+# information. 10% jitter is roughly "the tracker is guessing".
+BEAT_JITTER_MAX = 0.10
+
+# Onset strength on the beats, as a multiple of the track's mean. 1.0 means the
+# beats are no louder than anywhere else (no evidence); 2.0 is a clear grid.
+BEAT_SALIENCE_FLOOR = 1.0
+BEAT_SALIENCE_FULL = 2.0
+
+# Below this many beats there is not enough of a grid to measure.
+BEAT_MIN_COUNT = 8
+
+
+def _ramp01(value: float, low: float, high: float) -> float:
+    """0 at or below `low`, 1 at or above `high`, linear between."""
+    if not np.isfinite(value) or high <= low:
+        return 0.0
+    return float(np.clip((value - low) / (high - low), 0.0, 1.0))
+
+
+def beat_grid_confidence(beat_times, onset_env=None, beat_frames=None) -> float:
+    """How much to trust this track's beat grid, 0 (useless) to 1 (locked).
+
+    `onset_env` / `beat_frames` are optional: with them the salience term is
+    measured, without them the result is the steadiness term alone (which is
+    what a caller holding only stored `beat_times` can compute).
+    """
+    t = np.asarray(beat_times, dtype=float)
+    t = t[np.isfinite(t)]
+    if t.size < BEAT_MIN_COUNT:
+        return 0.0
+
+    ibi = np.diff(t)
+    ibi = ibi[ibi > 0]
+    if ibi.size < 2:
+        return 0.0
+    median = float(np.median(ibi))
+    if median <= 0:
+        return 0.0
+    jitter = float(np.std(ibi) / median)
+    steadiness = 1.0 - _ramp01(jitter, 0.0, BEAT_JITTER_MAX)
+
+    salience = 1.0
+    if onset_env is not None and beat_frames is not None:
+        env = np.asarray(onset_env, dtype=float)
+        frames = np.asarray(beat_frames, dtype=int)
+        frames = frames[(frames >= 0) & (frames < env.shape[0])]
+        mean_env = float(env.mean()) if env.size else 0.0
+        if frames.size and mean_env > 1e-9:
+            ratio = float(env[frames].mean()) / mean_env
+            salience = _ramp01(ratio, BEAT_SALIENCE_FLOOR, BEAT_SALIENCE_FULL)
+
+    return float(np.clip(steadiness * salience, 0.0, 1.0))
+
+
 def _step_tempo(y: np.ndarray, sr: int, hop_length: int) -> dict:
     import librosa
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop_length)
@@ -80,7 +159,7 @@ def _step_tempo(y: np.ndarray, sr: int, hop_length: int) -> dict:
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
     return {
         "bpm": float(round(float(np.atleast_1d(tempo)[0]), 2)),
-        "bpm_confidence": float(min(len(beats) / (len(y) / hop_length), 1.0)),
+        "bpm_confidence": beat_grid_confidence(beat_times, onset_env, beats),
         "beat_times": [round(float(t), 4) for t in beat_times],
         "beat_phase": _pick_beat_phase(onset_env, beats),
     }

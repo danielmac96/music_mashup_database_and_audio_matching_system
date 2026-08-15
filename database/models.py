@@ -465,7 +465,16 @@ HARMONY_COLUMNS = ("harmonic_shift", "harmonic_confidence", "bass_clash")
 # actually be layered rather than on a whole-track Camelot lookup.
 _SECTIONS_OPTIONAL_COLUMNS = (
     ("chroma_json", "TEXT"),        # 12 bins, L2-normalised, from the full mix
-    ("bass_chroma_json", "TEXT"),   # same, band-passed 40-250 Hz
+    ("bass_chroma_json", "TEXT"),   # same, from the bass stem (or a 40-250 Hz
+                                    # band-pass of the mix when there is none)
+    # P0.2 — the two the matcher actually layers. A mashup puts THIS track's
+    # vocal over THAT track's bed, so harmony has to be measured on the stems;
+    # chroma_json above is the full mix, which on the vocal side is dominated by
+    # an arrangement that is about to be discarded. NULL for tracks analysed
+    # before this existed, which matcher/harmony.py reads as "fall back to
+    # chroma_json" rather than as a clash.
+    ("chroma_vocal_json", "TEXT"),
+    ("chroma_bed_json", "TEXT"),
     ("key", "TEXT"),
     ("mode", "TEXT"),
     ("camelot", "TEXT"),
@@ -1121,9 +1130,10 @@ def replace_sections(song_id: int, sections: List[Dict],
         """INSERT INTO sections
                (song_id, section_index, start_sec, end_sec, label,
                 energy, vocal_presence, repetition, confidence,
-                chroma_json, bass_chroma_json, key, mode, camelot,
+                chroma_json, bass_chroma_json,
+                chroma_vocal_json, chroma_bed_json, key, mode, camelot,
                 key_confidence)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 song_id, idx,
@@ -1133,6 +1143,8 @@ def replace_sections(song_id: int, sections: List[Dict],
                 int(s.get("repetition", 1)), s.get("confidence"),
                 json.dumps(s["chroma"]) if s.get("chroma") else None,
                 json.dumps(s["bass_chroma"]) if s.get("bass_chroma") else None,
+                json.dumps(s["chroma_vocal"]) if s.get("chroma_vocal") else None,
+                json.dumps(s["chroma_bed"]) if s.get("chroma_bed") else None,
                 s.get("key"), s.get("mode"), s.get("camelot"),
                 s.get("key_confidence"),
             )
@@ -1156,7 +1168,9 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
         # Decode the Phase E chroma columns the same way features does, so
         # callers never see a JSON string where a vector is expected.
         for src, dest in (("chroma_json", "chroma"),
-                          ("bass_chroma_json", "bass_chroma")):
+                          ("bass_chroma_json", "bass_chroma"),
+                          ("chroma_vocal_json", "chroma_vocal"),
+                          ("chroma_bed_json", "chroma_bed")):
             if d.get(src):
                 d[dest] = json.loads(d.pop(src))
             else:
@@ -1412,7 +1426,17 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     spending them on rows the model is already confident about buys nothing;
     the uncertain ones are where a verdict carries the most information."""
     conn = get_conn(db_path)
-    where = ["mc.score_total >= ?"]
+    # min_score gates on the PERCENTILE, not the raw composite — the same number
+    # the row displays and the same one `tierFor` colours.
+    #
+    # These had drifted apart. The row has shown `score_percentile` since T3.5,
+    # but "Min match 85%" filtered `score_total >= 0.85` — and the raw composite
+    # is a weighted mean of five sub-scores that each floor at 0.25-0.5, so it
+    # spans roughly [0.45, 0.95] and clusters near 0.78. The result was a control
+    # that did nothing at all between 50 and 75 and then emptied the page,
+    # against a column of percentages that ran the full 0-100. Two scales, one
+    # label.
+    where = ["COALESCE(pc.score_percentile, 0) >= ?"]
     params: list = [min_score]
     if combo_type:
         where.append("mc.combo_type = ?")
@@ -1712,15 +1736,24 @@ def best_bed_per_vocal(combo_type: str = "vocal_over_instrumental",
     Hidden pairs and excluded tracks are filtered out here too."""
     conn = get_conn(db_path)
     rows = conn.execute(
-        """WITH ranked AS (
-               SELECT mc.*,
+        """WITH pct AS (
+               SELECT id,
+                      PERCENT_RANK() OVER (PARTITION BY combo_type
+                                           ORDER BY score_total) AS score_percentile
+               FROM mashup_candidates
+           ),
+           ranked AS (
+               SELECT mc.*, pc.score_percentile,
                       ROW_NUMBER() OVER (PARTITION BY mc.vocal_song_id
                                          ORDER BY mc.score_total DESC) AS bed_rank,
                       MAX(mc.score_total) OVER (PARTITION BY mc.vocal_song_id)
                           AS vocal_best_score
                FROM mashup_candidates mc
+               LEFT JOIN pct pc ON pc.id = mc.id
                WHERE mc.combo_type = ?
-                 AND mc.score_total >= ?
+                 -- Percentile, matching the flat list and the number the row
+                 -- shows. See get_candidates_enriched.
+                 AND COALESCE(pc.score_percentile, 0) >= ?
                  AND NOT EXISTS (SELECT 1 FROM pair_hidden h
                                   WHERE h.vocal_song_id = mc.vocal_song_id
                                     AND h.inst_song_id = mc.inst_song_id)
