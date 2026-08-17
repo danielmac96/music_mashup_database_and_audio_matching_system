@@ -35,6 +35,10 @@
   --green: #2ecc71;
   --green-ink: #04231a;
   --violet: #a78bfa;
+  /* Spectral room (collision_score). Its own colour because on the vocal path
+     it carries more weight than any other sub-score — timbre's share moves
+     onto it — and it was previously not drawn at all. */
+  --rose: #f472b6;
   --red: #f87171;
   --playhead: #ef4444;
 

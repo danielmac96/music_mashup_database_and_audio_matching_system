@@ -928,7 +928,7 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from database.models import (
         bulk_upsert_candidates, candidate_row, clear_candidates,
-        get_all_features, get_sections, DB_PATH,
+        get_all_features, get_sections, refresh_candidate_percentiles, DB_PATH,
     )
     # Read once per run, so a scoring pass is internally consistent even if the
     # user saves settings while it is going, and so a knob turned in the UI
@@ -1166,6 +1166,13 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     if progress:
         progress(90, f"Writing {len(rows)} candidates…")
     bulk_upsert_candidates(rows, db_path=db)
+
+    # C.1 — rank the finished table once, here, instead of on every list
+    # request. The readers fall back to computing these lazily, but only a run
+    # that has just rewritten the whole table knows it is the right moment.
+    if progress:
+        progress(96, "Ranking the results…")
+    refresh_candidate_percentiles(db_path=db)
 
     evaluated = len(vocals) * len(inst) + len(inst) * (len(inst) - 1) // 2
     dropped = scored - kept

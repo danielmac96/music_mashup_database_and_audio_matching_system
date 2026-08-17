@@ -167,6 +167,15 @@ def settings_provenance() -> dict:
                   "source": "env" if os.environ.get(spec[0]) else "settings"}
            for name, spec in _TUNABLE_INTS.items()},
         "match_weights": {"value": current_match_weights(), "source": "settings"},
+        # What the VOCAL path actually ranks on. _for_combo moves timbre's
+        # weight onto collision there, so the generic set above describes a
+        # ranking the user is almost never looking at — Discover defaults to
+        # vocal-over-instrumental. Exposed so the legend can state the weights
+        # in force rather than a hardcoded guess.
+        "match_weights_vocal": {
+            "value": current_match_weights("vocal_over_instrumental"),
+            "source": "settings",
+        },
         "stem_format": {"value": STEM_FORMAT, "source": "code"},
         "configured": CONFIGURED,
         "settings_path": str(settings_path()),

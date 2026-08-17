@@ -245,3 +245,37 @@ def test_timbre_no_longer_moves_a_vocal_row_total():
     ioi_diff = composite_score(a, different, stats=stats,
                                combo_type="instrumental_over_instrumental")
     assert ioi_same["total"] != pytest.approx(ioi_diff["total"])
+
+
+# ── B.1: the legend has to be able to state the weights in force ─────────────
+
+def test_settings_expose_the_vocal_path_weights():
+    """Discover defaults to vocal-over-instrumental, so the generic weight set
+    describes a ranking the user is almost never looking at. The legend used to
+    hardcode 'Key 30 · BPM 25 · Timbre 25 · Energy 20' — a set that matches
+    neither the defaults, nor the user's saved values, nor the vocal path (where
+    timbre is zero), and that omits collision entirely."""
+    import config
+
+    prov = config.settings_provenance()
+    assert "match_weights_vocal" in prov
+    vocal = prov["match_weights_vocal"]["value"]
+    generic = prov["match_weights"]["value"]
+
+    assert vocal["timbre_score"] == 0.0
+    assert vocal["collision_score"] == pytest.approx(
+        generic["collision_score"] + generic["timbre_score"])
+    assert vocal == config.current_match_weights("vocal_over_instrumental")
+
+
+def test_every_weighted_subscore_reaches_the_row():
+    """A term that carries weight but is never sent to the client cannot be
+    drawn, which is how collision stayed invisible while being the heaviest
+    term on the vocal path."""
+    from database.models import _CANDIDATE_INSERT_SQL
+    import config
+
+    for name in config.current_match_weights():
+        column = "score_" + name.removesuffix("_score")
+        assert column in _CANDIDATE_INSERT_SQL, \
+            f"{name} is weighted but {column} is never persisted"

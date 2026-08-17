@@ -239,3 +239,94 @@ def test_an_export_never_overwrites_an_explicit_rejection(db_path, monkeypatch):
     _record_implicit_positive(v, i)
 
     assert get_pair_feedback(db_path=db_path)[0]["verdict"] == "no"
+
+
+# ── C.1: the percentile is a stored column, not a per-request full sort ──────
+
+def test_percentiles_are_materialised_not_recomputed_per_request(db_path):
+    """They used to be two PERCENT_RANK window CTEs over the WHOLE candidates
+    table, evaluated on every list request — the dominant cost of every chip
+    click, and unskippable because min_score gates on one of them."""
+    from database.models import get_candidates_enriched, get_conn
+
+    _library(db_path, [0.71, 0.74, 0.77, 0.80, 0.83])
+    get_candidates_enriched(limit=50, db_path=db_path)   # triggers the backfill
+
+    conn = get_conn(db_path)
+    stored = conn.execute(
+        "SELECT score_total, score_percentile, energy_pct FROM mashup_candidates "
+        "ORDER BY score_total").fetchall()
+    conn.close()
+
+    assert all(r["score_percentile"] is not None for r in stored)
+    assert all(r["energy_pct"] is not None for r in stored)
+    # PERCENT_RANK over five rows: 0, .25, .5, .75, 1.
+    assert [round(r["score_percentile"], 2) for r in stored] == \
+           [0.0, 0.25, 0.5, 0.75, 1.0]
+
+
+def test_a_row_written_after_a_refresh_still_gets_a_percentile(db_path):
+    """Every route into the table has to end up filterable, or Min match
+    silently drops rows that were merely written the other way."""
+    from database.models import (
+        get_candidates_enriched, get_conn, upsert_candidate,
+    )
+
+    ids = _library(db_path, [0.50, 0.90])
+    get_candidates_enriched(limit=50, db_path=db_path)
+
+    side = lambda sid: {                                         # noqa: E731
+        "song_id": sid, "title": f"T{sid}", "artist": "A", "bpm": 128.0,
+        "key": "A", "mode": "minor", "camelot": "8A",
+        "loudness_rms": 0.05, "energy": 0.5,
+    }
+    upsert_candidate(side(ids[0]), side(ids[3]), {
+        "total": 0.70, "bpm_score": 1.0, "key_score": 1.0,
+        "energy_score": 0.9, "timbre_score": 0.9,
+    }, db_path=db_path)
+
+    conn = get_conn(db_path)
+    assert conn.execute("SELECT COUNT(*) FROM mashup_candidates "
+                        "WHERE score_percentile IS NULL").fetchone()[0] == 1
+    conn.close()
+
+    # Reading backfills it, and the new row lands between the other two.
+    rows = get_candidates_enriched(limit=50, db_path=db_path)
+    by_total = {round(r["score_total"], 2): r["score_percentile"] for r in rows}
+    assert by_total[0.5] < by_total[0.7] < by_total[0.9]
+
+
+def test_refresh_partitions_by_combo_type(db_path):
+    """Ranking a vocal-over-bed pair against instrumental-over-instrumental
+    pairs would make the best visible row read ~84th."""
+    from database.models import (
+        get_conn, init_db, refresh_candidate_percentiles, upsert_candidate,
+        upsert_song,
+    )
+
+    init_db(db_path)
+    sids = [upsert_song(f"s{n}", "A", f"https://sc/{n}", 200, "Pop",
+                        status="analysed", db_path=db_path) for n in range(4)]
+    side = lambda sid, e: {                                      # noqa: E731
+        "song_id": sid, "title": f"T{sid}", "artist": "A", "bpm": 128.0,
+        "key": "A", "mode": "minor", "camelot": "8A",
+        "loudness_rms": 0.05, "energy": e,
+    }
+    scores = lambda t: {"total": t, "bpm_score": 1.0, "key_score": 1.0,   # noqa: E731
+                        "energy_score": 0.9, "timbre_score": 0.9}
+    # One lonely vocal pair scoring 0.40, against two much better inst pairs.
+    upsert_candidate(side(sids[0], 0.5), side(sids[1], 0.5), scores(0.40),
+                     combo_type="vocal_over_instrumental", db_path=db_path)
+    for n, t in ((2, 0.80), (3, 0.95)):
+        upsert_candidate(side(sids[1], 0.5), side(sids[n], 0.5), scores(t),
+                         combo_type="instrumental_over_instrumental",
+                         db_path=db_path)
+    refresh_candidate_percentiles(db_path=db_path)
+
+    conn = get_conn(db_path)
+    vocal = conn.execute(
+        "SELECT score_percentile FROM mashup_candidates "
+        "WHERE combo_type='vocal_over_instrumental'").fetchone()[0]
+    conn.close()
+    # Only vocal pair in its partition → top of its own kind, not bottom of all.
+    assert vocal == pytest.approx(0.0)   # PERCENT_RANK of a single row is 0
