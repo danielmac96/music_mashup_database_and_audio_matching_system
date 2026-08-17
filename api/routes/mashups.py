@@ -11,9 +11,10 @@ import json
 
 from database.models import (
     BPM_BANDS, ENERGY_BANDS, ERA_BANDS, SUBSCORE_COLUMNS, VERDICTS,
-    best_bed_per_vocal, candidate_filter_options, exclude_track,
-    get_candidates_enriched, get_pair_feedback, hide_pair, include_track,
-    list_hidden, normalise_weights, unhide_pair, upsert_pair_feedback,
+    add_to_shortlist, best_bed_per_vocal, candidate_filter_options,
+    clear_shortlist, exclude_track, get_candidates_enriched, get_pair_feedback,
+    get_shortlist, hide_pair, include_track, list_hidden, normalise_weights,
+    remove_from_shortlist, unhide_pair, upsert_pair_feedback,
 )
 
 from api import jobs
@@ -376,6 +377,76 @@ def include_a_track(song_id: int) -> dict:
 def list_suppressed() -> dict:
     """Everything currently hidden or excluded, so the user can undo it."""
     return list_hidden()
+
+
+# ── Shortlist (D.1 / D.2) ────────────────────────────────────────────────────
+#
+# The shortlist is the output of a triage session, and it used to be a Set in
+# the browser that a refresh destroyed and no export could read.
+
+class ShortlistPair(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+    # Keyed by the SECTION pair — the candidate row has been one since E.3, and
+    # "that chorus over that drop" is the thing being starred.
+    vocal_section_idx: Optional[int] = None
+    inst_section_idx: Optional[int] = None
+    harmonic_shift: Optional[int] = None
+    note: Optional[str] = None
+
+
+@router.get("/shortlist")
+def read_shortlist() -> dict:
+    rows = get_shortlist()
+    return {"count": len(rows), "shortlist": rows}
+
+
+@router.post("/shortlist")
+def star_a_pair(body: ShortlistPair) -> dict:
+    add_to_shortlist(body.vocal_song_id, body.inst_song_id,
+                     vocal_section_idx=body.vocal_section_idx,
+                     inst_section_idx=body.inst_section_idx,
+                     harmonic_shift=body.harmonic_shift, note=body.note)
+    return {"ok": True, **body.model_dump()}
+
+
+@router.delete("/shortlist")
+def unstar_a_pair(vocal_song_id: int, inst_song_id: int,
+                  vocal_section_idx: Optional[int] = None,
+                  inst_section_idx: Optional[int] = None) -> dict:
+    removed = remove_from_shortlist(vocal_song_id, inst_song_id,
+                                    vocal_section_idx, inst_section_idx)
+    return {"ok": True, "removed": removed}
+
+
+@router.delete("/shortlist/all")
+def empty_the_shortlist() -> dict:
+    return {"ok": True, "removed": clear_shortlist()}
+
+
+@router.post("/shortlist/export")
+def queue_shortlist_export(background: BackgroundTasks,
+                           top_n: Optional[int] = None) -> dict:
+    """Export the starred pairs as FL session folders.
+
+    Driven by the explicit list rather than by filters, which is the whole
+    point: these are the pairs chosen by ear, and re-deriving them from a query
+    would export something else. Each carries its own section pair and measured
+    shift, so the folder is the take that was starred.
+    """
+    from api.workers import session_worker
+    from render.session import MAX_SESSIONS
+
+    rows = get_shortlist()
+    if not rows:
+        raise HTTPException(status_code=404, detail="the shortlist is empty")
+    limit = MAX_SESSIONS if top_n is None else max(1, min(top_n, MAX_SESSIONS))
+    pairs = [_export_pair(r) for r in rows[:limit]]
+    job_id = jobs.new_job(kind="session",
+                          message=f"Queued {len(pairs)} FL session exports")
+    background.add_task(session_worker.run_batch, job_id, pairs)
+    return {"job_id": job_id, "pair_count": len(pairs),
+            "archive_url": f"/api/studio/session/{job_id}/archive"}
 
 
 class PairVerdict(BaseModel):

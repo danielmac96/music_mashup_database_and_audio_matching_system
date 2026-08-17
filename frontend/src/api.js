@@ -255,6 +255,43 @@ export const api = {
   // `pin` ties the plan to a candidate row's own section pair and measured
   // transpose, so the recipe describes the moment that was auditioned rather
   // than one the server re-chooses. Omit it for an ad-hoc pair.
+  // ── Shortlist (D.1/D.2) ───────────────────────────────────────────────────
+  // The pairs starred while triaging. Keyed by the SECTION pair, because that
+  // is what a candidate row is. Persisted server-side so an hour of listening
+  // survives a refresh and can be exported directly.
+  getShortlist: () => jsonFetch("/api/mashups/shortlist"),
+
+  addToShortlist: ({ vocalSongId, instSongId, vocalSectionIdx = null,
+                     instSectionIdx = null, harmonicShift = null,
+                     note = null }) =>
+    jsonFetch("/api/mashups/shortlist", {
+      method: "POST",
+      body: JSON.stringify({
+        vocal_song_id: vocalSongId, inst_song_id: instSongId,
+        vocal_section_idx: vocalSectionIdx, inst_section_idx: instSectionIdx,
+        harmonic_shift: harmonicShift, note,
+      }),
+    }),
+
+  removeFromShortlist: ({ vocalSongId, instSongId, vocalSectionIdx = null,
+                          instSectionIdx = null }) => {
+    const params = new URLSearchParams({
+      vocal_song_id: String(vocalSongId), inst_song_id: String(instSongId),
+    });
+    if (vocalSectionIdx != null) params.set("vocal_section_idx", String(vocalSectionIdx));
+    if (instSectionIdx != null) params.set("inst_section_idx", String(instSectionIdx));
+    return jsonFetch(`/api/mashups/shortlist?${params}`, { method: "DELETE" });
+  },
+
+  clearShortlist: () =>
+    jsonFetch("/api/mashups/shortlist/all", { method: "DELETE" }),
+
+  // Export the starred pairs. Driven by the explicit list, not by filters —
+  // these are the pairs chosen by ear.
+  exportShortlist: (topN = null) =>
+    jsonFetch(`/api/mashups/shortlist/export${topN ? `?top_n=${topN}` : ""}`,
+      { method: "POST" }),
+
   getMashupPlan: (vocalId, instId, {
     vocalSectionIdx = null, instSectionIdx = null, harmonicShift = null,
   } = {}) => {

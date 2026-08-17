@@ -283,10 +283,23 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   const [adventure, setAdventure] = useState(0);
   const [filterOpts, setFilterOpts] = useState(null);
 
+  // A shortlist entry's identity: the section pair, matching the server's key.
+  // Falls back to -1 for a row with no sections, exactly as the unique index
+  // does, so the two agree on what "the same entry" means.
+  const shortlistKey = (c) =>
+    `${c.vocal_song_id}:${c.inst_song_id}:`
+    + `${c.vocal_section_idx ?? -1}:${c.inst_section_idx ?? -1}`;
+
   // ── T1.7 triage: highlighted row, verdicts, shortlist, shortcut legend ────
   const [cursor, setCursor] = useState(0);
   const [verdicts, setVerdicts] = useState({});   // "vocalId:instId" -> love|ok|no
+  // D.1 — the starred pairs, server-side. This was a local Set that a refresh
+  // destroyed and no export path could read, which meant an hour of triage
+  // produced nothing you could act on. Keyed by the section pair, since that is
+  // what a candidate row is.
   const [shortlist, setShortlist] = useState(() => new Set());
+  const [shortlistOnly, setShortlistOnly] = useState(false);
+  const [shortlistRows, setShortlistRows] = useState([]);
   const [showKeys, setShowKeys] = useState(false);
   const rowRefs = useRef(new Map());
   // `auditioning` is the user's intent (space toggles it); playingId is what the
@@ -321,6 +334,58 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
 
   const weightSummary = useMemo(
     () => summariseWeights(activeWeights), [activeWeights]);
+
+  const refreshShortlist = useCallback(() => api.getShortlist()
+    .then((d) => {
+      const rows = d.shortlist || [];
+      setShortlistRows(rows);
+      setShortlist(new Set(rows.map(shortlistKey)));
+    })
+    .catch(() => {}), []);
+  useEffect(() => { refreshShortlist(); }, [refreshShortlist]);
+
+  // Optimistic, like the verdicts: triage has to stay at the speed of the
+  // keyboard, and a star that waits for a round-trip does not.
+  const toggleShortlist = useCallback(async (c) => {
+    if (!c) return;
+    const k = shortlistKey(c);
+    const starred = shortlist.has(k);
+    setShortlist((s) => {
+      const n = new Set(s);
+      starred ? n.delete(k) : n.add(k);
+      return n;
+    });
+    const ref = {
+      vocalSongId: c.vocal_song_id, instSongId: c.inst_song_id,
+      vocalSectionIdx: c.vocal_section_idx ?? null,
+      instSectionIdx: c.inst_section_idx ?? null,
+    };
+    try {
+      if (starred) await api.removeFromShortlist(ref);
+      // The measured shift travels with the star so the export rebuilds this
+      // exact take even after a re-score has replaced the candidates table.
+      else await api.addToShortlist({ ...ref, harmonicShift: c.harmonic_shift ?? null });
+      refreshShortlist();
+    } catch (e) {
+      setShortlist((s) => {                       // put it back if it didn't stick
+        const n = new Set(s);
+        starred ? n.add(k) : n.delete(k);
+        return n;
+      });
+      toast(e.message || "Could not update the shortlist");
+    }
+  }, [shortlist, refreshShortlist]);
+
+  const exportShortlist = async () => {
+    try {
+      const { job_id, pair_count } = await api.exportShortlist();
+      setBatchToken(null);
+      setBatchJobId(job_id);
+      toast(`Exporting ${pair_count} starred pair${pair_count === 1 ? "" : "s"}…`);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
 
   // Verdicts persist server-side (T2.1), so a reload shows what you already judged.
   useEffect(() => {
@@ -440,7 +505,25 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     }
   };
 
+  // The starred pairs, filtered out of whatever the list currently holds. Rows
+  // whose pair is no longer in the scored set (a re-score dropped it) are still
+  // shown, rebuilt from the shortlist row itself — the star outlives the score.
+  const shortlistView = useMemo(() => {
+    if (!shortlistOnly) return null;
+    const inList = new Map(candidates.map((c) => [shortlistKey(c), c]));
+    return shortlistRows.map((r) => inList.get(shortlistKey(r)) || {
+      ...r,
+      id: `sl-${r.id}`,
+      // Enough for the row to render; the sub-score bars stay empty because
+      // this pair is not currently scored, which is the honest answer.
+      score_total: r.score_total ?? null,
+      score_percentile: null,
+      unscored: r.score_total == null,
+    });
+  }, [shortlistOnly, shortlistRows, candidates]);
+
   const sortedCandidates = useMemo(() => {
+    if (shortlistView) return shortlistView;
     if (sortMode === "Popularity") {
       return [...candidates].sort((a, b) => popOf(b) - popOf(a));
     }
@@ -456,7 +539,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       });
     }
     return candidates; // server already returns score-descending
-  }, [candidates, sortMode]);
+  }, [candidates, sortMode, shortlistView]);
 
   // ── T1.7 keyboard triage ─────────────────────────────────────────────────
   const keyOf = (c) => `${c.vocal_song_id}:${c.inst_song_id}`;
@@ -679,12 +762,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
         case "d": e.preventDefault(); judgeAndAdvance("no"); break;
         case "s": {
           e.preventDefault();
-          const c = sortedCandidates[cursor];
-          if (c) setShortlist((s) => {
-            const n = new Set(s);
-            n.has(c.id) ? n.delete(c.id) : n.add(c.id);
-            return n;
-          });
+          toggleShortlist(sortedCandidates[cursor]);
           break;
         }
         case "h": {
@@ -702,7 +780,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cursor, sortedCandidates, judgeAndAdvance, hide]);
+  }, [cursor, sortedCandidates, judgeAndAdvance, hide, toggleShortlist]);
 
   // Switching away from the tab must not leave an AudioContext playing.
   useEffect(() => stop, [stop]);
@@ -844,6 +922,15 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
             )}
           </>
         )}
+        {shortlist.size > 0 && (
+          <div className={`chip${shortlistOnly ? " active" : ""}`}
+            onClick={() => setShortlistOnly((v) => !v)}
+            title="Show only the pairs you starred. These persist across re-scores and can be exported directly — they are what an hour of triage is for.">
+            <span className="k">★ Shortlist</span>
+            <span className="mono">{shortlist.size}</span>
+            <span className="caret">▾</span>
+          </div>
+        )}
         {hiddenCount > 0 && (
           <div className="chip" onClick={unhideAll}
             title="Restore every pair you hid and every track you excluded">
@@ -871,6 +958,12 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
           <a className="btn" href={api.sessionArchiveUrl(batchToken)}
             target="_blank" rel="noreferrer"
             onClick={() => setBatchToken(null)}>↓ download sessions</a>
+        ) : shortlistOnly ? (
+          <button className="btn green" onClick={exportShortlist}
+            disabled={shortlist.size === 0}
+            title="Export every starred pair as an FL session folder, each rebuilt from the exact section pair and transpose you starred. This is the end of a triage session: the pairs you chose by ear, not the top of a query.">
+            ↓ Export {shortlist.size} starred
+          </button>
         ) : (
           <button className="btn" onClick={exportTopSessions}
             disabled={candidates.length === 0}
@@ -939,7 +1032,11 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
 
       {sortedCandidates.length === 0 && !loading ? (
         <p className="empty">
-          {activeFilters > 0
+          {shortlistOnly
+            ? "Nothing starred yet. Press s on a row (or click its rank) to "
+              + "shortlist it — starred pairs survive a re-score and export "
+              + "straight to FL session folders."
+            : activeFilters > 0
             ? "No pairs match every filter — clear one, or lower Min match."
             : minMatch > MIN_MATCHES[0]
             ? `No pairs score ${minMatch}% or better — click "Min match" to lower the bar, or re-score after analyzing more tracks.`
@@ -968,8 +1065,12 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                   className={`pair${i === 0 ? " top" : ""}${isCursor ? " cursor" : ""}`
                     + `${verdict ? ` judged-${verdict}` : ""}`
                     + `${playingId === c.id ? " playing" : ""}`}>
-                  <div className="pair-rank">
-                    {shortlist.has(c.id) ? "★" : i + 1}
+                  <div className="pair-rank"
+                    title={shortlist.has(shortlistKey(c))
+                      ? "Shortlisted — press s to unstar" : "Press s to shortlist"}
+                    onClick={(e) => { e.stopPropagation(); toggleShortlist(c); }}
+                    style={{ cursor: "pointer" }}>
+                    {shortlist.has(shortlistKey(c)) ? "★" : i + 1}
                     {verdict && (
                       <span className={`verdict-chip ${verdict}`}
                         title={`You judged this "${verdict}" — press f/d to change`}>

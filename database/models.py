@@ -169,6 +169,38 @@ CREATE TABLE IF NOT EXISTS track_excluded (
     created_at      TEXT DEFAULT (datetime('now'))
 );
 
+-- ── The pairs the user starred while triaging (D.1) ──────────────────────────
+-- The shortlist is the OUTPUT of a triage session — an hour of listening
+-- distilled to the twelve pairs worth building — and it used to be a
+-- useState(new Set()) in the browser that a refresh destroyed and no export
+-- path could read. The only way out of Discover was "Export top N", driven by
+-- filters rather than by the choices just made by ear.
+--
+-- Keyed by the SECTION pair, not the song pair: the candidate row has been a
+-- section pair since E.3, and "that chorus over that drop" is the thing being
+-- starred. COALESCE(-1) in the index because SQLite treats NULLs as distinct in
+-- a UNIQUE, so section-less rows would otherwise be free to duplicate.
+--
+-- Deliberately not part of mashup_candidates (truncated by every re-score) and
+-- deliberately not pair_feedback: starring is "I want to build this", not a
+-- verdict on how it sounded, and folding the two together would teach the model
+-- that everything queued for export was also loved.
+CREATE TABLE IF NOT EXISTS pair_shortlist (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    vocal_song_id     INTEGER NOT NULL,
+    inst_song_id      INTEGER NOT NULL,
+    vocal_section_idx INTEGER,
+    inst_section_idx  INTEGER,
+    harmonic_shift    INTEGER,
+    note              TEXT,
+    created_at        TEXT DEFAULT (datetime('now'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_shortlist_pair
+    ON pair_shortlist(vocal_song_id, inst_song_id,
+                      COALESCE(vocal_section_idx, -1),
+                      COALESCE(inst_section_idx, -1));
+
 -- ── Documented mixes (1001tracklists ingestion, Phase 3) ─────────────────────
 CREATE TABLE IF NOT EXISTS mixes (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2049,6 +2081,114 @@ def include_track(song_id: int, db_path: Path = DB_PATH) -> None:
     conn.execute("DELETE FROM track_excluded WHERE song_id=?", (song_id,))
     conn.commit()
     conn.close()
+
+
+# ── Shortlist (D.1) ──────────────────────────────────────────────────────────
+
+def _shortlist_key(vocal_song_id: int, inst_song_id: int,
+                   vocal_section_idx: Optional[int],
+                   inst_section_idx: Optional[int]) -> tuple:
+    return (vocal_song_id, inst_song_id,
+            -1 if vocal_section_idx is None else int(vocal_section_idx),
+            -1 if inst_section_idx is None else int(inst_section_idx))
+
+
+def add_to_shortlist(vocal_song_id: int, inst_song_id: int,
+                     vocal_section_idx: Optional[int] = None,
+                     inst_section_idx: Optional[int] = None,
+                     harmonic_shift: Optional[int] = None,
+                     note: Optional[str] = None,
+                     db_path: Path = DB_PATH) -> None:
+    """Star one section pair for building.
+
+    The section indices and the measured shift are stored with it so the export
+    can rebuild exactly this take (A.1) even after a re-score has replaced the
+    candidates table underneath.
+    """
+    conn = get_conn(db_path)
+    conn.execute(
+        """INSERT INTO pair_shortlist
+               (vocal_song_id, inst_song_id, vocal_section_idx,
+                inst_section_idx, harmonic_shift, note)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT (vocal_song_id, inst_song_id,
+                        COALESCE(vocal_section_idx, -1),
+                        COALESCE(inst_section_idx, -1))
+           DO UPDATE SET
+               harmonic_shift = excluded.harmonic_shift,
+               note = COALESCE(excluded.note, note)""",
+        (vocal_song_id, inst_song_id, vocal_section_idx, inst_section_idx,
+         harmonic_shift, note))
+    conn.commit()
+    conn.close()
+
+
+def remove_from_shortlist(vocal_song_id: int, inst_song_id: int,
+                          vocal_section_idx: Optional[int] = None,
+                          inst_section_idx: Optional[int] = None,
+                          db_path: Path = DB_PATH) -> int:
+    """Un-star one section pair. Returns how many rows went."""
+    conn = get_conn(db_path)
+    cur = conn.execute(
+        """DELETE FROM pair_shortlist
+            WHERE vocal_song_id=? AND inst_song_id=?
+              AND COALESCE(vocal_section_idx, -1)=?
+              AND COALESCE(inst_section_idx, -1)=?""",
+        _shortlist_key(vocal_song_id, inst_song_id,
+                       vocal_section_idx, inst_section_idx))
+    conn.commit()
+    removed = cur.rowcount
+    conn.close()
+    return removed
+
+
+def clear_shortlist(db_path: Path = DB_PATH) -> int:
+    conn = get_conn(db_path)
+    cur = conn.execute("DELETE FROM pair_shortlist")
+    conn.commit()
+    removed = cur.rowcount
+    conn.close()
+    return removed
+
+
+def get_shortlist(db_path: Path = DB_PATH) -> List[Dict]:
+    """Every starred pair, newest first, with enough metadata to render a row.
+
+    Joined against `songs` rather than `mashup_candidates` on purpose: a
+    re-score truncates the candidates table, and a shortlist that emptied itself
+    every time you re-scored would be worse than no shortlist. Titles come from
+    the songs; the sections come from the shortlist row itself.
+    """
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        """SELECT sl.*,
+                  sv.title  AS vocal_title,  sv.artist AS vocal_artist,
+                  si.title  AS inst_title,   si.artist AS inst_artist,
+                  (SELECT label FROM sections
+                    WHERE song_id = sl.vocal_song_id
+                      AND section_index = sl.vocal_section_idx)
+                      AS vocal_section_label,
+                  (SELECT label FROM sections
+                    WHERE song_id = sl.inst_song_id
+                      AND section_index = sl.inst_section_idx)
+                      AS inst_section_label,
+                  -- The live candidate row for this exact section pair, when a
+                  -- re-score has produced one. NULL just means "not currently
+                  -- in the scored set", which is not the same as "gone".
+                  (SELECT mc.score_total FROM mashup_candidates mc
+                    WHERE mc.vocal_song_id = sl.vocal_song_id
+                      AND mc.inst_song_id = sl.inst_song_id
+                      AND COALESCE(mc.vocal_section_idx, -1)
+                          = COALESCE(sl.vocal_section_idx, -1)
+                      AND COALESCE(mc.inst_section_idx, -1)
+                          = COALESCE(sl.inst_section_idx, -1)
+                    LIMIT 1) AS score_total
+           FROM pair_shortlist sl
+           LEFT JOIN songs sv ON sv.id = sl.vocal_song_id
+           LEFT JOIN songs si ON si.id = sl.inst_song_id
+           ORDER BY sl.created_at DESC, sl.id DESC""").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def list_hidden(db_path: Path = DB_PATH) -> Dict[str, List[Dict]]:
