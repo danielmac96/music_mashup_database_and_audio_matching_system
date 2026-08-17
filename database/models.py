@@ -1208,18 +1208,23 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
 def upsert_candidate(vocal: dict, inst: dict, scores: dict,
                      combo_type: str = "vocal_over_instrumental",
                      scorer: str = "heuristic", model_version: Optional[str] = None,
+                     section_pair: Optional[dict] = None,
                      db_path: Path = DB_PATH):
     """
     Insert or update a mashup_candidates row for a vocal+instrumental pair.
     combo_type: 'vocal_over_instrumental' | 'instrumental_over_instrumental'
     scorer:     'heuristic' | 'model'  (which scorer produced score_total)
+    section_pair: the (vocal section x bed section) this row is for, as
+                  matcher.sections builds it. The candidate IS a section pair
+                  since E.3, so a writer that cannot express one can only
+                  produce half a row.
 
     One pair, one commit. Library-wide scoring uses bulk_upsert_candidates.
     """
     conn = get_conn(db_path)
     conn.execute(_CANDIDATE_INSERT_SQL,
                  candidate_row(vocal, inst, scores, combo_type,
-                               scorer, model_version))
+                               scorer, model_version, section_pair))
     conn.commit()
     conn.close()
 
@@ -1471,6 +1476,113 @@ def get_candidates(min_score: float = 0.0, limit: int = 100,
     return [dict(r) for r in rows]
 
 
+# ── C.2: re-rank on new weights without a re-score ───────────────────────────
+#
+# Every part of the composite is already on the row, so trying a different
+# balance is arithmetic — not a reason to re-walk the whole pair matrix. Before
+# this, changing a weight meant Settings → Save → "Score library" → minutes,
+# which is why nobody ever tried a different balance.
+#
+# Done in SQL rather than over the returned page on purpose. Re-sorting fifty
+# rows that were selected by the OLD weights answers the wrong question: the
+# pairs a heavier tempo weight promotes are mostly not in the old top fifty.
+
+# Weight name (as the user and config know it) → the stored column.
+SUBSCORE_COLUMNS = {
+    "bpm_score": "score_bpm",
+    "key_score": "score_key",
+    "energy_score": "score_energy",
+    "timbre_score": "score_timbre",
+    "collision_score": "score_collision",
+}
+
+# What an unmeasured sub-score counts as. 0.5 is the neutral the analysis layer
+# already uses for "we did not measure it" (collision_score, _rollup), so a row
+# scored before Phase D is not silently demoted by a re-weight.
+UNMEASURED_SUBSCORE = 0.5
+
+
+def _weighted_total_sql(weights: Dict[str, float], effort_weight: float,
+                        section_weight: float, params: list) -> str:
+    """SQL for the composite, from the stored parts.
+
+    Mirrors matcher.match._apply_section_fit exactly:
+
+        whole   = Σ subscore × weight
+        blended = whole, or (1-sw)·whole + sw·section_fit when there is a fit
+        total   = blended × (1 - effort_weight × effort)
+
+    The blend is written multiplicatively rather than as a CASE so the `whole`
+    expression — and its bound parameters — appear once:
+    `(score_section IS NOT NULL)` is 1 or 0 in SQLite, so a row with no section
+    fit multiplies the section term out to nothing.
+    """
+    terms = []
+    for name, column in SUBSCORE_COLUMNS.items():
+        terms.append(f"? * COALESCE({column}, ?)")
+        params += [float(weights.get(name, 0.0)), UNMEASURED_SUBSCORE]
+    whole = " + ".join(terms)
+
+    blended = (f"({whole}) * (1 - ? * (score_section IS NOT NULL)) "
+               f"+ ? * COALESCE(score_section, 0.0)")
+    params += [float(section_weight), float(section_weight)]
+
+    params.append(float(effort_weight))
+    return f"({blended}) * (1 - ? * COALESCE(score_effort, 0.0))"
+
+
+def _reweight_cte(weights: Dict[str, float], effort_weight: float,
+                  section_weight: float, params: list) -> str:
+    """CTE giving every row a total and a percentile under the new weights.
+
+    The percentile is recomputed too: it is the number the row displays and the
+    one `min_score` gates on, so leaving it ranked against the old totals would
+    make the Min-match slider filter on a ranking the user just changed. This is
+    the full-table sort C.1 removed from the default path — worth paying here,
+    because a weight change is a deliberate act and the answer has to be right.
+    """
+    from config import _for_combo
+
+    vocal = _for_combo(dict(weights), "vocal_over_instrumental")
+    v_expr = _weighted_total_sql(vocal, effort_weight, section_weight, params)
+    g_expr = _weighted_total_sql(weights, effort_weight, section_weight, params)
+    return f"""
+        rw_raw AS (
+            SELECT id, combo_type,
+                   CASE WHEN combo_type = 'vocal_over_instrumental'
+                        THEN {v_expr} ELSE {g_expr} END AS rw_total
+            FROM mashup_candidates
+        ),
+        rw AS (
+            SELECT id, rw_total,
+                   PERCENT_RANK() OVER (PARTITION BY combo_type
+                                        ORDER BY rw_total) AS rw_pct
+            FROM rw_raw
+        )"""
+
+
+def normalise_weights(raw: Optional[Dict]) -> Optional[Dict[str, float]]:
+    """A user-supplied weight set, cleaned and normalised to sum to 1.
+
+    Normalised for the same reason config.current_match_weights normalises: five
+    sliders the user drags will not add up, and an un-normalised set rescales
+    every score in the library so the Min-match slider stops meaning anything.
+    Returns None for anything unusable, which the caller reads as "no override".
+    """
+    if not isinstance(raw, dict):
+        return None
+    out: Dict[str, float] = {}
+    for name in SUBSCORE_COLUMNS:
+        try:
+            out[name] = max(0.0, float(raw.get(name, 0.0)))
+        except (TypeError, ValueError):
+            out[name] = 0.0
+    total = sum(out.values())
+    if total <= 0:
+        return None
+    return {k: v / total for k, v in out.items()}
+
+
 def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             limit: int = 100, vocal_song_id: Optional[int] = None,
                             inst_song_id: Optional[int] = None,
@@ -1482,6 +1594,9 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             max_effort: Optional[float] = None,
                             order: str = "score",
                             max_per_song_pair: int = 1,
+                            weights: Optional[Dict[str, float]] = None,
+                            effort_weight: Optional[float] = None,
+                            section_weight: Optional[float] = None,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -1511,9 +1626,27 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     scorer is least sure about, i.e. closest to a coin flip. With hundreds of
     thousands of viable pairs and maybe 200 keypresses of patience per session,
     spending them on rows the model is already confident about buys nothing;
-    the uncertain ones are where a verdict carries the most information."""
+    the uncertain ones are where a verdict carries the most information.
+
+    weights / effort_weight / section_weight (C.2) re-rank the whole table under
+    a different balance, without a re-score. Every part of the composite is
+    already stored, so this is arithmetic. `score_total` and `score_percentile`
+    on the returned rows are the RE-WEIGHTED values — the row must display the
+    ranking it was actually ordered by. Only meaningful on the heuristic path: a
+    model-scored total is a probability, not a weighted sum, so those rows are
+    left alone (see the `scorer` guard below)."""
     conn = get_conn(db_path)
     _ensure_percentiles(conn)
+
+    weights = normalise_weights(weights)
+    reweighted = weights is not None
+    cte_params: list = []
+    if reweighted:
+        from config import current_float
+        effort_weight = (current_float("effort_weight")
+                         if effort_weight is None else float(effort_weight))
+        section_weight = (current_float("section_weight")
+                          if section_weight is None else float(section_weight))
     # min_score gates on the PERCENTILE, not the raw composite — the same number
     # the row displays and the same one `tierFor` colours.
     #
@@ -1524,7 +1657,10 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     # that did nothing at all between 50 and 75 and then emptied the page,
     # against a column of percentages that ran the full 0-100. Two scales, one
     # label.
-    where = ["COALESCE(mc.score_percentile, 0) >= ?"]
+    # Under a re-weight the stored percentile ranks the OLD totals, so gating on
+    # it would filter by a ranking the user has just changed.
+    where = [("COALESCE(rw.rw_pct, 0) >= ?" if reweighted
+              else "COALESCE(mc.score_percentile, 0) >= ?")]
     params: list = [min_score]
     if combo_type:
         where.append("mc.combo_type = ?")
@@ -1596,6 +1732,8 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     if order == "uncertain":
         order_sql = ("CASE WHEN mc.scorer='model' THEN ABS(mc.score_total - 0.5) "
                      "ELSE 9 END ASC, mc.score_total DESC")
+    elif reweighted:
+        order_sql = "rw.rw_total DESC"
     else:
         order_sql = "mc.score_total DESC"
 
@@ -1606,12 +1744,27 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     # rather than a wrong one.
     fetch = limit if max_per_song <= 0 else min(max(limit * 20, 200), 5000)
     params.append(fetch)
+
+    # The re-weight CTE is emitted FIRST, so its parameters bind first.
+    reweight_sql = ""
+    reweight_join = ""
+    reweight_cols = ""
+    if reweighted:
+        reweight_sql = "," + _reweight_cte(weights, effort_weight,
+                                           section_weight, cte_params)
+        reweight_join = "LEFT JOIN rw ON rw.id = mc.id"
+        # Deliberately NOT aliased to score_total: `mc.*` already produces that
+        # name, and a duplicate column in the result set resolves to whichever
+        # sqlite3.Row finds first. Renamed in Python below instead.
+        reweight_cols = ("rw.rw_total AS reweighted_total, "
+                         "rw.rw_pct   AS reweighted_percentile,")
+
     rows = conn.execute(
         f"""WITH pop AS (
                 SELECT id,
                        PERCENT_RANK() OVER (ORDER BY (plays + 2 * likes)) AS popularity
                 FROM songs
-            )
+            ){reweight_sql}
             -- score_percentile and energy_pct are columns now (C.1), not window
             -- functions over the whole candidates table on every request. See
             -- refresh_candidate_percentiles for where they are computed and why
@@ -1619,6 +1772,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             -- which is three orders of magnitude smaller than the candidates
             -- table, so it costs nothing worth an invalidation rule.
             SELECT mc.*,
+                   {reweight_cols}
                    sv.genre        AS vocal_genre,
                    sv.release_year AS vocal_year,
                    sv.plays        AS vocal_plays,
@@ -1662,14 +1816,38 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             LEFT JOIN songs si ON si.id = mc.inst_song_id
             LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
             LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
+            {reweight_join}
             WHERE {' AND '.join(where)}
             ORDER BY {order_sql}
             LIMIT ?""",
-        params,
+        cte_params + params,
     ).fetchall()
     conn.close()
-    return _cap_per_song([dict(r) for r in rows], max_per_song, limit,
-                         max_per_song_pair)
+    out = [_apply_reweight(dict(r)) for r in rows] if reweighted \
+        else [dict(r) for r in rows]
+    return _cap_per_song(out, max_per_song, limit, max_per_song_pair)
+
+
+def _apply_reweight(row: Dict) -> Dict:
+    """Promote the re-weighted total and percentile onto the row.
+
+    The row has to DISPLAY the ranking it was ordered by, or the list reads as
+    shuffled: a pair sitting at the top showing 41 pctl is worse than no
+    re-weight at all.
+
+    Model-scored rows are left alone. Their score_total is a learned
+    probability, not a weighted sum of these five sub-scores, so re-weighting it
+    would be inventing a number — the weights simply do not apply to that path.
+    """
+    total = row.pop("reweighted_total", None)
+    pct = row.pop("reweighted_percentile", None)
+    if row.get("scorer") == "model" or total is None:
+        return row
+    row["score_total"] = round(float(total), 4)
+    if pct is not None:
+        row["score_percentile"] = float(pct)
+    row["reweighted"] = True
+    return row
 
 
 # ── T3.5 filter vocabularies ─────────────────────────────────────────────────

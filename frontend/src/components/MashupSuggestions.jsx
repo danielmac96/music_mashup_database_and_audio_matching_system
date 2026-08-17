@@ -73,6 +73,17 @@ const SUBSCORES = [
       + "term on the vocal path. Needs band occupancy from a re-analysis to mean anything." },
 ];
 
+// The vocal path's redistribution, mirroring config._for_combo. Only used to
+// LABEL the live override — the server applies the real thing to the ranking.
+function forVocalCombo(weights) {
+  if (!weights) return weights;
+  return {
+    ...weights,
+    collision_score: (weights.collision_score || 0) + (weights.timbre_score || 0),
+    timbre_score: 0,
+  };
+}
+
 // "Weighted: Key 26 · BPM 22 · …", built from the weights actually in force.
 function summariseWeights(weights) {
   if (!weights) return "";
@@ -82,6 +93,64 @@ function summariseWeights(weights) {
     .sort((a, b) => b[1] - a[1])
     .map(([label, pct]) => `${label} ${pct}`);
   return parts.length ? `Weighted: ${parts.join(" · ")}` : "";
+}
+
+// C.2 — five sliders that re-rank the library live.
+//
+// Every part of the composite is already on the candidate row, so a different
+// balance is arithmetic, not a re-score. Before this, trying "tempo matters
+// more than key tonight" meant Settings → Save → Score library → minutes, which
+// is why nobody ever tried a different balance.
+//
+// The re-rank runs server-side over the WHOLE table. Re-sorting the visible
+// fifty would answer the wrong question: the pairs a heavier tempo weight
+// promotes are mostly not in the old top fifty.
+function WeightsPopover({ open, onClose, weights, saved, onChange, onReset,
+                          onSaveDefault, busy }) {
+  if (!open) return null;
+  const w = weights || saved || {};
+  const total = Object.values(w).reduce((a, b) => a + Number(b || 0), 0) || 1;
+  return (
+    <>
+      <div className="picker-overlay" onClick={onClose} />
+      <div className="picker-menu weights-menu">
+        <div className="weights-head">
+          <b>Ranking weights</b>
+          <span className="faint">re-ranks the library live · no re-score</span>
+        </div>
+        {SUBSCORES.map((s) => (
+          <div key={s.weight} className="weight-row">
+            <div className="weight-label">
+              <span style={{ flex: 1 }}>{s.label}</span>
+              <code className="mono">
+                {Math.round(100 * Number(w[s.weight] || 0) / total)}%
+              </code>
+            </div>
+            <input type="range" min={0} max={1} step={0.01} disabled={busy}
+              value={Number(w[s.weight] || 0)}
+              onChange={(e) => onChange({
+                ...w, [s.weight]: parseFloat(e.target.value),
+              })} />
+            <div className="faint weight-help">{s.help}</div>
+          </div>
+        ))}
+        <div className="faint weight-help" style={{ margin: "6px 0" }}>
+          They are normalised, so they need not add up. On the vocal path
+          Timbre's share moves onto Spectral room — the ranking uses the
+          redistributed set, and the legend shows what is in force.
+        </div>
+        <div className="ml-actions">
+          <button className="mini-btn" disabled={busy || !weights}
+            onClick={onReset}>Reset</button>
+          <button className="mini-btn" disabled={busy || !weights}
+            onClick={onSaveDefault}
+            title="Write these to settings.json so the next re-score uses them too">
+            Save as default
+          </button>
+        </div>
+      </div>
+    </>
+  );
 }
 
 function PlanDetails({ vocalId, instId, candidate }) {
@@ -191,6 +260,11 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   const [expanded, setExpanded] = useState(null);
   const [scorer, setScorer] = useState(null); // { scorer, model_version, auc }
   const [weights, setWeights] = useState(null); // { generic, vocal } from settings
+  // C.2 — a live override of the five sub-score weights. null = use the saved
+  // set. Non-null re-ranks the whole table on every refresh, so it is a
+  // deliberate state, not a display toggle.
+  const [weightOverride, setWeightOverride] = useState(null);
+  const [weightsOpen, setWeightsOpen] = useState(false);
   // ── T3.4 diversity: one 128 BPM 8A vocal otherwise owns the whole page ────
   const [maxPerSong, setMaxPerSong] = useState(3);
   const [grouped, setGrouped] = useState(false);
@@ -236,9 +310,17 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       .catch(() => setWeights(null));
   }, []);
 
-  const weightSummary = useMemo(() => summariseWeights(
-    comboType === "vocal_over_instrumental" ? weights?.vocal : weights?.generic,
-  ), [weights, comboType]);
+  // What the list in front of you is ranked on: the live override when there is
+  // one, otherwise the saved set — and on the vocal path, after the
+  // timbre→collision redistribution the server applies (config._for_combo).
+  const activeWeights = useMemo(() => {
+    const vocal = comboType === "vocal_over_instrumental";
+    if (!weightOverride) return vocal ? weights?.vocal : weights?.generic;
+    return vocal ? forVocalCombo(weightOverride) : weightOverride;
+  }, [weightOverride, weights, comboType]);
+
+  const weightSummary = useMemo(
+    () => summariseWeights(activeWeights), [activeWeights]);
 
   // Verdicts persist server-side (T2.1), so a reload shows what you already judged.
   useEffect(() => {
@@ -250,7 +332,8 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
 
   const refresh = async (type = comboType, activeSeed = seed, min = minMatch,
                         cap = maxPerSong, group = grouped, f = filters,
-                        free = freeOnly, sort = sortMode, adv = adventure) => {
+                        free = freeOnly, sort = sortMode, adv = adventure,
+                        wts = weightOverride) => {
     setLoading(true);
     setError(null);
     try {
@@ -267,6 +350,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       if (free) opts.maxEffort = FREE_BUILD_MAX_EFFORT;
       if (sort === "Uncertain") opts.order = "uncertain";
       if (adv > 0) opts.adventure = adv;
+      if (wts) opts.weights = wts;
       if (activeSeed?.songId != null) {
         if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
         else opts.vocalSongId = activeSeed.songId;
@@ -327,6 +411,9 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
         ...(freeOnly ? { max_effort: FREE_BUILD_MAX_EFFORT } : {}),
         ...(sortMode === "Uncertain" ? { order: "uncertain" } : {}),
         ...(adventure > 0 ? { adventure } : {}),
+        // A re-weighted list is a different ranking, so its top N is a
+        // different N.
+        ...(weightOverride ? { weights: JSON.stringify(weightOverride) } : {}),
         sort: sortMode.toLowerCase(),
         ...(seed?.songId != null
           ? (seed.role === "instrumental"
@@ -465,6 +552,48 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   };
 
   const activeFilters = Object.entries(filters).filter(([, v]) => v).length;
+
+  // ── C.2 weights popover ───────────────────────────────────────────────────
+  // Debounced: dragging a slider would otherwise fire a whole-table re-rank per
+  // pixel. 250ms is short enough that it still reads as live.
+  const weightTimer = useRef(null);
+  const setWeightDraft = useCallback((next) => {
+    setWeightOverride(next);
+    clearTimeout(weightTimer.current);
+    weightTimer.current = setTimeout(
+      () => refresh(comboType, seed, minMatch, maxPerSong, grouped, filters,
+                    freeOnly, sortMode, adventure, next), 250);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comboType, seed, minMatch, maxPerSong, grouped, filters, freeOnly,
+      sortMode, adventure]);
+  useEffect(() => () => clearTimeout(weightTimer.current), []);
+
+  const resetWeights = () => {
+    setWeightOverride(null);
+    refresh(comboType, seed, minMatch, maxPerSong, grouped, filters,
+            freeOnly, sortMode, adventure, null);
+  };
+
+  const saveWeightsAsDefault = async () => {
+    if (!weightOverride) return;
+    try {
+      await api.saveSettings({ match_weights: weightOverride });
+      const s = await api.getSettings();
+      setWeights({
+        generic: s.match_weights?.value || null,
+        vocal: s.match_weights_vocal?.value || s.match_weights?.value || null,
+      });
+      // The override and the saved set now agree, so drop the override and let
+      // the fast stored-percentile path serve the list again.
+      setWeightOverride(null);
+      refresh(comboType, seed, minMatch, maxPerSong, grouped, filters,
+              freeOnly, sortMode, adventure, null);
+      toast("Saved — these weights are the default now. Re-score to persist "
+            + "them onto the rows themselves.");
+    } catch (e) {
+      toast(e.message || "Could not save those weights");
+    }
+  };
 
   const refreshHiddenCount = useCallback(() => {
     api.getHidden()
@@ -652,6 +781,13 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
         )}
         {!grouped && (
           <>
+            <div className={`chip${weightOverride ? " active" : ""}`}
+              onClick={() => setWeightsOpen((v) => !v)}
+              title="Re-rank the whole library on a different balance of the five sub-scores. Applies instantly — every part of the composite is already stored, so this needs no re-score.">
+              <span className="k">Weights</span>
+              <span>{weightOverride ? "Custom" : "Default"}</span>
+              <span className="caret">▾</span>
+            </div>
             <div className={`chip${adventure > 0 ? " active" : ""}`}
               title="Safe = the best technical fit first. Adventurous = favour cross-genre and cross-era pairs among the ones that already fit. It never surfaces a pair that does not work; it decides which of the working ones you see first.">
               <span className="k">Adventurous</span>
@@ -748,6 +884,14 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
           <button className="btn" onClick={startScoring}>↻ Score library</button>
         )}
       </div>
+
+      <WeightsPopover
+        open={weightsOpen} onClose={() => setWeightsOpen(false)}
+        weights={weightOverride}
+        saved={comboType === "vocal_over_instrumental"
+          ? weights?.generic : weights?.generic}
+        onChange={setWeightDraft} onReset={resetWeights}
+        onSaveDefault={saveWeightsAsDefault} busy={loading} />
 
       {showKeys && (
         <div className="key-legend">

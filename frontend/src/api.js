@@ -190,6 +190,12 @@ export const api = {
     // Phase F — 0 = safest fit first, 1 = most adventurous. Only reorders pairs
     // that already cleared every technical gate; it never surfaces a bad fit.
     adventure = 0,
+    // C.2 — try a different balance without re-scoring. An object of the five
+    // sub-score weights; the server re-ranks the WHOLE table on them and
+    // returns re-weighted totals and percentiles. null = use the saved set.
+    weights = null,
+    // Server-side sort, so the export can ask for the page it is looking at.
+    sort = "",
   } = {}) => {
     const params = new URLSearchParams();
     if (comboType) params.set("combo_type", comboType);
@@ -206,6 +212,8 @@ export const api = {
     if (energy) params.set("energy", energy);
     if (bpmBand) params.set("bpm_band", bpmBand);
     if (vocalForward) params.set("vocal_forward", "true");
+    if (weights) params.set("weights", JSON.stringify(weights));
+    if (sort && sort !== "score") params.set("sort", sort);
     return jsonFetch(`/api/mashups?${params}`);
   },
 

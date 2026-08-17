@@ -7,11 +7,13 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
+import json
+
 from database.models import (
-    BPM_BANDS, ENERGY_BANDS, ERA_BANDS, VERDICTS, best_bed_per_vocal,
-    candidate_filter_options, exclude_track, get_candidates_enriched,
-    get_pair_feedback, hide_pair, include_track, list_hidden, unhide_pair,
-    upsert_pair_feedback,
+    BPM_BANDS, ENERGY_BANDS, ERA_BANDS, SUBSCORE_COLUMNS, VERDICTS,
+    best_bed_per_vocal, candidate_filter_options, exclude_track,
+    get_candidates_enriched, get_pair_feedback, hide_pair, include_track,
+    list_hidden, normalise_weights, unhide_pair, upsert_pair_feedback,
 )
 
 from api import jobs
@@ -189,19 +191,55 @@ def _validate_list_params(combo_type: str, max_per_song: int, order: str,
                 detail=f"{name} must be one of {sorted(allowed)}")
 
 
+def parse_weights(raw: Optional[str]) -> Optional[dict]:
+    """A JSON weight object off the query string, or None.
+
+    A malformed set is a 400 rather than a silent fall-back to the saved
+    weights: the user just dragged a slider, and quietly ranking by something
+    else is worse than saying no.
+    """
+    if raw is None or raw == "":
+        return None
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400,
+                            detail=f"weights must be a JSON object: {exc}")
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=400,
+                            detail="weights must be a JSON object")
+    unknown = sorted(set(parsed) - set(SUBSCORE_COLUMNS))
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown weight(s) {unknown}; expected "
+                   f"{sorted(SUBSCORE_COLUMNS)}")
+    if normalise_weights(parsed) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="weights must include at least one positive value")
+    return parsed
+
+
 def ranked_rows(*, combo_type: str, min_score: float, limit: int,
                 vocal_song_id: Optional[int] = None,
                 inst_song_id: Optional[int] = None,
                 max_per_song: int, genre: str, era: str, energy: str,
                 bpm_band: str, vocal_forward: bool,
                 max_effort: Optional[float], order: str, adventure: float,
-                sort: str = "score", with_reasons: bool = True) -> list:
+                sort: str = "score", with_reasons: bool = True,
+                weights: Optional[dict] = None,
+                effort_weight: Optional[float] = None,
+                section_weight: Optional[float] = None) -> list:
     """One ranked page, filtered, ordered and sorted exactly as Discover shows it.
 
     Shared by the list endpoint and the batch session export so the two cannot
     describe different sets of pairs. `with_reasons` is off for the export path:
     model explanations cost a full feature rebuild per row and nothing in a
     session folder reads them.
+
+    `weights` / `effort_weight` / `section_weight` re-rank the whole table under
+    a different balance without a re-score (C.2).
     """
     rows = get_candidates_enriched(
         combo_type=combo_type, min_score=min_score,
@@ -210,6 +248,8 @@ def ranked_rows(*, combo_type: str, min_score: float, limit: int,
         max_per_song=max_per_song,
         genre=genre, era=era, energy=energy, bpm_band=bpm_band,
         vocal_forward=vocal_forward, max_effort=max_effort, order=order,
+        weights=weights, effort_weight=effort_weight,
+        section_weight=section_weight,
     )
     rows = _with_playback_terms(rows)
     if with_reasons:
@@ -229,7 +269,10 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     max_effort: Optional[float] = None,
                     order: str = "score",
                     adventure: float = 0.0,
-                    sort: str = "score") -> dict:
+                    sort: str = "score",
+                    weights: Optional[str] = None,
+                    effort_weight: Optional[float] = None,
+                    section_weight: Optional[float] = None) -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -240,18 +283,32 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     `sort` reorders the returned page (score | popularity | effort | uncertain).
     The client also sorts locally so the toolbar stays instant; the parameter
     exists so the export path can ask for the same page it is looking at.
+
+    `weights` is a JSON object of the five sub-score weights. Supplying it
+    re-ranks the whole table under that balance and returns the re-weighted
+    total and percentile on each row — no re-score, because every part of the
+    composite is already stored. `effort_weight` / `section_weight` override the
+    other two live knobs the same way.
     """
     _validate_list_params(combo_type, max_per_song, order, adventure, sort,
                           era, energy, bpm_band)
+    parsed_weights = parse_weights(weights)
+    for value, name in ((effort_weight, "effort_weight"),
+                        (section_weight, "section_weight")):
+        if value is not None and not (0.0 <= value <= 1.0):
+            raise HTTPException(status_code=400,
+                                detail=f"{name} must be in [0, 1]")
     rows = ranked_rows(
         combo_type=combo_type, min_score=min_score, limit=limit,
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
         max_per_song=max_per_song, genre=genre, era=era, energy=energy,
         bpm_band=bpm_band, vocal_forward=vocal_forward, max_effort=max_effort,
-        order=order, adventure=adventure, sort=sort)
+        order=order, adventure=adventure, sort=sort, weights=parsed_weights,
+        effort_weight=effort_weight, section_weight=section_weight)
     return {"count": len(rows), "candidates": rows,
             "max_per_song": max_per_song, "order": order,
-            "adventure": adventure, "sort": sort}
+            "adventure": adventure, "sort": sort,
+            "reweighted": parsed_weights is not None}
 
 
 @router.get("/filters")
@@ -411,6 +468,11 @@ class BatchSessionRequest(BaseModel):
     order: str = "score"
     adventure: float = 0.0
     sort: str = "score"
+    # A re-weighted list is a different ranking, so exporting its top rows has
+    # to re-apply the same weights (C.2). JSON string, matching the GET param.
+    weights: Optional[str] = None
+    effort_weight: Optional[float] = None
+    section_weight: Optional[float] = None
     # A seeded list ("beds for this acapella") is still a list, and exporting
     # its top rows should honour the seed rather than silently widening to the
     # whole library.
@@ -441,6 +503,8 @@ def queue_session_batch(req: BatchSessionRequest,
         energy=req.energy, bpm_band=req.bpm_band,
         vocal_forward=req.vocal_forward, max_effort=req.max_effort,
         order=req.order, adventure=req.adventure, sort=req.sort,
+        weights=parse_weights(req.weights),
+        effort_weight=req.effort_weight, section_weight=req.section_weight,
         with_reasons=False)[:top_n]
     if not rows:
         raise HTTPException(status_code=404,
