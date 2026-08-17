@@ -32,6 +32,56 @@ const SORTS = ["Score", "Popularity", "Effort", "Uncertain"];
 // stretch, no transpose, and with a trustworthy beat grid.
 const FREE_BUILD_MAX_EFFORT = 0.25;
 const EFFORT_TONE = { Free: "free", Light: "light", Heavy: "heavy" };
+
+// B.4 — "the harmony was measured and it agrees". Below this the chroma
+// cross-correlation found no clear winner among the 12 transpositions, which is
+// a different thing from a clash and a different thing again from a NULL
+// (sections with no stored chroma, i.e. never measured at all).
+const HARMONY_CONFIDENT_MIN = 0.5;
+
+// B.3 — the five effort components, for the chip's breakdown. Weights mirror
+// matcher/effort.py::EFFORT_WEIGHTS; the row stores each component 0-1 and the
+// UI was collapsing all five into one of three words plus a single tooltip
+// phrase. "Needs a big stretch" and "needs a wide transpose" are different
+// problems with different fixes.
+const EFFORT_PARTS = [
+  ["effort_stretch", "Time-stretch", 0.30],
+  ["effort_pitch", "Transpose", 0.30],
+  ["effort_tempo_fold", "Half/double-time", 0.15],
+  ["effort_grid", "Beat grid", 0.15],
+  ["effort_key_certainty", "Key certainty", 0.10],
+];
+
+// The cost and harmony constraints, as toggles. Each is a separate decision a
+// producer actually makes, and none of them could be expressed before: the only
+// control was one "Free builds" toggle hardcoded to an effort cap of 0.25.
+const COST_CHIPS = [
+  ["noTranspose", "No transpose",
+    "Only pairs needing no meaningful pitch shift. A wide transpose wrecks "
+    + "formants — a voice goes chipmunk or demon long before a synth minds. "
+    + "±1 semitone counts as free (matcher/effort.py)."],
+  ["noStretch", "No stretch",
+    "Only pairs needing no meaningful time-stretch. Under 2% nobody hears it; "
+    + "by 12% the phase vocoder has visibly smeared the vocal."],
+  ["cleanHarmony", "Measured harmony",
+    "Only pairs whose harmony was actually MEASURED — the two sections' chroma "
+    + "cross-correlated over all 12 transpositions — and agreed. Excludes pairs "
+    + "where nothing was measured, because an unmeasured fit is not a "
+    + "confident one; those are ranked on the Camelot wheel instead."],
+  ["noBassClash", "No bass clash",
+    "Drop pairs whose bed's bass root sits a semitone or tritone from the "
+    + "vocal's tonic. The most common reason a key-compatible mashup still "
+    + "sounds wrong, and it is invisible in the Camelot code."],
+];
+
+function effortBreakdown(c) {
+  const parts = EFFORT_PARTS
+    .filter(([k]) => c[k] != null)
+    .map(([k, label, w]) => `${label} ${Math.round(c[k] * 100)}%`
+      + ` (×${w.toFixed(2)})`);
+  if (!parts.length) return "";
+  return "\n\nWhat it costs: " + parts.join(" · ");
+}
 // How many rows any one song may occupy. 0 = uncapped, which is what the list
 // did before T3.4 — and why a single 128 BPM 8A vocal could hold 40 of 50 rows.
 const PER_SONG_CAPS = [3, 2, 1, 0];
@@ -72,6 +122,39 @@ const SUBSCORES = [
       + "decides whether you can actually hear the top layer, and the heaviest "
       + "term on the vocal path. Needs band occupancy from a re-analysis to mean anything." },
 ];
+
+// ── B.2: separation quality, on the row ──────────────────────────────────────
+//
+// Measured per stem since Phase D and used only as a silent cutoff at
+// stem_quality_min (0.35). Below it a vocal vanished with no trace; above it a
+// 0.36 acapella and a 0.95 one looked identical. "Is this acapella clean enough
+// to be worth an hour?" had a stored answer nobody could see.
+//
+// Only flagged when it is bad enough to change the decision — a chip on every
+// row is a chip nobody reads.
+const STEM_QUALITY_WARN = 0.6;
+
+// Which defect dominates, so the tooltip says what is actually wrong with it
+// rather than just how wrong. Each is 0 (clean) to 1 (ruined).
+const STEM_DEFECTS = [
+  ["bleed", "the other stem bleeding through"],
+  ["hf_loss", "a smeared or missing top end"],
+  ["noise_floor", "separation residue where it should be silent"],
+];
+
+function stemQualityNote(prefix, row) {
+  const q = row[`${prefix}_stem_quality`];
+  if (q == null) return null;
+  const worst = STEM_DEFECTS
+    .map(([k, why]) => [row[`${prefix}_stem_${k}`], why])
+    .filter(([v]) => v != null)
+    .sort((a, b) => b[0] - a[0])[0];
+  const side = prefix === "vocal" ? "acapella" : "instrumental";
+  return `Separation quality of this ${side}: ${q.toFixed(2)}`
+    + (worst ? ` — mostly ${worst[1]} (${worst[0].toFixed(2)}).` : ".")
+    + " Below the Min stem quality setting a stem is not offered at all;"
+    + " this one cleared it but will need work.";
+}
 
 // The vocal path's redistribution, mirroring config._for_combo. Only used to
 // LABEL the live override — the server applies the real thing to the ranking.
@@ -277,6 +360,15 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   // constraint rather than a taste one, and it is the chip most worth reaching
   // for on a day with no patience for beatgridding.
   const [freeOnly, setFreeOnly] = useState(false);
+  // B.3 / B.4 — cost and harmony constraints, each its own control because they
+  // are separate decisions. `null` on any of them means "don't care".
+  //   noTranspose  — a wide pitch shift wrecks formants; some days you want none.
+  //   noStretch    — a 12% stretch is audibly smeared; some days you want none.
+  //   cleanHarmony — only pairs whose harmony was actually MEASURED and agreed.
+  //   noBassClash  — the most common reason a key-compatible mashup sounds wrong.
+  const [costFilters, setCostFilters] = useState(
+    { noTranspose: false, noStretch: false, cleanHarmony: false,
+      noBassClash: false });
   // Phase F — Safe ↔ Adventurous. Every sub-score rewards sameness, so the top
   // of the list drifts towards same-genre, same-era, same-production pairs.
   // This trades that against contrast, without ever relaxing a technical gate.
@@ -398,7 +490,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   const refresh = async (type = comboType, activeSeed = seed, min = minMatch,
                         cap = maxPerSong, group = grouped, f = filters,
                         free = freeOnly, sort = sortMode, adv = adventure,
-                        wts = weightOverride) => {
+                        wts = weightOverride, cost = costFilters) => {
     setLoading(true);
     setError(null);
     try {
@@ -416,6 +508,13 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       if (sort === "Uncertain") opts.order = "uncertain";
       if (adv > 0) opts.adventure = adv;
       if (wts) opts.weights = wts;
+      // Costs ramp to full at ±6 semitones / 12% stretch, so PITCH_FREE (±1)
+      // and STRETCH_FREE (2%) land at 0. "None" therefore means 0, not a small
+      // number — see matcher/effort.py.
+      if (cost.noTranspose) opts.maxPitchCost = 0;
+      if (cost.noStretch) opts.maxStretchCost = 0;
+      if (cost.cleanHarmony) opts.minHarmonicConfidence = HARMONY_CONFIDENT_MIN;
+      if (cost.noBassClash) opts.excludeBassClash = true;
       if (activeSeed?.songId != null) {
         if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
         else opts.vocalSongId = activeSeed.songId;
@@ -479,6 +578,11 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
         // A re-weighted list is a different ranking, so its top N is a
         // different N.
         ...(weightOverride ? { weights: JSON.stringify(weightOverride) } : {}),
+        ...(costFilters.noTranspose ? { max_pitch_cost: 0 } : {}),
+        ...(costFilters.noStretch ? { max_stretch_cost: 0 } : {}),
+        ...(costFilters.cleanHarmony
+          ? { min_harmonic_confidence: HARMONY_CONFIDENT_MIN } : {}),
+        ...(costFilters.noBassClash ? { exclude_bass_clash: true } : {}),
         sort: sortMode.toLowerCase(),
         ...(seed?.songId != null
           ? (seed.role === "instrumental"
@@ -630,11 +734,19 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
 
   const clearFilters = () => {
     const f = { genre: "", era: "", energy: "", bpmBand: "", vocalForward: false };
+    const cost = { noTranspose: false, noStretch: false, cleanHarmony: false,
+                   noBassClash: false };
     setFilters(f);
-    refresh(comboType, seed, minMatch, maxPerSong, grouped, f);
+    setCostFilters(cost);
+    setFreeOnly(false);
+    refresh(comboType, seed, minMatch, maxPerSong, grouped, f, false, sortMode,
+            adventure, weightOverride, cost);
   };
 
-  const activeFilters = Object.entries(filters).filter(([, v]) => v).length;
+  // Everything narrowing the list, so the ✕ chip counts what it will clear.
+  const activeFilters = Object.values(filters).filter(Boolean).length
+    + Object.values(costFilters).filter(Boolean).length
+    + (freeOnly ? 1 : 0);
 
   // ── C.2 weights popover ───────────────────────────────────────────────────
   // Debounced: dragging a slider would otherwise fire a whole-table re-rank per
@@ -887,6 +999,20 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
               <span className="k">Free builds</span>
               <span>{freeOnly ? "On" : "Off"}</span>
             </div>
+            {COST_CHIPS.map(([key, label, help]) => (
+              <div key={key} className={`chip${costFilters[key] ? " active" : ""}`}
+                title={help}
+                onClick={() => {
+                  const next = { ...costFilters, [key]: !costFilters[key] };
+                  setCostFilters(next);
+                  refresh(comboType, seed, minMatch, maxPerSong, grouped,
+                          filters, freeOnly, sortMode, adventure,
+                          weightOverride, next);
+                }}>
+                <span className="k">{label}</span>
+                <span>{costFilters[key] ? "On" : "Off"}</span>
+              </div>
+            ))}
             <div className="chip" onClick={() => cycleFilter(
               "genre", (filterOpts?.genres || []).map((g) => g.genre))}
               title="Pairs containing a track of this genre, on either side">
@@ -1090,6 +1216,12 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                             {" ⚠"}
                           </span>
                         )}
+                        {c.vocal_stem_quality != null
+                          && c.vocal_stem_quality < STEM_QUALITY_WARN && (
+                          <span className="stem-warn" title={stemQualityNote("vocal", c)}>
+                            {" ◍"}{c.vocal_stem_quality.toFixed(2)}
+                          </span>
+                        )}
                         {c.vocal_popularity != null && (
                           <span className="pop" title="Popularity percentile in your library">
                             {" · ★"}{Math.round(c.vocal_popularity * 100)}
@@ -1137,7 +1269,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                       ))}
                       {c.effort_label && (
                         <span className={`rel-chip effort ${EFFORT_TONE[c.effort_label]}`}
-                          title={`How much work this costs to build${c.effort_reason ? ` — ${c.effort_reason}` : " — nothing to fix"}. The match percentage says whether it fits; this says what it takes.`}>
+                          title={`How much work this costs to build${c.effort_reason ? ` — ${c.effort_reason}` : " — nothing to fix"}. The match percentage says whether it fits; this says what it takes.${effortBreakdown(c)}`}>
                           {c.effort_label}
                         </span>
                       )}
@@ -1152,6 +1284,12 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                         {keyLooksOff(c.inst_key_confidence) && (
                           <span className="bpm-warn" title={keyWarnTitle(c.inst_key_confidence)}>
                             {" ⚠"}
+                          </span>
+                        )}
+                        {c.inst_stem_quality != null
+                          && c.inst_stem_quality < STEM_QUALITY_WARN && (
+                          <span className="stem-warn" title={stemQualityNote("inst", c)}>
+                            {" ◍"}{c.inst_stem_quality.toFixed(2)}
                           </span>
                         )}
                         {c.inst_popularity != null && (

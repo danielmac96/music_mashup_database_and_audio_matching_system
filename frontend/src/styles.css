@@ -426,6 +426,9 @@ input, select { font-family: inherit; }
   color: var(--text-2);
 }
 .bpm-chip .u { color: var(--faint); font-size: 10px; }
+/* B.2 — a vocal stem the separator struggled with. Worth re-separating before
+   you spend an hour building on it. */
+.bpm-chip.stem-poor { color: var(--red); border-color: rgba(248, 113, 113, 0.45); }
 .key-chip {
   font-family: var(--font-mono);
   border-radius: 6px;
@@ -587,6 +590,10 @@ input, select { font-family: inherit; }
 }
 .bpm-warn { color: var(--amber-light); font-size: 13px; cursor: help; margin-left: -2px; }
 .pair-meta .pop { color: var(--amber-light); }
+/* B.2 — a stem the separator struggled with. Red rather than amber: an
+   artefact-riddled acapella is a worse surprise than an uncertain key, because
+   you only find out an hour in. */
+.pair-meta .stem-warn { color: var(--red); cursor: help; font-size: 11px; }
 .goodstart-btn {
   cursor: pointer; border: 1px solid var(--accent);
   background: color-mix(in srgb, var(--accent) 18%, transparent);

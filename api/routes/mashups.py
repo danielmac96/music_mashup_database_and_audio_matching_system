@@ -231,7 +231,12 @@ def ranked_rows(*, combo_type: str, min_score: float, limit: int,
                 sort: str = "score", with_reasons: bool = True,
                 weights: Optional[dict] = None,
                 effort_weight: Optional[float] = None,
-                section_weight: Optional[float] = None) -> list:
+                section_weight: Optional[float] = None,
+                max_pitch_cost: Optional[float] = None,
+                max_stretch_cost: Optional[float] = None,
+                min_harmonic_confidence: Optional[float] = None,
+                exclude_bass_clash: bool = False,
+                min_collision: Optional[float] = None) -> list:
     """One ranked page, filtered, ordered and sorted exactly as Discover shows it.
 
     Shared by the list endpoint and the batch session export so the two cannot
@@ -251,6 +256,9 @@ def ranked_rows(*, combo_type: str, min_score: float, limit: int,
         vocal_forward=vocal_forward, max_effort=max_effort, order=order,
         weights=weights, effort_weight=effort_weight,
         section_weight=section_weight,
+        max_pitch_cost=max_pitch_cost, max_stretch_cost=max_stretch_cost,
+        min_harmonic_confidence=min_harmonic_confidence,
+        exclude_bass_clash=exclude_bass_clash, min_collision=min_collision,
     )
     rows = _with_playback_terms(rows)
     if with_reasons:
@@ -273,7 +281,12 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     sort: str = "score",
                     weights: Optional[str] = None,
                     effort_weight: Optional[float] = None,
-                    section_weight: Optional[float] = None) -> dict:
+                    section_weight: Optional[float] = None,
+                    max_pitch_cost: Optional[float] = None,
+                    max_stretch_cost: Optional[float] = None,
+                    min_harmonic_confidence: Optional[float] = None,
+                    exclude_bass_clash: bool = False,
+                    min_collision: Optional[float] = None) -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -290,12 +303,23 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     total and percentile on each row — no re-score, because every part of the
     composite is already stored. `effort_weight` / `section_weight` override the
     other two live knobs the same way.
+
+    max_pitch_cost / max_stretch_cost constrain the two build costs
+    independently (B.3): "no transpose, any stretch" and "any transpose, no
+    stretch" are different days in the studio and a single effort cap expresses
+    neither. min_harmonic_confidence / exclude_bass_clash / min_collision filter
+    on the measured harmony and the spectral room (B.4) — three numbers the row
+    already displayed but nothing could select on.
     """
     _validate_list_params(combo_type, max_per_song, order, adventure, sort,
                           era, energy, bpm_band)
     parsed_weights = parse_weights(weights)
     for value, name in ((effort_weight, "effort_weight"),
-                        (section_weight, "section_weight")):
+                        (section_weight, "section_weight"),
+                        (max_pitch_cost, "max_pitch_cost"),
+                        (max_stretch_cost, "max_stretch_cost"),
+                        (min_harmonic_confidence, "min_harmonic_confidence"),
+                        (min_collision, "min_collision")):
         if value is not None and not (0.0 <= value <= 1.0):
             raise HTTPException(status_code=400,
                                 detail=f"{name} must be in [0, 1]")
@@ -305,7 +329,10 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         max_per_song=max_per_song, genre=genre, era=era, energy=energy,
         bpm_band=bpm_band, vocal_forward=vocal_forward, max_effort=max_effort,
         order=order, adventure=adventure, sort=sort, weights=parsed_weights,
-        effort_weight=effort_weight, section_weight=section_weight)
+        effort_weight=effort_weight, section_weight=section_weight,
+        max_pitch_cost=max_pitch_cost, max_stretch_cost=max_stretch_cost,
+        min_harmonic_confidence=min_harmonic_confidence,
+        exclude_bass_clash=exclude_bass_clash, min_collision=min_collision)
     return {"count": len(rows), "candidates": rows,
             "max_per_song": max_per_song, "order": order,
             "adventure": adventure, "sort": sort,
@@ -544,6 +571,13 @@ class BatchSessionRequest(BaseModel):
     weights: Optional[str] = None
     effort_weight: Optional[float] = None
     section_weight: Optional[float] = None
+    # B.3 / B.4 — same rule as the rest: a control that changes which rows are
+    # on screen has to be expressible here.
+    max_pitch_cost: Optional[float] = None
+    max_stretch_cost: Optional[float] = None
+    min_harmonic_confidence: Optional[float] = None
+    exclude_bass_clash: bool = False
+    min_collision: Optional[float] = None
     # A seeded list ("beds for this acapella") is still a list, and exporting
     # its top rows should honour the seed rather than silently widening to the
     # whole library.
@@ -576,6 +610,11 @@ def queue_session_batch(req: BatchSessionRequest,
         order=req.order, adventure=req.adventure, sort=req.sort,
         weights=parse_weights(req.weights),
         effort_weight=req.effort_weight, section_weight=req.section_weight,
+        max_pitch_cost=req.max_pitch_cost,
+        max_stretch_cost=req.max_stretch_cost,
+        min_harmonic_confidence=req.min_harmonic_confidence,
+        exclude_bass_clash=req.exclude_bass_clash,
+        min_collision=req.min_collision,
         with_reasons=False)[:top_n]
     if not rows:
         raise HTTPException(status_code=404,

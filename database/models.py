@@ -1624,6 +1624,11 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             energy: str = "", bpm_band: str = "",
                             vocal_forward: bool = False,
                             max_effort: Optional[float] = None,
+                            max_pitch_cost: Optional[float] = None,
+                            max_stretch_cost: Optional[float] = None,
+                            min_harmonic_confidence: Optional[float] = None,
+                            exclude_bass_clash: bool = False,
+                            min_collision: Optional[float] = None,
                             order: str = "score",
                             max_per_song_pair: int = 1,
                             weights: Optional[Dict[str, float]] = None,
@@ -1745,6 +1750,27 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         # it in. Treat it as passing rather than hiding the whole library.
         where.append("(mc.score_effort IS NULL OR mc.score_effort <= ?)")
         params.append(float(max_effort))
+    # B.3 — the two costs a producer constrains independently. "No transpose,
+    # any stretch" and "any transpose, no stretch" are completely different days
+    # in the studio, and a single Free-builds toggle could express neither.
+    if max_pitch_cost is not None:
+        where.append("(mc.effort_pitch IS NULL OR mc.effort_pitch <= ?)")
+        params.append(float(max_pitch_cost))
+    if max_stretch_cost is not None:
+        where.append("(mc.effort_stretch IS NULL OR mc.effort_stretch <= ?)")
+        params.append(float(max_stretch_cost))
+    # B.4 — harmony, measured rather than looked up on the Camelot wheel.
+    if min_harmonic_confidence is not None:
+        # NULL means the sections had no stored chroma, so the harmony was never
+        # measured. Asking for confident harmony has to EXCLUDE those: an
+        # unmeasured fit is not a confident one.
+        where.append("mc.harmonic_confidence >= ?")
+        params.append(float(min_harmonic_confidence))
+    if exclude_bass_clash:
+        where.append("COALESCE(mc.bass_clash, 0) = 0")
+    if min_collision is not None:
+        where.append("(mc.score_collision IS NULL OR mc.score_collision >= ?)")
+        params.append(float(min_collision))
     if vocal_forward:
         # The vocal presence of the section that will actually play, falling
         # back to the track's most vocal section when no pair was stored.
@@ -1842,12 +1868,31 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                      WHERE song_id = mc.inst_song_id
                        AND stem_type IN ('instrumental', 'full')
                      ORDER BY CASE stem_type WHEN 'instrumental' THEN 0 ELSE 1 END
-                     LIMIT 1) AS inst_key_confidence
+                     LIMIT 1) AS inst_key_confidence,
+                   -- B.2 — how well the separator did on the two stems this
+                   -- pair is actually made of. Measured since Phase D and used
+                   -- only as a silent cutoff at stem_quality_min: a 0.36
+                   -- acapella and a 0.95 one looked identical in the list, so
+                   -- "is this worth an hour?" had a stored answer nobody could
+                   -- see. Joined live, so a re-separation updates the chip
+                   -- without needing a re-score.
+                   qv.quality     AS vocal_stem_quality,
+                   qv.bleed       AS vocal_stem_bleed,
+                   qv.hf_loss     AS vocal_stem_hf_loss,
+                   qv.noise_floor AS vocal_stem_noise_floor,
+                   qi.quality     AS inst_stem_quality,
+                   qi.bleed       AS inst_stem_bleed,
+                   qi.hf_loss     AS inst_stem_hf_loss,
+                   qi.noise_floor AS inst_stem_noise_floor
             FROM mashup_candidates mc
             LEFT JOIN songs sv ON sv.id = mc.vocal_song_id
             LEFT JOIN songs si ON si.id = mc.inst_song_id
             LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
             LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
+            LEFT JOIN stems qv ON qv.song_id = mc.vocal_song_id
+                              AND qv.stem_type = 'vocals'
+            LEFT JOIN stems qi ON qi.song_id = mc.inst_song_id
+                              AND qi.stem_type = 'instrumental'
             {reweight_join}
             WHERE {' AND '.join(where)}
             ORDER BY {order_sql}

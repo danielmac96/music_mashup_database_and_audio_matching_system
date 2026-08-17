@@ -14,7 +14,7 @@ import { toast } from "../toast";
 
 const KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const GENRES = ["All", "Pop", "Hip Hop", "Rap", "EDM"];
-const SORTS = ["Popularity", "BPM", "Title", "Energy"];
+const SORTS = ["Popularity", "BPM", "Title", "Energy", "Stem quality"];
 
 // Auto-chain pipeline stage → the "kind" the PipelineDots component lights up.
 const STAGE_KIND = {
@@ -39,6 +39,39 @@ const bpmLooksOff = (f) => f?.bpm != null && (f.bpm < 80 || f.bpm > 170);
 const KEY_CONFIDENCE_MIN = 0.012;
 const keyLooksOff = (f) =>
   f?.key_confidence != null && f.key_confidence < KEY_CONFIDENCE_MIN;
+
+// ── B.2: separation quality, in the Library ──────────────────────────────────
+//
+// Measured per stem since Phase D, and until now read by exactly one thing: the
+// stem_quality_min cutoff during scoring. So a bleeding acapella was either
+// silently dropped from Discover or silently indistinguishable from a clean
+// one, and the Library — the screen where you decide what to re-separate — said
+// nothing at all.
+//
+// The vocal stem is the one that matters: it is the layer you hear naked over
+// someone else's bed, and it is where separation artefacts are audible.
+const STEM_QUALITY_WARN = 0.6;
+const STEM_DEFECTS = [
+  ["bleed", "the instrumental bleeding through"],
+  ["hf_loss", "a smeared or missing top end"],
+  ["noise_floor", "separation residue in the silent parts"],
+];
+
+const vocalQuality = (t) => t.stem_quality?.vocals?.quality ?? null;
+
+function stemQualityTitle(t) {
+  const m = t.stem_quality?.vocals;
+  if (!m) return "Separation quality not measured — re-analyse to get it.";
+  const worst = STEM_DEFECTS
+    .map(([k, why]) => [m[k], why])
+    .filter(([v]) => v != null)
+    .sort((a, b) => b[0] - a[0])[0];
+  return `Vocal separation quality ${m.quality.toFixed(2)} (1 = clean)`
+    + (worst ? `, mostly ${worst[1]} (${worst[0].toFixed(2)}).` : ".")
+    + (m.quality < STEM_QUALITY_WARN
+      ? " Try the other separator, or re-separate in four-stem mode."
+      : "");
+}
 
 function TrackEditor({ track, onSaved, onCancel }) {
   const feats = track.features?.full || {};
@@ -295,6 +328,12 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
     else if (sort === "BPM") out = [...out].sort((a, b) => bpmOf(a) - bpmOf(b));
     else if (sort === "Title") out = [...out].sort((a, b) => a.title.localeCompare(b.title));
     else if (sort === "Energy") out = [...out].sort((a, b) => enOf(b) - enOf(a));
+    // Worst first: this sort exists to find the acapellas worth re-separating.
+    // Unmeasured tracks go last — "not measured" is not "fine".
+    else if (sort === "Stem quality") {
+      out = [...out].sort((a, b) =>
+        (vocalQuality(a) ?? 2) - (vocalQuality(b) ?? 2));
+    }
     return out;
   }, [tracks, readyOnly, genre, search, sort]);
 
@@ -520,6 +559,13 @@ export function TrackList({ refreshKey, onSendToAudition, onFindMatches, onStatu
                   <div className="bpm-chip" title="Energy (0–100)">
                     <span className="u">EN </span>{f.energy != null ? Math.round(f.energy * 100) : "—"}
                   </div>
+                  {vocalQuality(t) != null && (
+                    <div className={`bpm-chip${vocalQuality(t) < STEM_QUALITY_WARN
+                      ? " stem-poor" : ""}`} title={stemQualityTitle(t)}>
+                      <span className="u">VOX </span>
+                      {vocalQuality(t).toFixed(2)}
+                    </div>
+                  )}
                 </div>
 
                 <div className="pipeline" style={{ justifyContent: "space-between" }}>

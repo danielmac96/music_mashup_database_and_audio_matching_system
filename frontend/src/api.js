@@ -184,6 +184,15 @@ export const api = {
     genre = "", era = "", energy = "", bpmBand = "", vocalForward = false,
     // Phase C — cap on how much work a pair costs to build (0-1). null = any.
     maxEffort = null,
+    // B.3 — the two build costs, constrained independently. "No transpose, any
+    // stretch" and "any transpose, no stretch" are different days in the studio.
+    maxPitchCost = null,
+    maxStretchCost = null,
+    // B.4 — the measured harmony and the spectral room. Numbers the row already
+    // showed but nothing could select on.
+    minHarmonicConfidence = null,
+    excludeBassClash = false,
+    minCollision = null,
     // Phase F — "score" (best first) or "uncertain" (the model's blind spots,
     // where a verdict buys the most information per keypress).
     order = "score",
@@ -212,6 +221,12 @@ export const api = {
     if (energy) params.set("energy", energy);
     if (bpmBand) params.set("bpm_band", bpmBand);
     if (vocalForward) params.set("vocal_forward", "true");
+    if (maxPitchCost != null) params.set("max_pitch_cost", String(maxPitchCost));
+    if (maxStretchCost != null) params.set("max_stretch_cost", String(maxStretchCost));
+    if (minHarmonicConfidence != null)
+      params.set("min_harmonic_confidence", String(minHarmonicConfidence));
+    if (excludeBassClash) params.set("exclude_bass_clash", "true");
+    if (minCollision != null) params.set("min_collision", String(minCollision));
     if (weights) params.set("weights", JSON.stringify(weights));
     if (sort && sort !== "score") params.set("sort", sort);
     return jsonFetch(`/api/mashups?${params}`);

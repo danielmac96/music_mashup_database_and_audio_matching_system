@@ -77,6 +77,30 @@ def _stems_by_song() -> dict[int, dict[str, str]]:
     return out
 
 
+def _stem_quality_by_song() -> dict[int, dict[str, dict]]:
+    """Separation quality per stem (B.2).
+
+    Measured since Phase D and, until now, read by exactly one thing: the
+    stem_quality_min cutoff in scoring. So a bleeding acapella was either
+    silently deleted from the ranked list or silently indistinguishable from a
+    pristine one, and the Library — where you decide what to re-separate —
+    showed nothing at all.
+    """
+    conn = get_conn()
+    rows = conn.execute(
+        """SELECT song_id, stem_type, quality, bleed, hf_loss, noise_floor
+             FROM stems
+            WHERE quality IS NOT NULL""").fetchall()
+    conn.close()
+    out: dict[int, dict[str, dict]] = {}
+    for r in rows:
+        out.setdefault(r["song_id"], {})[r["stem_type"]] = {
+            "quality": r["quality"], "bleed": r["bleed"],
+            "hf_loss": r["hf_loss"], "noise_floor": r["noise_floor"],
+        }
+    return out
+
+
 def _features_by_song(stem_type: str) -> dict[int, dict]:
     out: dict[int, dict] = {}
     for f in get_all_features(stem_type=stem_type):
@@ -102,6 +126,7 @@ def _section_counts_by_song() -> dict[int, int]:
 def list_tracks() -> dict:
     songs = get_all_songs()
     stems = _stems_by_song()
+    stem_quality = _stem_quality_by_song()
     features_full   = _features_by_song("full")
     features_vocals = _features_by_song("vocals")
     features_inst   = _features_by_song("instrumental")
@@ -141,6 +166,9 @@ def list_tracks() -> dict:
                 # e.g. "demucs:htdemucs" / "mdx:UVR-MDX-NET-Inst_HQ_3"
                 "separator": stem_paths.get("__separator__"),
             },
+            # {stem_type: {quality, bleed, hf_loss, noise_floor}} — absent for a
+            # track separated before Phase D, which is "not measured", not "bad".
+            "stem_quality": stem_quality.get(sid) or None,
             "features": feats or None,
             "section_count": section_counts.get(sid, 0),
             "variant_count": variant_sizes.get(s.get("variant_cluster"), 0),
