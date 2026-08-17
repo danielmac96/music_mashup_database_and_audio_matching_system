@@ -50,7 +50,14 @@ const keyWarnTitle = (kc) =>
   `Key uncertain (${kc.toFixed(3)} confidence) — the suggested pitch shift may be wrong.`;
 
 function PlanDetails({ vocalId, instId, candidate }) {
-  const { plan, error } = usePlan(vocalId, instId);
+  // Pin the plan to THIS row's section pair and measured transpose. The recipe
+  // and the "plays" line below used to come from two different choosers, so the
+  // expander could contradict the row it was expanding.
+  const { plan, error } = usePlan(vocalId, instId, {
+    vocalSectionIdx: candidate?.vocal_section_idx ?? null,
+    instSectionIdx: candidate?.inst_section_idx ?? null,
+    harmonicShift: candidate?.harmonic_shift ?? null,
+  });
 
   if (error) return <div className="plan-detail error-text">{error}</div>;
   if (!plan) return <div className="plan-detail muted">Loading plan…</div>;
@@ -244,6 +251,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     try {
       const { job_id, pair_count } = await api.startBatchSessionExport({
         top_n: BATCH_EXPORT_N,
+        // The page size the list is showing. The adventure reorder and the
+        // sort both act on the fetched page, so the server has to fetch the
+        // same page before slicing the top N off it.
+        limit: 50,
         combo_type: comboType,
         min_score: minMatch / 100,
         max_per_song: maxPerSong,
@@ -252,6 +263,18 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
         energy: filters.energy || "",
         bpm_band: filters.bpmBand || "",
         vocal_forward: !!filters.vocalForward,
+        // These four decide WHICH rows are on screen and were being dropped,
+        // so the export ran a different query from the list it was launched
+        // off. Free-builds-only in particular was silently ignored.
+        ...(freeOnly ? { max_effort: FREE_BUILD_MAX_EFFORT } : {}),
+        ...(sortMode === "Uncertain" ? { order: "uncertain" } : {}),
+        ...(adventure > 0 ? { adventure } : {}),
+        sort: sortMode.toLowerCase(),
+        ...(seed?.songId != null
+          ? (seed.role === "instrumental"
+            ? { inst_song_id: seed.songId }
+            : { vocal_song_id: seed.songId })
+          : {}),
       });
       setBatchToken(null);
       setBatchJobId(job_id);

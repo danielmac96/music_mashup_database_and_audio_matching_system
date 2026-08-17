@@ -244,8 +244,20 @@ export const api = {
   includeTrack: (songId) =>
     jsonFetch(`/api/mashups/excluded/${songId}`, { method: "DELETE" }),
 
-  getMashupPlan: (vocalId, instId) =>
-    jsonFetch(`/api/mashups/plan?vocal_id=${vocalId}&inst_id=${instId}`),
+  // `pin` ties the plan to a candidate row's own section pair and measured
+  // transpose, so the recipe describes the moment that was auditioned rather
+  // than one the server re-chooses. Omit it for an ad-hoc pair.
+  getMashupPlan: (vocalId, instId, {
+    vocalSectionIdx = null, instSectionIdx = null, harmonicShift = null,
+  } = {}) => {
+    const params = new URLSearchParams({
+      vocal_id: String(vocalId), inst_id: String(instId),
+    });
+    if (vocalSectionIdx != null) params.set("vocal_section_idx", String(vocalSectionIdx));
+    if (instSectionIdx != null) params.set("inst_section_idx", String(instSectionIdx));
+    if (harmonicShift != null) params.set("harmonic_shift", String(harmonicShift));
+    return jsonFetch(`/api/mashups/plan?${params}`);
+  },
 
   // ── Studio (DAW tab) ───────────────────────────────────────────────────────
   // Render the arrangement server-side (decoupled stretch/pitch per clip) to a

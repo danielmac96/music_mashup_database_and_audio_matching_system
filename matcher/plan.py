@@ -64,48 +64,136 @@ def _pick_sections(sections: List[Dict], priority: Dict[str, int],
     return usable
 
 
-def build_pairings(vocal_sections: List[Dict], inst_sections: List[Dict],
-                   stretch_factor: float, max_pairings: int = 4) -> List[Dict]:
-    """Match vocal sections to instrumental sections by label priority and
-    duration fit (after the instrumental is stretched to the vocal tempo)."""
-    v_use = _pick_sections(vocal_sections, _VOCAL_LABEL_PRIORITY, vocal_side=True)
-    i_use = _pick_sections(inst_sections, _INST_LABEL_PRIORITY, vocal_side=False)
-    if not v_use or not i_use:
-        return []
+def _pairing_row(v_start: float, v_end: float, v_label: Optional[str],
+                 i_start: float, i_end: float, i_label: Optional[str],
+                 stretch_factor: float, extra: Optional[Dict] = None) -> Dict:
+    """One pairing in the shape the recipe, the README and PlanDetails read."""
+    v_dur = float(v_end) - float(v_start)
+    i_dur_stretched = (float(i_end) - float(i_start)) / max(stretch_factor, 1e-6)
+    return {
+        "vocal_label": v_label,
+        "vocal_start": v_start,
+        "vocal_end": v_end,
+        "vocal_duration": round(v_dur, 1),
+        "inst_label": i_label,
+        "inst_start": i_start,
+        "inst_end": i_end,
+        "inst_duration_stretched": round(i_dur_stretched, 1),
+        "note": (
+            f"Lay vocal {v_label} ({_fmt_ts(v_start)}–{_fmt_ts(v_end)}) "
+            f"over instrumental {i_label} ({_fmt_ts(i_start)}–{_fmt_ts(i_end)})"
+        ),
+        **(extra or {}),
+    }
 
-    pairings = []
-    for v in v_use[:max_pairings]:
-        v_dur = (v["end_sec"] - v["start_sec"])
-        best = min(
-            i_use,
-            key=lambda i: (
-                _INST_LABEL_PRIORITY.get(i.get("label") or "verse", 9),
-                abs((i["end_sec"] - i["start_sec"]) / max(stretch_factor, 1e-6) - v_dur),
-            ),
+
+def build_pairings(vocal_sections: List[Dict], inst_sections: List[Dict],
+                   stretch_factor: float, max_pairings: int = 4,
+                   bpm: Optional[float] = None) -> List[Dict]:
+    """Which vocal sections to lay over which instrumental sections.
+
+    Delegates to matcher.sections.top_section_pairs — the SAME chooser that
+    produced the candidate row — rather than ranking again here.
+
+    It used to rank independently: label priority plus a *seconds*-based
+    duration fit, while scoring used label, vocal presence and a *bars*-based
+    phrase fit. The two disagree, and both answers were reaching the user at
+    once — the ranked row showed the scorer's section pair while the Plan
+    expander directly beneath it showed this function's, and the FL export
+    silently rendered this one. Two definitions of "the good part" is exactly
+    how the preview and the recipe end up describing different mashups.
+
+    `bpm` is the target tempo (the vocal's), so the fit is measured in bars.
+    Without it the phrase fit degrades to the seconds-based one, which is the
+    old behaviour and is why the parameter is threaded through from the plan.
+    """
+    from matcher.sections import top_section_pairs
+
+    rows = top_section_pairs(vocal_sections or [], inst_sections or [],
+                             stretch=stretch_factor or 1.0, bpm=bpm,
+                             limit=max_pairings)
+    return [
+        _pairing_row(
+            r["vocal_section_start"], r["vocal_section_end"],
+            r.get("vocal_section_label"),
+            r["inst_section_start"], r["inst_section_end"],
+            r.get("inst_section_label"),
+            stretch_factor or 1.0,
+            # Carried through so a caller can resolve the pairing back to the
+            # rows it came from without re-matching on start_sec.
+            extra={"vocal_section_idx": r.get("vocal_section_idx"),
+                   "inst_section_idx": r.get("inst_section_idx"),
+                   "score_section": r.get("score_section"),
+                   "section_note": r.get("section_note")},
         )
-        i_dur_stretched = (best["end_sec"] - best["start_sec"]) / max(stretch_factor, 1e-6)
-        pairings.append({
-            "vocal_label": v.get("label"),
-            "vocal_start": v["start_sec"],
-            "vocal_end": v["end_sec"],
-            "vocal_duration": round(v_dur, 1),
-            "inst_label": best.get("label"),
-            "inst_start": best["start_sec"],
-            "inst_end": best["end_sec"],
-            "inst_duration_stretched": round(i_dur_stretched, 1),
-            "note": (
-                f"Lay vocal {v.get('label')} ({_fmt_ts(v['start_sec'])}–{_fmt_ts(v['end_sec'])}) "
-                f"over instrumental {best.get('label')} "
-                f"({_fmt_ts(best['start_sec'])}–{_fmt_ts(best['end_sec'])})"
-            ),
-        })
-    return pairings
+        for r in rows
+    ]
+
+
+def _pinned_pairing(vocal_sections: List[Dict], inst_sections: List[Dict],
+                    vocal_section_idx: int, inst_section_idx: int,
+                    stretch_factor: float) -> Optional[Dict]:
+    """The pairing for two EXPLICIT section indices, or None if either is gone.
+
+    This is what makes an export reproducible: the candidate row already decided
+    which chorus goes over which drop, and re-deriving that choice at render
+    time is how the exported folder stopped matching the row the user judged.
+    """
+    v = next((s for s in vocal_sections or []
+              if s.get("section_index") == vocal_section_idx), None)
+    i = next((s for s in inst_sections or []
+              if s.get("section_index") == inst_section_idx), None)
+    if v is None or i is None:
+        return None
+    return _pairing_row(
+        float(v.get("start_sec") or 0.0), float(v.get("end_sec") or 0.0),
+        v.get("label"),
+        float(i.get("start_sec") or 0.0), float(i.get("end_sec") or 0.0),
+        i.get("label"),
+        stretch_factor or 1.0,
+        extra={"vocal_section_idx": vocal_section_idx,
+               "inst_section_idx": inst_section_idx, "pinned": True},
+    )
+
+
+def _section_for(sections: List[Dict], pairing: Dict, side: str) -> Optional[Dict]:
+    """Resolve one side of a pairing back to its `sections` row.
+
+    By index when the pairing carries one (every pairing does now), falling back
+    to the start time for a pairing built before the index travelled with it.
+    Matching on start_sec alone is fragile: it is a rounded float, and two
+    sections of a re-analysed track can round to the same value.
+    """
+    idx = pairing.get(f"{side}_section_idx")
+    if idx is not None:
+        hit = next((s for s in sections or []
+                    if s.get("section_index") == idx), None)
+        if hit is not None:
+            return hit
+    return next((s for s in sections or []
+                 if s.get("start_sec") == pairing[f"{side}_start"]), None)
 
 
 def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
-                      db_path=None) -> Optional[Dict]:
+                      db_path=None, *,
+                      vocal_section_idx: Optional[int] = None,
+                      inst_section_idx: Optional[int] = None,
+                      harmonic_shift: Optional[int] = None) -> Optional[Dict]:
     """Full actionable plan for one vocal-over-instrumental pair.
-    Returns None when either song is missing."""
+    Returns None when either song is missing.
+
+    `vocal_section_idx` / `inst_section_idx` pin the pairing to the exact
+    sections a candidate row was scored for, instead of re-choosing them here.
+    Pass them whenever the plan is being built FOR a row the user has seen —
+    the ranked list, the Plan expander, an FL export — or the plan will describe
+    a different moment than the one that was auditioned. `harmonic_shift` does
+    the same for the measured transpose: the row already cross-correlated those
+    two sections' chroma, and re-deriving a Camelot shift here throws that away.
+
+    Unresolvable indices (the track was re-analysed and the section is gone)
+    fall through to the default pick rather than failing — a stale pin should
+    cost you the exact moment, not the export.
+    """
     from database.models import (
         DB_PATH, get_conn, get_features_for_song, get_sections, get_song,
     )
@@ -145,7 +233,19 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
 
     v_sections = get_sections(vocal_song_id, db_path=db)
     i_sections = get_sections(inst_song_id, db_path=db)
-    pairings = build_pairings(v_sections, i_sections, stretch or 1.0)
+
+    # A pinned pair is the ONLY pairing: the caller is describing one specific
+    # row, and offering three alternatives underneath it would put the same
+    # ambiguity back that the pin exists to remove.
+    pinned = None
+    if vocal_section_idx is not None and inst_section_idx is not None:
+        pinned = _pinned_pairing(v_sections, i_sections, vocal_section_idx,
+                                 inst_section_idx, stretch or 1.0)
+    if pinned is not None:
+        pairings = [pinned]
+    else:
+        pairings = build_pairings(v_sections, i_sections, stretch or 1.0,
+                                  bpm=v_bpm or None)
 
     # Phase E: prefer the MEASURED transpose over the Camelot-derived one.
     # Camelot says whether two scales are compatible; cross-correlating the two
@@ -155,14 +255,19 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     harmony = None
     if pairings:
         from matcher.harmony import section_harmony
-        v_sec = next((s for s in v_sections
-                      if s.get("start_sec") == pairings[0]["vocal_start"]), None)
-        i_sec = next((s for s in i_sections
-                      if s.get("start_sec") == pairings[0]["inst_start"]), None)
+        v_sec = _section_for(v_sections, pairings[0], "vocal")
+        i_sec = _section_for(i_sections, pairings[0], "inst")
         h = section_harmony(v_sec, i_sec)
         if h["known"]:
             harmony = h
             shift = h["shift"]
+
+    # An explicitly supplied shift wins over both. It came from the candidate
+    # row, which measured it on these same two sections during scoring; letting
+    # the re-measurement above override it is how the exported folder ends up
+    # transposed differently from the pair that was auditioned.
+    if harmonic_shift is not None:
+        shift = int(harmonic_shift)
 
     # Stem file paths for drag-and-drop into the DAW.
     conn = get_conn(db)

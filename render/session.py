@@ -282,9 +282,19 @@ def _write_tags(path: Path, bpm: Optional[float], key: Optional[str]) -> None:
 
 def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
                   on_progress: ProgressCb = None,
+                  vocal_section_idx: Optional[int] = None,
+                  inst_section_idx: Optional[int] = None,
+                  harmonic_shift: Optional[int] = None,
                   db_path=None) -> Optional[Path]:
     """Write one mashup's FL session folder. Returns the folder, or None on a
-    caller-fixable problem (reported through on_progress)."""
+    caller-fixable problem (reported through on_progress).
+
+    `vocal_section_idx` / `inst_section_idx` / `harmonic_shift` come off the
+    candidate row the user actually chose. Without them this re-derived both the
+    section pairing and the transpose from scratch, so the folder you opened in
+    FL was frequently not the mashup you auditioned — a different chorus over a
+    different drop, pitched by a Camelot estimate instead of the measured shift.
+    """
     def _tick(pct, msg):
         if on_progress:
             on_progress(pct, msg)
@@ -304,7 +314,10 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     from matcher.plan import build_mashup_plan
 
     _tick(5, "Building the plan…")
-    plan = build_mashup_plan(vocal_song_id, inst_song_id, db_path=db_path)
+    plan = build_mashup_plan(vocal_song_id, inst_song_id, db_path=db_path,
+                             vocal_section_idx=vocal_section_idx,
+                             inst_section_idx=inst_section_idx,
+                             harmonic_shift=harmonic_shift)
     if not plan:
         _tick(None, f"No such pair: {vocal_song_id} over {inst_song_id}")
         return None
@@ -526,8 +539,11 @@ def build_session_batch(token: str, pairs: list[dict],
                         on_exported=None) -> Optional[Path]:
     """Export several mashups into one parent folder, then zip it.
 
-    `pairs`: [{vocal_song_id, inst_song_id}, …]. A pair that cannot be rendered
-    is skipped with a note in the folder rather than failing the batch — one
+    `pairs`: [{vocal_song_id, inst_song_id, vocal_section_idx?,
+    inst_section_idx?, harmonic_shift?}, …]. The optional keys pin each export
+    to the exact section pair and transpose of the candidate row it came from
+    (A.1); omitted, the plan re-chooses them. A pair that cannot be rendered is
+    skipped with a note in the folder rather than failing the batch — one
     un-separated track should not cost the other nine exports.
 
     `on_exported(vocal_song_id, inst_song_id)` fires per pair that actually
@@ -563,11 +579,18 @@ def build_session_batch(token: str, pairs: list[dict],
         # Render into a per-pair token folder, then move it under the parent
         # with a readable name.
         sub_token = f"{token}{idx:02x}"
-        plan = build_mashup_plan(v_id, i_id, db_path=db_path)
+        pin = {
+            "vocal_section_idx": p.get("vocal_section_idx"),
+            "inst_section_idx": p.get("inst_section_idx"),
+            "harmonic_shift": p.get("harmonic_shift"),
+        }
+        # Same pin for the naming plan and the render, so the folder's BPM/key
+        # tag describes the take inside it.
+        plan = build_mashup_plan(v_id, i_id, db_path=db_path, **pin)
         made_path = build_session(
             sub_token, v_id, i_id,
             on_progress=lambda pct, msg, _lo=lo: _tick(_lo, msg),
-            db_path=db_path)
+            db_path=db_path, **pin)
         if made_path is None:
             skipped.append(f"{v_id} over {i_id}")
             continue

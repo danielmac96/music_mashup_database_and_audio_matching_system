@@ -8,6 +8,8 @@ same clip math offline (render/mixdown.py) so the export matches what was
 heard. The token is the render job id."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
@@ -83,6 +85,12 @@ def stream_mixdown(token: str):
 class SessionRequest(BaseModel):
     vocal_song_id: int
     inst_song_id: int
+    # The candidate row's own choices (A.1). Omitted, the plan re-derives them
+    # and the export can describe a different moment than the row that launched
+    # it; supplied, the folder is exactly the pair that was auditioned.
+    vocal_section_idx: Optional[int] = None
+    inst_section_idx: Optional[int] = None
+    harmonic_shift: Optional[int] = None
 
 
 @router.post("/session")
@@ -90,7 +98,9 @@ def queue_session(req: SessionRequest, background: BackgroundTasks) -> dict:
     _require_songs([req.vocal_song_id, req.inst_song_id])
     job_id = jobs.new_job(kind="session", message="Queued for FL session export")
     background.add_task(session_worker.run, job_id,
-                        req.vocal_song_id, req.inst_song_id)
+                        req.vocal_song_id, req.inst_song_id,
+                        req.vocal_section_idx, req.inst_section_idx,
+                        req.harmonic_shift)
     return {"job_id": job_id,
             "archive_url": f"/api/studio/session/{job_id}/archive"}
 

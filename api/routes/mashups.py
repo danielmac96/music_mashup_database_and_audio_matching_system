@@ -129,23 +129,40 @@ def _with_playback_terms(rows: list) -> list:
     return rows
 
 
-@router.get("")
-def list_candidates(combo_type: str = "", min_score: float = 0.0,
-                    limit: int = 50, vocal_song_id: Optional[int] = None,
-                    inst_song_id: Optional[int] = None,
-                    max_per_song: int = 3,
-                    genre: str = "", era: str = "", energy: str = "",
-                    bpm_band: str = "", vocal_forward: bool = False,
-                    max_effort: Optional[float] = None,
-                    order: str = "score",
-                    adventure: float = 0.0) -> dict:
-    """The ranked list.
+# The Discover toolbar's Sort values. "score" and "uncertain" are decided in
+# SQL (see get_candidates_enriched); the other two reorder the fetched page.
+_SORTS = ("score", "popularity", "effort", "uncertain")
 
-    max_per_song caps how often one song may appear (0 = uncapped) so a single
-    well-placed vocal cannot own the page. genre / era / energy / bpm_band /
-    vocal_forward compose, and all of them filter in SQL — narrowing a
-    truncated 50 client-side would search the top of the list, not the library.
+
+def _apply_sort(rows: list, sort: str) -> list:
+    """Reorder a fetched page the way the Discover toolbar's Sort does.
+
+    This exists so "Export top N" can reproduce what is on screen. The sort used
+    to live only in MashupSuggestions.jsx, which meant the export ran a
+    different query from the list it was launched off: sort by Effort, export
+    the top 10, and you got the ten best-SCORING rows instead of the ten
+    cheapest to build.
+
+    Python's sort is stable and so is JavaScript's, so equal keys keep the
+    score-descending order the SQL returned — matching the client tie-break
+    without having to spell it out.
     """
+    s = (sort or "score").lower()
+    if s == "popularity":
+        return sorted(rows, key=lambda r: -((r.get("vocal_popularity") or 0.0)
+                                            + (r.get("inst_popularity") or 0.0)))
+    if s == "effort":
+        # Cheapest first; a row with no measured cost sorts last, because an
+        # unknown cost is not a free one.
+        return sorted(rows, key=lambda r: (
+            2.0 if r.get("score_effort") is None else float(r["score_effort"]),
+            -(r.get("score_total") or 0.0)))
+    return rows
+
+
+def _validate_list_params(combo_type: str, max_per_song: int, order: str,
+                          adventure: float, sort: str, era: str, energy: str,
+                          bpm_band: str) -> None:
     if combo_type and combo_type not in _COMBO_TYPES:
         raise HTTPException(
             status_code=400,
@@ -157,6 +174,9 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     if order not in ("score", "uncertain"):
         raise HTTPException(status_code=400,
                             detail="order must be score|uncertain")
+    if sort and sort.lower() not in _SORTS:
+        raise HTTPException(status_code=400,
+                            detail=f"sort must be one of {sorted(_SORTS)}")
     if not (0.0 <= adventure <= 1.0):
         raise HTTPException(status_code=400,
                             detail="adventure must be in [0, 1]")
@@ -167,6 +187,22 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
             raise HTTPException(
                 status_code=400,
                 detail=f"{name} must be one of {sorted(allowed)}")
+
+
+def ranked_rows(*, combo_type: str, min_score: float, limit: int,
+                vocal_song_id: Optional[int] = None,
+                inst_song_id: Optional[int] = None,
+                max_per_song: int, genre: str, era: str, energy: str,
+                bpm_band: str, vocal_forward: bool,
+                max_effort: Optional[float], order: str, adventure: float,
+                sort: str = "score", with_reasons: bool = True) -> list:
+    """One ranked page, filtered, ordered and sorted exactly as Discover shows it.
+
+    Shared by the list endpoint and the batch session export so the two cannot
+    describe different sets of pairs. `with_reasons` is off for the export path:
+    model explanations cost a full feature rebuild per row and nothing in a
+    session folder reads them.
+    """
     rows = get_candidates_enriched(
         combo_type=combo_type, min_score=min_score,
         limit=max(1, min(limit, 500)),
@@ -175,12 +211,47 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         genre=genre, era=era, energy=energy, bpm_band=bpm_band,
         vocal_forward=vocal_forward, max_effort=max_effort, order=order,
     )
-    rows = _with_reasons(_with_playback_terms(rows))
+    rows = _with_playback_terms(rows)
+    if with_reasons:
+        rows = _with_reasons(rows)
     if adventure > 0 and order == "score":
         rows = _reorder_by_surprise(rows, adventure)
+    return _apply_sort(rows, sort)
+
+
+@router.get("")
+def list_candidates(combo_type: str = "", min_score: float = 0.0,
+                    limit: int = 50, vocal_song_id: Optional[int] = None,
+                    inst_song_id: Optional[int] = None,
+                    max_per_song: int = 3,
+                    genre: str = "", era: str = "", energy: str = "",
+                    bpm_band: str = "", vocal_forward: bool = False,
+                    max_effort: Optional[float] = None,
+                    order: str = "score",
+                    adventure: float = 0.0,
+                    sort: str = "score") -> dict:
+    """The ranked list.
+
+    max_per_song caps how often one song may appear (0 = uncapped) so a single
+    well-placed vocal cannot own the page. genre / era / energy / bpm_band /
+    vocal_forward compose, and all of them filter in SQL — narrowing a
+    truncated 50 client-side would search the top of the list, not the library.
+
+    `sort` reorders the returned page (score | popularity | effort | uncertain).
+    The client also sorts locally so the toolbar stays instant; the parameter
+    exists so the export path can ask for the same page it is looking at.
+    """
+    _validate_list_params(combo_type, max_per_song, order, adventure, sort,
+                          era, energy, bpm_band)
+    rows = ranked_rows(
+        combo_type=combo_type, min_score=min_score, limit=limit,
+        vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
+        max_per_song=max_per_song, genre=genre, era=era, energy=energy,
+        bpm_band=bpm_band, vocal_forward=vocal_forward, max_effort=max_effort,
+        order=order, adventure=adventure, sort=sort)
     return {"count": len(rows), "candidates": rows,
             "max_per_song": max_per_song, "order": order,
-            "adventure": adventure}
+            "adventure": adventure, "sort": sort}
 
 
 @router.get("/filters")
@@ -289,8 +360,20 @@ def list_feedback(verdict: str = "") -> dict:
 
 
 @router.get("/plan")
-def get_plan(vocal_id: int, inst_id: int) -> dict:
-    plan = build_mashup_plan(vocal_id, inst_id)
+def get_plan(vocal_id: int, inst_id: int,
+             vocal_section_idx: Optional[int] = None,
+             inst_section_idx: Optional[int] = None,
+             harmonic_shift: Optional[int] = None) -> dict:
+    """The recipe for one pair.
+
+    The section indices and the measured shift pin the plan to a candidate row.
+    Without them the Plan expander re-chose its own sections and printed them
+    directly beneath a row that named different ones.
+    """
+    plan = build_mashup_plan(vocal_id, inst_id,
+                             vocal_section_idx=vocal_section_idx,
+                             inst_section_idx=inst_section_idx,
+                             harmonic_shift=harmonic_shift)
     if plan is None:
         raise HTTPException(status_code=404, detail="song not found")
     return plan
@@ -304,8 +387,18 @@ class BatchSessionRequest(BaseModel):
     The filters are passed through rather than a list of ids so the export
     matches what the user is looking at — including the diversity cap, which is
     applied in Python after the SQL and so cannot be reproduced client-side.
+
+    Every control that changes WHICH rows are on screen has to be here, or the
+    export quietly runs a different query from the list it was launched off.
+    `max_effort`, `order`, `adventure` and `sort` were missing: turning on "Free
+    builds", sorting by Effort and pressing "Export top 10" gave you the ten
+    best-scoring pairs in the unfiltered list instead of the ten you were
+    looking at. `limit` is the list's page size, because the adventure reorder
+    and the sort both act on the fetched page — exporting the top 10 means the
+    first 10 of that same page, not the top 10 of a 10-row query.
     """
     top_n: int = 10
+    limit: int = 50
     combo_type: str = "vocal_over_instrumental"
     min_score: float = 0.0
     max_per_song: int = 3
@@ -315,6 +408,14 @@ class BatchSessionRequest(BaseModel):
     energy: str = ""
     bpm_band: str = ""
     vocal_forward: bool = False
+    order: str = "score"
+    adventure: float = 0.0
+    sort: str = "score"
+    # A seeded list ("beds for this acapella") is still a list, and exporting
+    # its top rows should honour the seed rather than silently widening to the
+    # whole library.
+    vocal_song_id: Optional[int] = None
+    inst_song_id: Optional[int] = None
 
 
 @router.post("/session/batch")
@@ -323,29 +424,50 @@ def queue_session_batch(req: BatchSessionRequest,
     from api.workers import session_worker
     from render.session import MAX_SESSIONS
 
+    _validate_list_params(req.combo_type, req.max_per_song, req.order,
+                          req.adventure, req.sort, req.era, req.energy,
+                          req.bpm_band)
     if req.combo_type not in _COMBO_TYPES:
         raise HTTPException(
             status_code=400,
             detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
     top_n = max(1, min(req.top_n, MAX_SESSIONS))
 
-    rows = get_candidates_enriched(
-        combo_type=req.combo_type, min_score=req.min_score, limit=top_n,
+    rows = ranked_rows(
+        combo_type=req.combo_type, min_score=req.min_score,
+        limit=max(req.limit, top_n),
+        vocal_song_id=req.vocal_song_id, inst_song_id=req.inst_song_id,
         max_per_song=req.max_per_song, genre=req.genre, era=req.era,
         energy=req.energy, bpm_band=req.bpm_band,
         vocal_forward=req.vocal_forward, max_effort=req.max_effort,
-    )
+        order=req.order, adventure=req.adventure, sort=req.sort,
+        with_reasons=False)[:top_n]
     if not rows:
         raise HTTPException(status_code=404,
                             detail="no candidates match those filters")
 
-    pairs = [{"vocal_song_id": r["vocal_song_id"],
-              "inst_song_id": r["inst_song_id"]} for r in rows]
+    pairs = [_export_pair(r) for r in rows]
     job_id = jobs.new_job(kind="session",
                           message=f"Queued {len(pairs)} FL session exports")
     background.add_task(session_worker.run_batch, job_id, pairs)
     return {"job_id": job_id, "pair_count": len(pairs),
             "archive_url": f"/api/studio/session/{job_id}/archive"}
+
+
+def _export_pair(row: dict) -> dict:
+    """One candidate row, reduced to what an export needs to rebuild it exactly.
+
+    The section indices and the measured transpose travel with the pair (A.1).
+    Without them build_session re-derives both, and the folder you open is not
+    the mashup you auditioned.
+    """
+    return {
+        "vocal_song_id": row["vocal_song_id"],
+        "inst_song_id": row["inst_song_id"],
+        "vocal_section_idx": row.get("vocal_section_idx"),
+        "inst_section_idx": row.get("inst_section_idx"),
+        "harmonic_shift": row.get("harmonic_shift"),
+    }
 
 
 # ── Why a row ranks where it does (Phase F.3) ────────────────────────────────

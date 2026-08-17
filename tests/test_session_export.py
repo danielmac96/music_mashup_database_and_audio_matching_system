@@ -287,3 +287,85 @@ def test_batch_with_nothing_renderable_fails_cleanly(env):
                               db_path=db_path)
     assert out is None
     assert any("check the tracks have stems" in m for m in seen)
+
+
+# ── A.1: the export is the mashup that was auditioned ────────────────────────
+#
+# build_session used to take only the two song ids and re-derive the section
+# pairing with matcher.plan.build_pairings — a different chooser from the
+# matcher.sections.top_section_pairs that produced the candidate row. The
+# exported folder was therefore frequently a different chorus over a different
+# drop, pitched by a Camelot estimate rather than the row's measured shift.
+
+def test_pinned_sections_reach_the_rendered_files(env):
+    from render.session import build_session
+    tmp_path, db_path = env
+    vocal = _seed_song(tmp_path, db_path, 1, bpm=120.0, camelot="8A",
+                       stems=("full", "vocals", "instrumental"))
+    inst = _seed_song(tmp_path, db_path, 2, bpm=120.0, camelot="8A",
+                      stems=("full", "vocals", "instrumental"))
+
+    # Section 1 is the chorus (8-24s) and section 2 the drop (24-40s). Pin the
+    # DROP on the vocal side — the opposite of what the chooser prefers — so a
+    # pass can only mean the pin was honoured.
+    out = build_session("abcdef20", vocal, inst, db_path=db_path,
+                        vocal_section_idx=2, inst_section_idx=1)
+    assert out is not None
+
+    # conform_stem snaps the start to the next downbeat, so allow up to a bar
+    # of drift. What matters is which SECTION was rendered: the default chooser
+    # would have taken the chorus at 8s on the vocal side.
+    manifest = json.loads((out / "session.json").read_text())
+    assert manifest["vocal"]["conformed"]["section_start"] == pytest.approx(24.0, abs=2.0)
+    assert manifest["inst"]["conformed"]["section_start"] == pytest.approx(8.0, abs=2.0)
+
+
+def test_pinned_harmonic_shift_beats_the_camelot_derivation(env):
+    from render.session import build_session
+    tmp_path, db_path = env
+    vocal = _seed_song(tmp_path, db_path, 1, bpm=120.0, camelot="8A",
+                       stems=("full", "vocals", "instrumental"))
+    inst = _seed_song(tmp_path, db_path, 2, bpm=120.0, camelot="8A",
+                      stems=("full", "vocals", "instrumental"))
+
+    # Same Camelot code on both sides derives a 0-semitone shift; the row says
+    # the measured answer is -2. The row wins.
+    out = build_session("abcdef21", vocal, inst, db_path=db_path,
+                        vocal_section_idx=1, inst_section_idx=1,
+                        harmonic_shift=-2)
+    assert out is not None
+    manifest = json.loads((out / "session.json").read_text())
+    assert manifest["semitone_shift"] == -2
+
+
+def test_a_stale_pin_falls_back_instead_of_failing(env):
+    """A re-analysed track can lose the section a row pointed at. That should
+    cost you the exact moment, not the whole export."""
+    from render.session import build_session
+    tmp_path, db_path = env
+    vocal = _seed_song(tmp_path, db_path, 1, bpm=120.0, camelot="8A",
+                       stems=("full", "vocals", "instrumental"))
+    inst = _seed_song(tmp_path, db_path, 2, bpm=120.0, camelot="8A",
+                      stems=("full", "vocals", "instrumental"))
+
+    out = build_session("abcdef22", vocal, inst, db_path=db_path,
+                        vocal_section_idx=99, inst_section_idx=99)
+    assert out is not None and (out / "vocals.wav").exists()
+
+
+def test_batch_export_honours_each_pair_own_pin(env):
+    from render.session import build_session_batch
+    tmp_path, db_path = env
+    a = _seed_song(tmp_path, db_path, 1, bpm=120.0, camelot="8A",
+                   stems=("full", "vocals", "instrumental"))
+    b = _seed_song(tmp_path, db_path, 2, bpm=120.0, camelot="8A",
+                   stems=("full", "vocals", "instrumental"))
+
+    out = build_session_batch("abcdef23", [
+        {"vocal_song_id": a, "inst_song_id": b,
+         "vocal_section_idx": 2, "inst_section_idx": 1},
+    ], db_path=db_path)
+    assert out is not None
+    folder = next(p for p in out.iterdir() if p.is_dir())
+    manifest = json.loads((folder / "session.json").read_text())
+    assert manifest["vocal"]["conformed"]["section_start"] == pytest.approx(24.0, abs=2.0)
