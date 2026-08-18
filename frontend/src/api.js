@@ -334,10 +334,23 @@ export const api = {
   // target tempo and key and padded so bar 1 is at 0:00, plus a click, the
   // recipe, and a session.json in the mixdown clip shape. A mixdown is a bounce;
   // this is something you can actually mix.
-  startSessionExport: (vocalSongId, instSongId) =>
+  // Two shapes. `{ vocalSongId, instSongId, ... }` asks the engine to plan the
+  // pair — pass the candidate row's section indices and measured shift so the
+  // folder is the take that was auditioned (A.1). `{ clips, targetBpm }`
+  // exports a Studio arrangement exactly as built (A.4), same clip shape as
+  // startMixdown, so the browser playback, the bounce and the FL folder are
+  // three views of one arrangement.
+  startSessionExport: (opts = {}) =>
     jsonFetch("/api/studio/session", {
       method: "POST",
-      body: JSON.stringify({ vocal_song_id: vocalSongId, inst_song_id: instSongId }),
+      body: JSON.stringify(opts.clips
+        ? { clips: opts.clips, target_bpm: opts.targetBpm ?? null }
+        : {
+          vocal_song_id: opts.vocalSongId, inst_song_id: opts.instSongId,
+          vocal_section_idx: opts.vocalSectionIdx ?? null,
+          inst_section_idx: opts.instSectionIdx ?? null,
+          harmonic_shift: opts.harmonicShift ?? null,
+        }),
     }),
 
   // The same, for the top N of the currently filtered ranked list. Filters go to

@@ -884,13 +884,18 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
   }, [lanes.length, locked, projectBpm, onStatus]);
 
   // ── export ──────────────────────────────────────────────────────────────
+  // One clip payload, shared by the bounce and the session export, so what you
+  // hear here, what the mixdown renders and what lands in FL are three views of
+  // the same arrangement rather than three chances to disagree.
+  const audibleClips = () => lanes
+    .filter((l) => !l.muted && l.gain > 0)
+    .map((l) => ({
+      song_id: l.songId, stem: l.stem, offset_sec: l.offsetSec,
+      rate: l.rate, semitones: l.semitones, gain: l.gain,
+    }));
+
   const handleExport = async () => {
-    const clips = lanes
-      .filter((l) => !l.muted && l.gain > 0)
-      .map((l) => ({
-        song_id: l.songId, stem: l.stem, offset_sec: l.offsetSec,
-        rate: l.rate, semitones: l.semitones, gain: l.gain,
-      }));
+    const clips = audibleClips();
     if (clips.length === 0) { toast("Nothing audible to export"); return; }
     setError(null);
     try {
@@ -901,29 +906,27 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
     } catch (e) { setError(e.message); }
   };
 
-  // The FL session export is a vocal-over-instrumental pair, not an arbitrary
-  // arrangement: it bakes one tempo and one transpose into two files. Take the
-  // first audible lane of each kind — which is exactly what "Audition → Studio"
-  // seeds — and leave the button disabled when the arrangement is not that
-  // shape, since there would be no single right answer.
-  const sessionPair = (() => {
-    const audible = lanes.filter((l) => !l.muted && l.gain > 0);
-    const v = audible.find((l) => l.stem === "vocals");
-    const i = audible.find((l) => l.stem === "instrumental");
-    return v && i && v.songId !== i.songId
-      ? { vocalId: v.songId, instId: i.songId }
-      : null;
-  })();
-
+  // A.4 — export the arrangement you built.
+  //
+  // This used to send only two song ids and let the server re-plan the pair,
+  // which threw away every offset, rate, pitch and gain set here. Nudging a
+  // lane until it sat right produced nothing you could take to FL: the only
+  // ways out were a bounce (which you cannot mix) and a session rebuilt from
+  // the engine's own opinion of the pair. It also refused any arrangement that
+  // was not exactly one vocal over one instrumental, so a three-way or a
+  // drums-swap could not be exported at all.
   const handleSessionExport = async () => {
-    if (!sessionPair) return;
+    const clips = audibleClips();
+    if (clips.length === 0) { toast("Nothing audible to export"); return; }
     setError(null);
     try {
-      const { job_id } = await api.startSessionExport(
-        sessionPair.vocalId, sessionPair.instId);
+      const { job_id } = await api.startSessionExport({
+        clips, targetBpm: projectBpm || null,
+      });
       setSessionToken(null);
       setSessionJobId(job_id);
-      toast("Rendering FL session (conformed stems + click)…");
+      toast(`Rendering FL session (${clips.length} conformed lane`
+        + `${clips.length === 1 ? "" : "s"} + click)…`);
     } catch (e) { setError(e.message); }
   };
 
@@ -1047,10 +1050,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
           </a>
         )}
         <button className="export-btn" onClick={handleSessionExport}
-          disabled={sessionJobId != null || !sessionPair}
-          title={sessionPair
-            ? "Export both stems conformed to the project tempo and key, trimmed to the chosen sections and aligned so bar 1 is at 0:00 — drop into FL at 0:00, no nudging. Includes a click track and the recipe."
-            : "Needs one audible vocal lane and one audible instrumental lane from different tracks."}>
+          disabled={sessionJobId != null || lanes.length === 0}
+          title="Export every audible lane as its own conformed WAV — the arrangement you built, with your stretches, transposes and placements baked in so they all drop into FL at 0:00 together. Includes a click track and a README listing each lane's settings.">
           ↓ Export FL session
         </button>
         {sessionJobId && (

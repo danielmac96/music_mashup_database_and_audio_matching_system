@@ -32,8 +32,8 @@ from typing import Optional
 from config import PREVIEWS_DIR
 from render.dsp import (
     MAX_RENDER_SECS, RENDER_SR, STEM_TYPES, AudioStackMissing, ProgressCb,
-    clamp_rate, clamp_semitones, conform, is_valid_token, load_segment,
-    require_audio_stack, resolve_stem_path,
+    clamp_gain, clamp_rate, clamp_semitones, conform, is_valid_token,
+    load_segment, require_audio_stack, resolve_stem_path,
 )
 
 log = logging.getLogger(__name__)
@@ -531,6 +531,186 @@ def _lock_note(lock_ms: Optional[float]) -> str:
         f"  Nudge instrumental.wav {abs(lock_ms):.0f} ms {direction} — or check whether the two\n"
         f"  sections were snapped to different bars, which a nudge will not fix."
     )
+
+
+# ── A.4: export the arrangement you actually built ───────────────────────────
+#
+# Studio lets you place N lanes, set each one's rate, pitch, gain and offset,
+# and nudge until it sits right. Its export then threw all of that away and
+# re-planned the pair server-side, so there was no way to export what you had
+# just built — the only paths out were a bounced mixdown (which you cannot mix)
+# and a session rebuilt from the engine's own opinion.
+#
+# Same clip shape as /studio/mixdown, so what you hear in the browser, what the
+# mixdown renders and what lands in FL are three views of one arrangement.
+
+def build_session_from_clips(token: str, clips: list[dict], *,
+                             target_bpm: Optional[float] = None,
+                             on_progress: ProgressCb = None,
+                             db_path=None) -> Optional[Path]:
+    """Write an FL session folder from an explicit Studio arrangement.
+
+    Each clip is conformed exactly as the mixdown would conform it, then padded
+    at the head by its own offset, so every WAV starts at the arrangement's zero
+    and they all drop into the playlist at 0:00 together — the same guarantee
+    the pair export gives, extended to N lanes.
+    """
+    def _tick(pct, msg):
+        if on_progress:
+            on_progress(pct, msg)
+
+    out = session_dir(token)
+    if out is None:
+        _tick(None, "Invalid session token")
+        return None
+    if not clips:
+        _tick(None, "No clips to export")
+        return None
+
+    try:
+        np, _librosa, sf = require_audio_stack()
+    except AudioStackMissing as exc:
+        log.error("session export needs librosa + soundfile: %s", exc)
+        _tick(None, str(exc))
+        return None
+
+    from database.models import get_features_for_song, get_song
+
+    # Relative to the earliest clip, so a lane dragged left of zero still
+    # renders instead of being silently clipped away (mirrors build_mixdown).
+    base = min(0.0, *(float(c.get("offset_sec") or 0.0) for c in clips))
+
+    rendered: list[tuple[dict, "np.ndarray", dict]] = []
+    n = len(clips)
+    for idx, c in enumerate(clips):
+        song_id = int(c["song_id"])
+        stem = str(c.get("stem") or "full")
+        if stem not in STEM_TYPES:
+            _tick(None, f"Clip {idx + 1}: unknown stem '{stem}'")
+            return None
+        path = resolve_stem_path(song_id, stem, db_path=db_path)
+        if path is None:
+            _tick(None, f"Clip {idx + 1}: no {stem} audio for song {song_id} — "
+                        "separate/download it first")
+            return None
+
+        rate = clamp_rate(c.get("rate"))
+        semitones = clamp_semitones(c.get("semitones"))
+        gain = clamp_gain(c.get("gain"))
+        offset = float(c.get("offset_sec") or 0.0)
+
+        label = f"Clip {idx + 1}/{n}: "
+        _tick(int(5 + 75 * idx / n), f"{label}conforming {path.name}…")
+        y = load_segment(path, RENDER_SR, max_secs=MAX_RENDER_SECS, rate=rate)
+        y = conform(y, RENDER_SR, rate, semitones,
+                    on_progress=on_progress, label=label)
+        # Head padding IS the offset: the point of a session folder is that
+        # every file starts at the same zero, so the placement has to be baked
+        # into the audio rather than left as an instruction.
+        pad = max(0, int(round((offset - base) * RENDER_SR)))
+        y = np.pad(y, (pad, 0))
+
+        song = get_song(song_id, db_path=db_path) or {}
+        rendered.append((c, y, {
+            "song_id": song_id, "stem": stem, "title": song.get("title"),
+            "artist": song.get("artist"), "source": str(path),
+            "offset_sec": round(offset - base, 3), "rate": rate,
+            "semitones": semitones, "gain": gain,
+            "duration_secs": round(len(y) / RENDER_SR, 3),
+        }))
+
+    _tick(84, "Aligning to the bar grid…")
+    length = max(len(y) for _c, y, _i in rendered)
+    rendered = [(c, np.pad(y, (0, length - len(y))), info)
+                for c, y, info in rendered]
+
+    # The project tempo. Prefer what Studio says, since that is what the user
+    # conformed everything to; fall back to the first lane's own tempo.
+    if not target_bpm:
+        first = rendered[0][2]
+        feat = (get_features_for_song(first["song_id"], first["stem"],
+                                      db_path=db_path)
+                or get_features_for_song(first["song_id"], "full",
+                                         db_path=db_path) or {})
+        target_bpm = (feat.get("bpm") or 0.0) * first["rate"]
+
+    click = render_click(length / RENDER_SR, target_bpm or 0.0)
+    click = np.pad(click, (0, max(0, length - len(click))))[:length]
+
+    if out.exists():
+        shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True, exist_ok=True)
+
+    _tick(90, "Writing files…")
+    used: set = set()
+    for idx, (_c, y, info) in enumerate(rendered, start=1):
+        name = f"{idx:02d}_{_safe(info['title'], 28)}_{info['stem']}.wav"
+        while name in used:                     # two lanes on the same stem
+            name = f"{idx:02d}_{_safe(info['title'], 24)}_{info['stem']}_b.wav"
+        used.add(name)
+        info["file"] = name
+        sf.write(str(out / name), y.astype("float32"), RENDER_SR)
+        _write_tags(out / name, target_bpm, None)
+    sf.write(str(out / "click.wav"), click.astype("float32"), RENDER_SR)
+    _write_tags(out / "click.wav", target_bpm, None)
+
+    (out / "session.json").write_text(json.dumps({
+        "source": "studio",
+        "target_bpm": target_bpm,
+        "lanes": [info for _c, _y, info in rendered],
+        # build_mixdown's clip shape, offsets rebased to zero because the
+        # placement is now baked into each file's head padding.
+        "clips": [{"song_id": info["song_id"], "stem": info["stem"],
+                   "offset_sec": 0.0, "rate": info["rate"],
+                   "semitones": info["semitones"], "gain": info["gain"]}
+                  for _c, _y, info in rendered],
+    }, indent=2), encoding="utf-8")
+
+    (out / "README.txt").write_text(
+        _clips_readme(rendered, target_bpm), encoding="utf-8")
+
+    _tick(100, f"Session ready: {out.name}")
+    log.info("FL session exported from Studio: %s (%d lanes)", out, len(rendered))
+    return out
+
+
+def _clips_readme(rendered: list, target_bpm: Optional[float]) -> str:
+    lines = [
+        "Exported from Studio — this is the arrangement you built,",
+        "not a re-plan of the pair.",
+        "",
+        "=" * 68,
+        "ALREADY DONE FOR YOU",
+        "=" * 68,
+        f"Every WAV is rendered at {target_bpm:.1f} BPM."
+        if target_bpm else "Project tempo unknown — check against click.wav.",
+        "Each lane's placement is baked into its head padding, so they all",
+        "START AT 0:00 TOGETHER and stay in the arrangement you heard.",
+        "",
+        f"  1. Set the FL project tempo to {target_bpm:.1f} BPM."
+        if target_bpm else "  1. Set the FL project tempo by ear.",
+        "  2. Drag every WAV into the playlist at 0:00.",
+        "  3. That's it. click.wav is there to check.",
+        "",
+        "Do NOT re-stretch or re-pitch these files; that work is baked in.",
+        "Gain is NOT baked in — it is listed below so you can dial it in.",
+        "",
+        "=" * 68,
+        "LANES",
+        "=" * 68,
+    ]
+    for info in (i for _c, _y, i in rendered):
+        lines += [
+            f"  {info['file']}",
+            f"      {info.get('title') or '?'} — {info.get('artist') or '?'}"
+            f"  [{info['stem']}]",
+            f"      placed at {_fmt(info['offset_sec'])}, "
+            f"x{info['rate']:.4f} time-stretch, {info['semitones']:+d} semitones, "
+            f"gain {info['gain']:.2f}",
+            f"      source: {info['source']}",
+            "",
+        ]
+    return "\n".join(lines)
 
 
 def build_session_batch(token: str, pairs: list[dict],

@@ -369,3 +369,118 @@ def test_batch_export_honours_each_pair_own_pin(env):
     folder = next(p for p in out.iterdir() if p.is_dir())
     manifest = json.loads((folder / "session.json").read_text())
     assert manifest["vocal"]["conformed"]["section_start"] == pytest.approx(24.0, abs=2.0)
+
+
+# ── A.4: export the arrangement you actually built ───────────────────────────
+#
+# Studio's export sent two song ids and let the server re-plan the pair, which
+# threw away every offset, rate, pitch and gain the user had set — and refused
+# any arrangement that was not exactly one vocal over one instrumental.
+
+def test_studio_clips_export_every_lane(env):
+    from render.session import build_session_from_clips
+    tmp_path, db_path = env
+    a = _seed_song(tmp_path, db_path, 1, bpm=120.0, camelot="8A",
+                   stems=("full", "vocals", "instrumental"))
+    b = _seed_song(tmp_path, db_path, 2, bpm=120.0, camelot="8A",
+                   stems=("full", "vocals", "instrumental"))
+
+    out = build_session_from_clips("abcdef30", [
+        {"song_id": a, "stem": "vocals", "offset_sec": 0.0,
+         "rate": 1.0, "semitones": 0, "gain": 0.8},
+        {"song_id": b, "stem": "instrumental", "offset_sec": 4.0,
+         "rate": 1.05, "semitones": -2, "gain": 0.7},
+        # A third lane: the old export could not represent this at all.
+        {"song_id": b, "stem": "vocals", "offset_sec": 8.0,
+         "rate": 1.0, "semitones": 0, "gain": 0.5},
+    ], target_bpm=120.0, db_path=db_path)
+
+    assert out is not None
+    wavs = sorted(p.name for p in out.glob("*.wav"))
+    assert len(wavs) == 4, wavs          # three lanes + click
+    assert "click.wav" in wavs
+
+    manifest = json.loads((out / "session.json").read_text())
+    assert manifest["source"] == "studio"
+    assert len(manifest["lanes"]) == 3
+    assert manifest["target_bpm"] == pytest.approx(120.0)
+    # The user's settings survived rather than being re-derived.
+    bed = next(l for l in manifest["lanes"]
+               if l["stem"] == "instrumental")
+    assert bed["rate"] == pytest.approx(1.05)
+    assert bed["semitones"] == -2
+    assert bed["gain"] == pytest.approx(0.7)
+
+
+def test_lane_placement_is_baked_into_the_audio(env):
+    """The point of a session folder is that every file starts at the same
+    zero, so an offset has to become head padding rather than an instruction."""
+    from render.session import build_session_from_clips
+    tmp_path, db_path = env
+    a = _seed_song(tmp_path, db_path, 1, bpm=120.0, camelot="8A",
+                   stems=("full", "vocals", "instrumental"))
+
+    out = build_session_from_clips("abcdef31", [
+        {"song_id": a, "stem": "vocals", "offset_sec": 0.0,
+         "rate": 1.0, "semitones": 0, "gain": 0.8},
+        {"song_id": a, "stem": "instrumental", "offset_sec": 4.0,
+         "rate": 1.0, "semitones": 0, "gain": 0.8},
+    ], target_bpm=120.0, db_path=db_path)
+    assert out is not None
+
+    manifest = json.loads((out / "session.json").read_text())
+    files = {l["stem"]: l["file"] for l in manifest["lanes"]}
+    v, _ = sf.read(str(out / files["vocals"]))
+    i, _ = sf.read(str(out / files["instrumental"]))
+
+    assert len(v) == len(i), "every lane must be the same length"
+    # The offset lane opens with 4s of silence; the other does not.
+    assert float(np.max(np.abs(i[: int(3.5 * SR)]))) == pytest.approx(0.0, abs=1e-6)
+    assert float(np.max(np.abs(v[: int(3.5 * SR)]))) > 0.01
+    # And the offsets are rebased so the clips round-trip into Studio at zero.
+    assert all(c["offset_sec"] == 0.0 for c in manifest["clips"])
+
+
+def test_a_lane_dragged_before_zero_still_renders(env):
+    """Mirrors build_mixdown: everything is placed relative to the earliest
+    clip, so a negative offset is not silently clipped away."""
+    from render.session import build_session_from_clips
+    tmp_path, db_path = env
+    a = _seed_song(tmp_path, db_path, 1, bpm=120.0, camelot="8A",
+                   stems=("full", "vocals", "instrumental"))
+
+    out = build_session_from_clips("abcdef32", [
+        {"song_id": a, "stem": "vocals", "offset_sec": -3.0,
+         "rate": 1.0, "semitones": 0, "gain": 0.8},
+        {"song_id": a, "stem": "instrumental", "offset_sec": 0.0,
+         "rate": 1.0, "semitones": 0, "gain": 0.8},
+    ], target_bpm=120.0, db_path=db_path)
+    assert out is not None
+    lanes = json.loads((out / "session.json").read_text())["lanes"]
+    assert min(l["offset_sec"] for l in lanes) == 0.0
+    assert max(l["offset_sec"] for l in lanes) == pytest.approx(3.0)
+
+
+def test_clips_export_reports_a_missing_stem(env):
+    from render.session import build_session_from_clips
+    tmp_path, db_path = env
+    broken = _seed_song(tmp_path, db_path, 1, bpm=120.0, camelot="8A",
+                        stems=("full",))
+    seen = []
+    out = build_session_from_clips(
+        "abcdef33",
+        [{"song_id": broken, "stem": "vocals", "offset_sec": 0.0,
+          "rate": 1.0, "semitones": 0, "gain": 0.8}],
+        on_progress=lambda pct, msg: seen.append(msg), db_path=db_path)
+    assert out is None
+    assert any("separate/download it first" in m for m in seen)
+
+
+def test_clips_export_refuses_an_empty_arrangement(env):
+    from render.session import build_session_from_clips
+    _tmp, db_path = env
+    seen = []
+    assert build_session_from_clips(
+        "abcdef34", [], on_progress=lambda pct, msg: seen.append(msg),
+        db_path=db_path) is None
+    assert any("No clips" in m for m in seen)

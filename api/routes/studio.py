@@ -83,18 +83,45 @@ def stream_mixdown(token: str):
 # clip shape so an export round-trips back into Studio.
 
 class SessionRequest(BaseModel):
-    vocal_song_id: int
-    inst_song_id: int
+    """Either a pair to plan, or an arrangement already built in Studio.
+
+    `vocal_song_id`/`inst_song_id` ask the engine to plan the pair.
+    `clips` (A.4) exports the lanes exactly as arranged instead — same shape as
+    /studio/mixdown, so the browser playback, the bounce and the FL folder are
+    three views of one arrangement. Studio used to have no way to export what
+    you had just built: its button re-planned the pair server-side and threw
+    away every offset, rate, pitch and gain you had set.
+    """
+    vocal_song_id: Optional[int] = None
+    inst_song_id: Optional[int] = None
     # The candidate row's own choices (A.1). Omitted, the plan re-derives them
     # and the export can describe a different moment than the row that launched
     # it; supplied, the folder is exactly the pair that was auditioned.
     vocal_section_idx: Optional[int] = None
     inst_section_idx: Optional[int] = None
     harmonic_shift: Optional[int] = None
+    clips: Optional[list[Clip]] = None
+    target_bpm: Optional[float] = None
 
 
 @router.post("/session")
 def queue_session(req: SessionRequest, background: BackgroundTasks) -> dict:
+    if req.clips:
+        if len(req.clips) > MAX_CLIPS:
+            raise HTTPException(status_code=400,
+                                detail=f"too many clips (max {MAX_CLIPS})")
+        _require_songs([c.song_id for c in req.clips])
+        job_id = jobs.new_job(kind="session",
+                              message="Queued for FL session export")
+        background.add_task(session_worker.run_clips, job_id,
+                            [c.model_dump() for c in req.clips], req.target_bpm)
+        return {"job_id": job_id,
+                "archive_url": f"/api/studio/session/{job_id}/archive"}
+
+    if req.vocal_song_id is None or req.inst_song_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="pass either clips, or both vocal_song_id and inst_song_id")
     _require_songs([req.vocal_song_id, req.inst_song_id])
     job_id = jobs.new_job(kind="session", message="Queued for FL session export")
     background.add_task(session_worker.run, job_id,
