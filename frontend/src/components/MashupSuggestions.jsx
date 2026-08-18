@@ -1107,8 +1107,9 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       <WeightsPopover
         open={weightsOpen} onClose={() => setWeightsOpen(false)}
         weights={weightOverride}
-        saved={comboType === "vocal_over_instrumental"
-          ? weights?.generic : weights?.generic}
+        // The GENERIC five. The vocal path's timbre-to-collision move is the
+        // server's to apply (config._for_combo), not a slider to drag.
+        saved={weights?.generic}
         onChange={setWeightDraft} onReset={resetWeights}
         onSaveDefault={saveWeightsAsDefault} busy={loading} />
 

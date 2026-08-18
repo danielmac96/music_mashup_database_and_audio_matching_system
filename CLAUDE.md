@@ -1,8 +1,47 @@
 # CLAUDE.md — AI Assistant Guide
 
-current goal: a producer-side review (P0–P3, see below) landed on top of Phases
-A–F. **Before the §5 seventeen-mix ingest, re-analyse any existing library**:
-`features.bpm_confidence` and the per-section chroma both changed meaning.
+current goal: the **attribute-surface pass** (`docs/plans/attribute-surface/PLAN.md`)
+landed on top of the P0–P3 producer review and Phases A–F. **Before the §5
+seventeen-mix ingest, re-analyse any existing library**: `features.bpm_confidence`
+and the per-section chroma both changed meaning.
+
+What the attribute-surface pass changed, and why it matters when reading this code:
+
+- **The FL export is now the mashup that was auditioned.** `build_session` takes
+  `vocal_section_idx` / `inst_section_idx` / `harmonic_shift` off the candidate
+  row. It used to re-derive both, with a *different chooser*: `build_pairings`
+  ranked by label priority and a seconds-based duration fit while the row came
+  from `top_section_pairs` (label, vocal presence, bars-based phrase fit). Both
+  answers reached the screen at once. `build_pairings` now delegates to
+  `top_section_pairs` — **there is one section chooser; do not add a second.**
+- **Anything that changes which rows are on screen must be a field on
+  `BatchSessionRequest`**, or "Export top N" runs a different query from the list
+  it was launched off. `list_candidates` and `queue_session_batch` share
+  `ranked_rows()`; the Sort is implemented server-side to match the client's.
+- **`score_percentile` and `energy_pct` are stored columns**, refreshed by
+  `refresh_candidate_percentiles` at the end of a scoring run and backfilled
+  lazily by the readers. They were window functions over the whole candidates
+  table on every request. With the `(combo_type, score_total DESC)` index, a list
+  request on 200k rows went 1644 ms → 57 ms.
+- **Weights can be changed without a re-score.** `GET /api/mashups?weights=…`
+  recomputes the composite in SQL from the stored parts, over the whole table,
+  and recomputes the percentile with it. `normalise_weights` + `_weighted_total_sql`
+  must keep agreeing with `matcher.match._apply_section_fit` — there is a test
+  asserting the saved weights reproduce the stored total. Model-scored rows are
+  left alone: a learned probability is not a weighted sum.
+- **`pair_shortlist` is keyed by the SECTION pair and outlives a re-score.** It is
+  not `pair_feedback`: starring means "I want to build this", not "this sounded
+  good". `mashup_candidates` is truncated on every scoring run, so never join a
+  durable user choice to it.
+- **Studio exports its own lanes** (`build_session_from_clips`), same clip shape
+  as `/studio/mixdown`. Lane offsets are baked into head padding so every WAV
+  starts at the arrangement's zero.
+- Discover now draws **five** sub-score bars (collision was 35% of the vocal-path
+  composite and undrawn), states the weights actually in force, and can filter on
+  stem quality, the two build costs separately, measured harmony, bass clash and
+  collision.
+
+Earlier — the P0–P3 producer review:
 
 What that review changed, and why it matters when reading this code:
 

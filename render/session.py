@@ -642,12 +642,10 @@ def build_session_from_clips(token: str, clips: list[dict], *,
     out.mkdir(parents=True, exist_ok=True)
 
     _tick(90, "Writing files…")
-    used: set = set()
     for idx, (_c, y, info) in enumerate(rendered, start=1):
+        # The lane number leads, so two lanes on the same stem of the same track
+        # cannot collide and the filenames sort into arrangement order.
         name = f"{idx:02d}_{_safe(info['title'], 28)}_{info['stem']}.wav"
-        while name in used:                     # two lanes on the same stem
-            name = f"{idx:02d}_{_safe(info['title'], 24)}_{info['stem']}_b.wav"
-        used.add(name)
         info["file"] = name
         sf.write(str(out / name), y.astype("float32"), RENDER_SR)
         _write_tags(out / name, target_bpm, None)

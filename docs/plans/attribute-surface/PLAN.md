@@ -209,12 +209,27 @@ what you just built.
 
 ---
 
-## 4. The plan
+## 4. Status
+
+**Phases A–D are implemented** (commits 885290d, fe3ee47, d2ff5f0, 6d2c97d,
+085fad7, 4d99d2e). The plan below is kept as written so the reasoning behind
+each change stays readable; what actually landed, and anything that changed on
+contact with the code, is noted inline as ✅ / ⚠.
+
+Test suite: 498 → 555 passing. Measured list-request latency on a 200k-row
+candidates table: **1644 ms → 57 ms**.
+
+Still open: **E.1–E.4** (band-occupancy overlay, per-section harmony in the
+Plan, hook-window control, section chroma payload + tags), and **C.3 / D.3**
+(deep paging, grouping several section pairs of one song pair onto one row).
+
+## 5. The plan
+
 
 Ordered so each phase is independently shippable and the earliest phases carry
 the most value per line changed.
 
-### Phase A — Make the export the thing you chose (P0-1, P0-3, P3-1)
+### Phase A — Make the export the thing you chose (P0-1, P0-3, P3-1) ✅
 
 **A.1 Pin the section pair through to export.**
 - Add `vocal_section_idx`, `inst_section_idx`, `harmonic_shift` (all optional)
@@ -246,7 +261,7 @@ complete current filter state. Cheapest fix in the document.
 export button sends its lanes. This makes the Studio → FL path real and reuses
 the existing `Clip` model.
 
-### Phase B — Surface the scoring that already happened (P0-2, P2-1, P2-3)
+### Phase B — Surface the scoring that already happened (P0-2, P2-1, P2-3) ✅
 
 **B.1 Five bars, not four.** Add a collision cell to `.subscores`, a fifth
 legend swatch, and `score_collision` to `PlanDetails`' raw-scores line. Drive
@@ -259,19 +274,28 @@ the combo type is vocal) instead of the hardcoded string.
 the dominant defect ("0.44 — heavy bleed from the bed"). Add the same to
 `TrackList`'s per-track detail, and a `Stem quality` sort there.
 
-**B.3 Effort breakdown.** Expand the effort chip's hover into the five weighted
-components with a bar each. Replace the `Free builds` toggle with a
-`Max effort` slider bound to the existing `max_effort` query param, and add
-`no_transpose` / `no_stretch` as independent chips backed by two new SQL
-predicates on `effort_pitch` / `effort_stretch`.
+**B.3 Effort breakdown.** ⚠ The hover now lists all five weighted components,
+and `no_transpose` / `no_stretch` are independent chips over new
+`max_pitch_cost` / `max_stretch_cost` predicates. The `Free builds` toggle was
+KEPT rather than replaced by a `Max effort` slider: with the two costs now
+separately selectable, a third continuous control over their weighted sum is a
+worse way to say the same thing, and "free to build" is the one-click state
+worth keeping.
 
 **B.4 Harmony + collision filters.** New query params on `GET /api/mashups`:
 `min_harmonic_confidence`, `exclude_bass_clash`, `min_collision`. Three chips.
 All SQL-side, same as the existing filters.
 
-### Phase C — Make the list fast and re-rankable (P1-2, P1-3)
+### Phase C — Make the list fast and re-rankable (P1-2, P1-3) ✅ (C.1, C.2; C.3 open)
 
-**C.1 Materialise the percentiles.** Compute `score_percentile` and
+**C.1 Materialise the percentiles.** ⚠ Done, with one addition and one
+omission. Removing the CTEs only got 1644 ms → 429 ms: SQLite will not use
+`idx_candidates_score` for the ORDER BY once `combo_type` is also in the WHERE,
+so the query still scanned and sorted the whole table. A composite
+`(combo_type, score_total DESC)` index took it to 57 ms. The `pop` CTE was NOT
+cached — it ranks `songs`, three orders of magnitude smaller than the candidates
+table, so it costs nothing worth an invalidation rule.
+ Compute `score_percentile` and
 `energy_pct` once at the end of `score_all_pairs` and store them as columns on
 `mashup_candidates` (they are already recomputed on every re-score anyway —
 the table is truncated each run). Drop the `pct` and `nrg` CTEs from
@@ -291,7 +315,7 @@ needs no new measurement.
 **C.3 Deep paging.** `limit` caps at 500 and there is no offset. Add `offset`
 and an infinite-scroll fetch so the list is a library, not a top-50.
 
-### Phase D — The shortlist becomes the output (P1-1, P2-4)
+### Phase D — The shortlist becomes the output (P1-1, P2-4) ✅ (D.1, D.2; D.3 open)
 
 **D.1 Persist it.** New table `pair_shortlist(vocal_song_id, inst_song_id,
 vocal_section_idx, inst_section_idx, note, created_at)`, keyed the same way the
@@ -310,7 +334,7 @@ so the same two records occupy one line and you choose the moment. Add a
 `section_pair` filter chip (`vocal_label▸inst_label`) backed by the existing
 `sections.label` joins.
 
-### Phase E — Show the sound, not just the numbers (P2-2, P3-2)
+### Phase E — Show the sound, not just the numbers (P2-2, P3-2) — OPEN
 
 **E.1 Band occupancy overlay.** Serve `band_energy` for both sides on the
 expanded row and draw two 8-band mini-histograms with the overlap shaded. One
@@ -331,7 +355,7 @@ free-text field.
 
 ---
 
-## 5. Suggested order of work
+## 6. Suggested order of work
 
 1. **A.3** (one-line-ish, removes a correctness trap), then **A.1 + A.2** — the
    export must mean what the screen says before anything else is worth doing.
@@ -341,7 +365,7 @@ free-text field.
 5. **D.1/D.2** — closes the loop from ear to FL.
 6. **B.2–B.4**, **D.3**, then Phase E as polish.
 
-## 6. Deliberately not in scope here
+## 7. Deliberately not in scope here
 
 The highest-value *measurement* work is still the one CLAUDE.md names: match
 **phrases, not sections** (8/16/32-bar windows on the phrase grid), per-bar
