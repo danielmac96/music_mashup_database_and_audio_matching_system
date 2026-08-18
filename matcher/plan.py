@@ -266,8 +266,16 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     # row, which measured it on these same two sections during scoring; letting
     # the re-measurement above override it is how the exported folder ends up
     # transposed differently from the pair that was auditioned.
+    #
+    # `harmony` is corrected alongside it, not just `shift`: the two are rendered
+    # on the same screen — the recipe reads `semitone_shift` while the harmony
+    # line reads `harmony.shift` — so leaving them to disagree would print two
+    # different transposes for one row, with the "measured from the two
+    # sections' chroma" wording attached to whichever one won.
     if harmonic_shift is not None:
         shift = int(harmonic_shift)
+        if harmony is not None and harmony.get("shift") != shift:
+            harmony = {**harmony, "shift": shift}
 
     # Stem file paths for drag-and-drop into the DAW.
     conn = get_conn(db)

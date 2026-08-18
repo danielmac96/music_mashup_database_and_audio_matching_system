@@ -458,6 +458,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       // exact take even after a re-score has replaced the candidates table.
       else await api.addToShortlist({ ...ref, harmonicShift: c.harmonic_shift ?? null });
       refreshShortlist();
+      // Un-starring the last pair unmounts the Shortlist chip, so leaving the
+      // view on would strand Discover on a permanently empty list with no
+      // control to leave it.
+      if (starred && shortlist.size <= 1) setShortlistOnly(false);
     } catch (e) {
       setShortlist((s) => {                       // put it back if it didn't stick
         const n = new Set(s);
@@ -615,11 +619,13 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   const shortlistView = useMemo(() => {
     if (!shortlistOnly) return null;
     const inList = new Map(candidates.map((c) => [shortlistKey(c), c]));
+    // A starred pair that is no longer in the scored set still renders — and
+    // still auditions, because the server sends its tempo, key, section times
+    // and the derived stretch/shift with it. The sub-score bars stay empty,
+    // which is the honest answer: this pair is not currently scored.
     return shortlistRows.map((r) => inList.get(shortlistKey(r)) || {
       ...r,
       id: `sl-${r.id}`,
-      // Enough for the row to render; the sub-score bars stay empty because
-      // this pair is not currently scored, which is the honest answer.
       score_total: r.score_total ?? null,
       score_percentile: null,
       unscored: r.score_total == null,

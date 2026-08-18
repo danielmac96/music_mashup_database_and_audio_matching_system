@@ -579,6 +579,7 @@ def build_session_from_clips(token: str, clips: list[dict], *,
     # Relative to the earliest clip, so a lane dragged left of zero still
     # renders instead of being silently clipped away (mirrors build_mixdown).
     base = min(0.0, *(float(c.get("offset_sec") or 0.0) for c in clips))
+    max_samples = int(MAX_RENDER_SECS * RENDER_SR)
 
     rendered: list[tuple[dict, "np.ndarray", dict]] = []
     n = len(clips)
@@ -608,7 +609,14 @@ def build_session_from_clips(token: str, clips: list[dict], *,
         # every file starts at the same zero, so the placement has to be baked
         # into the audio rather than left as an instruction.
         pad = max(0, int(round((offset - base) * RENDER_SR)))
-        y = np.pad(y, (pad, 0))
+        # Bounded like build_mixdown's timeline. Without a cap a lane dragged to
+        # 30:00 in Studio — or a posted offset_sec of 1e7 — becomes a
+        # multi-gigabyte buffer per lane and a MemoryError in the worker.
+        if pad >= max_samples:
+            _tick(None, f"Clip {idx + 1}: starts beyond the "
+                        f"{int(MAX_RENDER_SECS / 60)}-minute export limit")
+            return None
+        y = np.pad(y, (pad, 0))[:max_samples]
 
         song = get_song(song_id, db_path=db_path) or {}
         rendered.append((c, y, {

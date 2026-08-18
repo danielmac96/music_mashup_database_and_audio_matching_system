@@ -330,3 +330,45 @@ def test_refresh_partitions_by_combo_type(db_path):
     conn.close()
     # Only vocal pair in its partition → top of its own kind, not bottom of all.
     assert vocal == pytest.approx(0.0)   # PERCENT_RANK of a single row is 0
+
+
+def test_candidate_indexes_survive_the_legacy_table_rebuild(tmp_path, monkeypatch):
+    """_migrate_candidates_unique_key rebuilds the table to shed a legacy
+    UNIQUE, and a rebuild drops every index on it. It used to restore its own
+    hardcoded list of four, so the C.1 indexes — created by the columns
+    migration, which runs FIRST — were silently lost on exactly the databases
+    that had been around long enough to be big."""
+    import sqlite3
+    from database.models import _CANDIDATE_INDEXES, get_conn
+
+    db = tmp_path / "legacy.db"
+    monkeypatch.setenv("MASHUP_DB_PATH", str(db))
+    monkeypatch.setenv("MASHUP_AUDIO_ROOT", str(tmp_path / "audio"))
+
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE mashup_candidates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            combo_type TEXT NOT NULL,
+            vocal_song_id INTEGER NOT NULL, vocal_title TEXT, vocal_artist TEXT,
+            vocal_bpm REAL, vocal_key TEXT, vocal_mode TEXT, vocal_camelot TEXT,
+            vocal_loudness_rms REAL, vocal_energy REAL,
+            inst_song_id INTEGER NOT NULL, inst_title TEXT, inst_artist TEXT,
+            inst_bpm REAL, inst_key TEXT, inst_mode TEXT, inst_camelot TEXT,
+            inst_loudness_rms REAL, inst_energy REAL,
+            score_total REAL, score_bpm REAL, score_key REAL, score_energy REAL,
+            score_timbre REAL, scorer TEXT, model_version TEXT, scored_at TEXT,
+            UNIQUE(combo_type, vocal_song_id, inst_song_id)
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    conn = get_conn(db)
+    have = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' "
+        "AND tbl_name='mashup_candidates'")}
+    conn.close()
+
+    want = {ddl.split("EXISTS ")[1].split(" ")[0] for ddl in _CANDIDATE_INDEXES}
+    assert not (want - have), f"rebuild dropped {sorted(want - have)}"

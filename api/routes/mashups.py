@@ -163,6 +163,14 @@ def _apply_sort(rows: list, sort: str) -> list:
     return rows
 
 
+def _validate_unit_ranges(*pairs) -> None:
+    """Every 0-1 knob, checked in one place so the list and the export agree."""
+    for value, name in pairs:
+        if value is not None and not (0.0 <= float(value) <= 1.0):
+            raise HTTPException(status_code=400,
+                                detail=f"{name} must be in [0, 1]")
+
+
 def _validate_list_params(combo_type: str, max_per_song: int, order: str,
                           adventure: float, sort: str, era: str, energy: str,
                           bpm_band: str) -> None:
@@ -314,15 +322,15 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     _validate_list_params(combo_type, max_per_song, order, adventure, sort,
                           era, energy, bpm_band)
     parsed_weights = parse_weights(weights)
-    for value, name in ((effort_weight, "effort_weight"),
-                        (section_weight, "section_weight"),
-                        (max_pitch_cost, "max_pitch_cost"),
-                        (max_stretch_cost, "max_stretch_cost"),
-                        (min_harmonic_confidence, "min_harmonic_confidence"),
-                        (min_collision, "min_collision")):
-        if value is not None and not (0.0 <= value <= 1.0):
-            raise HTTPException(status_code=400,
-                                detail=f"{name} must be in [0, 1]")
+    _validate_unit_ranges(
+        (effort_weight, "effort_weight"),
+        (section_weight, "section_weight"),
+        (max_effort, "max_effort"),
+        (max_pitch_cost, "max_pitch_cost"),
+        (max_stretch_cost, "max_stretch_cost"),
+        (min_harmonic_confidence, "min_harmonic_confidence"),
+        (min_collision, "min_collision"),
+    )
     rows = ranked_rows(
         combo_type=combo_type, min_score=min_score, limit=limit,
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
@@ -424,7 +432,9 @@ class ShortlistPair(BaseModel):
 
 @router.get("/shortlist")
 def read_shortlist() -> dict:
-    rows = get_shortlist()
+    # Same playback terms the ranked list gets, so a starred pair auditions
+    # conformed even when a re-score has dropped it out of the scored set.
+    rows = _with_playback_terms(get_shortlist())
     return {"count": len(rows), "shortlist": rows}
 
 
@@ -594,6 +604,18 @@ def queue_session_batch(req: BatchSessionRequest,
     _validate_list_params(req.combo_type, req.max_per_song, req.order,
                           req.adventure, req.sort, req.era, req.energy,
                           req.bpm_band)
+    # The same bounds the list applies. Without them the export could run a
+    # query the list would have refused, which is the A.3 failure again in a
+    # different place.
+    _validate_unit_ranges(
+        (req.effort_weight, "effort_weight"),
+        (req.section_weight, "section_weight"),
+        (req.max_effort, "max_effort"),
+        (req.max_pitch_cost, "max_pitch_cost"),
+        (req.max_stretch_cost, "max_stretch_cost"),
+        (req.min_harmonic_confidence, "min_harmonic_confidence"),
+        (req.min_collision, "min_collision"),
+    )
     if req.combo_type not in _COMBO_TYPES:
         raise HTTPException(
             status_code=400,

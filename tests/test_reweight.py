@@ -284,3 +284,38 @@ def test_export_can_reapply_the_same_weights():
     fields = set(BatchSessionRequest.model_fields)
     for name in ("weights", "effort_weight", "section_weight"):
         assert name in fields
+
+
+def test_a_model_row_is_not_reordered_by_weights_either(db_path):
+    """It is not enough to leave the DISPLAYED total alone: filtering and
+    ordering by a re-weighted number while showing the model's probability
+    silently replaces the model's ranking with a heuristic one and prints the
+    old figures beside it."""
+    from database.models import get_candidates_enriched, init_db, upsert_candidate
+    from database.models import upsert_song
+
+    init_db(db_path)
+    ids = []
+    for n in range(4):
+        ids.append(upsert_song(f"s{n}", "A", f"https://sc/{n}", 200,
+                               status="analysed", db_path=db_path))
+    # Two model rows. The one with the HIGHER probability is weak on tempo, so a
+    # tempo-only re-weight would flip them if it applied to the model path.
+    upsert_candidate(_side(ids[0]), _side(ids[1]),
+                     _scores(0.05, 0.5, 0.5, 0.5, 0.5, total=0.95),
+                     scorer="model", model_version="v1", db_path=db_path)
+    upsert_candidate(_side(ids[2]), _side(ids[3]),
+                     _scores(0.95, 0.5, 0.5, 0.5, 0.5, total=0.40),
+                     scorer="model", model_version="v1", db_path=db_path)
+
+    rows = get_candidates_enriched(
+        limit=50, max_per_song=0, db_path=db_path,
+        weights={"bpm_score": 1.0, "key_score": 0.0, "energy_score": 0.0,
+                 "timbre_score": 0.0, "collision_score": 0.0})
+
+    assert [r["score_total"] for r in rows] == [pytest.approx(0.95),
+                                                pytest.approx(0.40)]
+    assert not any(r.get("reweighted") for r in rows)
+    # The percentile still describes where each row sits in the re-ranked
+    # table, so the number on screen matches the position it was given.
+    assert rows[0]["score_percentile"] >= rows[1]["score_percentile"]

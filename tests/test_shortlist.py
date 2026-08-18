@@ -171,3 +171,42 @@ def test_starring_is_not_a_verdict(db_path):
     v, i = _songs(db_path)
     add_to_shortlist(v, i, 1, 2, db_path=db_path)
     assert get_pair_feedback(db_path=db_path) == []
+
+
+def test_a_starred_pair_carries_what_it_needs_to_audition(db_path):
+    """A star outlives the score, so a shortlist row can be the only record of a
+    pair. Listing it is not enough — it has to open in Studio conformed and on
+    the right section, which needs the tempo, the key and the section times."""
+    from api.routes.mashups import _with_playback_terms
+    from database.models import (
+        add_to_shortlist, get_shortlist, replace_sections, upsert_features,
+    )
+
+    v, i = _songs(db_path)
+    for sid, stem, bpm, cam in ((v, "vocals", 120.0, "8A"),
+                                (i, "instrumental", 126.0, "9A")):
+        upsert_features(sid, stem, {
+            "bpm": bpm, "key": "A", "mode": "minor", "camelot": cam,
+            "loudness_rms": 0.05, "energy": 0.5,
+        }, db_path=db_path)
+        replace_sections(sid, [
+            {"start_sec": 0.0, "end_sec": 20.0, "label": "intro",
+             "energy": 0.2, "vocal_presence": 0.1, "repetition": 1,
+             "confidence": 0.8},
+            {"start_sec": 20.0, "end_sec": 50.0, "label": "chorus",
+             "energy": 0.9, "vocal_presence": 0.9, "repetition": 2,
+             "confidence": 0.9},
+        ], db_path=db_path)
+
+    add_to_shortlist(v, i, 1, 1, db_path=db_path)
+    row = _with_playback_terms(get_shortlist(db_path=db_path))[0]
+
+    assert row["vocal_bpm"] == pytest.approx(120.0)
+    assert row["inst_camelot"] == "9A"
+    assert row["vocal_section_start"] == pytest.approx(20.0)
+    assert row["inst_section_end"] == pytest.approx(50.0)
+    # Derived server-side, as for a ranked row — one implementation of the
+    # Camelot and tempo maths. The factor is what the BED plays at to reach the
+    # vocal's tempo, so it is vocal/inst.
+    assert row["stretch_factor"] == pytest.approx(120.0 / 126.0, abs=1e-3)
+    assert row["semitone_shift"] is not None

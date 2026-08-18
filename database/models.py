@@ -549,6 +549,43 @@ _CANDIDATE_UNIQUE_INDEX = """
 """
 
 
+# Every index on mashup_candidates, in one place.
+#
+# _migrate_candidates_unique_key rebuilds the table (CREATE new / INSERT / DROP /
+# RENAME) to shed a legacy table-level UNIQUE, and a rebuild destroys every index
+# on it. That migration used to carry its own hardcoded list of four, so an index
+# created anywhere else — the two C.1 ones, created in
+# _migrate_candidates_columns, which runs FIRST — was silently dropped on a
+# legacy database and only came back after a restart. One list now, created by
+# one function, called from both branches of the rebuild.
+_CANDIDATE_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_candidates_score "
+    "ON mashup_candidates(score_total DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_candidates_type "
+    "ON mashup_candidates(combo_type)",
+    "CREATE INDEX IF NOT EXISTS idx_candidates_vocal "
+    "ON mashup_candidates(vocal_song_id)",
+    "CREATE INDEX IF NOT EXISTS idx_candidates_inst "
+    "ON mashup_candidates(inst_song_id)",
+    # C.1 — makes the "are the percentiles filled in?" probe in
+    # _ensure_percentiles an index seek rather than a table scan.
+    "CREATE INDEX IF NOT EXISTS idx_candidates_percentile "
+    "ON mashup_candidates(score_percentile)",
+    # C.1 — every Discover request filters by combo_type and orders by
+    # score_total. idx_candidates_score covers the ordering alone, which SQLite
+    # will not use once combo_type is also in the WHERE, so without this the
+    # list scans and sorts the whole table on every request. Measured on 200k
+    # rows: 429 ms -> 57 ms.
+    "CREATE INDEX IF NOT EXISTS idx_candidates_combo_score "
+    "ON mashup_candidates(combo_type, score_total DESC)",
+)
+
+
+def _create_candidate_indexes(conn: sqlite3.Connection) -> None:
+    for ddl in _CANDIDATE_INDEXES:
+        conn.execute(ddl)
+
+
 def _migrate_candidates_unique_key(conn: sqlite3.Connection) -> None:
     """Move the candidate key from (song, song) to (song, section, song, section)."""
     sql = conn.execute(
@@ -556,6 +593,7 @@ def _migrate_candidates_unique_key(conn: sqlite3.Connection) -> None:
         "AND name='mashup_candidates'").fetchone()
     if not sql or "UNIQUE(combo_type, vocal_song_id, inst_song_id)" not in (sql[0] or ""):
         conn.execute(_CANDIDATE_UNIQUE_INDEX)
+        _create_candidate_indexes(conn)
         return
 
     cols = [r[1] for r in conn.execute(
@@ -577,11 +615,7 @@ def _migrate_candidates_unique_key(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE mashup_candidates")
     conn.execute("ALTER TABLE mashup_candidates_new RENAME TO mashup_candidates")
     conn.execute(_CANDIDATE_UNIQUE_INDEX)
-    for idx in ("CREATE INDEX IF NOT EXISTS idx_candidates_score ON mashup_candidates(score_total DESC)",
-                "CREATE INDEX IF NOT EXISTS idx_candidates_type ON mashup_candidates(combo_type)",
-                "CREATE INDEX IF NOT EXISTS idx_candidates_vocal ON mashup_candidates(vocal_song_id)",
-                "CREATE INDEX IF NOT EXISTS idx_candidates_inst ON mashup_candidates(inst_song_id)"):
-        conn.execute(idx)
+    _create_candidate_indexes(conn)
 
 
 def _migrate_sections_columns(conn: sqlite3.Connection) -> None:
@@ -598,18 +632,9 @@ def _migrate_candidates_columns(conn: sqlite3.Connection) -> None:
     for col, decl in _CANDIDATES_OPTIONAL_COLUMNS:
         if col not in existing:
             conn.execute(f"ALTER TABLE mashup_candidates ADD COLUMN {col} {decl}")
-    # Makes the "are the percentiles filled in?" probe in _ensure_percentiles a
-    # single index seek instead of a table scan, which is the whole point of
-    # storing them.
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_percentile "
-                 "ON mashup_candidates(score_percentile)")
-    # Every Discover request filters by combo_type and orders by score_total.
-    # idx_candidates_score covers the ordering alone, which SQLite will not use
-    # once combo_type is also in the WHERE — so the list was scanning and
-    # sorting the whole table on each request even after C.1 removed the window
-    # functions. Measured on a 200k-row table: 429 ms → 57 ms.
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_combo_score "
-                 "ON mashup_candidates(combo_type, score_total DESC)")
+    # Indexes are NOT created here: _migrate_candidates_unique_key runs
+    # after this and may rebuild the table, dropping anything created now.
+    # See _CANDIDATE_INDEXES.
 
 
 def _migrate_features_columns(conn: sqlite3.Connection) -> None:
@@ -1578,10 +1603,17 @@ def _reweight_cte(weights: Dict[str, float], effort_weight: float,
     vocal = _for_combo(dict(weights), "vocal_over_instrumental")
     v_expr = _weighted_total_sql(vocal, effort_weight, section_weight, params)
     g_expr = _weighted_total_sql(weights, effort_weight, section_weight, params)
+    # A model-scored row keeps its own total. Its score is a learned
+    # probability, not a weighted sum of these five sub-scores, so a weight has
+    # nothing to say about it. It has to be excluded HERE and not only when the
+    # row is rendered: filtering and ordering by a re-weighted number while
+    # displaying the model's probability would silently replace the model's
+    # ranking with a heuristic one and show the old figures next to it.
     return f"""
         rw_raw AS (
             SELECT id, combo_type,
-                   CASE WHEN combo_type = 'vocal_over_instrumental'
+                   CASE WHEN scorer = 'model' THEN score_total
+                        WHEN combo_type = 'vocal_over_instrumental'
                         THEN {v_expr} ELSE {g_expr} END AS rw_total
             FROM mashup_candidates
         ),
@@ -1889,8 +1921,15 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             LEFT JOIN songs si ON si.id = mc.inst_song_id
             LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
             LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
+            -- The stem each side is actually made of. On the
+            -- instrumental-over-instrumental path the vocal_* columns hold the
+            -- TOP layer, which is an instrumental (see matcher.match._emit), so
+            -- keying this to 'vocals' reported the acapella quality of a track
+            -- whose acapella is not in the mashup at all.
             LEFT JOIN stems qv ON qv.song_id = mc.vocal_song_id
-                              AND qv.stem_type = 'vocals'
+                              AND qv.stem_type = CASE mc.combo_type
+                                  WHEN 'instrumental_over_instrumental'
+                                  THEN 'instrumental' ELSE 'vocals' END
             LEFT JOIN stems qi ON qi.song_id = mc.inst_song_id
                               AND qi.stem_type = 'instrumental'
             {reweight_join}
@@ -1912,17 +1951,23 @@ def _apply_reweight(row: Dict) -> Dict:
     shuffled: a pair sitting at the top showing 41 pctl is worse than no
     re-weight at all.
 
-    Model-scored rows are left alone. Their score_total is a learned
-    probability, not a weighted sum of these five sub-scores, so re-weighting it
-    would be inventing a number — the weights simply do not apply to that path.
+    Model-scored rows keep their own total — a learned probability is not a
+    weighted sum of these five, so re-weighting it would be inventing a number.
+    The CTE already passes those rows through unchanged (see _reweight_cte), so
+    the total here equals the stored one; the percentile is still taken, because
+    it is a rank within the re-ranked table and the row must display the
+    position it was actually given. Only rows the weights genuinely moved are
+    flagged `reweighted`.
     """
     total = row.pop("reweighted_total", None)
     pct = row.pop("reweighted_percentile", None)
-    if row.get("scorer") == "model" or total is None:
+    if total is None:
         return row
-    row["score_total"] = round(float(total), 4)
     if pct is not None:
         row["score_percentile"] = float(pct)
+    if row.get("scorer") == "model":
+        return row
+    row["score_total"] = round(float(total), 4)
     row["reweighted"] = True
     return row
 
@@ -2209,14 +2254,37 @@ def get_shortlist(db_path: Path = DB_PATH) -> List[Dict]:
         """SELECT sl.*,
                   sv.title  AS vocal_title,  sv.artist AS vocal_artist,
                   si.title  AS inst_title,   si.artist AS inst_artist,
+                  -- Enough to AUDITION a starred pair, not just list it. A row
+                  -- whose pair has fallen out of the scored set still has to
+                  -- open in Studio conformed and on the right section; without
+                  -- the tempo, the key and the section times it played both
+                  -- full tracks unstretched from 0:00.
+                  fv.bpm AS vocal_bpm, fv.camelot AS vocal_camelot,
+                  fi.bpm AS inst_bpm,  fi.camelot AS inst_camelot,
                   (SELECT label FROM sections
                     WHERE song_id = sl.vocal_song_id
                       AND section_index = sl.vocal_section_idx)
                       AS vocal_section_label,
+                  (SELECT start_sec FROM sections
+                    WHERE song_id = sl.vocal_song_id
+                      AND section_index = sl.vocal_section_idx)
+                      AS vocal_section_start,
+                  (SELECT end_sec FROM sections
+                    WHERE song_id = sl.vocal_song_id
+                      AND section_index = sl.vocal_section_idx)
+                      AS vocal_section_end,
                   (SELECT label FROM sections
                     WHERE song_id = sl.inst_song_id
                       AND section_index = sl.inst_section_idx)
                       AS inst_section_label,
+                  (SELECT start_sec FROM sections
+                    WHERE song_id = sl.inst_song_id
+                      AND section_index = sl.inst_section_idx)
+                      AS inst_section_start,
+                  (SELECT end_sec FROM sections
+                    WHERE song_id = sl.inst_song_id
+                      AND section_index = sl.inst_section_idx)
+                      AS inst_section_end,
                   -- The live candidate row for this exact section pair, when a
                   -- re-score has produced one. NULL just means "not currently
                   -- in the scored set", which is not the same as "gone".
@@ -2231,6 +2299,20 @@ def get_shortlist(db_path: Path = DB_PATH) -> List[Dict]:
            FROM pair_shortlist sl
            LEFT JOIN songs sv ON sv.id = sl.vocal_song_id
            LEFT JOIN songs si ON si.id = sl.inst_song_id
+           -- Tempo and key from the stem each side contributes, falling back to
+           -- the full mix — the same preference get_candidates_enriched uses.
+           LEFT JOIN features fv ON fv.song_id = sl.vocal_song_id
+                                AND fv.stem_type = CASE WHEN EXISTS (
+                                        SELECT 1 FROM features
+                                         WHERE song_id = sl.vocal_song_id
+                                           AND stem_type = 'vocals')
+                                    THEN 'vocals' ELSE 'full' END
+           LEFT JOIN features fi ON fi.song_id = sl.inst_song_id
+                                AND fi.stem_type = CASE WHEN EXISTS (
+                                        SELECT 1 FROM features
+                                         WHERE song_id = sl.inst_song_id
+                                           AND stem_type = 'instrumental')
+                                    THEN 'instrumental' ELSE 'full' END
            ORDER BY sl.created_at DESC, sl.id DESC""").fetchall()
     conn.close()
     return [dict(r) for r in rows]
