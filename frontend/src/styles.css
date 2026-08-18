@@ -1889,3 +1889,27 @@ input, select { font-family: inherit; }
 }
 /* E.2 — a section whose key disagrees with its track's. */
 .key-differs { color: var(--amber-light); }
+
+/* ── E.3 hook window editor ─────────────────────────────────────────────── */
+.hook-edit { flex-basis: 100%; display: flex; flex-direction: column; gap: 6px; }
+.hook-row { display: flex; align-items: center; gap: 8px; }
+.hook-span { font-size: 12px; }
+.hook-nudge { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; }
+
+/* ── D.3 the other scored section pairings of one song pair ─────────────── */
+.section-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+  font-size: 11.5px;
+}
+.rel-chip.section-alt {
+  cursor: pointer;
+  border: 1px solid var(--border-ctrl);
+  background: var(--inset-2);
+  color: var(--text);
+  font: inherit;
+}
+.rel-chip.section-alt.on { border-color: var(--cyan); color: var(--cyan-light); }

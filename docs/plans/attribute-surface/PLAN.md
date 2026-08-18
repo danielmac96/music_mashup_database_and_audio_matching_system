@@ -211,17 +211,26 @@ what you just built.
 
 ## 4. Status
 
-**Phases A–D are implemented** (commits 885290d, fe3ee47, d2ff5f0, 6d2c97d,
-085fad7, 4d99d2e). The plan below is kept as written so the reasoning behind
-each change stays readable; what actually landed, and anything that changed on
-contact with the code, is noted inline as ✅ / ⚠.
+**Every phase is implemented.** The plan below is kept as written so the
+reasoning behind each change stays readable; what actually landed, and anything
+that changed on contact with the code, is noted inline as ✅ / ⚠.
 
-Test suite: 498 → 555 passing. Measured list-request latency on a 200k-row
+Test suite: 498 → 595 passing. Measured list-request latency on a 200k-row
 candidates table: **1644 ms → 57 ms**.
 
-Still open: **E.1–E.4** (band-occupancy overlay, per-section harmony in the
-Plan, hook-window control, section chroma payload + tags), and **C.3 / D.3**
-(deep paging, grouping several section pairs of one song pair onto one row).
+Two bugs the work surfaced that were not in the original review:
+
+* **`surprise_genre` and `surprise_era` were constants.** `get_all_features`
+  never selected `genre` or `release_year`, so both distances saw `None` on each
+  side and returned the neutral 0.5 for every pair — two of Phase F's three
+  contrast columns carried no signal in any training vector. Fixed in E.4; a
+  model trained before it is worth rebuilding.
+* **The C.1 indexes were dropped on legacy databases.** They were created in
+  `_migrate_candidates_columns`, which runs *before*
+  `_migrate_candidates_unique_key` — and that migration rebuilds the table,
+  destroying every index and restoring its own hardcoded list of four. So the
+  performance fix silently did not apply to exactly the databases old enough to
+  need it.
 
 ## 5. The plan
 
@@ -286,7 +295,7 @@ worth keeping.
 `min_harmonic_confidence`, `exclude_bass_clash`, `min_collision`. Three chips.
 All SQL-side, same as the existing filters.
 
-### Phase C — Make the list fast and re-rankable (P1-2, P1-3) ✅ (C.1, C.2; C.3 open)
+### Phase C — Make the list fast and re-rankable (P1-2, P1-3) ✅
 
 **C.1 Materialise the percentiles.** ⚠ Done, with one addition and one
 omission. Removing the CTEs only got 1644 ms → 429 ms: SQLite will not use
@@ -315,7 +324,7 @@ needs no new measurement.
 **C.3 Deep paging.** `limit` caps at 500 and there is no offset. Add `offset`
 and an infinite-scroll fetch so the list is a library, not a top-50.
 
-### Phase D — The shortlist becomes the output (P1-1, P2-4) ✅ (D.1, D.2; D.3 open)
+### Phase D — The shortlist becomes the output (P1-1, P2-4) ✅
 
 **D.1 Persist it.** New table `pair_shortlist(vocal_song_id, inst_song_id,
 vocal_section_idx, inst_section_idx, note, created_at)`, keyed the same way the
@@ -328,13 +337,13 @@ only starred rows, and `Export shortlist` → `POST /api/mashups/session/batch`
 with the explicit pair+section list rather than filters. This is the seam
 between "judged by ear" and "opened in FL".
 
-**D.3 Group section pairs.** When several rows share a song pair, collapse them
-into one row with a section-pair switcher (`chorus▸drop`, `verse▸breakdown`),
-so the same two records occupy one line and you choose the moment. Add a
-`section_pair` filter chip (`vocal_label▸inst_label`) backed by the existing
-`sections.label` joins.
+**D.3 Group section pairs.** ⚠ The list already showed one row per song pair
+(`max_per_song_pair` defaults to 1), so there was nothing to collapse — the
+problem was that the other takes were unreachable. The expander now lists them
+and can switch the plan to one, with its own pinned export; the `section_pair`
+chip filters on the shape of the move.
 
-### Phase E — Show the sound, not just the numbers (P2-2, P3-2) — OPEN
+### Phase E — Show the sound, not just the numbers (P2-2, P3-2) ✅
 
 **E.1 Band occupancy overlay.** Serve `band_energy` for both sides on the
 expanded row and draw two 8-band mini-histograms with the overlap shaded. One
@@ -348,10 +357,10 @@ but this chorus is 3B" stops being invisible.
 and allow dragging it; re-render the hook clip on change. The audition is the
 main triage instrument and its window is currently unquestionable.
 
-**E.4 Payload + tags.** Add `?include_chroma=false` (default) to
-`GET /tracks/{id}/sections`. Parse `songs.tags` into the genre filter
-vocabulary and into `_genre_distance`, which currently token-matches a
-free-text field.
+**E.4 Payload + tags.** ⚠ Done, plus the constant-contrast-column bug it
+uncovered. Tags feed `_genre_distance` only as a FALLBACK for a missing genre:
+folding them into a genre that is already set would move a value the model
+trained on, whereas replacing a "we don't know" only adds information.
 
 ---
 

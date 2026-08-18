@@ -9,8 +9,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from database.models import (
-    delete_song, get_all_features, get_all_songs, get_conn, get_features_for_song,
-    get_sections, update_features_manual, update_hook, update_song_url,
+    clear_hook, delete_song, get_all_features, get_all_songs, get_conn,
+    get_features_for_song, get_sections, update_features_manual, update_hook,
+    update_song_url,
 )
 from ingest.sources import classify_url, normalize_url
 
@@ -382,6 +383,78 @@ def stream_hook(song_id: int, stem: str = "vocals",
         headers={"Accept-Ranges": "bytes", "Cache-Control": "public, max-age=3600"},
         filename=path.name,
     )
+
+
+class HookWindow(BaseModel):
+    """A hand-picked preview window for one role (E.3)."""
+    role: str = "vocal"
+    hook_start: float
+    hook_end: float
+
+
+@router.patch("/{song_id}/hook")
+def set_hook(song_id: int, body: HookWindow) -> dict:
+    """Override the 16-bar window the audition plays.
+
+    pick_hook is a heuristic over section labels, energy and downbeats, and it
+    is right most of the time — but the audition is the main triage instrument,
+    and until now its window was unquestionable: if the chosen bars missed the
+    part of the vocal that sells the track, every judgment made through it was
+    made on the wrong evidence.
+
+    The cached clip is deleted so the next request re-renders. `hook_role` is
+    marked 'manual' so a later structure re-run can tell a chosen window from a
+    computed one and leave it alone.
+    """
+    if body.role not in _HOOK_ROLE_STEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role must be one of {sorted(_HOOK_ROLE_STEMS)}")
+    if body.hook_start < 0:
+        raise HTTPException(status_code=400, detail="hook_start must be >= 0")
+    if body.hook_end <= body.hook_start:
+        raise HTTPException(status_code=400,
+                            detail="hook_end must be after hook_start")
+    stem = _HOOK_ROLE_STEMS[body.role]
+    if get_features_for_song(song_id, stem) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no analysed '{stem}' stem for this track")
+
+    updated = update_hook(song_id, stem, {
+        "hook_start": round(float(body.hook_start), 3),
+        "hook_end": round(float(body.hook_end), 3),
+        "hook_role": "manual",
+    })
+
+    # Drop the rendered clip, or the audition keeps playing the old bars.
+    from api.workers.hook_worker import hook_clip_path
+    try:
+        hook_clip_path(song_id, stem).unlink(missing_ok=True)
+    except OSError:
+        pass                       # a stale clip is cosmetic, not worth a 500
+
+    return {"song_id": song_id, "role": body.role, "stem": stem,
+            "hook_start": body.hook_start, "hook_end": body.hook_end,
+            "hook_role": "manual", "updated_rows": updated}
+
+
+@router.delete("/{song_id}/hook")
+def reset_hook(song_id: int, role: str = "vocal") -> dict:
+    """Throw away a hand-picked window and let pick_hook choose again."""
+    if role not in _HOOK_ROLE_STEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role must be one of {sorted(_HOOK_ROLE_STEMS)}")
+    stem = _HOOK_ROLE_STEMS[role]
+    clear_hook(song_id, stem)
+    from api.workers.hook_worker import hook_clip_path
+    try:
+        hook_clip_path(song_id, stem).unlink(missing_ok=True)
+    except OSError:
+        pass
+    # The GET recomputes and stores on a miss, so this is the whole reset.
+    return get_hook(song_id, role=role)
 
 
 class BeatPhaseUpdate(BaseModel):

@@ -38,8 +38,24 @@ What the attribute-surface pass changed, and why it matters when reading this co
   starts at the arrangement's zero.
 - Discover now draws **five** sub-score bars (collision was 35% of the vocal-path
   composite and undrawn), states the weights actually in force, and can filter on
-  stem quality, the two build costs separately, measured harmony, bass clash and
-  collision.
+  stem quality, the two build costs separately, measured harmony, bass clash,
+  collision and the section-pair shape (`chorus>drop`).
+- **`surprise_genre` and `surprise_era` were constants.** `get_all_features` never
+  selected `genre` or `release_year`, so both distances saw None on each side and
+  returned the neutral 0.5 for every pair — two of Phase F's three contrast
+  columns carried no signal in any training vector. **Re-train any model built
+  before this.** Tags now stand in for a missing genre, but never widen one that
+  is set: that would move a value a model trained on.
+- **The ranked list pages.** `offset` is applied AFTER the per-song cap, never in
+  SQL — the cap is a greedy pass in rank order, so a SQL OFFSET starts it mid-list
+  with empty counts and yields a page 2 that both repeats and skips rows.
+- **Indexes on `mashup_candidates` live in `_CANDIDATE_INDEXES` only.**
+  `_migrate_candidates_unique_key` rebuilds the table and a rebuild drops every
+  index; creating one anywhere else means it vanishes on legacy databases.
+- A **manual hook window** (`hook_role='manual'`) survives a structure re-run.
+  `pick_hook` is a heuristic and the audition is the main triage instrument — a
+  re-analysis silently replacing a window chosen by ear invalidates every verdict
+  made through it.
 
 Earlier — the P0–P3 producer review:
 

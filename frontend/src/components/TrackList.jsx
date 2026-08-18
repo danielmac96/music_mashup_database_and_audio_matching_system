@@ -73,6 +73,116 @@ function stemQualityTitle(t) {
       : "");
 }
 
+// ── E.3: the 16 bars the audition plays ──────────────────────────────────────
+//
+// pick_hook is a heuristic over section labels, energy and downbeats. It is
+// right most of the time, but the audition is the main triage instrument, and
+// its window was unquestionable: if the chosen bars miss the part of the vocal
+// that sells the track, every judgment made through it was made on the wrong
+// evidence — and you would never know, because the window was never shown.
+function HookEditor({ track, role }) {
+  const [hook, setHook] = useState(null);   // { hook_start, hook_end, hook_role }
+  const [draft, setDraft] = useState(null); // [start, end] while editing
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const audioRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getHook(track.id, role)
+      .then((h) => { if (!cancelled) { setHook(h); setDraft(null); } })
+      .catch((e) => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, [track.id, role]);
+
+  if (error) return <div className="faint" style={{ fontSize: 11 }}>Hook: {error}</div>;
+  if (!hook) return <div className="faint" style={{ fontSize: 11 }}>Hook: loading…</div>;
+
+  const start = draft ? draft[0] : hook.hook_start;
+  const end = draft ? draft[1] : hook.hook_end;
+  const dirty = draft != null
+    && (draft[0] !== hook.hook_start || draft[1] !== hook.hook_end);
+  const stem = role === "bed" ? "instrumental" : "vocals";
+
+  const nudge = (which, by) => setDraft(() => {
+    const next = [start, end];
+    next[which] = Math.max(0, Math.round((next[which] + by) * 100) / 100);
+    // Keep the window non-empty; dragging the start past the end is a mistake,
+    // not an instruction.
+    if (next[1] <= next[0]) next[1] = next[0] + 1;
+    return next;
+  });
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await api.setHook(track.id, {
+        role, hookStart: start, hookEnd: end,
+      });
+      setHook(saved);
+      setDraft(null);
+      // The server dropped the cached clip; bust the browser's copy too.
+      if (audioRef.current) audioRef.current.load();
+      toast("Hook window saved — the audition plays these bars now");
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+
+  const reset = async () => {
+    setBusy(true);
+    try {
+      const auto = await api.resetHook(track.id, role);
+      setHook(auto);
+      setDraft(null);
+      if (audioRef.current) audioRef.current.load();
+      toast("Back to the automatically chosen hook");
+    } catch (e) { setError(e.message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="hook-edit">
+      <div className="hook-row">
+        <span className="muted" style={{ width: 34 }}>{role === "bed" ? "Bed" : "Vox"}</span>
+        <span className="mono hook-span">
+          {fmtDur(start)} – {fmtDur(end)}
+          <span className="faint">{` (${Math.round(end - start)}s)`}</span>
+        </span>
+        {hook.hook_role === "manual" && (
+          <span className="badge" title="You picked this window. A structure re-run leaves it alone.">
+            manual
+          </span>
+        )}
+        <span style={{ flex: 1 }} />
+        {["start", "end"].map((edge, which) => (
+          <span key={edge} className="hook-nudge">
+            <span className="faint">{edge}</span>
+            <button className="mini-btn" disabled={busy}
+              onClick={() => nudge(which, -2)} title={`Move the ${edge} 2s earlier`}>−</button>
+            <button className="mini-btn" disabled={busy}
+              onClick={() => nudge(which, 2)} title={`Move the ${edge} 2s later`}>+</button>
+          </span>
+        ))}
+      </div>
+      <div className="hook-row">
+        {/* Keyed on the window so a saved change forces a fresh element rather
+            than replaying the browser's cached copy of the old bars. */}
+        <audio ref={audioRef} controls preload="none"
+          key={`${hook.hook_start}-${hook.hook_end}`}
+          src={api.hookAudioUrl(track.id, stem)} style={{ height: 30, flex: 1 }} />
+        <button className="mini-btn" onClick={save} disabled={busy || !dirty}>
+          {busy ? "Saving…" : "Save hook"}
+        </button>
+        <button className="mini-btn" onClick={reset}
+          disabled={busy || hook.hook_role !== "manual"}
+          title="Discard the hand-picked window and let the engine choose again">
+          Auto
+        </button>
+      </div>
+      {error && <div className="error-text">{error}</div>}
+    </div>
+  );
+}
+
 function TrackEditor({ track, onSaved, onCancel }) {
   const feats = track.features?.full || {};
   const analysed = isAnalysed(track);
@@ -154,6 +264,15 @@ function TrackEditor({ track, onSaved, onCancel }) {
               {saving ? "Saving…" : "Save features"}
             </button>
           </div>
+          {track.stems?.vocals && (
+            <div style={{ flexBasis: "100%" }}>
+              <div className="faint" style={{ fontSize: 11, margin: "6px 0 2px" }}>
+                Audition window — the 16 bars Discover plays when judging this
+                track. Chosen automatically; adjust it if it misses the hook.
+              </div>
+              <HookEditor track={track} role="vocal" />
+            </div>
+          )}
         </>
       )}
       {error && <div className="error-text">{error}</div>}

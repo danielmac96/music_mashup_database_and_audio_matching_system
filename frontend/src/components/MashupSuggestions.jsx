@@ -331,20 +331,72 @@ function SectionKeys({ keys, plan }) {
   );
 }
 
-function PlanDetails({ vocalId, instId, candidate }) {
-  // Pin the plan to THIS row's section pair and measured transpose. The recipe
-  // and the "plays" line below used to come from two different choosers, so the
+// ── D.3: the other ideas about the same two records ──────────────────────────
+//
+// The scorer emits a row per section pairing, and the list shows at most one of
+// them — otherwise the same two records occupy three rows with what reads, to a
+// browsing eye, as one suggestion repeated. The others are still scored and
+// still in the table. "Chorus over drop" and "verse over breakdown" are
+// genuinely different ideas, and until now the only way to reach the second was
+// to seed on one track and re-filter.
+function SectionPairSwitcher({ vocalId, instId, comboType, current, onPick }) {
+  const [pairs, setPairs] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.getSectionPairs(vocalId, instId, comboType)
+      .then((d) => { if (!cancelled) setPairs(d.section_pairs || []); })
+      .catch(() => { if (!cancelled) setPairs([]); });
+    return () => { cancelled = true; };
+  }, [vocalId, instId, comboType]);
+
+  // One pairing is not a choice; say nothing rather than show a dead control.
+  if (!pairs || pairs.length < 2) return null;
+
+  return (
+    <div className="section-switch">
+      <span className="muted">Also scored:</span>
+      {pairs.map((p) => {
+        const on = p.vocal_section_idx === current.vocal_section_idx
+          && p.inst_section_idx === current.inst_section_idx;
+        return (
+          <button key={p.id} className={`rel-chip section-alt${on ? " on" : ""}`}
+            onClick={() => onPick(p)}
+            title={`${p.vocal_section_label || "vocal"} `
+              + `${fmtTime(p.vocal_section_start)}–${fmtTime(p.vocal_section_end)}`
+              + ` over ${p.inst_section_label || "bed"} `
+              + `${fmtTime(p.inst_section_start)}–${fmtTime(p.inst_section_end)}`
+              + ` · section fit ${Math.round((p.score_section || 0) * 100)}%`}>
+            {(p.vocal_section_label || "?")} ▸ {(p.inst_section_label || "?")}
+            <span className="faint">
+              {" "}{Math.round((p.score_total || 0) * 100)}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function PlanDetails({ vocalId, instId, candidate, comboType, onExport }) {
+  // Which section pairing this expander is describing. Defaults to the row's
+  // own, and the switcher above can move it to one of the same song pair's
+  // other scored takes.
+  const [pick, setPick] = useState(null);
+  const sc = pick || candidate || {};
+
+  // Pin the plan to THAT pairing and its measured transpose. The recipe and the
+  // "plays" line below used to come from two different choosers, so the
   // expander could contradict the row it was expanding.
   const { plan, error } = usePlan(vocalId, instId, {
-    vocalSectionIdx: candidate?.vocal_section_idx ?? null,
-    instSectionIdx: candidate?.inst_section_idx ?? null,
-    harmonicShift: candidate?.harmonic_shift ?? null,
+    vocalSectionIdx: sc.vocal_section_idx ?? null,
+    instSectionIdx: sc.inst_section_idx ?? null,
+    harmonicShift: sc.harmonic_shift ?? null,
   });
 
   if (error) return <div className="plan-detail error-text">{error}</div>;
   if (!plan) return <div className="plan-detail muted">Loading plan…</div>;
 
-  const sc = candidate || {};
   const pc = (v) => `${Math.round((v || 0) * 100)}%`;
 
   return (
@@ -363,6 +415,25 @@ function PlanDetails({ vocalId, instId, candidate }) {
             <span title="How much work this pair costs to build, 0 (free) to 1. Discounts the composite; it is not one of the sub-scores.">
               {" · effort "}{pc(sc.score_effort)}
             </span>
+          )}
+        </div>
+      )}
+      {candidate && (
+        <SectionPairSwitcher vocalId={vocalId} instId={instId}
+          comboType={comboType} current={sc} onPick={setPick} />
+      )}
+      {pick && (
+        <div className="raw-scores mono">
+          <b>Showing a different take.</b>{" "}
+          <button className="mini-btn" onClick={() => setPick(null)}>
+            back to the row's
+          </button>
+          {onExport && (
+            <button className="mini-btn" style={{ marginLeft: 6 }}
+              onClick={() => onExport(pick)}
+              title="Export this section pairing as an FL session folder, rather than the one the row names.">
+              ↓ Export this take
+            </button>
           )}
         </div>
       )}
@@ -461,7 +532,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   // ── T3.5 filters. "" / false is off; they compose, and all of them are
   // applied by the server over the whole table, not over the visible 50.
   const [filters, setFilters] = useState(
-    { genre: "", era: "", energy: "", bpmBand: "", vocalForward: false });
+    { genre: "", era: "", energy: "", bpmBand: "", vocalForward: false,
+      // D.3 — "chorus>drop". The shape of the move, independent of which
+      // records are on either side of it.
+      sectionPair: "" });
   // Phase C — "Free builds only". Separate from `filters` because it is a cost
   // constraint rather than a taste one, and it is the chip most worth reaching
   // for on a day with no patience for beatgridding.
@@ -716,6 +790,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
         energy: filters.energy || "",
         bpm_band: filters.bpmBand || "",
         vocal_forward: !!filters.vocalForward,
+        section_pair: filters.sectionPair || "",
         // These four decide WHICH rows are on screen and were being dropped,
         // so the export ran a different query from the list it was launched
         // off. Free-builds-only in particular was silently ignored.
@@ -740,6 +815,25 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       setBatchToken(null);
       setBatchJobId(job_id);
       toast(`Exporting ${pair_count} FL session${pair_count === 1 ? "" : "s"}…`);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  // Export a single take — the row's own, or one of the same song pair's other
+  // scored section pairings picked in the expander (D.3). Pinned, so the folder
+  // is that exact idea rather than whichever one the engine would re-choose.
+  const exportOneTake = async (row) => {
+    try {
+      const { job_id } = await api.startSessionExport({
+        vocalSongId: row.vocal_song_id, instSongId: row.inst_song_id,
+        vocalSectionIdx: row.vocal_section_idx ?? null,
+        instSectionIdx: row.inst_section_idx ?? null,
+        harmonicShift: row.harmonic_shift ?? null,
+      });
+      setBatchToken(null);
+      setBatchJobId(job_id);
+      toast("Exporting this take as an FL session…");
     } catch (e) {
       setError(e.message);
     }
@@ -882,7 +976,8 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   };
 
   const clearFilters = () => {
-    const f = { genre: "", era: "", energy: "", bpmBand: "", vocalForward: false };
+    const f = { genre: "", era: "", energy: "", bpmBand: "", vocalForward: false,
+                sectionPair: "" };
     const cost = { noTranspose: false, noStretch: false, cleanHarmony: false,
                    noBassClash: false };
     setFilters(f);
@@ -1196,6 +1291,16 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
               <span className="k">Energy</span>
               <span>{filters.energy || "Any"}</span><span className="caret">▾</span>
             </div>
+            <div className="chip"
+              onClick={() => cycleFilter(
+                "sectionPair",
+                (filterOpts?.section_pairs || []).map((p) => p.value))}
+              title="The shape of the move — which kind of section goes over which. 'Chorus over drop' and 'verse over breakdown' are different ideas about the same library.">
+              <span className="k">Shape</span>
+              <span>{filters.sectionPair
+                ? filters.sectionPair.replace(">", " ▸ ") : "Any"}</span>
+              <span className="caret">▾</span>
+            </div>
             <div className={`chip${filters.vocalForward ? " active" : ""}`}
               onClick={toggleVocalForward}
               title="Only pairs whose vocal section is properly sung, not an ad-lib">
@@ -1494,7 +1599,9 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                   </div>
                 </div>
                 {expanded === c.id && (
-                  <PlanDetails vocalId={c.vocal_song_id} instId={c.inst_song_id} candidate={c} />
+                  <PlanDetails vocalId={c.vocal_song_id} instId={c.inst_song_id}
+                    candidate={c} comboType={comboType}
+                    onExport={exportOneTake} />
                 )}
               </Fragment>
             );

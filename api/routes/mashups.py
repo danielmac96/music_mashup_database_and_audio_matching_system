@@ -28,6 +28,11 @@ router = APIRouter()
 
 _COMBO_TYPES = {"vocal_over_instrumental", "instrumental_over_instrumental"}
 
+# How many alternative section pairings of one song pair to offer. The
+# scorer emits at most MAX_SECTION_PAIRS_PER_SONG_PAIR of them, so this is a
+# ceiling rather than a policy.
+MAX_SECTION_PAIRS_SHOWN = 8
+
 # What the dominant effort component means in the DAW, for the chip's tooltip.
 _EFFORT_REASONS = {
     "stretch_cost": "needs a big time-stretch",
@@ -238,6 +243,7 @@ def ranked_rows(*, combo_type: str, min_score: float, limit: int,
                 inst_song_id: Optional[int] = None,
                 max_per_song: int, genre: str, era: str, energy: str,
                 bpm_band: str, vocal_forward: bool,
+                section_pair: str = "",
                 max_effort: Optional[float], order: str, adventure: float,
                 offset: int = 0,
                 sort: str = "score", with_reasons: bool = True,
@@ -265,8 +271,8 @@ def ranked_rows(*, combo_type: str, min_score: float, limit: int,
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
         max_per_song=max_per_song,
         genre=genre, era=era, energy=energy, bpm_band=bpm_band,
-        vocal_forward=vocal_forward, max_effort=max_effort, order=order,
-        offset=offset,
+        vocal_forward=vocal_forward, section_pair=section_pair,
+        max_effort=max_effort, order=order, offset=offset,
         weights=weights, effort_weight=effort_weight,
         section_weight=section_weight,
         max_pitch_cost=max_pitch_cost, max_stretch_cost=max_stretch_cost,
@@ -288,6 +294,7 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     max_per_song: int = 3,
                     genre: str = "", era: str = "", energy: str = "",
                     bpm_band: str = "", vocal_forward: bool = False,
+                    section_pair: str = "",
                     max_effort: Optional[float] = None,
                     order: str = "score",
                     adventure: float = 0.0,
@@ -341,7 +348,8 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         combo_type=combo_type, min_score=min_score, limit=limit,
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
         max_per_song=max_per_song, genre=genre, era=era, energy=energy,
-        bpm_band=bpm_band, vocal_forward=vocal_forward, max_effort=max_effort,
+        bpm_band=bpm_band, vocal_forward=vocal_forward,
+        section_pair=section_pair, max_effort=max_effort,
         order=order, adventure=adventure, offset=offset, sort=sort,
         weights=parsed_weights,
         effort_weight=effort_weight, section_weight=section_weight,
@@ -356,6 +364,28 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
             # needs to be told rather than left to keep asking.
             "has_more": len(rows) >= limit and offset + limit < MAX_PAGING_DEPTH,
             "reweighted": parsed_weights is not None}
+
+
+@router.get("/section-pairs")
+def list_section_pairs(vocal_id: int, inst_id: int,
+                       combo_type: str = "vocal_over_instrumental") -> dict:
+    """Every scored section pairing of these two songs, best first (D.3).
+
+    The list shows at most one pairing per song pair, or the same two records
+    would occupy three rows with what reads as the same suggestion. The others
+    are still scored and still in the table — they are different ideas ("chorus
+    over drop" vs "verse over breakdown"), and this is how you reach them
+    without seeding and re-filtering.
+    """
+    if combo_type not in _COMBO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
+    rows = get_candidates_enriched(
+        combo_type=combo_type, vocal_song_id=vocal_id, inst_song_id=inst_id,
+        limit=MAX_SECTION_PAIRS_SHOWN, max_per_song=0, max_per_song_pair=0,
+        include_hidden=True)
+    return {"count": len(rows), "section_pairs": _with_playback_terms(rows)}
 
 
 @router.get("/filters")
@@ -584,6 +614,7 @@ class BatchSessionRequest(BaseModel):
     energy: str = ""
     bpm_band: str = ""
     vocal_forward: bool = False
+    section_pair: str = ""
     order: str = "score"
     adventure: float = 0.0
     sort: str = "score"
@@ -639,7 +670,8 @@ def queue_session_batch(req: BatchSessionRequest,
         vocal_song_id=req.vocal_song_id, inst_song_id=req.inst_song_id,
         max_per_song=req.max_per_song, genre=req.genre, era=req.era,
         energy=req.energy, bpm_band=req.bpm_band,
-        vocal_forward=req.vocal_forward, max_effort=req.max_effort,
+        vocal_forward=req.vocal_forward, section_pair=req.section_pair,
+        max_effort=req.max_effort,
         order=req.order, adventure=req.adventure, sort=req.sort,
         weights=parse_weights(req.weights),
         effort_weight=req.effort_weight, section_weight=req.section_weight,

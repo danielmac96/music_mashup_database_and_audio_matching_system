@@ -370,6 +370,12 @@ def _persist_hooks(song_id: int, sections: list) -> dict:
                 or get_features_for_song(song_id, "full")
             if not feat:
                 continue
+            # A window the user picked by ear outranks the heuristic (E.3).
+            # Re-running structure must not silently throw away a choice they
+            # made — DELETE /tracks/{id}/hook is how you go back to automatic.
+            if feat.get("hook_role") == "manual":
+                out[role] = [feat.get("hook_start"), feat.get("hook_end")]
+                continue
             hook = pick_hook(sections, feat, role=role)
             if hook and update_hook(song_id, stem, hook):
                 out[role] = [hook["hook_start"], hook["hook_end"]]

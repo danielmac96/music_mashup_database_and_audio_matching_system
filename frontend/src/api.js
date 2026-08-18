@@ -161,6 +161,27 @@ export const api = {
 
   getSections: (id) => jsonFetch(`/api/tracks/${id}/sections`),
 
+  // ── Hook window (E.3) ─────────────────────────────────────────────────────
+  // The 16 bars the audition plays. pick_hook is a heuristic and it is right
+  // most of the time, but the audition is the main triage instrument — if its
+  // window misses the part of the vocal that sells the track, every judgment
+  // made through it was made on the wrong evidence.
+  getHook: (id, role = "vocal") =>
+    jsonFetch(`/api/tracks/${id}/hook?role=${role}`),
+
+  setHook: (id, { role = "vocal", hookStart, hookEnd }) =>
+    jsonFetch(`/api/tracks/${id}/hook`, {
+      method: "PATCH",
+      body: JSON.stringify({ role, hook_start: hookStart, hook_end: hookEnd }),
+    }),
+
+  // Throw away a hand-picked window and let pick_hook choose again.
+  resetHook: (id, role = "vocal") =>
+    jsonFetch(`/api/tracks/${id}/hook?role=${role}`, { method: "DELETE" }),
+
+  hookAudioUrl: (id, stem = "vocals") =>
+    `/api/tracks/${id}/hook/audio?stem=${stem}`,
+
   getWaveform: (id, stem) => jsonFetch(`/api/tracks/${id}/waveform?stem=${stem}`),
 
   startScoring: ({ bpmMaxDiff = null, keyMinScore = null } = {}) => {
@@ -193,6 +214,9 @@ export const api = {
     minHarmonicConfidence = null,
     excludeBassClash = false,
     minCollision = null,
+    // D.3 — the SHAPE of the move ("chorus>drop"), which is how a DJ thinks
+    // about it before thinking about which records.
+    sectionPair = "",
     // Phase F — "score" (best first) or "uncertain" (the model's blind spots,
     // where a verdict buys the most information per keypress).
     order = "score",
@@ -231,11 +255,19 @@ export const api = {
       params.set("min_harmonic_confidence", String(minHarmonicConfidence));
     if (excludeBassClash) params.set("exclude_bass_clash", "true");
     if (minCollision != null) params.set("min_collision", String(minCollision));
+    if (sectionPair) params.set("section_pair", sectionPair);
     if (weights) params.set("weights", JSON.stringify(weights));
     if (sort && sort !== "score") params.set("sort", sort);
     if (offset) params.set("offset", String(offset));
     return jsonFetch(`/api/mashups?${params}`);
   },
+
+  // Every scored section pairing of one song pair. The list shows at most one,
+  // or the same two records occupy three rows with what reads as the same
+  // suggestion; the others are different ideas and this is how you reach them.
+  getSectionPairs: (vocalId, instId, comboType = "vocal_over_instrumental") =>
+    jsonFetch(`/api/mashups/section-pairs?vocal_id=${vocalId}`
+      + `&inst_id=${instId}&combo_type=${comboType}`),
 
   // Which filter values this library actually contains.
   getMashupFilters: (comboType = "") =>

@@ -952,6 +952,18 @@ def update_hook(song_id: int, stem_type: str, hook: Optional[Dict],
     return updated
 
 
+def clear_hook(song_id: int, stem_type: str, db_path: Path = DB_PATH) -> int:
+    """Forget a hand-picked hook window so pick_hook chooses again (E.3)."""
+    conn = get_conn(db_path)
+    cur = conn.execute(
+        """UPDATE features SET hook_start=NULL, hook_end=NULL, hook_role=NULL
+           WHERE song_id=? AND stem_type=?""", (song_id, stem_type))
+    conn.commit()
+    cleared = cur.rowcount
+    conn.close()
+    return cleared
+
+
 def get_song(song_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
     conn = get_conn(db_path)
     row = conn.execute("SELECT * FROM songs WHERE id=?", (song_id,)).fetchone()
@@ -1675,6 +1687,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             genre: str = "", era: str = "",
                             energy: str = "", bpm_band: str = "",
                             vocal_forward: bool = False,
+                            section_pair: str = "",
                             offset: int = 0,
                             max_effort: Optional[float] = None,
                             max_pitch_cost: Optional[float] = None,
@@ -1828,6 +1841,19 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     if min_collision is not None:
         where.append("(mc.score_collision IS NULL OR mc.score_collision >= ?)")
         params.append(float(min_collision))
+    if section_pair:
+        # "chorus>drop" — the SHAPE of the move, which is how a DJ thinks about
+        # it before thinking about which records. Either side may be blank
+        # ("chorus>" = any bed section under a chorus).
+        v_label, _, i_label = section_pair.partition(">")
+        for label, side in ((v_label.strip(), "vocal"), (i_label.strip(), "inst")):
+            if not label:
+                continue
+            where.append(
+                f"""(SELECT label FROM sections
+                      WHERE song_id = mc.{side}_song_id
+                        AND section_index = mc.{side}_section_idx) = ?""")
+            params.append(label)
     if vocal_forward:
         # The vocal presence of the section that will actually play, falling
         # back to the track's most vocal section when no pair was stored.
@@ -2064,6 +2090,9 @@ def bpm_bounds(band: str) -> tuple:
 MIN_TAG_TRACKS = 2
 MAX_TAG_CHIPS = 20
 
+# Section-pair shapes offered as chips (D.3).
+MAX_SHAPE_CHIPS = 12
+
 
 def _parse_tags(raw) -> List[str]:
     """A song's `tags` column (a JSON array string) as a clean list."""
@@ -2106,6 +2135,21 @@ def candidate_filter_options(combo_type: str = "",
             {where}
             AND s.tags IS NOT NULL AND s.tags != ''""",
         args).fetchall()
+    # D.3 — which (vocal section > bed section) shapes exist. "chorus over
+    # drop" is a different idea from "verse over breakdown", and until now the
+    # only way to look for one was to read every row.
+    shape_rows = conn.execute(
+        f"""SELECT sv.label AS v, si.label AS i, COUNT(*) AS n
+              FROM mashup_candidates mc
+              JOIN sections sv ON sv.song_id = mc.vocal_song_id
+                              AND sv.section_index = mc.vocal_section_idx
+              JOIN sections si ON si.song_id = mc.inst_song_id
+                              AND si.section_index = mc.inst_section_idx
+            {where}
+            GROUP BY sv.label, si.label
+            ORDER BY n DESC, sv.label, si.label
+            LIMIT {MAX_SHAPE_CHIPS}""", args).fetchall()
+
     years = conn.execute(
         """SELECT MIN(release_year) AS lo, MAX(release_year) AS hi
            FROM songs WHERE release_year > 0""").fetchone()
@@ -2132,6 +2176,9 @@ def candidate_filter_options(combo_type: str = "",
         "eras": eras,
         "bpm_bands": list(BPM_BANDS),
         "energy_bands": list(ENERGY_BANDS),
+        "section_pairs": [{"value": f"{r['v']}>{r['i']}",
+                           "label": f"{r['v']} ▸ {r['i']}", "n": r["n"]}
+                          for r in shape_rows if r["v"] and r["i"]],
     }
 
 
