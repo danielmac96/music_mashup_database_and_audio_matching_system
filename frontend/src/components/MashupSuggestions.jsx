@@ -88,6 +88,9 @@ const PER_SONG_CAPS = [3, 2, 1, 0];
 // Rows exported per "Export top N" click. Each session is two phase-vocoder
 // passes over a full section, so this is a few minutes of CPU, not an afternoon.
 const BATCH_EXPORT_N = 10;
+// Rows per page. The list pages on scroll now (C.3) instead of being a hard
+// top-50 with the rest of the library unreachable.
+const PAGE_SIZE = 50;
 const popOf = (c) => (c.vocal_popularity || 0) + (c.inst_popularity || 0);
 
 // Key drives 30% of the score and the suggested pitch shift, so an unreliable
@@ -236,6 +239,98 @@ function WeightsPopover({ open, onClose, weights, saved, onChange, onReset,
   );
 }
 
+// ── E.1: where the two sides actually sit in the spectrum ────────────────────
+//
+// collision_score is the heaviest term on the vocal path and it is one number:
+// it says "these two fight" without ever saying WHERE, which is the only part
+// you can act on. The 8-band occupancy vectors behind it have been measured
+// since Phase D and drawn nowhere.
+//
+// Two mirrored bars per band with the overlap shaded: the overlap IS the
+// collision (1 - the sum of the per-band minima), so the picture and the score
+// are the same quantity. A tall shaded block at 60-400 Hz says high-pass the
+// bed; one at 400 Hz-2 kHz says the vocal will not cut through and no EQ will
+// fix it.
+function bandLabel(lo, hi) {
+  const f = (v) => (v >= 1000 ? `${Math.round(v / 100) / 10}k` : Math.round(v));
+  return `${f(lo)}–${f(hi)}`;
+}
+
+function BandOverlay({ edges, vocal, bed, collision }) {
+  if (!edges || !vocal?.length || !bed?.length
+      || vocal.length !== bed.length) return null;
+  // Each vector already sums to 1. Scale to the loudest band on either side so
+  // the shape is readable rather than technically-correct-and-flat.
+  const peak = Math.max(...vocal, ...bed) || 1;
+  const pct = (v) => `${Math.max(1, (v / peak) * 100)}%`;
+  return (
+    <div className="band-overlay">
+      <div className="band-head mono">
+        spectral room
+        {collision != null && <b> {Math.round(collision * 100)}%</b>}
+        <span className="faint">
+          {" "}— the shaded part is where they fight. Tall overlap low down:
+          high-pass the bed. Tall in the mids: the vocal will not cut through.
+        </span>
+      </div>
+      <div className="band-cols">
+        {vocal.map((v, n) => {
+          const b = bed[n];
+          const shared = Math.min(v, b);
+          return (
+            <div className="band-col" key={n}
+              title={`${bandLabel(edges[n], edges[n + 1])} Hz — `
+                + `vocal ${Math.round(v * 100)}%, bed ${Math.round(b * 100)}%, `
+                + `overlapping ${Math.round(shared * 100)}%`}>
+              <div className="band-pair">
+                <span className="band-bar vocal" style={{ height: pct(v) }}>
+                  <i style={{ height: pct(shared) }} />
+                </span>
+                <span className="band-bar bed" style={{ height: pct(b) }}>
+                  <i style={{ height: pct(shared) }} />
+                </span>
+              </div>
+              <div className="band-tick mono">{bandLabel(edges[n], edges[n + 1])}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── E.2: the chosen sections' own key ────────────────────────────────────────
+//
+// A track has one key only in the sense that an average has one value. Real
+// records modulate, and the chorus is frequently not the key the whole-track
+// mean reports — which is why a pair that looks compatible on the Camelot codes
+// can still fight. Stored per section since Phase E, shown nowhere until now.
+function SectionKeys({ keys, plan }) {
+  if (!keys) return null;
+  const sides = [["vocal", plan?.vocal], ["inst", plan?.inst]];
+  if (!sides.some(([side]) => keys[side]?.camelot)) return null;
+  return (
+    <div className="raw-scores mono"
+      title="The key of the SECTION being layered, next to the track's overall estimate. They disagree whenever the record modulates, and the section is the one that matters.">
+      section keys
+      {sides.map(([side, track]) => {
+        const k = keys[side];
+        if (!k?.camelot) return null;
+        return (
+          <span key={side}>
+            {` · ${side} `}
+            <b className={k.differs_from_track ? "key-differs" : undefined}>
+              {k.camelot}
+            </b>
+            {k.differs_from_track && track?.camelot
+              ? ` (track ${track.camelot})` : ""}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function PlanDetails({ vocalId, instId, candidate }) {
   // Pin the plan to THIS row's section pair and measured transpose. The recipe
   // and the "plays" line below used to come from two different choosers, so the
@@ -271,6 +366,10 @@ function PlanDetails({ vocalId, instId, candidate }) {
           )}
         </div>
       )}
+      <SectionKeys keys={plan.section_keys} plan={plan} />
+      <BandOverlay edges={plan.band_edges}
+        vocal={plan.vocal?.band_energy} bed={plan.inst?.band_energy}
+        collision={sc.score_collision} />
       {plan.harmony && (
         <div className="raw-scores mono"
           title="Measured from the two sections' chroma rather than the Camelot wheel">
@@ -348,6 +447,13 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   // deliberate state, not a display toggle.
   const [weightOverride, setWeightOverride] = useState(null);
   const [weightsOpen, setWeightsOpen] = useState(false);
+  // C.3 paging. `queryRef` holds the query the current rows came from, so
+  // "load more" asks the same question with a deeper offset rather than
+  // rebuilding it from state that may have moved on.
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const queryRef = useRef(null);
+  const sentinelRef = useRef(null);
   // ── T3.4 diversity: one 128 BPM 8A vocal otherwise owns the whole page ────
   const [maxPerSong, setMaxPerSong] = useState(3);
   const [grouped, setGrouped] = useState(false);
@@ -491,6 +597,31 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       .catch(() => {});
   }, []);
 
+  // One description of "what the list is showing", used by the first page, by
+  // every "load more", and (via the same field names) by the export. A second
+  // copy of this is how a page 2 ends up answering a different question.
+  const buildQuery = (type, activeSeed, min, cap, f, free, sort, adv, wts,
+                      cost) => {
+    const opts = { comboType: type, minScore: min / 100, limit: PAGE_SIZE,
+                   maxPerSong: cap, ...f };
+    if (free) opts.maxEffort = FREE_BUILD_MAX_EFFORT;
+    if (sort === "Uncertain") opts.order = "uncertain";
+    if (adv > 0) opts.adventure = adv;
+    if (wts) opts.weights = wts;
+    // Costs ramp to full at ±6 semitones / 12% stretch, so PITCH_FREE (±1) and
+    // STRETCH_FREE (2%) land at 0. "None" therefore means 0, not a small
+    // number — see matcher/effort.py.
+    if (cost.noTranspose) opts.maxPitchCost = 0;
+    if (cost.noStretch) opts.maxStretchCost = 0;
+    if (cost.cleanHarmony) opts.minHarmonicConfidence = HARMONY_CONFIDENT_MIN;
+    if (cost.noBassClash) opts.excludeBassClash = true;
+    if (activeSeed?.songId != null) {
+      if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
+      else opts.vocalSongId = activeSeed.songId;
+    }
+    return opts;
+  };
+
   const refresh = async (type = comboType, activeSeed = seed, min = minMatch,
                         cap = maxPerSong, group = grouped, f = filters,
                         free = freeOnly, sort = sortMode, adv = adventure,
@@ -506,31 +637,43 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
         setCandidates(data.candidates);
         return;
       }
-      const opts = { comboType: type, minScore: min / 100, limit: 50,
-                     maxPerSong: cap, ...f };
-      if (free) opts.maxEffort = FREE_BUILD_MAX_EFFORT;
-      if (sort === "Uncertain") opts.order = "uncertain";
-      if (adv > 0) opts.adventure = adv;
-      if (wts) opts.weights = wts;
-      // Costs ramp to full at ±6 semitones / 12% stretch, so PITCH_FREE (±1)
-      // and STRETCH_FREE (2%) land at 0. "None" therefore means 0, not a small
-      // number — see matcher/effort.py.
-      if (cost.noTranspose) opts.maxPitchCost = 0;
-      if (cost.noStretch) opts.maxStretchCost = 0;
-      if (cost.cleanHarmony) opts.minHarmonicConfidence = HARMONY_CONFIDENT_MIN;
-      if (cost.noBassClash) opts.excludeBassClash = true;
-      if (activeSeed?.songId != null) {
-        if (activeSeed.role === "instrumental") opts.instSongId = activeSeed.songId;
-        else opts.vocalSongId = activeSeed.songId;
-      }
+      const opts = { ...buildQuery(type, activeSeed, min, cap, f, free, sort,
+                                   adv, wts, cost), offset: 0 };
       const data = await api.getMashups(opts);
       setCandidates(data.candidates);
+      setHasMore(!!data.has_more);
+      queryRef.current = opts;
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
   };
+
+  // ── C.3: the list is a library, not a top-50 ──────────────────────────────
+  //
+  // `limit` capped at 500 and there was no offset, so anything past the first
+  // page was unreachable except by narrowing filters until it floated up. The
+  // per-song cap is greedy, so the server applies the offset AFTER capping and
+  // re-derives the earlier pages; `has_more` says whether asking again can
+  // return anything, rather than leaving the client to keep guessing.
+  const loadMore = useCallback(async () => {
+    const base = queryRef.current;
+    if (!base || loadingMore || !hasMore || shortlistOnly || grouped) return;
+    setLoadingMore(true);
+    try {
+      const data = await api.getMashups({ ...base, offset: candidates.length });
+      // Concatenate rather than replace: `id` is unique per candidate row, and
+      // the offset is applied after the cap, so pages cannot overlap.
+      setCandidates((rows) => [...rows, ...(data.candidates || [])]);
+      setHasMore(!!data.has_more);
+    } catch (e) {
+      setError(e.message);
+      setHasMore(false);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [candidates.length, hasMore, loadingMore, shortlistOnly, grouped]);
 
   useEffect(() => {
     refresh(comboType, seed, minMatch);
@@ -899,6 +1042,19 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [cursor, sortedCandidates, judgeAndAdvance, hide, toggleShortlist]);
+
+  // Fetch the next page when the end of the list scrolls into view. An
+  // observer rather than a scroll handler so it costs nothing while idle, and
+  // rootMargin so the page arrives before the user hits the bottom.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || !hasMore) return;
+    const io = new IntersectionObserver(
+      (entries) => { if (entries.some((e) => e.isIntersecting)) loadMore(); },
+      { rootMargin: "400px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMore, loadMore]);
 
   // Switching away from the tab must not leave an AudioContext playing.
   useEffect(() => stop, [stop]);
@@ -1343,6 +1499,14 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
               </Fragment>
             );
           })}
+          {!shortlistOnly && !grouped && (
+            <div ref={sentinelRef} className="page-sentinel muted">
+              {loadingMore ? "Loading more…"
+                : hasMore ? " "
+                : `End of the list — ${sortedCandidates.length} pairs. `
+                  + "Widen Min match or clear a filter for more."}
+            </div>
+          )}
         </div>
       )}
     </div>

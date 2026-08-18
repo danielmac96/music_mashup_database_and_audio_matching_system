@@ -1181,6 +1181,14 @@ def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[D
     conn = get_conn(db_path)
     rows = conn.execute(
         """SELECT f.*, s.title, s.artist, s.variant_cluster,
+                  -- Phase F's contrast terms read these off the feature dict.
+                  -- They were never selected, so _genre_distance and
+                  -- _era_distance saw None on both sides and returned their
+                  -- neutral 0.5 for EVERY pair: surprise_genre and surprise_era
+                  -- were constants in every training vector, which is precisely
+                  -- the "a column with no signal is only a chance to overfit
+                  -- noise" hazard matcher/features.py warns about.
+                  s.genre, s.release_year, s.tags,
                   st.quality AS stem_quality
            FROM features f
            JOIN songs s ON s.id=f.song_id
@@ -1238,7 +1246,22 @@ def replace_sections(song_id: int, sections: List[Dict],
     conn.close()
 
 
-def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
+_CHROMA_COLUMNS = (("chroma_json", "chroma"),
+                   ("bass_chroma_json", "bass_chroma"),
+                   ("chroma_vocal_json", "chroma_vocal"),
+                   ("chroma_bed_json", "chroma_bed"))
+
+
+def get_sections(song_id: int, db_path: Path = DB_PATH,
+                 include_chroma: bool = True) -> List[Dict]:
+    """A song's sections, ordered.
+
+    `include_chroma=False` drops the four 12-float vectors (E.4). They exist for
+    the matcher — harmony.py cross-correlates them — and no screen reads them,
+    so shipping them to the browser is ~48 floats per section on every Studio
+    lane add for nothing. Kept on by default because every in-process caller
+    wants them; the HTTP layer is the one that does not.
+    """
     conn = get_conn(db_path)
     rows = conn.execute(
         "SELECT * FROM sections WHERE song_id=? ORDER BY section_index",
@@ -1250,11 +1273,8 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
         d = dict(r)
         # Decode the Phase E chroma columns the same way features does, so
         # callers never see a JSON string where a vector is expected.
-        for src, dest in (("chroma_json", "chroma"),
-                          ("bass_chroma_json", "bass_chroma"),
-                          ("chroma_vocal_json", "chroma_vocal"),
-                          ("chroma_bed_json", "chroma_bed")):
-            if d.get(src):
+        for src, dest in _CHROMA_COLUMNS:
+            if include_chroma and d.get(src):
                 d[dest] = json.loads(d.pop(src))
             else:
                 d.pop(src, None)
@@ -1655,6 +1675,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             genre: str = "", era: str = "",
                             energy: str = "", bpm_band: str = "",
                             vocal_forward: bool = False,
+                            offset: int = 0,
                             max_effort: Optional[float] = None,
                             max_pitch_cost: Optional[float] = None,
                             max_stretch_cost: Optional[float] = None,
@@ -1753,8 +1774,12 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     # Genre and era match EITHER side: "show me the 2010s pairs" means a pair
     # with a 2010s record in it, not one where both tracks happen to be.
     if genre:
-        where.append("(sv.genre LIKE ? OR si.genre LIKE ?)")
-        params += [f"%{genre}%", f"%{genre}%"]
+        # Tags as well as the genre field (E.4). SoundCloud's `genre` is one
+        # free-text string and often blank, while the tags carry the real
+        # description — filtering on genre alone silently hid those uploads.
+        where.append("(sv.genre LIKE ? OR si.genre LIKE ? "
+                     " OR sv.tags LIKE ? OR si.tags LIKE ?)")
+        params += [f"%{genre}%"] * 4
     if era:
         lo, hi = era_bounds(era)
         if lo is None:
@@ -1832,7 +1857,17 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     # on a big library; this pool is enough to fill `limit` unless one song
     # dominates far beyond the cap, and the shortfall is visible as a short page
     # rather than a wrong one.
-    fetch = limit if max_per_song <= 0 else min(max(limit * 20, 200), 5000)
+    #
+    # `offset` (C.3) is applied AFTER the cap, not in SQL. The cap is stateful —
+    # a song only loses a row once it already has its share of better ones — so
+    # a SQL OFFSET would start the greedy pass mid-list with empty counts and
+    # produce a page 2 that both repeats and skips rows. Paging therefore
+    # re-derives the pages before it, which is why the pool is bounded: past
+    # MAX_PAGING_DEPTH rows the list stops being something you scroll and starts
+    # being something you filter.
+    offset = max(0, min(int(offset), MAX_PAGING_DEPTH))
+    want = offset + limit
+    fetch = want if max_per_song <= 0 else min(max(want * 20, 200), 5000)
     params.append(fetch)
 
     # The re-weight CTE is emitted FIRST, so its parameters bind first.
@@ -1941,7 +1976,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     conn.close()
     out = [_apply_reweight(dict(r)) for r in rows] if reweighted \
         else [dict(r) for r in rows]
-    return _cap_per_song(out, max_per_song, limit, max_per_song_pair)
+    return _cap_per_song(out, max_per_song, want, max_per_song_pair)[offset:]
 
 
 def _apply_reweight(row: Dict) -> Dict:
@@ -2005,6 +2040,11 @@ ENERGY_BANDS: Dict[str, tuple] = {
     "high": (0.67, 1.01),
 }
 
+# How deep the ranked list can be paged. The per-song cap is greedy, so each
+# page re-derives the ones before it; past this the honest answer is "narrow the
+# filters", not "scroll further".
+MAX_PAGING_DEPTH = 2000
+
 # A section the separator found this much voice in is one you can hear over a
 # bed. Matches the vocal-presence scale sections are scored on.
 VOCAL_FORWARD_MIN = 0.6
@@ -2016,6 +2056,26 @@ def era_bounds(era: str) -> tuple:
 
 def bpm_bounds(band: str) -> tuple:
     return BPM_BANDS.get(band, (None, None))
+
+
+# A tag has to describe at least this many tracks to earn a filter chip, and
+# only this many tags are offered — a chip that cycles through forty one-off
+# hashtags is worse than no chip.
+MIN_TAG_TRACKS = 2
+MAX_TAG_CHIPS = 20
+
+
+def _parse_tags(raw) -> List[str]:
+    """A song's `tags` column (a JSON array string) as a clean list."""
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, (list, tuple)):
+        return []
+    return [t.strip() for t in (str(x) for x in parsed) if t.strip()]
 
 
 def candidate_filter_options(combo_type: str = "",
@@ -2037,15 +2097,38 @@ def candidate_filter_options(combo_type: str = "",
             WHERE g IS NOT NULL AND g != ''
             GROUP BY g ORDER BY n DESC, g""",
         args * 2).fetchall()
+    # Tags that describe more than one track. A tag on a single upload is
+    # noise in a chip you cycle with a click; two is the point at which
+    # filtering on it can group anything.
+    tag_rows = conn.execute(
+        f"""SELECT s.tags FROM mashup_candidates mc
+              JOIN songs s ON s.id IN (mc.vocal_song_id, mc.inst_song_id)
+            {where}
+            AND s.tags IS NOT NULL AND s.tags != ''""",
+        args).fetchall()
     years = conn.execute(
         """SELECT MIN(release_year) AS lo, MAX(release_year) AS hi
            FROM songs WHERE release_year > 0""").fetchone()
     conn.close()
+
+    known = {(r["genre"] or "").lower() for r in genres}
+    tag_counts: Dict[str, int] = {}
+    for r in tag_rows:
+        for tag in _parse_tags(r["tags"]):
+            if tag.lower() in known:
+                continue                       # already offered as a genre
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    tags = [{"genre": t, "n": n} for t, n in
+            sorted(tag_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            if n >= MIN_TAG_TRACKS][:MAX_TAG_CHIPS]
     lo, hi = (years["lo"], years["hi"]) if years else (None, None)
     eras = [name for name, (a, b) in ERA_BANDS.items()
             if lo is not None and not (hi < a or lo > b)]
     return {
-        "genres": [dict(r) for r in genres],
+        # Genres first, then the tags that describe more than one track. One
+        # chip either way: to the user "Techno" is "Techno" whether SoundCloud
+        # filed it as the genre or as a tag.
+        "genres": [dict(r) for r in genres] + tags,
         "eras": eras,
         "bpm_bands": list(BPM_BANDS),
         "energy_bands": list(ENERGY_BANDS),

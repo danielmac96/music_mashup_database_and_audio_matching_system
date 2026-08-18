@@ -21,6 +21,13 @@ from matcher.match import (
     camelot_score, compute_semitone_shift, compute_stretch_factor, effective_bpm,
 )
 
+# Band edges for the occupancy overlay (E.1). Imported from the module that
+# MEASURES them so the drawn axis cannot drift from the vector it labels.
+try:
+    from analysis.quality import BAND_EDGES
+except ImportError:                      # numpy/librosa absent — plan still works
+    BAND_EDGES = (0.0, 60.0, 150.0, 400.0, 1000.0, 2500.0, 5000.0, 8000.0, 11025.0)
+
 # Section label priority when choosing what to mash.
 _VOCAL_LABEL_PRIORITY = {"chorus": 0, "verse": 1, "bridge": 2, "drop": 3,
                          "breakdown": 4, "intro": 5, "outro": 6}
@@ -252,11 +259,14 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     # sections' chroma says what actually makes the notes line up, and hands
     # back a bass-clash warning as a by-product. Falls back to the Camelot
     # estimate when either section has no stored chroma.
+    # The two sections the plan is ABOUT, resolved once — the harmony below and
+    # the per-section keys further down are both asking about this same moment.
+    v_sec = _section_for(v_sections, pairings[0], "vocal") if pairings else None
+    i_sec = _section_for(i_sections, pairings[0], "inst") if pairings else None
+
     harmony = None
     if pairings:
         from matcher.harmony import section_harmony
-        v_sec = _section_for(v_sections, pairings[0], "vocal")
-        i_sec = _section_for(i_sections, pairings[0], "inst")
         h = section_harmony(v_sec, i_sec)
         if h["known"]:
             harmony = h
@@ -276,6 +286,34 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
         shift = int(harmonic_shift)
         if harmony is not None and harmony.get("shift") != shift:
             harmony = {**harmony, "shift": shift}
+
+    # E.2 — the chosen sections' OWN key, not the track's.
+    #
+    # A track has one key only in the sense that an average has one value: real
+    # records modulate, and the chorus is frequently not the key the whole-track
+    # mean reports. detect_sections has stored a per-section Krumhansl estimate
+    # since Phase E and nothing ever showed it, so "the track is 8A but this
+    # chorus is 3B" — the reason a pair that looks compatible is not — was
+    # invisible on the one screen where it decides what you do next.
+    section_keys = None
+    if pairings:
+        section_keys = {
+            side: (None if sec is None else {
+                "key": sec.get("key"), "mode": sec.get("mode"),
+                "camelot": sec.get("camelot"),
+                "key_confidence": sec.get("key_confidence"),
+                "label": sec.get("label"),
+                # Whether it disagrees with the whole-track estimate, which is
+                # the part worth reading: agreement is the boring case.
+                "differs_from_track": bool(
+                    sec.get("camelot") and track_camelot
+                    and sec.get("camelot") != track_camelot),
+            })
+            for side, sec, track_camelot in (
+                ("vocal", v_sec, v_feat.get("camelot")),
+                ("inst", i_sec, i_feat.get("camelot")),
+            )
+        }
 
     # Stem file paths for drag-and-drop into the DAW.
     conn = get_conn(db)
@@ -301,6 +339,16 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
             "key": feat.get("key"),
             "mode": feat.get("mode"),
             "camelot": feat.get("camelot"),
+            # E.1 — where this stem sits in the spectrum, 8 log-spaced bands
+            # each a fraction of total energy. Measured since Phase D, feeding
+            # collision_score, and never drawn: the number said "these two
+            # fight" without ever saying WHERE, which is the only part you can
+            # act on. None when the stem predates the measurement.
+            "band_energy": feat.get("band_energy"),
+            # On a bed, how much of it is still voice — an instrumental cut from
+            # a full record carries the original topline, and two competing
+            # melodies is a different problem from a frequency clash.
+            "residual_vocal_ratio": feat.get("residual_vocal_ratio"),
         }
 
     steps = []
@@ -345,6 +393,10 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
         "key_relation": _key_relation(v_feat.get("camelot") or "",
                                       i_feat.get("camelot") or ""),
         "harmony": harmony,
+        "section_keys": section_keys,
+        # The band edges the two occupancy vectors are measured against, so the
+        # UI can label them in Hz rather than as "band 4".
+        "band_edges": list(BAND_EDGES),
         "vocal_sections": v_sections,
         "inst_sections": i_sections,
         "pairings": pairings,

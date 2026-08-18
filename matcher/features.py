@@ -242,23 +242,62 @@ def surprise_terms(top: dict, bed: dict) -> dict:
     Deliberately NOT folded into the compatibility score: these must be able to
     trade against it under user control, and a model that has both can learn
     where this particular user's taste sits between safe and adventurous.
+
+    NOTE: until E.4, `genre` and `release_year` were not selected by
+    get_all_features, so both distances saw None on both sides and returned the
+    neutral 0.5 for every pair — two of the three contrast columns were
+    constants. A model trained before that fix learned nothing from them and is
+    worth rebuilding.
     """
     return {
-        "surprise_genre": _genre_distance(top.get("genre"), bed.get("genre")),
+        "surprise_genre": _genre_distance(top.get("genre"), bed.get("genre"),
+                                          top.get("tags"), bed.get("tags")),
         "surprise_era": _era_distance(top.get("release_year"),
                                       bed.get("release_year")),
         "surprise_timbre": 1.0 - _num(sub_scores(top, bed).get("timbre_score"), 0.5),
     }
 
 
-def _genre_distance(a: Optional[str], b: Optional[str]) -> float:
+def _tokens(text: Optional[str]) -> set:
+    return {w for w in (text or "").lower().replace("/", " ").split() if w}
+
+
+def _tag_tokens(tags) -> set:
+    """Tokens from a song's SoundCloud tags (stored as a JSON array string).
+
+    Used only as a FALLBACK for a missing genre. Folding tags into a genre that
+    IS set would change a value the model was trained on; using them where the
+    answer was previously the neutral 0.5 only ever adds information.
+    """
+    if not tags:
+        return set()
+    if isinstance(tags, str):
+        try:
+            tags = json.loads(tags)
+        except ValueError:
+            tags = [tags]
+    if not isinstance(tags, (list, tuple)):
+        return set()
+    out: set = set()
+    for t in tags:
+        out |= _tokens(str(t))
+    return out
+
+
+def _genre_distance(a: Optional[str], b: Optional[str],
+                    a_tags=None, b_tags=None) -> float:
     """0 when the genres match, 1 when they share nothing. Unknown → 0.5.
 
     Token overlap rather than string equality: SoundCloud genre strings are
     free text, so "Future House" and "House" are neighbours, not strangers.
+
+    A side with no genre falls back to its tags, which is often the only thing a
+    SoundCloud upload has. Tags never widen a genre that is already set — that
+    would move a value the model trained on, whereas this only replaces a
+    "we don't know".
     """
-    ta = {w for w in (a or "").lower().replace("/", " ").split() if w}
-    tb = {w for w in (b or "").lower().replace("/", " ").split() if w}
+    ta = _tokens(a) or _tag_tokens(a_tags)
+    tb = _tokens(b) or _tag_tokens(b_tags)
     if not ta or not tb:
         return 0.5
     return 1.0 - len(ta & tb) / len(ta | tb)

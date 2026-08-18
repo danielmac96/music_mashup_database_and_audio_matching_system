@@ -480,14 +480,20 @@ def change_url(song_id: int, body: UrlUpdate) -> dict:
 
 
 @router.get("/{song_id}/sections")
-def list_sections(song_id: int) -> dict:
-    """Detected structure sections (chorus/verse/drop with timestamps)."""
+def list_sections(song_id: int, include_chroma: bool = False) -> dict:
+    """Detected structure sections (chorus/verse/drop with timestamps).
+
+    The four per-section chroma vectors are OFF by default (E.4): they exist so
+    matcher/harmony.py can cross-correlate them, no screen reads them, and at
+    ~48 floats per section they were the bulk of this response on every Studio
+    lane add. Pass include_chroma=true if you actually want them.
+    """
     conn = get_conn()
     row = conn.execute("SELECT id FROM songs WHERE id=?", (song_id,)).fetchone()
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="song not found")
-    sections = get_sections(song_id)
+    sections = get_sections(song_id, include_chroma=include_chroma)
     return {"count": len(sections), "sections": sections}
 
 

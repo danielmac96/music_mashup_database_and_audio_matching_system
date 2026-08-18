@@ -1837,3 +1837,55 @@ input, select { font-family: inherit; }
   border: 1px solid rgba(245, 166, 35, 0.28);
 }
 .bulk-bar .btn { white-space: nowrap; }
+
+/* C.3 — the end-of-list sentinel the IntersectionObserver watches. It needs
+   real height, or it can never intersect and the list stops paging. */
+.page-sentinel {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  padding: 10px 0 24px;
+}
+
+/* ── E.1 band-occupancy overlay ──────────────────────────────────────────────
+   Two mirrored bars per band, the shaded inner block being the overlap. The
+   overlap IS collision_score (1 - the sum of the per-band minima), so the
+   picture and the number on the row are the same quantity. */
+.band-overlay { margin: 8px 0 4px; }
+.band-head { font-size: 11.5px; margin-bottom: 6px; }
+.band-head .faint { font-weight: 400; }
+.band-cols { display: flex; gap: 4px; align-items: flex-end; }
+.band-col { flex: 1; min-width: 0; cursor: help; }
+/* Fixed height so bands are comparable by eye, which is the whole point. */
+.band-pair { display: flex; gap: 2px; align-items: flex-end; height: 56px; }
+.band-bar {
+  flex: 1;
+  position: relative;
+  border-radius: 2px 2px 0 0;
+  min-height: 1px;
+  display: block;
+}
+.band-bar.vocal { background: rgba(56, 189, 248, 0.35); }
+.band-bar.bed { background: rgba(245, 166, 35, 0.35); }
+/* The contested part, drawn from the bottom of each bar. */
+.band-bar > i {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  display: block;
+  border-radius: 2px 2px 0 0;
+}
+.band-bar.vocal > i { background: var(--cyan); }
+.band-bar.bed > i { background: var(--amber); }
+.band-tick {
+  font-size: 9px;
+  color: var(--faint);
+  text-align: center;
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* E.2 — a section whose key disagrees with its track's. */
+.key-differs { color: var(--amber-light); }

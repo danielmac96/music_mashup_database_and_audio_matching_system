@@ -10,7 +10,8 @@ from pydantic import BaseModel
 import json
 
 from database.models import (
-    BPM_BANDS, ENERGY_BANDS, ERA_BANDS, SUBSCORE_COLUMNS, VERDICTS,
+    BPM_BANDS, ENERGY_BANDS, ERA_BANDS, MAX_PAGING_DEPTH, SUBSCORE_COLUMNS,
+    VERDICTS,
     add_to_shortlist, best_bed_per_vocal, candidate_filter_options,
     clear_shortlist, exclude_track, get_candidates_enriched, get_pair_feedback,
     get_shortlist, hide_pair, include_track, list_hidden, normalise_weights,
@@ -173,7 +174,7 @@ def _validate_unit_ranges(*pairs) -> None:
 
 def _validate_list_params(combo_type: str, max_per_song: int, order: str,
                           adventure: float, sort: str, era: str, energy: str,
-                          bpm_band: str) -> None:
+                          bpm_band: str, offset: int = 0) -> None:
     if combo_type and combo_type not in _COMBO_TYPES:
         raise HTTPException(
             status_code=400,
@@ -188,6 +189,8 @@ def _validate_list_params(combo_type: str, max_per_song: int, order: str,
     if sort and sort.lower() not in _SORTS:
         raise HTTPException(status_code=400,
                             detail=f"sort must be one of {sorted(_SORTS)}")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be 0 or greater")
     if not (0.0 <= adventure <= 1.0):
         raise HTTPException(status_code=400,
                             detail="adventure must be in [0, 1]")
@@ -236,6 +239,7 @@ def ranked_rows(*, combo_type: str, min_score: float, limit: int,
                 max_per_song: int, genre: str, era: str, energy: str,
                 bpm_band: str, vocal_forward: bool,
                 max_effort: Optional[float], order: str, adventure: float,
+                offset: int = 0,
                 sort: str = "score", with_reasons: bool = True,
                 weights: Optional[dict] = None,
                 effort_weight: Optional[float] = None,
@@ -262,6 +266,7 @@ def ranked_rows(*, combo_type: str, min_score: float, limit: int,
         max_per_song=max_per_song,
         genre=genre, era=era, energy=energy, bpm_band=bpm_band,
         vocal_forward=vocal_forward, max_effort=max_effort, order=order,
+        offset=offset,
         weights=weights, effort_weight=effort_weight,
         section_weight=section_weight,
         max_pitch_cost=max_pitch_cost, max_stretch_cost=max_stretch_cost,
@@ -286,6 +291,7 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     max_effort: Optional[float] = None,
                     order: str = "score",
                     adventure: float = 0.0,
+                    offset: int = 0,
                     sort: str = "score",
                     weights: Optional[str] = None,
                     effort_weight: Optional[float] = None,
@@ -320,7 +326,7 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     already displayed but nothing could select on.
     """
     _validate_list_params(combo_type, max_per_song, order, adventure, sort,
-                          era, energy, bpm_band)
+                          era, energy, bpm_band, offset)
     parsed_weights = parse_weights(weights)
     _validate_unit_ranges(
         (effort_weight, "effort_weight"),
@@ -336,14 +342,19 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
         max_per_song=max_per_song, genre=genre, era=era, energy=energy,
         bpm_band=bpm_band, vocal_forward=vocal_forward, max_effort=max_effort,
-        order=order, adventure=adventure, sort=sort, weights=parsed_weights,
+        order=order, adventure=adventure, offset=offset, sort=sort,
+        weights=parsed_weights,
         effort_weight=effort_weight, section_weight=section_weight,
         max_pitch_cost=max_pitch_cost, max_stretch_cost=max_stretch_cost,
         min_harmonic_confidence=min_harmonic_confidence,
         exclude_bass_clash=exclude_bass_clash, min_collision=min_collision)
     return {"count": len(rows), "candidates": rows,
             "max_per_song": max_per_song, "order": order,
-            "adventure": adventure, "sort": sort,
+            "adventure": adventure, "sort": sort, "offset": offset,
+            # Whether asking for the next page can return anything. A short page
+            # means the pool ran out, which is the end of the list — the client
+            # needs to be told rather than left to keep asking.
+            "has_more": len(rows) >= limit and offset + limit < MAX_PAGING_DEPTH,
             "reweighted": parsed_weights is not None}
 
 

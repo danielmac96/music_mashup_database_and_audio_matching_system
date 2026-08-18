@@ -205,6 +205,10 @@ export const api = {
     weights = null,
     // Server-side sort, so the export can ask for the page it is looking at.
     sort = "",
+    // C.3 — how far into the ranked list this page starts. Applied after the
+    // per-song cap, which is greedy and therefore stateful, so the server
+    // re-derives the earlier pages rather than using a SQL OFFSET.
+    offset = 0,
   } = {}) => {
     const params = new URLSearchParams();
     if (comboType) params.set("combo_type", comboType);
@@ -229,6 +233,7 @@ export const api = {
     if (minCollision != null) params.set("min_collision", String(minCollision));
     if (weights) params.set("weights", JSON.stringify(weights));
     if (sort && sort !== "score") params.set("sort", sort);
+    if (offset) params.set("offset", String(offset));
     return jsonFetch(`/api/mashups?${params}`);
   },
 
