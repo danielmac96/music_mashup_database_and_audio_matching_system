@@ -21,6 +21,7 @@ from database.models import init_db  # noqa: E402
 
 from api.routes import database as database_routes  # noqa: E402
 from api.routes import datasets as dataset_routes  # noqa: E402
+from api.routes import discovery as discovery_routes  # noqa: E402
 from api.routes import jobs as jobs_routes  # noqa: E402
 from api.routes import mashups as mashup_routes  # noqa: E402
 from api.routes import mixes as mix_routes  # noqa: E402
@@ -63,6 +64,7 @@ app.include_router(mix_routes.router, prefix="/api/mixes", tags=["mixes"])
 app.include_router(dataset_routes.router, prefix="/api/datasets", tags=["datasets"])
 app.include_router(model_routes.router, prefix="/api/models", tags=["models"])
 app.include_router(studio_routes.router, prefix="/api/studio", tags=["studio"])
+app.include_router(discovery_routes.router, prefix="/api/discovery", tags=["discovery"])
 
 
 @app.get("/api/health")

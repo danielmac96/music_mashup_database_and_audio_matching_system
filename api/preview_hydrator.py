@@ -84,6 +84,11 @@ def start(tracks: list[dict]) -> str:
             "tracks": rows,
             "count": len(rows),
             "hydrated_count": sum(1 for t in rows if t.get("hydrated")),
+            # hydrated_count is "we finished trying"; enriched_count is "we got
+            # real metadata back". They differ for geo-blocked, private and
+            # removed uploads, and the gap is exactly what the preview panel
+            # needs to warn about before you commit to ingesting.
+            "enriched_count": sum(1 for t in rows if t.get("hydrated")),
             "done": False,
         }
     for idx, row in enumerate(rows):
@@ -95,7 +100,7 @@ def start(tracks: list[dict]) -> str:
 
 def get(session_id: Optional[str]) -> Optional[dict]:
     """Session snapshot for the poll endpoint: {tracks, count, hydrated_count,
-    done}. None for unknown/expired ids."""
+    enriched_count, done}. None for unknown/expired ids."""
     if not session_id:
         return None
     with _LOCK:
@@ -107,6 +112,7 @@ def get(session_id: Optional[str]) -> Optional[dict]:
             "tracks": [dict(t) for t in s["tracks"]],
             "count": s["count"],
             "hydrated_count": s["hydrated_count"],
+            "enriched_count": s["enriched_count"],
             "done": s["done"],
         }
 
@@ -142,12 +148,23 @@ def _hydrate_one(session_id: str, idx: int) -> None:
             if rich:
                 cache_put(source_url, rich)
 
-    merged = {**row, **(rich or {}), "hydrated": True}
+    # Hydration may only ADD information. A plain {**row, **rich} lets an empty
+    # rich value blank a populated flat one — the flat playlist listing carries a
+    # thumbnail and a duration that the per-track fetch sometimes returns as ""
+    # or 0, so the preview row would visibly lose its artwork on hydration.
+    merged = dict(row)
+    for key, value in (rich or {}).items():
+        if value in (None, "", 0) and merged.get(key) not in (None, "", 0):
+            continue
+        merged[key] = value
+    merged["hydrated"] = True
     with _LOCK:
         s = _SESSIONS.get(session_id)
         if s is None:
             return
         s["tracks"][idx] = merged
         s["hydrated_count"] += 1
+        if rich:
+            s["enriched_count"] += 1
         if s["hydrated_count"] >= s["count"]:
             s["done"] = True
