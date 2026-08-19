@@ -153,6 +153,38 @@ previews get a **Fix preview** action.
 
 ---
 
+## Discover tab (find tracks, then find mashups)
+
+**Discover** holds two panes behind a segmented control.
+
+**Find tracks** searches SoundCloud directly — tracks, sets or artists — and you
+can paste any SoundCloud link to jump straight to it. Click an artist to browse
+their uploads, likes or sets; click *similar* on a track for SoundCloud's own
+related list. Every row shows whether it is **already in your library**, so a
+half-collected back catalogue is obvious at a glance, and Go+ tracks are flagged
+as **Go+ preview** *before* you import one and discover only ~30s is downloadable.
+
+Tick the rows you want, then either **Import & process** (straight into the
+library and the pipeline) or **Add to crate**.
+
+A **crate** is a shortlist that lives in this app's database. Its items do *not*
+have to be downloaded — that is the point: collect while browsing, decide later.
+Crates are drag-reorderable, dedupe on add, and export as a URL list or as JSON
+that imports back into another crate. **Import** on a crate downloads and
+processes everything in it that is not already in your library.
+
+> **Why crates instead of real SoundCloud playlists?** Writing to a SoundCloud
+> account needs OAuth against a *registered* app, and SoundCloud stopped
+> accepting new API app registrations in 2019. Reading needs no credentials at
+> all. If you do have a client id and secret, put them in Settings and the
+> greyed **Push to SoundCloud** button on a crate starts working — it creates a
+> private playlist and updates it in place on re-push.
+
+**Find mashups** is the ranked section-pair list (formerly the whole Discover
+tab) — unchanged, including keyboard triage and "Find beds" from Library.
+
+---
+
 ## Studio tab (multi-track mashup DAW)
 
 **Studio** is the only arranger — it absorbed the old two-deck Audition tab,
@@ -313,6 +345,8 @@ Each stage filters by status, so re-running the pipeline only touches tracks tha
 | Config | `config.py` | All paths, model names, weights, plus the settings layer (env > `settings.json` > default). See **Settings & configuration**. |
 | Database | `database/models.py` | SQLite schema + CRUD helpers |
 | Ingest | `ingest/soundcloud.py` | Fetch playlist metadata via `yt-dlp` |
+| Browse | `ingest/soundcloud_browse.py` | SoundCloud search / resolve / playlists / users / related, paged and throttled (Discover tab) |
+| SC write | `ingest/soundcloud_oauth.py` | OAuth 2.1 playlist push — **dormant** without app credentials |
 | Download | `downloader/download.py` | yt-dlp wrapper, with YouTube fallback for SoundCloud Go+ previews |
 | Stems | `stems/separate.py` | Demucs separation |
 | Analysis | `analysis/analyze.py` | Audio feature extraction |

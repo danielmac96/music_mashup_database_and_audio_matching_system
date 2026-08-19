@@ -1,10 +1,55 @@
 # CLAUDE.md — AI Assistant Guide
 
-current goal: a producer-side review (P0–P3, see below) landed on top of Phases
-A–F. **Before the §5 seventeen-mix ingest, re-analyse any existing library**:
-`features.bpm_confidence` and the per-section chroma both changed meaning.
+current goal: **Phase 1 of the Discovery plan is done** (branch `discovery-tab`,
+commits D1.0–D1.6). Next is Phase 2 of
+`~/.claude/plans/using-the-current-repo-abstract-curry.md`: the two data-losing
+bugs first, then section-level analysis columns.
 
-What that review changed, and why it matters when reading this code:
+**Before the §5 seventeen-mix ingest, re-analyse any existing library**:
+`features.bpm_confidence` and the per-section chroma both changed meaning. Phase 2
+adds a second reason to re-analyse — do the backfill once, after it, not twice.
+
+### Discovery tab (Phase 1, shipped)
+
+Discover is now two panes: **Find tracks** (SoundCloud search/browse → crates →
+bulk import) and **Find mashups** (the pre-existing ranked list, unmodified).
+
+- `ingest/soundcloud_browse.py` is a **separate module from
+  `ingest/soundcloud_api.py` on purpose**, and `soundcloud_api.py` has a
+  zero-line diff. `search_candidates` there feeds the mixes auto-resolver, which
+  EXECUTION_PLAN §0.1 freezes; browse's throttle, cache and circuit breaker would
+  otherwise change that path's timing and failure modes. A test greps the frozen
+  module to keep the dependency pointing one way.
+- **Both layers share one scraped `client_id`.** Getting it rate-limited breaks
+  the frozen resolver too — which is why browse throttles, backs off on 429, and
+  opens a breaker after repeated failures, and why the UI searches on Enter and
+  pages with a button rather than as-you-type and infinite scroll.
+- `soundcloud_browse.track_row` emits **exactly** the key set
+  `ingest/soundcloud._normalise` emits. That is what lets browse results drop
+  into `POST /api/playlists/ingest` unchanged. A test pins the equivalence — if
+  you add a field to one, add it to the other.
+- The pagination cursor is SoundCloud's opaque `next_href`, which round-trips
+  through our API to the browser and back. It is validated against
+  `https://api-v2.soundcloud.com` before being fetched.
+- **Crates** (`crates` / `crate_items`) are the local answer to "manipulate a
+  playlist". An item does **not** require the track to be in the library, and
+  `payload_json` freezes the whole canonical ingest row so a crate ingests with
+  no further network calls.
+- `ingest/soundcloud_oauth.py` is **complete and dormant**. Writes need a
+  registered app and SoundCloud closed registration in 2019, so every write
+  endpoint answers **501 naming the settings keys**, never 500 and never a silent
+  no-op. Writes target `api.soundcloud.com` with an `Authorization` header; the
+  read layer sends none and **must never start** — attempting writes with a
+  scraped client_id would risk the read path, and with it the frozen resolver.
+- Library membership is answered per page by `songs_by_identity`, matching
+  `source_url` first and `track_id` second. `idx_songs_track_id` lives at the end
+  of `_migrate_songs_columns`, **not** in `SCHEMA`: `executescript(SCHEMA)` runs
+  before the migrations, so an index on a migrated column would raise on older
+  databases.
+
+### The producer-side review (P0–P3), which landed on top of Phases A–F
+
+What it changed, and why it matters when reading this code:
 
 - `bpm_confidence` was `len(beats) / n_frames` — beats-per-frame, i.e.
   `bpm / 2580`, spanning 0.027–0.067. Everything read it as a 0–1 confidence, so
