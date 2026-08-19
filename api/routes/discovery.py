@@ -185,12 +185,81 @@ def import_rows(req: ImportRequest) -> dict:
 @router.get("/status")
 def status() -> dict:
     """What Discovery can do right now. Read always works; write needs an app."""
+    return {"read_enabled": True, "account": _account_status(),
+            "write_enabled": bool(_account_status().get("authorized"))}
+
+
+# ── account (dormant until credentials exist) ────────────────────────────────
+# Every one of these answers 501 with a plain explanation rather than 500 or a
+# silent no-op, so the UI can grey the affected controls and say why.
+
+def _account_status() -> dict:
     try:
         from ingest import soundcloud_oauth
-        account = soundcloud_oauth.status()
+        return soundcloud_oauth.status()
     except Exception:  # noqa: BLE001 — the write layer is optional by design
         log.debug("soundcloud_oauth unavailable", exc_info=True)
-        account = {"configured": False, "authorized": False,
-                   "reason": "SoundCloud write support is not installed."}
-    return {"read_enabled": True, "account": account,
-            "write_enabled": bool(account.get("authorized"))}
+        return {"configured": False, "authorized": False, "username": "",
+                "reason": "SoundCloud write support is not installed."}
+
+
+def _oauth():
+    from ingest import soundcloud_oauth
+    return soundcloud_oauth
+
+
+def guard_write(fn, *args, **kwargs):
+    """Run a write, mapping "not set up" to 501 and a rejection to 502.
+
+    Shared with the crates router so a dormant push and a dormant like explain
+    themselves the same way."""
+    oauth = _oauth()
+    try:
+        return fn(*args, **kwargs)
+    except oauth.NotConfigured as exc:
+        raise HTTPException(status_code=501, detail=str(exc)) from exc
+    except oauth.SoundCloudAuthError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+class AuthStartRequest(BaseModel):
+    redirect_uri: str
+
+
+class AuthCallbackRequest(BaseModel):
+    code: str
+    verifier: str
+    redirect_uri: str
+
+
+@router.get("/account")
+def account() -> dict:
+    return _account_status()
+
+
+@router.post("/account/authorize")
+def account_authorize(req: AuthStartRequest) -> dict:
+    """Begin the OAuth flow. The verifier comes back to the caller and is handed
+    to /account/callback — it never goes over the wire, which is the point of PKCE."""
+    return guard_write(_oauth().authorize_url, req.redirect_uri)
+
+
+@router.post("/account/callback")
+def account_callback(req: AuthCallbackRequest) -> dict:
+    return guard_write(_oauth().exchange_code, req.code, req.verifier, req.redirect_uri)
+
+
+@router.post("/account/disconnect")
+def account_disconnect() -> dict:
+    _oauth().disconnect()
+    return _account_status()
+
+
+@router.post("/tracks/{track_id}/like")
+def like(track_id: str) -> dict:
+    return {"liked": True, "result": guard_write(_oauth().like_track, track_id)}
+
+
+@router.delete("/tracks/{track_id}/like")
+def unlike(track_id: str) -> dict:
+    return {"liked": False, "result": guard_write(_oauth().unlike_track, track_id)}

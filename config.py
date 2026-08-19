@@ -167,6 +167,12 @@ def settings_provenance() -> dict:
                   "source": "env" if os.environ.get(spec[0]) else "settings"}
            for name, spec in _TUNABLE_INTS.items()},
         "match_weights": {"value": current_match_weights(), "source": "settings"},
+        # Presence only, never the values — this response goes to the browser.
+        # The secret must not leave the server, and neither must the token.
+        "soundcloud_client_id": {"value": bool(SOUNDCLOUD_CLIENT_ID),
+                                 "source": SOUNDCLOUD_CLIENT_ID_SOURCE},
+        "soundcloud_client_secret": {"value": bool(SOUNDCLOUD_CLIENT_SECRET),
+                                     "source": SOUNDCLOUD_CLIENT_SECRET_SOURCE},
         "stem_format": {"value": STEM_FORMAT, "source": "code"},
         "configured": CONFIGURED,
         "settings_path": str(settings_path()),
@@ -335,9 +341,31 @@ AUTO_LINK_MIN_DURATION = 60.0   # seconds; guards against preview-length mislink
 # rather than being averaged away.
 AUTO_LINK_MIN_ARTIST   = 0.5
 
-# ── SoundCloud scrape ─────────────────────────────────────────────────────────
-# Used when you pass a playlist URL rather than a local file list
-SC_CLIENT_ID = os.getenv("SC_CLIENT_ID", "")   # optional, for higher rate limits
+# ── SoundCloud ────────────────────────────────────────────────────────────────
+# READING SoundCloud needs no credentials at all: ingest/soundcloud_api.py scrapes
+# a working client_id out of SoundCloud's own public JS bundles, and that is what
+# both the mixes auto-resolver and the Discovery browse layer use.
+#
+# WRITING (creating a playlist on your account, liking, reposting) needs OAuth 2.1
+# against a *registered* app — a client id AND secret from developers.soundcloud.com.
+# That registration has been closed to new applicants since 2019, so these are
+# empty for almost everyone and the write layer stays dormant: see
+# ingest/soundcloud_oauth.py, which reports `configured: false` and makes every
+# write endpoint answer 501 with an explanation rather than failing obscurely.
+#
+# Set them and the "Push to SoundCloud" action on a crate lights up. SC_CLIENT_ID
+# is kept as an env alias for the older name.
+_sc_id_val, SOUNDCLOUD_CLIENT_ID_SOURCE = _resolve(
+    "SOUNDCLOUD_CLIENT_ID", "soundcloud_client_id", os.getenv("SC_CLIENT_ID", ""))
+SOUNDCLOUD_CLIENT_ID = _sc_id_val
+_sc_secret_val, SOUNDCLOUD_CLIENT_SECRET_SOURCE = _resolve(
+    "SOUNDCLOUD_CLIENT_SECRET", "soundcloud_client_secret", "")
+SOUNDCLOUD_CLIENT_SECRET = _sc_secret_val
+
+# The OAuth token lives in its own file, NOT settings.json — GET /api/settings is
+# read by the browser and must never carry a bearer token.
+def soundcloud_token_path() -> Path:
+    return _settings_dir() / "soundcloud_token.json"
 
 # ── Firecrawl (1001tracklists structured scrape) ──────────────────────────────
 # Firecrawl's hosted stealth proxy renders + bypasses the Cloudflare Turnstile

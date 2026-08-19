@@ -209,6 +209,56 @@ def export(crate_id: int, format: str = Query("urls", pattern="^(urls|json|m3u)$
     return _attach("\n".join(lines) + "\n", "m3u", "audio/x-mpegurl")
 
 
+class PushRequest(BaseModel):
+    sharing: str = "private"
+
+
+@router.post("/{crate_id}/push")
+def push(crate_id: int, req: PushRequest) -> dict:
+    """Publish a crate as a real SoundCloud playlist on your account.
+
+    Dormant: this answers 501 with setup instructions until a client id and
+    secret exist and an account is connected. SoundCloud has not accepted new
+    API app registrations since 2019, so for most people the crate stays local —
+    which is exactly why crates exist rather than being a thin playlist mirror.
+
+    Private by default: pushing a shortlist should never publish to your
+    followers unless you ask for it. Re-pushing updates the same playlist rather
+    than creating a second one."""
+    from api.routes.discovery import guard_write
+    from ingest import soundcloud_oauth as oauth
+    from database.models import get_conn
+
+    crate = _crate_or_404(crate_id)
+    track_ids = [i["track_id"] for i in crate["items"] if i.get("track_id")]
+    if not track_ids:
+        raise HTTPException(
+            status_code=400,
+            detail="No item in this crate carries a SoundCloud track id, so there "
+                   "is nothing to push. Crates built from SoundCloud search or a "
+                   "resolved link will have them.")
+
+    if crate.get("sc_playlist_id"):
+        result = guard_write(oauth.set_playlist_tracks, crate["sc_playlist_id"], track_ids)
+    else:
+        result = guard_write(oauth.create_playlist, crate["name"], track_ids,
+                             sharing=req.sharing)
+
+    conn = get_conn()
+    try:
+        conn.execute(
+            """UPDATE crates SET sc_playlist_id=?, sc_permalink_url=?,
+                                 synced_at=datetime('now'), updated_at=datetime('now')
+                WHERE id=?""",
+            (str(result.get("id") or crate.get("sc_playlist_id") or ""),
+             result.get("permalink_url") or crate.get("sc_permalink_url") or "",
+             crate_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return {"pushed": len(track_ids), "crate": _crate_or_404(crate_id)}
+
+
 @router.post("/import")
 def import_urls(req: ImportUrlsRequest) -> dict:
     """Build a crate from a list of SoundCloud URLs — the other half of export.

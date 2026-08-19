@@ -249,6 +249,7 @@ CREATE TABLE IF NOT EXISTS crates (
     note             TEXT DEFAULT '',
     sc_playlist_id   TEXT DEFAULT '',
     sc_permalink_url TEXT DEFAULT '',
+    synced_at        TEXT,
     created_at       TEXT DEFAULT (datetime('now')),
     updated_at       TEXT DEFAULT (datetime('now')),
     UNIQUE(name)
@@ -322,6 +323,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
         _migrate_stems_columns(conn)
         _migrate_mixtracks_columns(conn)
         _migrate_mashuppairs_columns(conn)
+        _migrate_crates_columns(conn)
         conn.commit()
         _INITIALIZED_PATHS.add(key)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -599,6 +601,22 @@ def _migrate_features_columns(conn: sqlite3.Connection) -> None:
     for col, decl in _FEATURES_OPTIONAL_COLUMNS:
         if col not in existing:
             conn.execute(f"ALTER TABLE features ADD COLUMN {col} {decl}")
+
+
+_CRATES_OPTIONAL_COLUMNS = (
+    # When a crate was last pushed to SoundCloud. Only ever set by the dormant
+    # OAuth write path, so it stays NULL for everyone without app credentials.
+    ("synced_at", "TEXT"),
+)
+
+
+def _migrate_crates_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(crates)").fetchall()}
+    if not existing:
+        return   # table not created yet; SCHEMA will have made it complete
+    for col, decl in _CRATES_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE crates ADD COLUMN {col} {decl}")
 
 
 def _migrate_songs_columns(conn: sqlite3.Connection) -> None:
