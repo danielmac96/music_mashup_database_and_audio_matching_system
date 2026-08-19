@@ -394,8 +394,86 @@ export const api = {
 
   getScorerStatus: () => jsonFetch("/api/mashups/scorer-status"),
 
-  // Read-only DB browser (debug view). Maps to the api/routes/database.py
-  // router mounted at /api/db.
+  // ── Discovery (SoundCloud search/browse) + crates ──────────────────────────
+  // Every track row comes back with `in_library` already resolved server-side,
+  // so the browser never has to reconcile results against the library itself.
+
+  discoverySearch: (q, kind = "tracks", cursor = null, limit = 20) =>
+    jsonFetch(`/api/discovery/search?${new URLSearchParams({
+      q, kind, limit: String(limit), ...(cursor ? { cursor } : {}),
+    })}`),
+
+  // Paste any SoundCloud link: a track, a set, or an artist page. A set resolves
+  // straight to its tracks and an artist to their uploads.
+  discoveryResolve: (url) =>
+    jsonFetch("/api/discovery/resolve", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+
+  discoveryUserFeed: (userId, feed = "tracks", cursor = null) =>
+    jsonFetch(`/api/discovery/users/${userId}/${feed}${cursor
+      ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+
+  discoveryPlaylist: (playlistId) =>
+    jsonFetch(`/api/discovery/playlists/${playlistId}`),
+
+  discoveryRelated: (trackId, cursor = null) =>
+    jsonFetch(`/api/discovery/tracks/${trackId}/related${cursor
+      ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
+
+  discoveryImport: (rows) =>
+    jsonFetch("/api/discovery/import", {
+      method: "POST",
+      body: JSON.stringify({ rows }),
+    }),
+
+  discoveryStatus: () => jsonFetch("/api/discovery/status"),
+
+  getCrates: () => jsonFetch("/api/crates"),
+
+  getCrate: (id) => jsonFetch(`/api/crates/${id}`),
+
+  createCrate: (name, note = "") =>
+    jsonFetch("/api/crates", { method: "POST", body: JSON.stringify({ name, note }) }),
+
+  renameCrate: (id, name) =>
+    jsonFetch(`/api/crates/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+
+  deleteCrate: (id) => jsonFetch(`/api/crates/${id}`, { method: "DELETE" }),
+
+  addCrateItems: (id, rows) =>
+    jsonFetch(`/api/crates/${id}/items`, {
+      method: "POST",
+      body: JSON.stringify({ rows }),
+    }),
+
+  removeCrateItems: (id, itemIds) =>
+    jsonFetch(`/api/crates/${id}/items/remove`, {
+      method: "POST",
+      body: JSON.stringify({ item_ids: itemIds }),
+    }),
+
+  reorderCrate: (id, itemIds) =>
+    jsonFetch(`/api/crates/${id}/reorder`, {
+      method: "POST",
+      body: JSON.stringify({ item_ids: itemIds }),
+    }),
+
+  ingestCrate: (id) => jsonFetch(`/api/crates/${id}/ingest`, { method: "POST" }),
+
+  // A plain link, not a fetch: the response is a file download.
+  crateExportUrl: (id, format = "urls") =>
+    `/api/crates/${id}/export?format=${format}`,
+
+  // Dormant until SoundCloud app credentials exist — answers 501 with setup
+  // instructions, which the UI shows as the tooltip on the disabled button.
+  pushCrate: (id, sharing = "private") =>
+    jsonFetch(`/api/crates/${id}/push`, {
+      method: "POST",
+      body: JSON.stringify({ sharing }),
+    }),
+
   getDbTables: () => jsonFetch("/api/db/tables"),
 
   getDbTable: (table, limit = 100, offset = 0) =>

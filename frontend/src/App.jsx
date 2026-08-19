@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { MixImporter } from "./components/MixImporter";
 import { TrackList } from "./components/TrackList";
-import { MashupSuggestions } from "./components/MashupSuggestions";
+import { Discovery } from "./components/Discovery";
 import { MixStudio } from "./components/MixStudio";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { TuningPanel } from "./components/TuningPanel";
@@ -13,10 +13,13 @@ import { onToast } from "./toast";
 // mixes, find pairs, build them (T4.3). Import folded into Library (T4.2),
 // Audition into Studio (T4.1), and the database browser sits behind Settings —
 // it is a debugging window, not a step.
+// Discover holds two panes: finding tracks on SoundCloud and finding mashups in
+// what you already have. They are the same job at two scales — the mashup list
+// is what tells you which kind of track you are short of.
 const TABS = [
   ["library", "Library"],
   ["mixes", "Mixes"],
-  ["mashups", "Discover"],
+  ["discovery", "Discover"],
   ["studio", "Studio"],
 ];
 
@@ -109,7 +112,7 @@ export default function App() {
 
   const findMatches = (songId, role) => {
     setMashupSeed({ songId, role });
-    setTab("mashups");
+    setTab("discovery");
   };
 
   if (configured === false) {
@@ -167,13 +170,14 @@ export default function App() {
           onStatus={setHeaderStatus}
         />
       )}
-      {tab === "mashups" && (
-        <MashupSuggestions
+      {tab === "discovery" && (
+        <Discovery
           seed={mashupSeed}
           onClearSeed={() => setMashupSeed(null)}
           onAudition={(patch) => sendToStudio(patch)}
           onStatus={setHeaderStatus}
           showInstOverInst={prefs.showInstOverInst}
+          onOpenLibrary={() => setTab("library")}
         />
       )}
       {tab === "studio" && (
