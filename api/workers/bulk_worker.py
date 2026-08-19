@@ -83,6 +83,23 @@ def run(job_id: str, action: str, song_ids: list[int]) -> None:
 # unexplained count, and so a user who does not care about four-stem is not
 # told their library needs hours of work.
 
+# One definition of "this track predates a generation of feature we now need".
+# It was duplicated across staleness() and stale_song_ids(), which is exactly how
+# a new column gets counted as stale in the badge but skipped by the button.
+_STALE_ANALYSIS_SQL = """
+       NOT EXISTS (SELECT 1 FROM features f
+                   WHERE f.song_id=s.id AND f.band_energy_json IS NOT NULL)
+    OR NOT EXISTS (SELECT 1 FROM stems st
+                   WHERE st.song_id=s.id AND st.quality IS NOT NULL)
+    OR NOT EXISTS (SELECT 1 FROM sections sec
+                   WHERE sec.song_id=s.id AND sec.chroma_json IS NOT NULL)
+    -- P2.1: the section's own tempo, grid and class. A section row that predates
+    -- it has NULL bpm_source, which readers must treat as "not measured".
+    OR NOT EXISTS (SELECT 1 FROM sections sec
+                   WHERE sec.song_id=s.id AND sec.bpm_source IS NOT NULL)
+"""
+
+
 def staleness(db_path=None) -> dict:
     """How many analysed tracks are missing each generation of feature."""
     from database.models import get_conn
@@ -137,15 +154,19 @@ def staleness(db_path=None) -> dict:
                        WHERE st.song_id = s.id AND st.stem_type='drums')"""
             ).fetchone()[0]
 
+        # P2.1: sections carrying no measured tempo/grid of their own.
+        no_section_grid = conn.execute(
+            """SELECT COUNT(DISTINCT s.id) FROM songs s
+               WHERE s.status='analysed'
+                 AND EXISTS (SELECT 1 FROM sections x WHERE x.song_id = s.id)
+                 AND NOT EXISTS (
+                   SELECT 1 FROM sections sec
+                   WHERE sec.song_id = s.id AND sec.bpm_source IS NOT NULL)"""
+        ).fetchone()[0]
+
         needs_analysis = conn.execute(
-            """SELECT COUNT(*) FROM songs s
-               WHERE s.status='analysed' AND (
-                   NOT EXISTS (SELECT 1 FROM features f
-                               WHERE f.song_id=s.id AND f.band_energy_json IS NOT NULL)
-                OR NOT EXISTS (SELECT 1 FROM stems st
-                               WHERE st.song_id=s.id AND st.quality IS NOT NULL)
-                OR NOT EXISTS (SELECT 1 FROM sections sec
-                               WHERE sec.song_id=s.id AND sec.chroma_json IS NOT NULL))"""
+            f"""SELECT COUNT(*) FROM songs s
+                WHERE s.status='analysed' AND ({_STALE_ANALYSIS_SQL})"""
         ).fetchone()[0]
         return {
             "total_analysed": total,
@@ -153,6 +174,7 @@ def staleness(db_path=None) -> dict:
             "missing_band_energy": no_bands,
             "missing_stem_quality": no_quality,
             "missing_section_chroma": no_chroma,
+            "missing_section_grid": no_section_grid,
             "missing_sections": no_sections,
             "missing_four_stems": wrong_stem_mode,
             "stem_mode": "four" if four else "two",
@@ -182,15 +204,9 @@ def stale_song_ids(action: str, db_path=None) -> list[int]:
                    ORDER BY s.id""").fetchall()
             return [r[0] for r in rows]
         rows = conn.execute(
-            """SELECT s.id FROM songs s
-               WHERE s.status='analysed' AND (
-                   NOT EXISTS (SELECT 1 FROM features f
-                               WHERE f.song_id=s.id AND f.band_energy_json IS NOT NULL)
-                OR NOT EXISTS (SELECT 1 FROM stems st
-                               WHERE st.song_id=s.id AND st.quality IS NOT NULL)
-                OR NOT EXISTS (SELECT 1 FROM sections sec
-                               WHERE sec.song_id=s.id AND sec.chroma_json IS NOT NULL))
-               ORDER BY s.id""").fetchall()
+            f"""SELECT s.id FROM songs s
+                WHERE s.status='analysed' AND ({_STALE_ANALYSIS_SQL})
+                ORDER BY s.id""").fetchall()
         return [r[0] for r in rows]
     finally:
         conn.close()

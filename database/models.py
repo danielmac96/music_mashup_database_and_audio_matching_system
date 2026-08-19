@@ -550,6 +550,29 @@ _SECTIONS_OPTIONAL_COLUMNS = (
     ("mode", "TEXT"),
     ("camelot", "TEXT"),
     ("key_confidence", "REAL"),
+    # P2.1 — the section's OWN tempo and grid. Every bar count in the system was
+    # previously derived on the fly from bars_in(seconds, track_bpm), which is an
+    # average over a record that may change tempo and cannot express a section
+    # whose grid is simply unreadable. Measured inside detect_sections' existing
+    # segment loop, where the beat grid and onset envelope are already in memory.
+    ("bpm", "REAL"),
+    ("bpm_source", "TEXT"),          # 'section_estimate' | 'track_fallback'
+    ("bpm_confidence", "REAL"),      # steadiness x salience, as analyze.py means it
+    # energy above is normalised to the track's own 95th percentile, which says
+    # where this section sits WITHIN the record. Comparing two records needs the
+    # unnormalised figure as well.
+    ("energy_absolute", "REAL"),
+    ("energy_slope", "REAL"),        # signed, per second, over the section
+    ("energy_trend", "TEXT"),        # 'increasing' | 'decreasing' | 'stable'
+    ("beat_times_json", "TEXT"),
+    ("downbeats_json", "TEXT"),      # bar lines, from beat_times + beat phase
+    ("beat_count", "INTEGER"),
+    ("bar_count", "REAL"),
+    ("beats_per_bar", "INTEGER DEFAULT 4"),
+    ("phrase_length_bars", "REAL"),
+    # vocal|instrumental|mixed|unknown. vocal_presence is a continuous 0-1 and
+    # every caller re-invented its own threshold; this is the shared answer.
+    ("section_class", "TEXT"),
 )
 
 
@@ -1360,8 +1383,13 @@ def replace_sections(song_id: int, sections: List[Dict],
                 energy, vocal_presence, repetition, confidence,
                 chroma_json, bass_chroma_json,
                 chroma_vocal_json, chroma_bed_json, key, mode, camelot,
-                key_confidence)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                key_confidence,
+                bpm, bpm_source, bpm_confidence,
+                energy_absolute, energy_slope, energy_trend,
+                beat_times_json, downbeats_json, beat_count, bar_count,
+                beats_per_bar, phrase_length_bars, section_class)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                   ?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 song_id, idx,
@@ -1375,6 +1403,14 @@ def replace_sections(song_id: int, sections: List[Dict],
                 json.dumps(s["chroma_bed"]) if s.get("chroma_bed") else None,
                 s.get("key"), s.get("mode"), s.get("camelot"),
                 s.get("key_confidence"),
+                s.get("bpm"), s.get("bpm_source"), s.get("bpm_confidence"),
+                s.get("energy_absolute"), s.get("energy_slope"),
+                s.get("energy_trend"),
+                json.dumps(s["beat_times"]) if s.get("beat_times") else None,
+                json.dumps(s["downbeats"]) if s.get("downbeats") else None,
+                s.get("beat_count"), s.get("bar_count"),
+                s.get("beats_per_bar"), s.get("phrase_length_bars"),
+                s.get("section_class"),
             )
             for idx, s in enumerate(sections)
         ],
@@ -1398,7 +1434,9 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
         for src, dest in (("chroma_json", "chroma"),
                           ("bass_chroma_json", "bass_chroma"),
                           ("chroma_vocal_json", "chroma_vocal"),
-                          ("chroma_bed_json", "chroma_bed")):
+                          ("chroma_bed_json", "chroma_bed"),
+                          ("beat_times_json", "beat_times"),
+                          ("downbeats_json", "downbeats")):
             if d.get(src):
                 d[dest] = json.loads(d.pop(src))
             else:
