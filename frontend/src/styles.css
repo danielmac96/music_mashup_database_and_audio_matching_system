@@ -1926,3 +1926,11 @@ input, select { font-family: inherit; }
    with its reason in the tooltip beats a banner nagging about a feature almost
    nobody can turn on. */
 .crate-actions .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Spec §10's human-readable candidate line: "chorus 1:12–1:44 over drop
+   0:48–1:20 · 16 bars · 120→128 BPM · nudge the bed +300 ms". Deliberately
+   quiet — it is the answer to "and then what?", not the headline. */
+.pair-reason {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
+  text-align: center; margin: 5px 0 2px; line-height: 1.45;
+}

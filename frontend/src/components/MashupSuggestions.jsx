@@ -780,6 +780,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                       <div className="cell"><span style={{ width: w(c.score_energy), background: "var(--amber)" }} /></div>
                       <div className="cell"><span style={{ width: w(c.score_timbre), background: "var(--green)" }} /></div>
                     </div>
+                    {/* Spec §10: what building this pair actually involves —
+                        which sections, how many bars, the tempo move and the
+                        nudge. Stored on the row (P2.4), so no recomputation. */}
+                    {c.reason && <div className="pair-reason">{c.reason}</div>}
                     <div className="relation-chips">
                       <span className="rel-chip" style={{ color: kr.tagColor, background: kr.tagBg }}>{kr.tag}</span>
                       <span className="rel-chip bpm">{bpmTag(c.vocal_bpm, c.inst_bpm)}</span>

@@ -505,6 +505,15 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("score_phrase", "REAL"),
     ("score_rhythm", "REAL"),
     ("score_structure", "REAL"),
+    # P2.4 / spec §8 — what building this pair actually involves. Computed at
+    # scoring time from the stored per-section downbeats, so the ranked list can
+    # say it without the export step having to be reached first.
+    ("alignment_downbeat", "REAL"),
+    ("alignment_offset", "REAL"),
+    ("target_bpm", "REAL"),
+    ("tempo_adjustment", "REAL"),
+    ("pitch_adjustment", "INTEGER"),
+    ("reason", "TEXT"),
     # Phase C — how much WORK this pair costs to build, 0 (free) to 1. The four
     # sub-scores all measure similarity; none of them measures effort, but a
     # 12% stretch and a +5 semitone shift are real costs a producer weighs
@@ -1487,12 +1496,15 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        section_bars_vocal, section_bars_bed,
        section_loop_repeats, section_note,
        score_phrase, score_rhythm, score_structure,
+       alignment_downbeat, alignment_offset, target_bpm,
+       tempo_adjustment, pitch_adjustment, reason,
        score_effort, effort_stretch, effort_pitch,
        effort_tempo_fold, effort_grid, effort_key_certainty,
        harmonic_shift, harmonic_confidence, bass_clash,
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+             ?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -1513,6 +1525,12 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_phrase=excluded.score_phrase,
        score_rhythm=excluded.score_rhythm,
        score_structure=excluded.score_structure,
+       alignment_downbeat=excluded.alignment_downbeat,
+       alignment_offset=excluded.alignment_offset,
+       target_bpm=excluded.target_bpm,
+       tempo_adjustment=excluded.tempo_adjustment,
+       pitch_adjustment=excluded.pitch_adjustment,
+       reason=excluded.reason,
        score_effort=excluded.score_effort,
        effort_stretch=excluded.effort_stretch,
        effort_pitch=excluded.effort_pitch,
@@ -1554,6 +1572,8 @@ SECTION_PAIR_COLUMNS = (
     "section_bars_vocal", "section_bars_bed",
     "section_loop_repeats", "section_note",
     "score_phrase", "score_rhythm", "score_structure",
+    "alignment_downbeat", "alignment_offset", "target_bpm",
+    "tempo_adjustment", "pitch_adjustment", "reason",
 )
 
 

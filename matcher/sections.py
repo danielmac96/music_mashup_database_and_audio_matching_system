@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 from matcher.plan import (
     _INST_LABEL_PRIORITY, _VOCAL_LABEL_PRIORITY, _pick_sections,
 )
+from matcher.alignment import align, describe
 from matcher.section_score import section_components
 
 # What a section pair is judged on. Deliberately only the three things a
@@ -221,7 +222,8 @@ def top_section_pairs(vocal_sections: List[Dict], inst_sections: List[Dict],
 
 
 def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
-              stretch: float, bpm: Optional[float]) -> Dict:
+              stretch: float, bpm: Optional[float],
+              semitones: Optional[int] = None) -> Dict:
     """The stored shape of one section pair. Shared by both entry points so a
     row means the same thing however it was chosen."""
     pf = phrase_fit(
@@ -229,8 +231,17 @@ def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
         (float(i.get("end_sec") or 0) - float(i.get("start_sec") or 0))
         / max(float(stretch or 1.0), 1e-6), bpm)
     parts = section_components(v, i, stretch)
+    # Spec §8: the ranked list should say what building this involves, not just
+    # that it is worth building. Computed from the stored per-section downbeats,
+    # so it costs no audio and runs for every candidate rather than only for the
+    # ones that reach export.
+    aligned = align(v, i, stretch, semitones, target_bpm=bpm)
+    row_bars = {"section_bars_vocal": pf.get("vocal_bars"),
+                "section_loop_repeats": pf.get("repeats")}
     return {
         **parts,
+        **aligned,
+        "reason": describe(v, i, row_bars, aligned, bpm, bpm),
         "vocal_section_idx": _index_of(v, vi),
         "inst_section_idx": _index_of(i, ii),
         "vocal_section_start": round(float(v.get("start_sec") or 0.0), 3),
