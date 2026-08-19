@@ -1643,6 +1643,17 @@ def clear_candidates(db_path: Path = DB_PATH) -> None:
     conn.close()
 
 
+# The spec (§13) names four states: good | bad | saved | ignored. The repo has
+# had three verdicts plus two suppression tables since T2.1, and that shape is
+# BETTER than the spec's, because it separates "I judged this" from "stop
+# showing me this" — conflating them poisons the training set with rows the user
+# hid for reasons that have nothing to do with whether the mashup works.
+#
+# So the vocabulary is mapped, not migrated. The learned scorer trains on these
+# values today and a rename would invalidate every stored judgement:
+#
+#     spec 'good'    -> 'ok'            spec 'saved'   -> 'love'
+#     spec 'bad'     -> 'no'            spec 'ignored' -> pair_hidden / track_excluded
 VERDICTS = ("love", "ok", "no")
 
 
