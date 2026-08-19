@@ -1,0 +1,27 @@
+{
+ "collection": [
+  {
+   "id": 7001,
+   "kind": "playlist",
+   "title": "Summer Crate",
+   "permalink_url": "https://soundcloud.com/artistone/sets/summer-crate",
+   "track_count": 4,
+   "duration": 840000,
+   "genre": "House",
+   "artwork_url": "https://i1.sndcdn.com/artworks-set-large.jpg",
+   "user": {
+    "id": 900,
+    "kind": "user",
+    "username": "artistone",
+    "permalink_url": "https://soundcloud.com/artistone",
+    "avatar_url": "https://i1.sndcdn.com/avatars-000-large.jpg",
+    "followers_count": 100,
+    "track_count": 10,
+    "verified": false,
+    "city": "",
+    "country_code": ""
+   }
+  }
+ ],
+ "next_href": null
+}
