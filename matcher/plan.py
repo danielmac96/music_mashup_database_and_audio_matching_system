@@ -21,11 +21,23 @@ from matcher.match import (
     camelot_score, compute_semitone_shift, compute_stretch_factor, effective_bpm,
 )
 
-# Section label priority when choosing what to mash.
-_VOCAL_LABEL_PRIORITY = {"chorus": 0, "verse": 1, "bridge": 2, "drop": 3,
-                         "breakdown": 4, "intro": 5, "outro": 6}
-_INST_LABEL_PRIORITY = {"drop": 0, "chorus": 1, "verse": 2, "breakdown": 3,
-                        "bridge": 4, "intro": 5, "outro": 6}
+from matcher.patterns import priority_for
+
+# Section label priority when choosing what to mash — now DERIVED from the
+# configured mashup patterns (matcher/patterns.py) rather than hard-coded here.
+# Same shape as before, so _pick_sections and matcher.sections.usable_sections
+# are unchanged; the patterns are simply where the ordering now comes from.
+#
+# These module-level snapshots exist because both are imported by name
+# elsewhere. Prefer current_priority() below in new code: patterns are read live
+# from settings.json, and a module constant freezes whatever they were at import.
+_VOCAL_LABEL_PRIORITY = priority_for(vocal_side=True)
+_INST_LABEL_PRIORITY = priority_for(vocal_side=False)
+
+
+def current_priority(vocal_side: bool) -> Dict[str, int]:
+    """Live label priority for one side, honouring edited patterns."""
+    return priority_for(vocal_side=vocal_side)
 
 
 def _fmt_ts(secs: float) -> str:
