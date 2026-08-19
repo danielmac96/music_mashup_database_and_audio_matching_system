@@ -1,13 +1,16 @@
 # Claude — Next Steps for the Mashup Engine
 
-An audit of missed opportunities and improvements toward the ultimate goal:
-**taking a library of downloaded, stem-separated, analysed tracks and easily
-mashing them together into a Two Friends / Big Bootie-style mix.**
+An audit of what is left on the way to the goal: **taking a library of
+downloaded, stem-separated, analysed tracks and easily mashing them into a
+Two Friends / Big Bootie-style mix.**
 
-Written after building the Studio tab (multi-track DAW timeline over the
-N-voice `MashupEngine`, grid snapping, tempo sync, pitch per lane, server-side
-WAV mixdown). Each item below states the gap, why it matters, and includes a
-ready-to-paste **Claude Code prompt** to implement it.
+Originally written after building the Studio tab. **Rewritten 2026-08-19**,
+after the Discovery tab and the section-matching spec work landed — six of the
+original nineteen items had shipped in the meantime and were sending readers to
+rebuild things that already existed.
+
+Each item states the gap, why it matters, and carries a ready-to-paste
+**Claude Code prompt** pointed at the files as they are now.
 
 How to read the tiers:
 
@@ -18,433 +21,426 @@ How to read the tiers:
 
 ---
 
-## Tier A — Make the mashups sound better
+## ⚠ Do this first: re-analyse the library
 
-### A1. Clip trim (in/out points) — *the single biggest gap*
+`Settings → Re-analyse N`. Three generations of feature changed meaning:
+`features.bpm_confidence`, the per-section chroma, and the whole per-section
+tempo/grid/class block added in P2.1.
 
-Today a Studio lane always plays the **whole stem**. Real mashups use the
-chorus of one song and the drop of another. Without trim, users fake it with
-offsets and mutes.
+**Until it runs, the three new score components sit at zero weight and the
+ranked list is unchanged.** That is deliberate — they read per-section columns
+that are NULL on an un-backfilled library, and turning them on early would score
+on missing data. See **N1** below for the follow-up.
 
-Why it matters: it unlocks "vocal chorus over instrumental drop", the core
-Big Bootie move. The engine already supports it implicitly — a voice is armed
-from a raw offset — so this is mostly plumbing: `clipStartSec`/`clipEndSec`
-per lane, drag handles on the clip edges, and matching `clip_start`/`clip_end`
-fields in the mixdown renderer.
+---
+
+## Where the original audit stands
+
+Kept rather than deleted, so the history stays readable.
+
+| Ref | Item | Status |
+|-----|------|--------|
+| A1 | Clip trim (in/out) | **Half done** — see A1 below |
+| A2 | Fades / crossfades | live |
+| A3 | Per-lane low/high-cut | live |
+| A4 | Stereo mixdown | live |
+| A5 | Grid phase / set downbeat | ✅ shipped — alt+click a beat line in Studio |
+| B1 | Send to Studio | ✅ shipped — from Library and Discover |
+| B2 | Auto-arrange | live |
+| B3 | Multiple clips per lane | live |
+| B4 | Studio undo/redo | live |
+| B5 | Auto-resolve Mixes tracks | ✅ shipped, and went further than proposed |
+| C1 | Learned pairwise scorer | ✅ shipped — Phase F, grouped CV + calibration |
+| C2 | Four-stem separation | ✅ shipped — Phase D |
+| C3 | Onset-accurate micro-alignment | **Half done** — see C3 below |
+| C4 | 1001tracklists scrape | ✅ shipped via Firecrawl, not the proposed Playwright |
+| D1 | Server-side Studio projects | live |
+| D2 | Multi-resolution waveform peaks | live |
+| D3 | Master limiter + meters | **Half done** — see D3 below |
+| D4 | Job persistence across restarts | live |
+| D5 | requirements + CI | live |
+
+Also shipped since, and not in the original audit: the **Discovery tab**
+(SoundCloud search/browse → local crates → bulk import), **section-level
+analysis** (per-section tempo, grid, downbeats, energy shape, class),
+**configurable mashup patterns**, **phrase/rhythm/structure scores**,
+**alignment persisted on every candidate**, and **candidate preview rendering**.
+
+---
+
+## Tier N — New, and first in the queue
+
+### N1. Turn on the phrase / rhythm / structure weights
+
+They are computed and stored on every candidate row but weighted **zero**
+(`config.SECTION_WEIGHTS`). This is the one task that is blocked purely on the
+re-analysis above, and it is the payoff for all of Phase 2.
+
+Do it empirically, not by taste: the numbers are already in the database, so you
+can see what they would do before letting them do it.
 
 **Prompt:**
-> In the Studio tab (frontend/src/components/MixStudio.jsx), add per-lane clip
-> trimming. Add `clipStart` and `clipEnd` (raw content seconds, default 0 and
-> buffer duration) to the lane state, persisted in the localStorage project.
-> Render drag handles on the left/right edges of the clip body in `paintLane`
-> plus invisible 8px hit zones in the lane div; dragging a handle changes
-> clipStart/clipEnd with the same snap-to-grid behaviour as moving a clip
-> (snap the trimmed edge to the project grid). The waveform, beat grid and
+> The library has been re-analysed, so sections now carry bar_count, beat_times,
+> downbeats and energy_trend. Before changing any weight, write a one-off script
+> under a scratch path that reads mashup_candidates and reports, for
+> score_phrase / score_rhythm / score_structure: the distribution (min, median,
+> p90, max), how many rows are at the neutral fallback (0.5 for rhythm and
+> structure), and the Spearman correlation of each against score_total and
+> against the stored pair_feedback verdicts. Then raise the three weights in
+> config.SECTION_WEIGHTS proportionally to how much signal each actually
+> carries, keeping label/duration/voice dominant, re-score, and report how much
+> the top 50 of the ranked list changed (rows added, rows dropped, rank
+> correlation). Do not raise a weight whose component is mostly sitting at its
+> neutral fallback — that would be adding noise, not signal.
+
+### N2. Resolve the 11 failing tests
+
+`tests/test_match_score.py` (9), `tests/test_mix_resolve.py` (1) and
+`tests/test_tracklist_parse.py` (1) fail on a clean checkout and have for a
+while. The first two are untracked WIP; the third is a tracked fixture snapshot.
+
+This matters more than it looks: a permanently red suite means a real regression
+has nowhere to show up. `ingest/match_score.py` is itself a reconstruction
+(CLAUDE.md flags it), so the test and the module genuinely disagree about the
+intended weights — someone has to decide which is right.
+
+**Prompt:**
+> Run pytest and triage the 11 failures. For tests/test_match_score.py, compare
+> what the tests assert against what ingest/match_score.py computes, using the
+> recorded responses in tests/fixtures/sc_search/ — that module is a
+> reconstruction, so decide per test whether the test encodes the intended
+> behaviour (fix the module) or a stale expectation (fix the test), and say
+> which you chose and why for each. For test_tracklist_parse's festival_set
+> fixture, the parser now returns artist='' and parse_confidence 0.5 where the
+> snapshot expects a parsed artist — work out whether the parser regressed or
+> the snapshot predates a deliberate change. Get the suite to zero failures,
+> then commit the previously-untracked test files so the baseline is defended.
+
+---
+
+## Tier A — Make the mashups sound better
+
+### A1. Clip trim in the Studio UI — *half done*
+
+**The renderer already supports it.** `render/mixdown.py` clips take optional
+`start_sec` / `end_sec` (added for candidate previews), and `load_segment` does
+the trimming. What is missing is the Studio half: a lane still plays the whole
+stem, so you cannot *build* the thing the engine can already render.
+
+Why it still matters most: it unlocks "vocal chorus over instrumental drop" as a
+thing you assemble by hand, not just something the candidate list hands you.
+
+**Prompt:**
+> Add per-lane clip trimming to the Studio (frontend/src/components/MixStudio.jsx).
+> render/mixdown.py ALREADY accepts start_sec/end_sec per clip — do not
+> reimplement that; this is the UI, engine and API-model half.
+> Add `clipStart` and `clipEnd` (raw content seconds) to lane state, persisted in
+> the localStorage project under the existing STORAGE_KEY. Render drag handles on
+> the left/right edges of the clip body in `paintLane`, plus invisible 8px hit
+> zones in the lane div; dragging a handle changes clipStart/clipEnd with the
+> same snap-to-grid behaviour as moving a clip. The waveform, beat grid and
 > section ribbon must only draw inside the trimmed range. Extend
-> engine/MashupEngine.js `_armVoice` so a voice with `clipStartSec`/`clipEndSec`
-> starts reading at `clipStartSec` raw seconds and stops at `clipEndSec`
-> (use src.start(when, rawOffset + clipStart) and schedule src.stop at the
-> display-time end; handle the loop path too). Extend render/mixdown.py and
-> api/routes/studio.py Clip model with clip_start/clip_end (raw seconds,
-> validated 0 <= start < end) and slice the loaded audio before stretching.
-> Update tests/test_studio_and_mixes.py with a validation test. Keep the
-> existing offset-drag behaviour when grabbing the middle of a clip.
+> engine/MashupEngine.js `setVoice`/`_armVoice` so a voice with
+> clipStartSec/clipEndSec starts reading at clipStartSec raw seconds and stops at
+> clipEndSec (src.start(when, rawOffset + clipStart), schedule src.stop at the
+> display-time end, and handle the loop path). Add clip_start/clip_end to the
+> Clip model in api/routes/studio.py (validated 0 <= start < end) and pass them
+> through as start_sec/end_sec. Keep the existing offset-drag behaviour when
+> grabbing the middle of a clip. Add a validation test to
+> tests/test_studio_and_mixes.py.
 
 ### A2. Fades and crossfades per clip
 
-Hard clip starts/stops sound amateur. A 0.2–2s fade-in/out per clip (and a
-long fade for outros) covers 90% of transition needs without full automation.
+Hard clip starts and stops sound amateur. A 0.2–2s fade in/out per clip (and a
+long fade for outros) covers most transition needs without full automation.
+Worth doing right after A1 — a trimmed clip that starts mid-waveform *needs* a
+fade far more than an untrimmed one did.
 
 **Prompt:**
-> Add per-lane `fadeIn` and `fadeOut` (seconds, default 0) to the Studio tab.
-> UI: small draggable fade triangles at the top corners of the clip body in
-> paintLane (draw the fade ramp as a translucent triangle overlay). Engine:
-> in MashupEngine._armVoice, after connecting the gain node, schedule
-> gainNode.gain linear ramps so the voice fades in over fadeIn display-seconds
-> from its clip start and out over fadeOut before its end — remember _arm can
-> start mid-clip, so compute the envelope value at the arm position and ramp
-> from there (use setValueAtTime + linearRampToValueAtTime against the shared
-> ctx clock). Mixdown: apply the same linear envelopes in render/mixdown.py
-> with numpy before summing. Persist fades in the localStorage project and the
-> mixdown API (fade_in/fade_out on the Clip model).
+> Add per-lane `fadeIn` and `fadeOut` (seconds, default 0) to the Studio. UI:
+> small draggable fade triangles at the top corners of the clip body in
+> paintLane, dragging inward to lengthen the fade; shade the faded region.
+> In engine/MashupEngine.js apply them with gain automation on the per-voice
+> gain node (linearRampToValueAtTime at arm time, and re-derive correctly when
+> seeking into the middle of a fade). Mirror it in render/mixdown.py with a
+> numpy ramp applied to the clip samples AFTER conform() so the fade is in
+> display time, not raw time — an export that fades over a different number of
+> seconds than the preview did is worse than no fade. Add fade_in/fade_out to
+> the Clip model with validation that they do not overlap in a short clip.
 
 ### A3. Per-lane EQ: low-cut / high-cut (the DJ "bass swap")
 
-Two full instrumentals clash in the low end. A high-pass on one lane (kill the
-bass of the incoming track) is the classic DJ fix and trivially cheap with
-WebAudio `BiquadFilterNode`s.
+Two full instrumentals clash in the low end. A high-pass on one lane — kill the
+bass of the incoming track — is the classic DJ fix and cheap with WebAudio
+`BiquadFilterNode`s. This is the single most audible move still missing.
+
+Note the engine already knows something relevant: `analysis/quality.py`
+computes 8-band occupancy and `collision_score` ranks pairs on spectral
+complementarity. The UI can suggest a starting cutoff from that rather than
+making the user guess.
 
 **Prompt:**
-> Add a simple per-lane filter section to the Studio: LOW (high-pass) and HIGH
-> (low-pass) cut knobs or sliders, default off. In MashupEngine, insert two
-> BiquadFilterNodes (highpass, lowpass) between each voice's SoundTouch node
-> and its gain node, created once per voice in setVoice and kept across
-> re-arms; expose setVoiceFilter(role, {highpassHz, lowpassHz}) that updates
-> frequency.value live (0/off = 20Hz highpass, 20kHz lowpass). Wire lane state
-> `hpHz`/`lpHz` through the Studio engine-sync effect and persist them. For
-> the offline mixdown, implement the equivalent with scipy.signal butterworth
-> filters (order 2) in render/mixdown.py — scipy is already a librosa
-> dependency — mapping the same cutoff values, so the export matches what was
-> heard. Add the fields to the Clip model with sensible validation.
+> Add a per-lane filter section to the Studio: LOW (high-pass) and HIGH
+> (low-pass) cut sliders, default off. In engine/MashupEngine.js insert two
+> BiquadFilterNodes (highpass, lowpass) between each voice's SoundTouch node and
+> its gain node, created once per voice in setVoice and kept across re-arms;
+> expose setVoiceFilter(role, {highpassHz, lowpassHz}) updating frequency.value
+> live (off = 20Hz highpass / 20kHz lowpass). Wire lane state `hpHz`/`lpHz`
+> through the engine-sync effect and persist them. For the offline mixdown,
+> implement the equivalent with scipy.signal butterworth filters (order 2) in
+> render/mixdown.py — scipy is already a librosa dependency — mapping the same
+> cutoffs so the export matches what was heard. Add the fields to the Clip model.
+> Then, as a second commit: when two lanes are both instrumental-ish, read their
+> stored band_energy_json (features table) and offer a suggested high-pass on the
+> quieter-bass lane, as a one-click "swap the bass" button rather than a number
+> the user has to invent.
 
 ### A4. Stereo, higher-fidelity mixdown
 
-`render/mixdown.py` renders **mono** (`librosa.load(mono=True)`), while the
-browser preview is stereo. Exports audibly collapse the image.
+Everything renders mono: `render/dsp.py::load_segment` loads with `mono=True`,
+and `conform`, `peak_normalise` and `build_mixdown` all assume a 1-D array. For
+a mashup that is a real fidelity loss — the whole point is two records occupying
+different space, and half that space is stereo width.
 
 **Prompt:**
-> Make the Studio mixdown stereo. In render/mixdown.py, load each clip with
-> mono=False (handle mono sources by duplicating the channel), run
-> librosa.effects.time_stretch / pitch_shift per channel (they accept
-> multi-channel arrays in librosa >= 0.10 via axis handling — otherwise
-> process each channel and stack), place into a (2, N) float32 timeline,
-> peak-limit jointly, and write stereo WAV. Keep MIXDOWN_SR 44100. Also add
-> an optional `loop_only: {start, end}` display-seconds window to the mixdown
-> request that renders just that region (for quickly bouncing the 8-bar loop);
-> validate end > start. Update tests.
-
-### A5. Grid phase ("set downbeat") correction
-
-`beat_times[i % 4 == 0]` assumes the first detected beat is beat 1 of a bar.
-When librosa starts mid-bar, downbeat snapping is consistently one/two beats
-off and everything feels wrong.
-
-**Prompt:**
-> Add a per-lane downbeat phase control in the Studio tab. Lane state gets
-> `beatPhase` (0-3, default 0); everywhere the code treats `i % 4 === 0` as a
-> downbeat (paintLane bar lines, snapToGrid anchors) use
-> `(i - beatPhase) % 4 === 0` instead. UI: a small "◧ phase" button in the
-> lane header that cycles 0→1→2→3 with a toast showing the value, plus
-> alt+click on a beat line in the lane canvas to declare that beat a downbeat
-> (compute its index and set the phase). Persist beatPhase in the project.
-> Also surface it subtly: draw downbeat lines noticeably stronger than beat
-> lines so a wrong phase is visible at a glance.
+> Make the render path stereo end to end. In render/dsp.py, load_segment should
+> load 2-D (mono=False) and return shape (2, n), upmixing a genuinely mono source
+> by duplication; conform() must apply the phase vocoder and pitch shift per
+> channel; peak_normalise must take the peak across both channels so the image
+> is not shifted by normalising them independently. In render/mixdown.py sum into
+> a (2, n) buffer and write with soundfile as stereo. render/session.py must keep
+> working — check every consumer of load_segment/conform, including measure_lock,
+> which should collapse to mono for its correlation rather than being made
+> stereo-aware. Add a test asserting a rendered mixdown has 2 channels and that a
+> hard-panned test signal survives the round trip.
 
 ---
 
 ## Tier B — Make mashups faster to build
 
-### B1. "Send to Studio" from Library, Mashups and Audition
+### B2. Auto-arrange: "good start" in the Studio
 
-The Studio's picker works, but the natural flow is: Mashups tab suggests a
-pair → one click drops both stems onto Studio lanes, tempo-synced, with the
-plan's suggested pitch already applied. Audition already has this pattern via
-`sendToAudition`; Studio deserves the same on-ramp.
+Sending a candidate to Studio gives you two lanes at zero. Everything the
+arrangement needs is now **on the candidate row** — both section spans, the
+target BPM, the transpose, the alignment offset, the loop repeat count — so the
+Studio can lay out a real starting arrangement instead of a blank one.
 
-**Prompt:**
-> Wire cross-tab seeding into the Studio tab. In App.jsx add `studioSeed`
-> state (array of {songId, stem, semitones?}) and a `sendToStudio(seed)`
-> callback that sets it and switches to the studio tab. Pass it into
-> MixStudio as a `seed` prop; on receiving a new seed, MixStudio adds one
-> lane per entry (reusing addLane), applies suggested semitones, enables
-> SYNC on each lane that has a BPM, and clears the seed via an onClearSeed
-> callback. Add the entry points: (1) MashupSuggestions.jsx — a "⧉ Studio"
-> button next to the existing Audition button on each pair, sending the
-> vocal's vocals stem and the inst's instrumental stem plus the plan's
-> semitone shift; (2) TrackList.jsx — per-track overflow actions "Add vocal
-> to Studio" / "Add instrumental to Studio"; (3) AuditionStudio.jsx — a
-> "Continue in Studio →" button that carries both current stems, offsets,
-> stretch and pitch into equivalent lane settings. Match existing styling.
-
-### B2. Auto-arrange: "Good start" for the Studio
-
-Audition has ✨ Good start (tempo + key + hook alignment in one click). The
-Studio should do the multi-lane version: pick the anchor lane, conform all
-other lanes, and place each vocal's best section over the anchor's matching
-section using `matcher/plan.build_mashup_plan` pairings.
+This is a much smaller job than when it was first written, precisely because
+P2.4 put those numbers on the row.
 
 **Prompt:**
-> Add a "✨ Auto-arrange" button to the Studio toolbar. Behaviour: the first
-> unmuted instrumental/full lane is the anchor (offset 0, project BPM =
-> round(anchor BPM)); every other lane gets SYNC enabled and, if it's a
-> vocals lane, fetch GET /api/mashups/plan?vocal_id=<lane song>&inst_id=
-> <anchor song> (api.getMashupPlan) and use the first pairing to set the
-> vocal lane's offset so pairing.vocal_start (converted to display seconds
-> through the lane's rate) lands on pairing.inst_start in the anchor's
-> display time — same math as applyGoodStart in AuditionStudio.jsx. Apply
-> the plan's semitone_shift to the vocal lane. Fall back to aligning first
-> downbeats when there is no plan/pairing, with a toast explaining which
-> path was used. Seek the playhead to the first aligned hook.
+> When Studio receives a seed from Discover, build a real arrangement instead of
+> two lanes at zero. The candidate row carries vocal_section_start/end,
+> inst_section_start/end, target_bpm, tempo_adjustment, alignment_offset,
+> harmonic_shift and section_loop_repeats — use them to set each lane's
+> clipStart/clipEnd (needs A1), rate, semitones and offsetSec, set the project
+> BPM to target_bpm, and set the loop region to the vocal section. If
+> section_loop_repeats > 1, lay the bed down that many times. Show the row's
+> `reason` string as a one-line caption above the timeline so the arrangement
+> explains itself. Fall back to today's behaviour when the seed carries no
+> section timings.
 
 ### B3. Multiple clips per lane (duplicate / split)
 
-One clip per lane forces "one more lane per repetition". Splitting a clip at
-the playhead and duplicating clips turns the Studio into a real arranger.
-This is the natural follow-up **after A1 (trim)** since a clip becomes
-{offset, clipStart, clipEnd}.
+A lane is one clip. Real arrangements repeat a chorus and drop a bed back in.
+Compounds with A1 — do trim first.
 
 **Prompt:**
-> Refactor Studio lanes to hold an array of clips instead of a single
-> implicit clip: lane.clips = [{id, offsetSec, clipStart, clipEnd}], sharing
-> the lane's buffer/rate/pitch/gain. Update paintLane to draw each clip,
-> selection to be (laneId, clipId), drag/trim to operate on the selected
-> clip, and the engine sync to register one engine voice per clip (role
-> `${laneId}:${clipId}` — MashupEngine already handles arbitrary voice
-> keys). Add clip operations: cmd/ctrl+D duplicates the selected clip placed
-> immediately after itself snapped to the grid; S splits the selected clip
-> at the playhead into two clips. Update the mixdown payload to emit one
-> Clip entry per clip. Migrate saved localStorage projects from the old
-> single-clip shape. Keep the lane header controls unchanged (they stay
-> per-lane).
+> Let a Studio lane hold multiple clips. Change lane state from one clip to a
+> `clips: []` array (each with offsetSec, clipStart, clipEnd, fades, gain),
+> migrating existing localStorage projects on load. Add duplicate (ctrl+D on the
+> selected clip) and split-at-playhead (S). Painting, hit-testing, dragging and
+> the engine sync all need to work per clip rather than per lane; the engine
+> should arm one voice per clip, so revisit the voice-limit assumption in
+> MashupEngine. The offline renderer already takes a flat clip list, so
+> render/mixdown.py needs nothing — but api/routes/studio.py must flatten lanes
+> to clips the same way the engine does, or the export will not match.
 
 ### B4. Undo/redo in the Studio
 
-Destructive drags with no undo make users afraid to experiment.
+Every edit is destructive and the project autosaves. `MixMatchBoard.jsx` already
+has a working undo stack (`UNDO_DEPTH = 20`) — copy its shape rather than
+inventing a second one.
 
 **Prompt:**
-> Add undo/redo to MixStudio.jsx. Implement a small history reducer: every
-> committed user action (drag end, trim end, add/remove lane, pitch/gain
-> change on pointer-up, sync toggle, BPM change) pushes a snapshot of the
-> serializable project state (same shape as the localStorage payload) onto
-> an undo stack capped at 100 entries; cmd/ctrl+Z undoes, shift+cmd/ctrl+Z
-> redoes, restoring lanes by rehydrating against the loaded tracks/buffers
-> (buffers are cached by decodeStem, so restoring is cheap — reuse the
-> restore path from the localStorage load). Do NOT push snapshots on every
-> pointermove — only when an interaction ends. Show toasts "Undo: moved
-> clip" style using a short action label carried with each snapshot.
-
-### B5. Auto-resolve Mixes-tab tracks (stop hand-pasting links)
-
-The Mixes tab parses a Big Bootie tracklist, but every entry must be linked
-to SoundCloud/YouTube by hand. `yt_dlp` can search (`scsearch1:`,
-`ytsearch1:`) and auto-fill the vast majority.
-
-**Prompt:**
-> Add auto-resolve to the mixes flow. Backend: in ingest/soundcloud.py add
-> search_track(query, prefer="soundcloud") that uses yt_dlp with
-> "scsearch1:<query>" then "ytsearch1:<query>" (flat extraction, no
-> download) and returns {source_url, title, artist, duration_secs} or None.
-> New endpoint POST /api/mixes/{mix_id}/auto-resolve in api/routes/mixes.py:
-> for every unresolved mix_track, search "<artist> <title>", store the hit in
-> link_url/link_platform with resolve_status='resolved', and return counts;
-> run it as a background job via the api.jobs system with per-track progress
-> since each search takes ~1s. Frontend MixImporter.jsx: an "⚡ Auto-resolve
-> all" button with a JobBadge, after which the list refreshes; keep the
-> manual input as the override for wrong hits (manual overwrites always win,
-> resolve_status='manual'). Mock yt_dlp in a test that verifies statuses and
-> that manual resolutions are not overwritten.
+> Add undo/redo to the Studio, following the existing pattern in
+> frontend/src/components/MixMatchBoard.jsx (bounded stack, UNDO_DEPTH 20).
+> Push a snapshot of lane state before every mutating action (add/remove lane,
+> move, trim, fade, gain, rate, semitones, phase). Ctrl+Z / Ctrl+Shift+Z, and
+> make sure the keyboard handler does not fight the existing Space/arrow
+> bindings. Do not snapshot on every frame of a drag — snapshot on drag start.
 
 ---
 
 ## Tier C — Make the engine smarter
 
-### C1. Ship the learned pairwise scorer (the stubs are waiting)
+### C3. Onset-accurate micro-alignment — *half done*
 
-The DB schema (datasets/models tables), the Mixes tab (documented
-`mashup_pairs` from real Big Bootie sets = positive training examples), and
-the API surface (`/api/datasets/build`, `/api/models/train`, scorer='auto' in
-`matcher/match.py`) all exist — but `matcher/features.py` and
-`matcher/model_scorer.py` return 501. This closes the loop from "import real
-DJ sets" to "matches ranked like a real DJ would".
+`render/session.py::measure_lock` cross-correlates the two **rendered** onset
+envelopes and reports a residual in ms, and P2.4 puts a grid-derived
+`alignment_offset` on every candidate. What is missing is using either one from
+the Studio: there is no "snap tight" that nudges a lane by the measured amount.
 
 **Prompt:**
-> Implement the learned pairwise scorer the codebase is already wired for.
-> Create matcher/features.py: build_pair_features(feat_vocal, feat_inst) →
-> ordered feature vector reusing matcher/match.py helpers (bpm ratio + min
-> diff, camelot_score, energy delta, mfcc cosine, spectral centroid/rolloff
-> deltas, zero-crossing delta) with FEATURE_NAMES exported; and
-> build_dataset(name, neg_ratio, seed) that takes positives from
-> mashup_pairs joined through mix_tracks.song_id (both sides must have
-> analysed features), samples negatives as random analysed pairs not in the
-> positive set (neg_ratio per positive, seeded RNG), writes a CSV to
-> config.DATASETS_DIR and registers it in the datasets table. Create
-> matcher/model_scorer.py: train(dataset_id) fitting
-> sklearn LogisticRegression (add scikit-learn to requirements.txt) with a
-> held-out AUC in metrics_json, saved with joblib into config.MODELS_DIR and
-> registered in the models table; load_active_model(db_path=None) returning
-> {model, feature_names, version, metrics} for the active row (this exact
-> signature is what api/routes/mashups.py scorer_status and
-> matcher/match.py score_all_pairs already import); score_pair(bundle,
-> feat_a, feat_b) → probability. Replace the 501s in api/routes/datasets.py
-> build and api/routes/models.py train with background jobs via api.jobs.
-> Add tests with a tiny synthetic library: build → train → activate →
-> scorer-status reports model, and score_all_pairs(scorer='model') runs.
+> Add a "snap tight" action to the Studio that micro-aligns the selected lane
+> against the reference lane. Reuse render/session.py::measure_lock rather than
+> writing a second correlation — expose it through a small endpoint that takes
+> two song_ids plus their clip ranges, renders just those spans, and returns the
+> residual offset in ms. Apply it as a nudge to the selected lane's offsetSec,
+> show the value, and make it undoable (needs B4). If the candidate already
+> carries alignment_offset, offer that instantly as the cheap answer and reserve
+> the render-based measurement for when the user wants it confirmed.
 
-### C2. 4-stem separation (drums / bass / other / vocals)
+### C4. Match phrases, not sections — *the highest-value work left*
 
-Demucs htdemucs is already a 4-stem model — the pipeline just keeps
-`vocals`/`no_vocals`. Keeping drums and bass separately unlocks "acapella +
-someone else's drums + a third song's synths", which is exactly how layered
-festival mashups are built, and it makes the Studio's lane model shine.
+Flagged in CLAUDE.md and still not done. Sections are 12–60s and variable;
+mashups are built on 8/16/32-bar phrases. Matching whole sections means
+comparing two windows that mostly do not correspond.
+
+**P2.1 built the groundwork**: every section now stores its own beat times,
+downbeats, bar count and phrase length. The window slicing this needs is
+finally cheap.
+
+This is a big change and deserves its own plan, not a one-shot prompt.
 
 **Prompt:**
-> Extend stem separation from 2 to 4 stems. In stems/ (the demucs wrapper)
-> stop using --two-stems and save all four htdemucs outputs; keep writing
-> vocals + instrumental as today (instrumental = sum of drums/bass/other or
-> demucs' no_vocals via a second pass — prefer summing the three stems with
-> soundfile to avoid a second GPU pass), and additionally upsert 'drums',
-> 'bass', 'other' rows into the stems table with files under
-> AUDIO_DIR/drums etc. (extend config.py dirs + ensure_dirs). Update
-> _STEM_TYPES in api/routes/tracks.py (audio streaming + waveform) and the
-> analysis worker to also analyse drums (beat tracking on drums is the most
-> reliable — prefer the drums stem's beat grid for the full mix when
-> available). Frontend: add DRUM/BASS/OTHER buttons to the Studio picker's
-> stem buttons (only enabled when present) and stem badges. Keep the whole
-> thing backward compatible with libraries that only have 2 stems. Update
-> the readme pipeline description.
-
-### C3. Onset-accurate micro-alignment ("snap tight")
-
-Grid snapping gets clips within ~10ms, but vocals often need a final few-ms
-nudge to sit "in the pocket". Cross-correlating onset envelopes around the
-current alignment automates the last mile.
-
-**Prompt:**
-> Add a "⇥ Tighten" action to the Studio (toolbar button + T shortcut) that
-> micro-aligns the selected vocal lane against the anchor lane. Backend:
-> POST /api/studio/align accepting {song_a, stem_a, song_b, stem_b,
-> window_a_start, window_b_start, duration (<=15s), rate_a, rate_b} that
-> loads just those windows with librosa, computes onset strength envelopes
-> (librosa.onset.onset_strength, hop 512), cross-correlates them within
-> ±250ms and returns the lag in seconds with a confidence (peak vs mean).
-> Frontend: call it with the 8 seconds around the playhead for the selected
-> lane vs the first other audible lane, apply the returned lag to the
-> lane's offset (converted through display time), and toast the correction
-> ("tightened by −23 ms, confidence 0.81"); ignore below a confidence
-> threshold with an explanatory toast. Keep it synchronous (fast small
-> windows), no job queue needed.
-
-### C4. Scraped 1001tracklists import (finish the 501)
-
-`POST /api/mixes/import` currently 501s and points at paste mode. Playwright
-is already an optional dep in the health check and `config.SNAPSHOTS_DIR`
-exists for page snapshots.
-
-**Prompt:**
-> Implement URL scraping for the Mixes tab. Create ingest/tracklists.py with
-> fetch_tracklist(url): use playwright (chromium, headless) to load the
-> page, save the HTML into config.SNAPSHOTS_DIR (filename from a slug of
-> the url; store the path in mixes.raw_snapshot_path), and parse tracks —
-> for 1001tracklists.com use its DOM structure (tlpItem rows: track number,
-> cue, 'w/' overlay class, artist - title text, external link hrefs when
-> present); for any other domain fall back to api/routes/mixes.py
-> _parse_tracklist on the page text. Replace the 501 in import_mix with:
-> playwright missing → keep the current 501 message; otherwise run the
-> scrape in a background job (api.jobs) because page loads take seconds,
-> reusing the same insert logic as import-paste (factor that into a shared
-> helper first). Respect robots/simple rate limiting (one fetch, no
-> crawling). Add a parser unit test against a small saved HTML fixture in
-> tests/fixtures/.
+> Read CLAUDE.md's note on phrase matching and matcher/sections.py. Produce a
+> written plan (do not implement yet) for matching fixed 8/16/32-bar phrase
+> windows on the stored downbeat grid instead of whole detected sections.
+> Cover: how windows are enumerated without exploding the candidate count (today
+> MAX_SECTION_PAIRS_PER_SONG_PAIR caps it at 3), whether windows are stored or
+> derived at scoring time, what happens to the section_* columns and the
+> feedback rows keyed on section index, and how to A/B the result against the
+> current ranking rather than assuming it is better. Include per-bar chroma for
+> progression matching and vocal melody features (pyin or torchcrepe → f0 range
+> and a duration-weighted note histogram) as separate follow-on phases with
+> their own acceptance checks.
 
 ---
 
 ## Tier D — Foundations
 
-### D1. Server-side Studio projects (localStorage is fragile)
+### D1. Server-side Studio projects
 
-Projects currently live in one browser's localStorage: no naming, no
-history, lost on a different machine/profile. The app is local-first with
-SQLite right there.
+Projects live in one browser's localStorage under
+`mashup.studio.project.v1`. Clearing site data loses your work, and you cannot
+open a project on another machine.
 
 **Prompt:**
-> Add persistent Studio projects. Schema (database/models.py init_db):
-> studio_projects(id, name, bpm, snap_mode, updated_at) and
-> studio_lanes(id, project_id, position, song_id, stem, offset_sec, rate,
-> semitones, gain, muted, synced, color_idx, extra_json). Routes
-> api/routes/studio.py: GET /projects, POST /projects (save/overwrite by
-> name with full lane payload), GET /projects/{id}, DELETE /projects/{id}.
-> Frontend: a project menu in the Studio toolbar — current project name,
-> Save (upserts by name), Save as…, Open (list with updated_at), Delete —
-> keeping localStorage as the autosave scratch layer that also records the
-> last-open project id and re-opens it. Skip lanes whose song no longer
-> exists, with a toast. Tests for the routes with a temp DB.
+> Add a `studio_projects` table (id, name, payload_json, created_at, updated_at)
+> to database/models.py's SCHEMA with accessors, and CRUD routes under
+> /api/studio/projects. In MixStudio.jsx add a project picker: New / Open /
+> Save / Save As, autosaving the active project server-side on the existing
+> debounce, and keep localStorage as the offline fallback for an unnamed
+> scratch project. Migrate any existing localStorage project into a server
+> project named "Recovered" on first load. Add the table to the _TABLES
+> whitelist in api/routes/database.py.
 
 ### D2. Multi-resolution waveform peaks
 
-`waveform_rms` is 360 points for the whole track — at DAW zoom levels the
-waveform turns into a staircase. Ship real peak data.
+`GET /api/tracks/{id}/waveform` returns a fixed 360-point envelope, so a zoomed
+lane draws a smooth line with no detail and you cannot see a transient to align
+to.
 
 **Prompt:**
-> Add a higher-resolution peaks endpoint. In the analysis stage, compute and
-> store (features table, new column peaks_json or a compact binary file
-> next to the stem) min/max peak pairs at 50ms resolution per stem;
-> lazily backfill: GET /api/tracks/{id}/peaks?stem=vocals&res=50 computes
-> from the audio file on first request (soundfile block reads, no librosa
-> needed), caches to disk under AUDIO_DIR/peaks/, and returns
-> {res_ms, peaks: [[min,max],…]}. In the Studio's paintLane, when
-> pps > 40 switch from waveform_rms to the peaks data (fetch once per lane,
-> cache in lane state) and draw proper min/max bars. Keep the 360-point
-> envelope for the Audition tab untouched.
+> Serve multi-resolution waveform peaks. Precompute min/max peak pairs at
+> several zoom levels (e.g. 512, 4096, 32768 samples per bucket) during
+> analysis, store them alongside the existing waveform_rms_json, and let
+> GET /api/tracks/{id}/waveform take a `resolution` (or a start/end window) so
+> the Studio can request detail for what is on screen. paintLane should pick the
+> level from the current pps and draw min/max pairs as vertical spans rather
+> than a single RMS line. Keep the existing 360-point response as the default so
+> nothing that reads it breaks, and backfill through the existing staleness
+> machinery in api/workers/bulk_worker.py.
 
-### D3. Master bus safety: limiter + meters
+### D3. Master bus: real limiter + meters — *half done*
 
-Six lanes at 0.8 gain will clip the master. The offline mixdown peak-limits;
-the live engine doesn't.
+`render/dsp.py::peak_normalise` scales the whole mix down when it clips. That is
+normalisation, not limiting — one transient drags the entire mix quieter — and
+there are no meters anywhere, so you cannot see it happen.
 
 **Prompt:**
-> Add master-bus processing and metering to MashupEngine: insert a
-> DynamicsCompressorNode configured as a limiter (threshold -1dB, knee 0,
-> ratio 20, attack 0.003, release 0.25) between this.master and
-> ctx.destination, plus an AnalyserNode tap; expose engine.getLevels()
-> returning the current peak per master (and optionally per voice via one
-> analyser on the master only — keep it cheap). Studio UI: a master gain
-> slider + a simple two-segment level meter in the toolbar (green/amber/red,
-> driven from getLevels() inside the existing onTick rAF loop, no extra
-> timers), and a small "LIMITING" indicator when the compressor's reduction
-> exceeds 1dB. Persist master gain in the project payload and pass it to the
-> mixdown as a master_gain multiplier.
+> Replace peak_normalise's behaviour on the master bus with a real look-ahead
+> limiter in render/dsp.py: a few ms of look-ahead, smoothed gain reduction,
+> ceiling around -0.3 dBFS. Keep peak_normalise as-is for callers that want it
+> and add the limiter as a separate function so the change is opt-in per caller,
+> then use it in render/mixdown.py. Report peak and LUFS-ish loudness in the
+> mixdown job result. In the Studio, add a master meter driven by an
+> AnalyserNode in MashupEngine (peak + a held clip indicator), and a per-lane
+> meter if it is cheap. A clip indicator that never lights is worse than none, so
+> test it against a deliberately hot mix.
 
 ### D4. Job persistence across restarts
 
-`api/jobs.py` is an in-memory dict: a server restart forgets running exports
-and the UI polls a 404. The pipeline resumes via song status, but one-off
-jobs (mixdown, export, preview) vanish silently.
+`api/jobs.py` keeps jobs in a module-level dict. Restart the server mid-import
+and the history is gone — `queue_runner.resume_pending()` resumes the *tracks*,
+but the UI has no job to attach to and the badge goes blank.
 
 **Prompt:**
-> Persist jobs to SQLite. Add a jobs table (id TEXT PK, kind, song_id,
-> stage, status, progress, message, result_json, error, traceback,
-> created_at, updated_at) to database/models.py. Rewrite api/jobs.py to
-> write-through: keep the in-memory dict as a cache but mirror every
-> new_job/update/done/fail to the table (single connection per call, same
-> pattern as the rest of models.py), and make get/list_jobs fall back to the
-> table so /api/jobs survives restarts. On startup (api/server.py lifespan),
-> mark any job still queued/running as failed with "server restarted" —
-> except kind='pipeline' jobs, which queue_runner.resume_pending() already
-> re-enqueues. Keep the public function signatures identical so no caller
-> changes. Update the DB browser whitelist so the jobs table is inspectable.
+> Persist jobs. Add a `jobs` table (id, kind, status, message, progress,
+> song_id, stage, result_json, error, created_at, updated_at) and make
+> api/jobs.py write through to it while keeping the in-memory dict as a cache,
+> so the hot path stays fast. On startup, mark any job still 'running' as
+> 'interrupted' rather than leaving it running forever, and have
+> resume_pending() re-attach resumed tracks to a fresh job. Keep
+> MAX_TERMINAL_JOBS trimming, but do it in SQL.
 
-### D5. Repo hygiene: requirements + CI
+### D5. requirements + CI
 
-`requirements.txt` doesn't pin the web test deps (httpx was missing), there's
-no CI, and the frontend has no lint. Cheap insurance for everything above.
+No `.github/workflows`. Two bugs this session were ordering-dependent — they
+passed alone and failed in the full suite — which is exactly what CI catches and
+a developer running one test file does not.
 
 **Prompt:**
-> Add basic CI. Create .github/workflows/ci.yml running on push/PR: (1) a
-> python job on 3.11 that installs requirements.txt + requirements-dev.txt
-> and runs pytest — first audit both files and add anything the test suite
-> imports (pytest, httpx, fastapi, uvicorn, numpy, soundfile) to
-> requirements-dev.txt with compatible-release pins; mark the librosa-heavy
-> tests with @pytest.mark.audio and skip that marker in CI if the install
-> is too slow; (2) a node job that runs `npm ci && npx vite build` in
-> frontend/. Fail the build on either. Keep the workflow minimal — no
-> caching cleverness beyond actions/setup-python and setup-node built-ins.
+> Add a GitHub Actions workflow that installs requirements.txt +
+> requirements-dev.txt on Windows and Linux, runs the full pytest suite (not
+> individual files — several bugs here only appear from module reload ordering
+> across files), and builds the frontend. Pin the numpy<2 constraint explicitly
+> since the audio stack depends on it. Also run pytest with -p no:randomly if
+> ordering is deliberate, or add a shuffled run as a separate allowed-to-fail
+> job to surface more ordering coupling. Do not add a linter in the same PR.
 
 ---
 
 ## Suggested order of attack
 
-1. **A1 trim** → **B3 multiple clips** (they compound; do trim first)
-2. **A2 fades** + **D3 limiter/meters** (quick wins, big audible payoff)
-3. **B1 send-to-Studio** + **B2 auto-arrange** (turns Mashups → Studio into a
-   two-click flow — this is the "easily mix and mash in one space" promise)
-4. **A5 grid phase** + **C3 tighten** (alignment quality)
-5. **A3 EQ** + **A4 stereo mixdown** (sound quality)
-6. **B5 auto-resolve** → **C1 learned scorer** (the data flywheel: Big Bootie
-   tracklists in → documented pairs → trained scorer → better suggestions)
-7. **C2 four stems** (bigger lift; multiplies what the Studio can do)
-8. **D1/D2/D4/D5** as they start to hurt
+1. **Re-analyse the library**, then **N1** (turn on the new weights). Everything
+   in Phase 2 is waiting on this and it is a single click plus a measurement.
+2. **A1 trim** → **A2 fades** → **B3 multiple clips**. These compound, in that
+   order. A1 is half done already.
+3. **A3 EQ** — the most audible single addition left.
+4. **B2 auto-arrange**. Much cheaper now that the candidate row carries the
+   whole arrangement; do it after A1 so it has clips to trim.
+5. **N2** (green suite) and **D5** (CI) together, before the codebase grows
+   further.
+6. **A4 stereo** + **D3 limiter/meters** — fidelity, once the arrangement
+   features are in.
+7. **C4 phrase matching** — the biggest engine win left, and it deserves its own
+   plan first.
+8. **B4 / C3 / D1 / D2 / D4** as they start to hurt.
 
-Notes for whoever picks these up:
+## Notes for whoever picks these up
 
-- The engine's coordinate space (display seconds; `rate` = raw seconds per
-  display second) is documented at the top of `frontend/src/engine/MashupEngine.js`
-  — every timeline feature must convert through it, and the offline renderer
-  in `render/mixdown.py` must mirror the same math or exports won't match
-  what was heard.
-- The Studio's painting is windowed (only `[viewStart, viewStart + viewW/pps]`
-  is drawn); keep new overlays inside `paintLane`/`paintRuler` rather than DOM
-  elements per beat, or zoomed-out projects will crawl.
-- Anything that touches the pipeline should keep the "graceful without the
-  audio stack" property: librosa/soundfile/demucs import lazily, and API
-  routes must degrade with a clear message instead of a 500 (see the 501
-  pattern in `api/routes/datasets.py`).
+- **The engine's coordinate space** (display seconds; `rate` = raw seconds per
+  display second) is documented at the top of `frontend/src/engine/MashupEngine.js`.
+  Every timeline feature must convert through it, and `render/mixdown.py` must
+  mirror the same maths or exports will not match what was heard.
+- **Studio painting is windowed** — only `[viewStart, viewStart + viewW/pps]` is
+  drawn. Keep new overlays inside `paintLane`/`paintRuler` rather than DOM
+  elements per beat, or zoomed-out projects crawl.
+- **Degrade, don't 500.** librosa/soundfile/demucs import lazily and routes must
+  fail with a clear message — see the 501 pattern in `ingest/soundcloud_oauth.py`
+  and `api/routes/discovery.py`.
+- **The SoundCloud read path is shared and fragile.** `ingest/soundcloud_api.py`
+  must keep a zero-line diff (the mixes auto-resolver is frozen), and both layers
+  share one scraped `client_id` — which is why `soundcloud_browse.py` throttles
+  and why search is on Enter rather than as-you-type. See CLAUDE.md.
+- **Migrations run before you think.** `get_conn` executes `SCHEMA` *before* the
+  `_migrate_*` functions, so an index on a migrated column belongs in the
+  migration, never in `SCHEMA`. And a migration touching `pair_feedback` must
+  never drop the original on a short copy — that table is irreplaceable.
+- **Run the whole suite, not one file.** Several modules bind `get_conn` or
+  `config` at import, so a test that passes alone can fail after another file
+  reloads those modules. Baseline before blaming a change: `git stash` and re-run.
+- **Interpreter**: `.\.venv\Scripts\python.exe` — there is no bare `python` on
+  PATH on this machine.
