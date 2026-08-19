@@ -321,6 +321,33 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auditioning, current?.id]);
 
+  const [previewing, setPreviewing] = useState(null);
+
+  // A rendered preview is a job, not a fetch — it decodes, stretches and sums
+  // two sections. Poll the job, then hand back an audio URL.
+  const renderPreview = useCallback(async (c) => {
+    setPreviewing(c.id);
+    try {
+      const { job_id } = await api.startCandidatePreview(c.id);
+      let job = null;
+      for (let i = 0; i < 120; i += 1) {
+        job = await api.getJob(job_id);
+        if (job.status === "completed" || job.status === "failed") break;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      if (job?.status !== "completed") {
+        throw new Error(job?.error || job?.message || "Preview timed out");
+      }
+      window.open(job.result?.audio_url || `/api/studio/mixdown/${job_id}/audio`,
+                  "_blank", "noopener");
+      toast("Preview rendered");
+    } catch (e) {
+      toast(e.message || "Could not render that preview");
+    } finally {
+      setPreviewing(null);
+    }
+  }, []);
+
   const judge = useCallback(async (c, verdict) => {
     if (!c) return;
     const k = keyOf(c);
@@ -851,6 +878,14 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                         ▶ Audition
                       </button>
                     )}
+                    {/* Server render of the actual section pair, at the stored
+                        tempo/pitch/offset. Slower than Audition on purpose:
+                        this is the one you keep. */}
+                    <button className="plan" disabled={previewing === c.id}
+                      onClick={() => renderPreview(c)}
+                      title="Render these two sections into one mix, at the tempo, pitch and offset this row proposes">
+                      {previewing === c.id ? "…rendering" : "⤓ Preview mix"}
+                    </button>
                     <button className="plan" onClick={() => hide(c)}
                       title="Hide this pairing (h). Kept out of every future list until you restore it.">
                       ⊘ Hide

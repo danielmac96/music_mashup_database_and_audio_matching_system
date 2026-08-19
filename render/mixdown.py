@@ -50,7 +50,13 @@ def build_mixdown(token: str, clips: list[dict],
                   db_path=None) -> Optional[Path]:
     """Render `clips` to one WAV. Each clip dict:
         song_id: int, stem: str, offset_sec: float,
-        rate: float (>0), semitones: int, gain: float (linear)
+        rate: float (>0), semitones: int, gain: float (linear),
+        start_sec: float | None, end_sec: float | None   (trim, optional)
+
+    `start_sec`/`end_sec` take a SECTION out of the stem rather than playing it
+    whole — what a candidate preview needs, and what Claude_next_steps.md calls
+    the single biggest gap in Studio. Omitted, the clip behaves exactly as
+    before, so no existing caller changes.
     Returns the output path, or None on a caller-fixable problem (details are
     reported through on_progress so the job message explains itself)."""
     def _tick(pct, msg):
@@ -94,11 +100,21 @@ def build_mixdown(token: str, clips: list[dict],
         semitones = clamp_semitones(c.get("semitones"))
         gain = clamp_gain(c.get("gain"))
         offset = float(c.get("offset_sec") or 0.0)
+        # None (not 0.0) means "no trim" — a clip genuinely starting at 0.0 is a
+        # different instruction from one that was never given a start.
+        start_sec = c.get("start_sec")
+        end_sec = c.get("end_sec")
+        start_sec = float(start_sec) if start_sec is not None else None
+        end_sec = float(end_sec) if end_sec is not None else None
+        if start_sec is not None and end_sec is not None and end_sec <= start_sec:
+            _tick(None, f"Clip {idx + 1}: end_sec must be after start_sec")
+            return None
 
         pct_lo = int(5 + 85 * idx / n)
         label = f"Clip {idx + 1}/{n}: "
         _tick(pct_lo, f"{label}loading {path.name}…")
-        y = load_segment(path, MIXDOWN_SR, max_secs=MAX_MIXDOWN_SECS, rate=rate)
+        y = load_segment(path, MIXDOWN_SR, start_sec=start_sec, end_sec=end_sec,
+                         max_secs=MAX_MIXDOWN_SECS, rate=rate)
         y = conform(y, MIXDOWN_SR, rate, semitones,
                     on_progress=on_progress, label=label)
 

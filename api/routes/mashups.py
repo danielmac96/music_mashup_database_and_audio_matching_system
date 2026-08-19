@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from database.models import (
+    get_conn,
     BPM_BANDS, ENERGY_BANDS, ERA_BANDS, VERDICTS, best_bed_per_vocal,
     candidate_filter_options, exclude_track, get_candidates_enriched,
     get_pair_feedback, hide_pair, include_track, list_hidden, unhide_pair,
@@ -15,7 +16,7 @@ from database.models import (
 )
 
 from api import jobs
-from api.workers import match_worker
+from api.workers import candidate_preview_worker, match_worker
 from matcher.effort import dominant_component, effort_label
 from matcher.match import compute_semitone_shift, compute_stretch_factor
 from matcher.plan import build_mashup_plan
@@ -286,6 +287,44 @@ def list_feedback(verdict: str = "") -> dict:
                             detail=f"verdict must be one of {sorted(VERDICTS)}")
     rows = get_pair_feedback(verdict=verdict)
     return {"count": len(rows), "feedback": rows}
+
+
+@router.post("/{candidate_id}/preview")
+def queue_candidate_preview(candidate_id: int, background: BackgroundTasks) -> dict:
+    """Render this candidate's two sections into one previewable mix (spec §11).
+
+    Everything the render needs is on the row after P2.0/P2.4 — both section
+    spans, the tempo move, the transpose and the offset — so this is a lookup
+    and a job, not a decision.
+
+    Note this is NOT the fast triage path: Discover already auditions a
+    candidate client-side through useHookAudition in well under a second, and a
+    server render must not become the default way to hear one. This is for
+    checking a build and sharing the result.
+    """
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT * FROM mashup_candidates WHERE id=?",
+                           (candidate_id,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise HTTPException(status_code=404,
+                            detail=f"candidate {candidate_id} not found — the table "
+                                   "is rebuilt on every re-score, so an old id "
+                                   "may simply be gone")
+    candidate = dict(row)
+    if candidate_preview_worker.clips_for(candidate) is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This candidate has no section timings, so there is nothing "
+                   "specific to preview. Re-score the library and try again.")
+
+    job_id = jobs.new_job(kind="mixdown", message="Queued for preview render")
+    background.add_task(candidate_preview_worker.run, job_id, candidate)
+    return {"job_id": job_id,
+            "audio_url": f"/api/studio/mixdown/{job_id}/audio",
+            "reason": candidate.get("reason") or ""}
 
 
 @router.get("/plan")

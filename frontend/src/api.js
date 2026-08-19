@@ -394,6 +394,12 @@ export const api = {
 
   getScorerStatus: () => jsonFetch("/api/mashups/scorer-status"),
 
+  // Render one candidate's two sections into a single mix (spec §11). NOT the
+  // triage path — Discover already auditions client-side in under a second;
+  // this is for checking a build and sharing the result.
+  startCandidatePreview: (candidateId) =>
+    jsonFetch(`/api/mashups/${candidateId}/preview`, { method: "POST" }),
+
   // ── Discovery (SoundCloud search/browse) + crates ──────────────────────────
   // Every track row comes back with `in_library` already resolved server-side,
   // so the browser never has to reconcile results against the library itself.
