@@ -161,7 +161,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
 
   // ── T1.7 triage: highlighted row, verdicts, shortlist, shortcut legend ────
   const [cursor, setCursor] = useState(0);
-  const [verdicts, setVerdicts] = useState({});   // "vocalId:instId" -> love|ok|no
+  // Keyed on the SECTION PAIR, not the song pair. Since E.3 a candidate row is
+  // "this chorus over that drop", and judging one must not mark every other
+  // pairing of the same two records as judged too.
+  const [verdicts, setVerdicts] = useState({});   // "vId:iId:vSec:iSec" -> love|ok|no
   const [shortlist, setShortlist] = useState(() => new Set());
   const [showKeys, setShowKeys] = useState(false);
   const rowRefs = useRef(new Map());
@@ -179,7 +182,9 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   useEffect(() => {
     api.getPairFeedback()
       .then((d) => setVerdicts(Object.fromEntries(
-        (d.feedback || []).map((f) => [`${f.vocal_song_id}:${f.inst_song_id}`, f.verdict]))))
+        (d.feedback || []).map((f) => [
+          `${f.vocal_song_id}:${f.inst_song_id}:${f.vocal_section ?? -1}:${f.inst_section ?? -1}`,
+          f.verdict]))))
       .catch(() => {});
   }, []);
 
@@ -291,7 +296,8 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   }, [candidates, sortMode]);
 
   // ── T1.7 keyboard triage ─────────────────────────────────────────────────
-  const keyOf = (c) => `${c.vocal_song_id}:${c.inst_song_id}`;
+  const keyOf = (c) => `${c.vocal_song_id}:${c.inst_song_id}`
+    + `:${c.vocal_section_idx ?? -1}:${c.inst_section_idx ?? -1}`;
   const current = sortedCandidates[cursor] || null;
 
   // Keep the highlight on a real row when the list changes underneath it

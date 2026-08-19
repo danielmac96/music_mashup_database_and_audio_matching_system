@@ -143,9 +143,19 @@ CREATE TABLE IF NOT EXISTS pair_feedback (
     vocal_section   INTEGER,
     inst_section    INTEGER,
     verdict         TEXT NOT NULL CHECK(verdict IN ('love','ok','no')),
-    created_at      TEXT DEFAULT (datetime('now')),
-    UNIQUE(vocal_song_id, inst_song_id)
+    -- The exact feature values the judged candidate was generated from. A
+    -- verdict without them is only as reproducible as the last re-score, and
+    -- score_all_pairs truncates mashup_candidates on every run.
+    features_json   TEXT,
+    created_at      TEXT DEFAULT (datetime('now'))
+    -- No table-level UNIQUE: the key is the index below, which includes the
+    -- sections. "chorus over drop" and "verse over breakdown" are different
+    -- judgements about the same two records.
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pair_feedback_section
+    ON pair_feedback(vocal_song_id, inst_song_id,
+                     COALESCE(vocal_section, -1), COALESCE(inst_section, -1));
 CREATE INDEX IF NOT EXISTS idx_feedback_verdict ON pair_feedback(verdict);
 
 -- ── Pairs and tracks the user does not want to see again (T3.4) ──────────────
@@ -314,17 +324,26 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     if needs_init:
-        conn.executescript(SCHEMA)
-        _migrate_songs_columns(conn)
-        _migrate_features_columns(conn)
-        _migrate_candidates_columns(conn)
-        _migrate_sections_columns(conn)
-        _migrate_candidates_unique_key(conn)
-        _migrate_stems_columns(conn)
-        _migrate_mixtracks_columns(conn)
-        _migrate_mashuppairs_columns(conn)
-        _migrate_crates_columns(conn)
-        conn.commit()
+        # A migration that raises must not leave this connection open: it holds a
+        # write lock, so every later attempt — including the retry that would fix
+        # things — fails with "database is locked" instead of the real error.
+        try:
+            conn.executescript(SCHEMA)
+            _migrate_songs_columns(conn)
+            _migrate_features_columns(conn)
+            _migrate_candidates_columns(conn)
+            _migrate_sections_columns(conn)
+            _migrate_candidates_unique_key(conn)
+            _migrate_stems_columns(conn)
+            _migrate_mixtracks_columns(conn)
+            _migrate_mashuppairs_columns(conn)
+            _migrate_crates_columns(conn)
+            _migrate_pair_feedback_key(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            conn.close()
+            raise
         _INITIALIZED_PATHS.add(key)
     conn.execute("PRAGMA journal_mode=WAL")
     # With parallel pipeline stages writing concurrently, a writer can briefly
@@ -470,6 +489,16 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("inst_section_start", "REAL"),
     ("inst_section_end", "REAL"),
     ("score_section", "REAL"),               # selection fit, NOT part of score_total
+    # P2.0 — matcher.sections._pair_row has always COMPUTED these and they were
+    # thrown away on every write, because SECTION_PAIR_COLUMNS bound only the
+    # seven above. They are what lets a row say "chorus over drop, 16 bars,
+    # loop the bed x2" without re-deriving the section pair to find out.
+    ("vocal_section_label", "TEXT"),
+    ("inst_section_label", "TEXT"),
+    ("section_bars_vocal", "REAL"),
+    ("section_bars_bed", "REAL"),
+    ("section_loop_repeats", "INTEGER"),
+    ("section_note", "TEXT"),
     # Phase C — how much WORK this pair costs to build, 0 (free) to 1. The four
     # sub-scores all measure similarity; none of them measures effort, but a
     # 12% stretch and a +5 semitone shift are real costs a producer weighs
@@ -578,6 +607,83 @@ def _migrate_candidates_unique_key(conn: sqlite3.Connection) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_candidates_vocal ON mashup_candidates(vocal_song_id)",
                 "CREATE INDEX IF NOT EXISTS idx_candidates_inst ON mashup_candidates(inst_song_id)"):
         conn.execute(idx)
+
+
+_PAIR_FEEDBACK_UNIQUE_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_pair_feedback_section "
+    "ON pair_feedback(vocal_song_id, inst_song_id, "
+    "COALESCE(vocal_section, -1), COALESCE(inst_section, -1))")
+
+_PAIR_FEEDBACK_OPTIONAL_COLUMNS = (
+    ("features_json", "TEXT"),
+)
+
+
+def _copy_pair_feedback(conn: sqlite3.Connection, col_list: str) -> None:
+    """Carry every legacy row into the rebuilt table.
+
+    Its own function so the row-count guard around it has a seam to be tested
+    through — this is the step whose failure would cost the user every verdict
+    they have ever given."""
+    conn.execute(f"INSERT INTO pair_feedback_new ({col_list}) "
+                 f"SELECT {col_list} FROM pair_feedback")
+
+
+def _migrate_pair_feedback_key(conn: sqlite3.Connection) -> None:
+    """Move the feedback key from (song, song) to (song, song, section, section).
+
+    The old UNIQUE(vocal_song_id, inst_song_id) sat directly above nullable
+    vocal_section/inst_section columns, so judging "chorus over drop" and then
+    "verse over breakdown" on the same two records DESTROYED the first verdict.
+    Since E.3 made the section pair the candidate row, that is the normal way to
+    use the app, and the loss compounds silently.
+
+    Unlike _migrate_candidates_unique_key, this table is NOT safe to rebuild
+    carelessly: score_all_pairs truncates mashup_candidates on every run, but
+    pair_feedback is irreplaceable user input and the only training signal the
+    learned scorer has. So: copy into a new table, swap, and only then drop —
+    all inside one transaction, and idempotent on re-entry.
+    """
+    existing = {row[1] for row in conn.execute(
+        "PRAGMA table_info(pair_feedback)").fetchall()}
+    if not existing:
+        return   # SCHEMA has just created it in the correct shape
+
+    for col, decl in _PAIR_FEEDBACK_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE pair_feedback ADD COLUMN {col} {decl}")
+
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' "
+        "AND name='pair_feedback'").fetchone()
+    ddl = (sql[0] if sql else "") or ""
+    if "UNIQUE(vocal_song_id, inst_song_id)" not in ddl:
+        conn.execute(_PAIR_FEEDBACK_UNIQUE_INDEX)   # already migrated
+        return
+
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(pair_feedback)").fetchall()]
+    col_list = ", ".join(cols)
+    new_ddl = ddl.replace("pair_feedback", "pair_feedback_new", 1)
+    new_ddl = re.sub(r",?\s*UNIQUE\(vocal_song_id,\s*inst_song_id\)", "", new_ddl)
+    new_ddl = re.sub(r",\s*\)\s*$", "\n)", new_ddl.strip())
+
+    conn.execute("DROP TABLE IF EXISTS pair_feedback_new")
+    conn.execute(new_ddl)
+    _copy_pair_feedback(conn, col_list)
+
+    moved = conn.execute("SELECT COUNT(*) FROM pair_feedback_new").fetchone()[0]
+    had = conn.execute("SELECT COUNT(*) FROM pair_feedback").fetchone()[0]
+    if moved != had:
+        # Never drop the original on a short copy. Leaving both tables in place
+        # is recoverable; losing every verdict the user ever gave is not.
+        conn.execute("DROP TABLE IF EXISTS pair_feedback_new")
+        raise RuntimeError(
+            f"pair_feedback migration copied {moved} of {had} rows; left untouched.")
+
+    conn.execute("DROP TABLE pair_feedback")
+    conn.execute("ALTER TABLE pair_feedback_new RENAME TO pair_feedback")
+    conn.execute(_PAIR_FEEDBACK_UNIQUE_INDEX)
 
 
 def _migrate_sections_columns(conn: sqlite3.Connection) -> None:
@@ -1333,12 +1439,15 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        vocal_section_idx, inst_section_idx,
        vocal_section_start, vocal_section_end,
        inst_section_start, inst_section_end, score_section,
+       vocal_section_label, inst_section_label,
+       section_bars_vocal, section_bars_bed,
+       section_loop_repeats, section_note,
        score_effort, effort_stretch, effort_pitch,
        effort_tempo_fold, effort_grid, effort_key_certainty,
        harmonic_shift, harmonic_confidence, bass_clash,
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -1350,6 +1459,12 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        inst_section_start=excluded.inst_section_start,
        inst_section_end=excluded.inst_section_end,
        score_section=excluded.score_section,
+       vocal_section_label=excluded.vocal_section_label,
+       inst_section_label=excluded.inst_section_label,
+       section_bars_vocal=excluded.section_bars_vocal,
+       section_bars_bed=excluded.section_bars_bed,
+       section_loop_repeats=excluded.section_loop_repeats,
+       section_note=excluded.section_note,
        score_effort=excluded.score_effort,
        effort_stretch=excluded.effort_stretch,
        effort_pitch=excluded.effort_pitch,
@@ -1380,10 +1495,16 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        scored_at=datetime('now')"""
 
 
+# Bind order for the section-pair block. MUST match the column list and the
+# placeholder count in _CANDIDATE_INSERT_SQL — candidate_row splats this, so
+# adding a name here without adding it there shifts every later binding.
 SECTION_PAIR_COLUMNS = (
     "vocal_section_idx", "inst_section_idx",
     "vocal_section_start", "vocal_section_end",
     "inst_section_start", "inst_section_end", "score_section",
+    "vocal_section_label", "inst_section_label",
+    "section_bars_vocal", "section_bars_bed",
+    "section_loop_repeats", "section_note",
 )
 
 
@@ -1459,19 +1580,33 @@ VERDICTS = ("love", "ok", "no")
 def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int, verdict: str,
                          vocal_section: Optional[int] = None,
                          inst_section: Optional[int] = None,
+                         features: Optional[Dict] = None,
                          db_path: Path = DB_PATH) -> None:
-    """Record (or correct) the user's verdict on one pair."""
+    """Record (or correct) the user's verdict on one SECTION PAIR.
+
+    Keyed on the sections as well as the songs: "chorus over drop" and "verse
+    over breakdown" are different judgements about the same two records, and
+    before P2.0 the second silently overwrote the first.
+
+    `features` is the feature snapshot the judged candidate was generated from.
+    Stored because score_all_pairs truncates mashup_candidates on every run, so
+    a verdict is otherwise only as reproducible as the last re-score."""
     conn = get_conn(db_path)
     conn.execute(
         """INSERT INTO pair_feedback
-               (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(vocal_song_id, inst_song_id) DO UPDATE SET
+               (vocal_song_id, inst_song_id, vocal_section, inst_section,
+                verdict, features_json)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(vocal_song_id, inst_song_id,
+                       COALESCE(vocal_section, -1), COALESCE(inst_section, -1))
+           DO UPDATE SET
                verdict=excluded.verdict,
-               vocal_section=excluded.vocal_section,
-               inst_section=excluded.inst_section,
+               -- Keep the original snapshot when the correction carries none,
+               -- rather than blanking what the first judgement recorded.
+               features_json=COALESCE(excluded.features_json, pair_feedback.features_json),
                created_at=datetime('now')""",
-        (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict),
+        (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict,
+         json.dumps(features, ensure_ascii=False) if features else None),
     )
     conn.commit()
     conn.close()

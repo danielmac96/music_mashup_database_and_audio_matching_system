@@ -265,22 +265,7 @@ def best_section_pair(vocal_sections: List[Dict], inst_sections: List[Dict],
         vocal_sections, inst_sections, stretch, prefiltered, bpm)
     if v is None or i is None:
         return None
-    return {
-        "vocal_section_idx": _index_of(v, vi),
-        "inst_section_idx": _index_of(i, ii),
-        "vocal_section_start": round(float(v.get("start_sec") or 0.0), 3),
-        "vocal_section_end": round(float(v.get("end_sec") or 0.0), 3),
-        "inst_section_start": round(float(i.get("start_sec") or 0.0), 3),
-        "inst_section_end": round(float(i.get("end_sec") or 0.0), 3),
-        "vocal_section_label": v.get("label"),
-        "inst_section_label": i.get("label"),
-        "score_section": round(best_score, 4),
-        **({k: v for k, v in (
-            ("section_bars_vocal", _pf.get("vocal_bars")),
-            ("section_bars_bed", _pf.get("bed_bars")),
-            ("section_loop_repeats", _pf.get("repeats")),
-        )} if (_pf := phrase_fit(
-            float(v.get("end_sec") or 0) - float(v.get("start_sec") or 0),
-            (float(i.get("end_sec") or 0) - float(i.get("start_sec") or 0))
-            / max(float(stretch or 1.0), 1e-6), bpm)) else {}),
-    }
+    # Delegate rather than rebuild: this used to assemble the dict itself and
+    # quietly omitted section_note, so a row's shape depended on which entry
+    # point produced it. Both now return the same keys by construction.
+    return _pair_row(v, i, vi, ii, best_score, stretch, bpm)
