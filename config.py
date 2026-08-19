@@ -167,6 +167,7 @@ def settings_provenance() -> dict:
                   "source": "env" if os.environ.get(spec[0]) else "settings"}
            for name, spec in _TUNABLE_INTS.items()},
         "match_weights": {"value": current_match_weights(), "source": "settings"},
+        "section_weights": {"value": current_section_weights(), "source": "settings"},
         # Presence only, never the values — this response goes to the browser.
         # The secret must not leave the server, and neither must the token.
         "soundcloud_client_id": {"value": bool(SOUNDCLOUD_CLIENT_ID),
@@ -446,6 +447,23 @@ EFFORT_WEIGHT = 0.25
 # the section was chosen afterwards, wrong once the section is the unit.
 SECTION_WEIGHT = 0.25
 
+# Weights inside score_section itself (spec §7's phrase / rhythm / structure,
+# plus the label/duration/voice terms that were already there).
+#
+# The three new ones ship at ZERO on purpose. They read per-section columns that
+# P2.1 only just added, so until a library has been re-analysed they would be
+# scoring on missing data — and flipping them on before the backfill would move
+# every ranking in an existing library for reasons the user cannot see. Raise
+# them (Settings → Tuning, or here) once "Re-analyse" reports nothing stale.
+SECTION_WEIGHTS = {
+    "label":     0.40,
+    "duration":  0.35,
+    "voice":     0.25,
+    "phrase":    0.0,
+    "rhythm":    0.0,
+    "structure": 0.0,
+}
+
 # How many section pairs one song pair may contribute. Two tracks with six
 # usable sections each would otherwise produce 36 rows and drown everything
 # else; three is enough to show that a pair works in more than one place.
@@ -493,6 +511,31 @@ _TUNABLE_INTS = {
 # Sub-score weights, tuned as a group. Stored as a dict in settings.json.
 _WEIGHT_KEYS = ("bpm_score", "key_score", "energy_score", "timbre_score",
                 "collision_score")
+
+_SECTION_WEIGHT_KEYS = ("label", "duration", "voice",
+                        "phrase", "rhythm", "structure")
+
+
+def current_section_weights() -> dict:
+    """The six score_section weights, normalised to sum to 1.
+
+    Same contract as current_match_weights: normalised rather than validated, so
+    dragging one slider does not silently rescale every section score in the
+    library. An all-zero saved set falls back to the defaults."""
+    saved = _load_settings().get("section_weights")
+    out = dict(SECTION_WEIGHTS)
+    if isinstance(saved, dict):
+        for key in _SECTION_WEIGHT_KEYS:
+            try:
+                val = float(saved[key])
+            except (KeyError, TypeError, ValueError):
+                continue
+            out[key] = max(0.0, val)
+    total = sum(out.values())
+    if total <= 0:
+        out = dict(SECTION_WEIGHTS)
+        total = sum(out.values())
+    return {k: v / total for k, v in out.items()}
 
 
 def _clamp(value, lo, hi):

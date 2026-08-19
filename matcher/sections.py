@@ -26,6 +26,7 @@ from typing import Dict, List, Optional
 from matcher.plan import (
     _INST_LABEL_PRIORITY, _VOCAL_LABEL_PRIORITY, _pick_sections,
 )
+from matcher.section_score import section_components
 
 # What a section pair is judged on. Deliberately only the three things a
 # `sections` row can actually answer:
@@ -35,9 +36,24 @@ from matcher.plan import (
 #   voice     — is anyone actually singing in the vocal section?
 # These are selection weights, not ranking weights: they decide which pair of
 # sections wins, never how the candidate places in the list.
+# Defaults, kept as module constants because several tests and the CLI import
+# them by name. The live values come from config.current_section_weights(),
+# which also carries spec §7's phrase/rhythm/structure terms — those ship at
+# zero until a library has been re-analysed for the P2.1 columns they read.
 W_LABEL = 0.40
 W_DURATION = 0.35
 W_VOCAL = 0.25
+
+
+def _weights() -> Dict[str, float]:
+    try:
+        from config import current_section_weights
+        return current_section_weights()
+    except ImportError:
+        total = W_LABEL + W_DURATION + W_VOCAL
+        return {"label": W_LABEL / total, "duration": W_DURATION / total,
+                "voice": W_VOCAL / total, "phrase": 0.0, "rhythm": 0.0,
+                "structure": 0.0}
 
 # Worst rank in either priority map (intro/outro). _pick_sections drops those,
 # so in practice the range is 0-4; the divisor just keeps the term in [0, 1]
@@ -137,9 +153,20 @@ def score_section_pair(vocal: Dict, inst: Dict, stretch: float,
     # Bars, not seconds, when the tempo is known: looping the bed is a normal
     # move, and charging full price for it hides good pairs.
     fit = phrase_fit(v_dur, i_dur, bpm)["fit"] if bpm else duration_fit(v_dur, i_dur)
-    return (W_LABEL * label
-            + W_DURATION * fit
-            + W_VOCAL * min(max(voice, 0.0), 1.0))
+
+    w = _weights()
+    total = (w["label"] * label
+             + w["duration"] * fit
+             + w["voice"] * min(max(voice, 0.0), 1.0))
+    # Spec §7's three. Skipped entirely when their weights are zero — the
+    # default until the library carries P2.1's per-section grid — so this costs
+    # nothing on a run that is not using them.
+    if w["phrase"] or w["rhythm"] or w["structure"]:
+        parts = section_components(vocal, inst, stretch)
+        total += (w["phrase"] * parts["score_phrase"]
+                  + w["rhythm"] * parts["score_rhythm"]
+                  + w["structure"] * parts["score_structure"])
+    return total
 
 
 def usable_sections(sections: List[Dict], vocal_side: bool) -> List[Dict]:
@@ -201,7 +228,9 @@ def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
         float(v.get("end_sec") or 0) - float(v.get("start_sec") or 0),
         (float(i.get("end_sec") or 0) - float(i.get("start_sec") or 0))
         / max(float(stretch or 1.0), 1e-6), bpm)
+    parts = section_components(v, i, stretch)
     return {
+        **parts,
         "vocal_section_idx": _index_of(v, vi),
         "inst_section_idx": _index_of(i, ii),
         "vocal_section_start": round(float(v.get("start_sec") or 0.0), 3),

@@ -499,6 +499,12 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("section_bars_bed", "REAL"),
     ("section_loop_repeats", "INTEGER"),
     ("section_note", "TEXT"),
+    # P2.3 — spec §7's phrase / rhythm / structure. Stored even while their
+    # weights are zero, so the UI can show what they say and the numbers can be
+    # judged against real pairs BEFORE they are allowed to move any ranking.
+    ("score_phrase", "REAL"),
+    ("score_rhythm", "REAL"),
+    ("score_structure", "REAL"),
     # Phase C — how much WORK this pair costs to build, 0 (free) to 1. The four
     # sub-scores all measure similarity; none of them measures effort, but a
     # 12% stretch and a +5 semitone shift are real costs a producer weighs
@@ -1480,12 +1486,13 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        vocal_section_label, inst_section_label,
        section_bars_vocal, section_bars_bed,
        section_loop_repeats, section_note,
+       score_phrase, score_rhythm, score_structure,
        score_effort, effort_stretch, effort_pitch,
        effort_tempo_fold, effort_grid, effort_key_certainty,
        harmonic_shift, harmonic_confidence, bass_clash,
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -1503,6 +1510,9 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        section_bars_bed=excluded.section_bars_bed,
        section_loop_repeats=excluded.section_loop_repeats,
        section_note=excluded.section_note,
+       score_phrase=excluded.score_phrase,
+       score_rhythm=excluded.score_rhythm,
+       score_structure=excluded.score_structure,
        score_effort=excluded.score_effort,
        effort_stretch=excluded.effort_stretch,
        effort_pitch=excluded.effort_pitch,
@@ -1543,6 +1553,7 @@ SECTION_PAIR_COLUMNS = (
     "vocal_section_label", "inst_section_label",
     "section_bars_vocal", "section_bars_bed",
     "section_loop_repeats", "section_note",
+    "score_phrase", "score_rhythm", "score_structure",
 )
 
 
