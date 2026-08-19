@@ -2,7 +2,7 @@
 database/models.py — SQLite schema via raw sqlite3.
 Tables: songs, stems, features, sections, mashup_candidates.
 """
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Sequence, Iterable
 import re
 import sqlite3
 import json
@@ -237,6 +237,46 @@ CREATE TABLE IF NOT EXISTS datasets (
     created_at         TEXT DEFAULT (datetime('now')),
     UNIQUE(name, version)
 );
+
+-- ── Crates: local shortlists built while browsing SoundCloud (Discovery) ─────
+-- A crate is this app's answer to "manipulate a playlist". SoundCloud's write
+-- API needs a registered app and registration has been closed since 2019, so
+-- the ordered list you build lives here instead. sc_playlist_id/permalink stay
+-- empty until (and unless) credentials appear and a crate is pushed upstream.
+CREATE TABLE IF NOT EXISTS crates (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    name             TEXT NOT NULL,
+    note             TEXT DEFAULT '',
+    sc_playlist_id   TEXT DEFAULT '',
+    sc_permalink_url TEXT DEFAULT '',
+    created_at       TEXT DEFAULT (datetime('now')),
+    updated_at       TEXT DEFAULT (datetime('now')),
+    UNIQUE(name)
+);
+
+-- One find, shortlisted. song_id stays NULL until the track is ingested, which
+-- is the point: you collect while browsing and decide what to download later.
+-- payload_json freezes the whole canonical ingest row, so a crate can be bulk
+-- ingested with zero further network calls and survives the upload being taken
+-- down. title/artist/duration/thumbnail are denormalised for cheap listing —
+-- the same trade mashup_candidates makes with vocal_title/inst_title.
+CREATE TABLE IF NOT EXISTS crate_items (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    crate_id      INTEGER NOT NULL,
+    position      INTEGER NOT NULL,
+    source_url    TEXT NOT NULL,     -- normalised permalink; the dedup key
+    track_id      TEXT DEFAULT '',   -- SoundCloud numeric id, when known
+    song_id       INTEGER,           -- set once ingested into the library
+    payload_json  TEXT,
+    title         TEXT,
+    artist        TEXT,
+    duration_secs REAL,
+    thumbnail     TEXT,
+    added_at      TEXT DEFAULT (datetime('now')),
+    UNIQUE(crate_id, source_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_crate_items_crate ON crate_items(crate_id, position);
 
 -- ── Learned pairwise models (Phase 5) ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS models (
@@ -573,6 +613,14 @@ def _migrate_songs_columns(conn: sqlite3.Connection) -> None:
            WHERE (release_year IS NULL OR release_year = 0)
              AND upload_date IS NOT NULL AND length(upload_date) >= 4"""
     )
+    # Discovery looks up "do I already have this?" by SoundCloud track id as well
+    # as by URL, which catches a track whose permalink was renamed. The index has
+    # to be created HERE rather than in SCHEMA: executescript(SCHEMA) runs before
+    # the ALTER TABLE loop above, so on a DB predating track_id the index would
+    # reference a column that does not exist yet and raise.
+    # Deliberately not UNIQUE — track_id is '' for every mixes-ingested row and
+    # every row older than the column, so a UNIQUE would collide immediately.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_songs_track_id ON songs(track_id)")
 
 
 def init_db(db_path: Path = DB_PATH) -> Path:
@@ -886,6 +934,62 @@ def get_song_by_url(source_url: str, db_path: Path = DB_PATH) -> Optional[Dict]:
     row = conn.execute("SELECT * FROM songs WHERE source_url=?", (source_url,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_song_by_track_id(track_id: str, db_path: Path = DB_PATH) -> Optional[Dict]:
+    """Look up a song by its SoundCloud numeric track id.
+
+    A secondary key, not a primary one: track_id is '' for rows ingested through
+    the mixes path and for anything upserted before the column existed, so a miss
+    here means "unknown", never "not in the library". Check source_url first."""
+    if not track_id:
+        return None
+    conn = get_conn(db_path)
+    row = conn.execute("SELECT * FROM songs WHERE track_id=?", (str(track_id),)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def songs_by_identity(source_urls: Sequence[str] = (),
+                      track_ids: Sequence[str] = (),
+                      db_path: Path = DB_PATH) -> Dict[str, List[Dict]]:
+    """Which of these SoundCloud tracks are already in the library.
+
+    One query for a whole page of Discovery results — the alternative is a round
+    trip per row. Returns ``{"by_url": {url: row}, "by_track_id": {tid: row}}``
+    holding only the light fields a result row needs to render a badge.
+
+    Empty track ids are dropped before the query: '' is the default for rows that
+    never learned their id, so matching on it would claim every such row is the
+    track being looked at."""
+    urls = [u for u in {str(u) for u in source_urls} if u]
+    tids = [t for t in {str(t) for t in track_ids} if t]
+    out: Dict[str, Dict[str, Dict]] = {"by_url": {}, "by_track_id": {}}
+    if not urls and not tids:
+        return out
+
+    clauses, params = [], []
+    if urls:
+        clauses.append(f"source_url IN ({','.join('?' * len(urls))})")
+        params.extend(urls)
+    if tids:
+        clauses.append(f"(track_id != '' AND track_id IN ({','.join('?' * len(tids))}))")
+        params.extend(tids)
+
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        "SELECT id, title, artist, source_url, track_id, status, last_error "
+        f"FROM songs WHERE {' OR '.join(clauses)}", params).fetchall()
+    conn.close()
+
+    url_set, tid_set = set(urls), set(tids)
+    for row in rows:
+        r = dict(row)
+        if r["source_url"] in url_set:
+            out["by_url"][r["source_url"]] = r
+        if r["track_id"] and r["track_id"] in tid_set:
+            out["by_track_id"][r["track_id"]] = r
+    return out
 
 
 def delete_song(song_id: int, db_path: Path = DB_PATH) -> Dict:
@@ -1856,3 +1960,259 @@ def get_candidates_for_song(song_id: int, role: str = "vocal",
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+# ── Crates (Discovery shortlists) ────────────────────────────────────────────
+# The local answer to "manipulate a playlist". A crate item does not require the
+# track to be in the library: you shortlist while browsing SoundCloud and decide
+# what to actually download later, which is the whole point of the surface.
+
+
+def create_crate(name: str, note: str = "", db_path: Path = DB_PATH) -> Dict:
+    """Create a crate. Names are unique, so this raises on a duplicate rather
+    than silently handing back someone else's crate."""
+    clean = (name or "").strip()
+    if not clean:
+        raise ValueError("crate name is required")
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute("INSERT INTO crates (name, note) VALUES (?, ?)",
+                           (clean, (note or "").strip()))
+        conn.commit()
+        return {"id": cur.lastrowid, "name": clean, "note": (note or "").strip()}
+    finally:
+        conn.close()
+
+
+def list_crates(db_path: Path = DB_PATH) -> List[Dict]:
+    """Every crate with its item count and how many of those are ingested.
+
+    The two counts are what the UI needs to say "12 tracks, 5 in library" without
+    a second query per crate."""
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        """SELECT c.*,
+                  COUNT(i.id)                             AS item_count,
+                  COALESCE(SUM(i.song_id IS NOT NULL), 0) AS ingested_count
+             FROM crates c
+             LEFT JOIN crate_items i ON i.crate_id = c.id
+            GROUP BY c.id
+            ORDER BY c.updated_at DESC, c.id DESC""").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_crate(crate_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
+    """One crate plus its items in order, each carrying the library status of the
+    song it maps to (a NULL song_id means "not ingested yet")."""
+    conn = get_conn(db_path)
+    try:
+        crate = conn.execute("SELECT * FROM crates WHERE id=?", (crate_id,)).fetchone()
+        if not crate:
+            return None
+        items = conn.execute(
+            """SELECT i.*, s.status AS song_status, s.last_error AS song_error
+                 FROM crate_items i
+                 LEFT JOIN songs s ON s.id = i.song_id
+                WHERE i.crate_id = ?
+                ORDER BY i.position, i.id""", (crate_id,)).fetchall()
+        out = dict(crate)
+        out["items"] = [dict(r) for r in items]
+        return out
+    finally:
+        conn.close()
+
+
+def update_crate(crate_id: int, *, name: Optional[str] = None,
+                 note: Optional[str] = None, db_path: Path = DB_PATH) -> bool:
+    """Rename a crate and/or change its note. False if it does not exist."""
+    sets, params = [], []
+    if name is not None:
+        clean = name.strip()
+        if not clean:
+            raise ValueError("crate name cannot be empty")
+        sets.append("name=?")
+        params.append(clean)
+    if note is not None:
+        sets.append("note=?")
+        params.append(note.strip())
+    if not sets:
+        return True
+    sets.append("updated_at=datetime('now')")
+    params.append(crate_id)
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(f"UPDATE crates SET {', '.join(sets)} WHERE id=?", params)
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_crate(crate_id: int, db_path: Path = DB_PATH) -> bool:
+    """Delete a crate and its items. No FK cascade is declared anywhere in this
+    schema, so children go explicitly — same as delete_song."""
+    conn = get_conn(db_path)
+    try:
+        conn.execute("DELETE FROM crate_items WHERE crate_id=?", (crate_id,))
+        cur = conn.execute("DELETE FROM crates WHERE id=?", (crate_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def add_crate_items(crate_id: int, rows: Iterable[Dict],
+                    db_path: Path = DB_PATH) -> Dict:
+    """Append rows to a crate, skipping ones already in it.
+
+    `rows` are canonical ingest rows — the shape ingest.soundcloud._normalise and
+    soundcloud_browse.track_row both produce. Callers pass already-normalised
+    source_urls; UNIQUE(crate_id, source_url) does the deduping, so re-adding a
+    page of search results is harmless.
+
+    Returns {"added", "skipped", "item_ids"} so the UI can say "3 added, 2 already
+    in this crate" rather than appearing to do nothing."""
+    conn = get_conn(db_path)
+    try:
+        if not conn.execute("SELECT 1 FROM crates WHERE id=?", (crate_id,)).fetchone():
+            raise ValueError(f"crate {crate_id} does not exist")
+
+        start = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS n FROM crate_items WHERE crate_id=?",
+            (crate_id,)).fetchone()["n"]
+
+        added, skipped, item_ids = 0, 0, []
+        seen: set = set()   # dedup within this request too, not only against the DB
+        for row in rows:
+            url = (row.get("source_url") or "").strip()
+            if not url or url in seen:
+                skipped += 1
+                continue
+            seen.add(url)
+            # Link straight to the library when we already have it, so a freshly
+            # added item shows its pipeline status without waiting for a relink.
+            existing = conn.execute(
+                "SELECT id FROM songs WHERE source_url=?", (url,)).fetchone()
+            cur = conn.execute(
+                """INSERT INTO crate_items
+                       (crate_id, position, source_url, track_id, song_id,
+                        payload_json, title, artist, duration_secs, thumbnail)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(crate_id, source_url) DO NOTHING""",
+                (crate_id, start + added, url, str(row.get("track_id") or ""),
+                 existing["id"] if existing else None,
+                 json.dumps(row, ensure_ascii=False),
+                 row.get("title") or "", row.get("artist") or "",
+                 float(row.get("duration_secs") or 0.0), row.get("thumbnail") or ""))
+            if cur.rowcount:
+                added += 1
+                item_ids.append(cur.lastrowid)
+            else:
+                skipped += 1
+        conn.execute("UPDATE crates SET updated_at=datetime('now') WHERE id=?", (crate_id,))
+        conn.commit()
+        return {"added": added, "skipped": skipped, "item_ids": item_ids}
+    finally:
+        conn.close()
+
+
+def remove_crate_items(crate_id: int, item_ids: Sequence[int],
+                       db_path: Path = DB_PATH) -> int:
+    """Remove items and close the gaps their positions leave behind, so position
+    stays dense and a later reorder has a contiguous range to work with."""
+    ids = [int(i) for i in item_ids]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" * len(ids))
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            f"DELETE FROM crate_items WHERE crate_id=? AND id IN ({placeholders})",
+            [crate_id, *ids])
+        removed = cur.rowcount
+        remaining = conn.execute(
+            "SELECT id FROM crate_items WHERE crate_id=? ORDER BY position, id",
+            (crate_id,)).fetchall()
+        for pos, row in enumerate(remaining):
+            conn.execute("UPDATE crate_items SET position=? WHERE id=?", (pos, row["id"]))
+        conn.execute("UPDATE crates SET updated_at=datetime('now') WHERE id=?", (crate_id,))
+        conn.commit()
+        return removed
+    finally:
+        conn.close()
+
+
+def reorder_crate(crate_id: int, item_ids: Sequence[int],
+                  db_path: Path = DB_PATH) -> bool:
+    """Rewrite positions to the given order. The id set must be exactly the
+    crate's items, each once — a partial list would silently drop tracks. Same
+    contract as /api/mixes/{id}/reorder, so the frontend reuses its handler."""
+    ids = [int(i) for i in item_ids]
+    conn = get_conn(db_path)
+    try:
+        current = {r["id"] for r in conn.execute(
+            "SELECT id FROM crate_items WHERE crate_id=?", (crate_id,)).fetchall()}
+        if set(ids) != current or len(ids) != len(current):
+            raise ValueError("item_ids must be exactly the crate's items, each once")
+        # Two-pass, parking in a non-colliding range first. crate_items has no
+        # UNIQUE on position today, but the mixes reorder does it this way and a
+        # future index on (crate_id, position) would otherwise break this.
+        for iid in ids:
+            conn.execute("UPDATE crate_items SET position = position + 100000 WHERE id=?", (iid,))
+        for pos, iid in enumerate(ids):
+            conn.execute("UPDATE crate_items SET position=? WHERE id=?", (pos, iid))
+        conn.execute("UPDATE crates SET updated_at=datetime('now') WHERE id=?", (crate_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def relink_crate_songs(crate_id: int, db_path: Path = DB_PATH) -> int:
+    """Point crate items at library songs that now exist, matching on source_url.
+    Run after ingesting a crate; returns how many items gained a song_id."""
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            """UPDATE crate_items
+                  SET song_id = (SELECT s.id FROM songs s
+                                  WHERE s.source_url = crate_items.source_url)
+                WHERE crate_id = ?
+                  AND song_id IS NULL
+                  AND EXISTS (SELECT 1 FROM songs s
+                               WHERE s.source_url = crate_items.source_url)""",
+            (crate_id,))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def crate_payloads(crate_id: int, only_unlinked: bool = True,
+                   db_path: Path = DB_PATH) -> List[Dict]:
+    """The canonical ingest rows for a crate, in order.
+
+    `only_unlinked` skips items already pointing at a library song, which is what
+    "Ingest this crate" wants — the ingest path would report them as skipped
+    duplicates anyway, but not asking is cheaper and makes the count honest."""
+    conn = get_conn(db_path)
+    sql = ("SELECT payload_json, source_url, title, artist FROM crate_items "
+           "WHERE crate_id=?" + (" AND song_id IS NULL" if only_unlinked else "") +
+           " ORDER BY position, id")
+    rows = conn.execute(sql, (crate_id,)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        try:
+            payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+        except (ValueError, TypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        # A row written before payload_json existed, or one whose JSON is corrupt,
+        # still has enough on the item itself to be ingestable.
+        payload.setdefault("source_url", r["source_url"])
+        payload.setdefault("title", r["title"] or "")
+        payload.setdefault("artist", r["artist"] or "")
+        out.append(payload)
+    return out
