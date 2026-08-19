@@ -79,6 +79,13 @@ def client(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
     from api.routes import studio
 
+    # studio.py does `from database.models import get_conn` at import time, so it
+    # holds a function whose default db_path was frozen to whatever DB_PATH was
+    # when it first loaded. Without this reload the route reads a previous test's
+    # database and the fixture's song is invisible — an ordering bug that only
+    # shows up once some earlier test file reloads database.models.
+    importlib.reload(studio)
+
     app = FastAPI()
     app.include_router(studio.router, prefix="/api/studio")
     return TestClient(app)

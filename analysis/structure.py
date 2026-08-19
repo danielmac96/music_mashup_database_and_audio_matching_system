@@ -261,6 +261,117 @@ def _norm_chroma(vec: np.ndarray) -> list:
     return [round(float(x), 6) for x in (v / n)]
 
 
+# A section's own tempo is only worth believing when its grid is steady enough
+# to be worth believing. Below this we keep the track's BPM and say so, rather
+# than letting a four-beat breakdown claim 74 BPM and drag a match with it.
+SECTION_BPM_MIN_CONFIDENCE = 0.25
+SECTION_BPM_MIN_BEATS = 8
+# How far a section's own estimate may sit from the track's before we treat it
+# as a half/double-time reading of the same grid rather than a real change.
+SECTION_BPM_FOLD_TOLERANCE = 0.08
+
+# vocal_presence thresholds for the categorical class. Between them is "mixed":
+# a section with singing over a full arrangement, which is usable on either side
+# but ideal on neither.
+SECTION_VOCAL_MIN = 0.35
+SECTION_INSTRUMENTAL_MAX = 0.12
+
+# Energy slope below this (per second, on the 0-1 normalised curve) reads as
+# flat. A build is not subtle, and calling every gentle wobble a "build" would
+# make the label useless for picking one.
+ENERGY_TREND_EPSILON = 0.004
+
+
+def _section_bpm(section_beats: np.ndarray, track_bpm: Optional[float],
+                 confidence: float) -> tuple:
+    """(bpm, source) for one section.
+
+    Falls back to the track's tempo when the section's own grid is too short or
+    too unsteady to trust — and records WHICH, because a caller weighing a match
+    should know whether it is looking at a measurement or an inheritance.
+
+    A section estimate that lands within tolerance of half or double the track
+    tempo is a fold of the same grid, not a tempo change, so it is snapped back:
+    an 8-bar half-time bridge is still the same record.
+    """
+    if track_bpm and (len(section_beats) < SECTION_BPM_MIN_BEATS
+                      or confidence < SECTION_BPM_MIN_CONFIDENCE):
+        return float(track_bpm), "track_fallback"
+
+    intervals = np.diff(section_beats)
+    intervals = intervals[intervals > 1e-6]
+    if len(intervals) < 2:
+        return (float(track_bpm), "track_fallback") if track_bpm else (None, None)
+
+    bpm = 60.0 / float(np.median(intervals))
+    if not np.isfinite(bpm) or bpm <= 0:
+        return (float(track_bpm), "track_fallback") if track_bpm else (None, None)
+
+    if track_bpm:
+        for factor in (0.5, 2.0):
+            if abs(bpm - track_bpm * factor) / max(track_bpm * factor, 1e-6) \
+                    < SECTION_BPM_FOLD_TOLERANCE:
+                return float(track_bpm), "section_estimate"
+    return round(float(bpm), 2), "section_estimate"
+
+
+def _energy_shape(curve: np.ndarray, duration: float) -> tuple:
+    """(slope per second, trend label) over a section's energy curve.
+
+    A least-squares fit rather than end-minus-start: a drop's last beat can be a
+    tail and its first a pickup, and either would flip the sign of a difference
+    while saying nothing about the shape between them.
+    """
+    if curve is None or len(curve) < 3 or duration <= 0:
+        return None, "stable"
+    x = np.linspace(0.0, float(duration), len(curve))
+    try:
+        slope = float(np.polyfit(x, curve.astype(float), 1)[0])
+    except (np.linalg.LinAlgError, ValueError):
+        return None, "stable"
+    if not np.isfinite(slope):
+        return None, "stable"
+    if slope > ENERGY_TREND_EPSILON:
+        trend = "increasing"
+    elif slope < -ENERGY_TREND_EPSILON:
+        trend = "decreasing"
+    else:
+        trend = "stable"
+    return round(slope, 6), trend
+
+
+def _section_class(vocal_presence: Optional[float]) -> str:
+    """vocal | instrumental | mixed | unknown.
+
+    unknown means the vocal stem was missing, NOT that the section is quiet —
+    the spec's §5 says not to match unknown sections unless explicitly enabled,
+    and conflating "no stem" with "no vocal" would silently drop half a library
+    that has not been separated yet.
+    """
+    if vocal_presence is None:
+        return "unknown"
+    if vocal_presence >= SECTION_VOCAL_MIN:
+        return "vocal"
+    if vocal_presence <= SECTION_INSTRUMENTAL_MAX:
+        return "instrumental"
+    return "mixed"
+
+
+def _phrase_length(bar_count: float) -> Optional[float]:
+    """The power-of-two phrase this section's length is nearest, in bars.
+
+    Sections are snapped to an 8-bar grid upstream, so this is usually exact;
+    it exists so a 15.8-bar section reports the 16 a producer would call it.
+    """
+    if not bar_count or bar_count <= 0:
+        return None
+    candidates = (1, 2, 4, 8, 16, 32, 64)
+    best = min(candidates, key=lambda c: abs(bar_count - c))
+    # Beyond the top candidate, report the rounded bar count rather than
+    # claiming a 200-bar section is a 64-bar phrase.
+    return float(best) if bar_count <= candidates[-1] * 1.5 else round(bar_count, 2)
+
+
 def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
                     inst_path: Optional[Path] = None,
                     bass_path: Optional[Path] = None,
@@ -305,6 +416,11 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
 
     _tick("Beat tracking…")
     tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=HOP_LENGTH)
+    # librosa returns tempo as a 0-d array in some versions and a float in
+    # others; a section's fallback has to be a plain number either way.
+    track_bpm = float(np.atleast_1d(tempo)[0]) if tempo is not None else None
+    if track_bpm is not None and not np.isfinite(track_bpm):
+        track_bpm = None
     if len(beats) < 16:
         log.warning("  Too few beats detected — skipping structure analysis.")
         return []
@@ -374,7 +490,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     # The phase is recomputed here rather than read from `features`: analysis
     # trims the head of the file before beat-tracking (BEAT_TRIM_SECS), so the
     # stored beat_phase indexes a different grid from the one above.
-    from analysis.analyze import _pick_beat_phase
+    from analysis.analyze import _pick_beat_phase, beat_grid_confidence
     onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP_LENGTH)
     phase = _pick_beat_phase(onset_env, beats)
     bounds, snapped = snap_boundaries_to_phrases(
@@ -432,6 +548,27 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         # never occurs — least of all the chorus you actually want to layer.
         from analysis.analyze import key_from_chroma
         section_key = key_from_chroma(seg_chroma)
+        # ── the section's own tempo and grid (P2.1) ──────────────────────────
+        # Everything here comes off arrays already in memory for the boundary
+        # work above, so this costs no extra decode and no extra DSP pass.
+        seg_beats = beat_times[a:min(b + 1, len(beat_times))]
+        seg_frames = beats[a:min(b + 1, len(beats))]
+        grid_conf = beat_grid_confidence(seg_beats, onset_env, seg_frames)
+        seg_bpm, bpm_source = _section_bpm(seg_beats, track_bpm, grid_conf)
+
+        beat_count = max(0, len(seg_beats) - 1)
+        bar_count = round(beat_count / BEATS_PER_BAR, 3) if beat_count else 0.0
+        # Bar lines, on the track's phase so a section's downbeats agree with
+        # every other consumer of beat_phase (render/session.py, hooks.py).
+        downbeats = [round(float(t), 4) for i, t in enumerate(seg_beats)
+                     if (a + i) % BEATS_PER_BAR == phase]
+
+        seg_curve = rms_b[a:b]
+        energy_abs = float(seg_curve.mean()) if len(seg_curve) else None
+        slope, trend = _energy_shape(
+            seg_curve / (rms_max + 1e-9) if len(seg_curve) else None,
+            end_t - start_t)
+
         seg = {
             "start_sec": round(start_t, 2),
             "end_sec": round(end_t, 2),
@@ -439,6 +576,19 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
             "vocal_presence": round(vp, 4) if vp is not None else None,
             "phrase_aligned": phrase_aligned,
             "chroma": _norm_chroma(seg_chroma),
+            "bpm": seg_bpm,
+            "bpm_source": bpm_source,
+            "bpm_confidence": round(float(grid_conf), 4),
+            "energy_absolute": round(energy_abs, 6) if energy_abs is not None else None,
+            "energy_slope": slope,
+            "energy_trend": trend,
+            "beat_times": [round(float(t), 4) for t in seg_beats],
+            "downbeats": downbeats,
+            "beat_count": beat_count,
+            "bar_count": bar_count,
+            "beats_per_bar": BEATS_PER_BAR,
+            "phrase_length_bars": _phrase_length(bar_count),
+            "section_class": _section_class(vp),
             **section_key,
         }
         if bass_chroma_b is not None:

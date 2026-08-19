@@ -2,7 +2,7 @@
 database/models.py — SQLite schema via raw sqlite3.
 Tables: songs, stems, features, sections, mashup_candidates.
 """
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Sequence, Iterable
 import re
 import sqlite3
 import json
@@ -143,9 +143,19 @@ CREATE TABLE IF NOT EXISTS pair_feedback (
     vocal_section   INTEGER,
     inst_section    INTEGER,
     verdict         TEXT NOT NULL CHECK(verdict IN ('love','ok','no')),
-    created_at      TEXT DEFAULT (datetime('now')),
-    UNIQUE(vocal_song_id, inst_song_id)
+    -- The exact feature values the judged candidate was generated from. A
+    -- verdict without them is only as reproducible as the last re-score, and
+    -- score_all_pairs truncates mashup_candidates on every run.
+    features_json   TEXT,
+    created_at      TEXT DEFAULT (datetime('now'))
+    -- No table-level UNIQUE: the key is the index below, which includes the
+    -- sections. "chorus over drop" and "verse over breakdown" are different
+    -- judgements about the same two records.
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pair_feedback_section
+    ON pair_feedback(vocal_song_id, inst_song_id,
+                     COALESCE(vocal_section, -1), COALESCE(inst_section, -1));
 CREATE INDEX IF NOT EXISTS idx_feedback_verdict ON pair_feedback(verdict);
 
 -- ── Pairs and tracks the user does not want to see again (T3.4) ──────────────
@@ -238,6 +248,47 @@ CREATE TABLE IF NOT EXISTS datasets (
     UNIQUE(name, version)
 );
 
+-- ── Crates: local shortlists built while browsing SoundCloud (Discovery) ─────
+-- A crate is this app's answer to "manipulate a playlist". SoundCloud's write
+-- API needs a registered app and registration has been closed since 2019, so
+-- the ordered list you build lives here instead. sc_playlist_id/permalink stay
+-- empty until (and unless) credentials appear and a crate is pushed upstream.
+CREATE TABLE IF NOT EXISTS crates (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    name             TEXT NOT NULL,
+    note             TEXT DEFAULT '',
+    sc_playlist_id   TEXT DEFAULT '',
+    sc_permalink_url TEXT DEFAULT '',
+    synced_at        TEXT,
+    created_at       TEXT DEFAULT (datetime('now')),
+    updated_at       TEXT DEFAULT (datetime('now')),
+    UNIQUE(name)
+);
+
+-- One find, shortlisted. song_id stays NULL until the track is ingested, which
+-- is the point: you collect while browsing and decide what to download later.
+-- payload_json freezes the whole canonical ingest row, so a crate can be bulk
+-- ingested with zero further network calls and survives the upload being taken
+-- down. title/artist/duration/thumbnail are denormalised for cheap listing —
+-- the same trade mashup_candidates makes with vocal_title/inst_title.
+CREATE TABLE IF NOT EXISTS crate_items (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    crate_id      INTEGER NOT NULL,
+    position      INTEGER NOT NULL,
+    source_url    TEXT NOT NULL,     -- normalised permalink; the dedup key
+    track_id      TEXT DEFAULT '',   -- SoundCloud numeric id, when known
+    song_id       INTEGER,           -- set once ingested into the library
+    payload_json  TEXT,
+    title         TEXT,
+    artist        TEXT,
+    duration_secs REAL,
+    thumbnail     TEXT,
+    added_at      TEXT DEFAULT (datetime('now')),
+    UNIQUE(crate_id, source_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_crate_items_crate ON crate_items(crate_id, position);
+
 -- ── Learned pairwise models (Phase 5) ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS models (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -273,16 +324,26 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     if needs_init:
-        conn.executescript(SCHEMA)
-        _migrate_songs_columns(conn)
-        _migrate_features_columns(conn)
-        _migrate_candidates_columns(conn)
-        _migrate_sections_columns(conn)
-        _migrate_candidates_unique_key(conn)
-        _migrate_stems_columns(conn)
-        _migrate_mixtracks_columns(conn)
-        _migrate_mashuppairs_columns(conn)
-        conn.commit()
+        # A migration that raises must not leave this connection open: it holds a
+        # write lock, so every later attempt — including the retry that would fix
+        # things — fails with "database is locked" instead of the real error.
+        try:
+            conn.executescript(SCHEMA)
+            _migrate_songs_columns(conn)
+            _migrate_features_columns(conn)
+            _migrate_candidates_columns(conn)
+            _migrate_sections_columns(conn)
+            _migrate_candidates_unique_key(conn)
+            _migrate_stems_columns(conn)
+            _migrate_mixtracks_columns(conn)
+            _migrate_mashuppairs_columns(conn)
+            _migrate_crates_columns(conn)
+            _migrate_pair_feedback_key(conn)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            conn.close()
+            raise
         _INITIALIZED_PATHS.add(key)
     conn.execute("PRAGMA journal_mode=WAL")
     # With parallel pipeline stages writing concurrently, a writer can briefly
@@ -428,6 +489,31 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("inst_section_start", "REAL"),
     ("inst_section_end", "REAL"),
     ("score_section", "REAL"),               # selection fit, NOT part of score_total
+    # P2.0 — matcher.sections._pair_row has always COMPUTED these and they were
+    # thrown away on every write, because SECTION_PAIR_COLUMNS bound only the
+    # seven above. They are what lets a row say "chorus over drop, 16 bars,
+    # loop the bed x2" without re-deriving the section pair to find out.
+    ("vocal_section_label", "TEXT"),
+    ("inst_section_label", "TEXT"),
+    ("section_bars_vocal", "REAL"),
+    ("section_bars_bed", "REAL"),
+    ("section_loop_repeats", "INTEGER"),
+    ("section_note", "TEXT"),
+    # P2.3 — spec §7's phrase / rhythm / structure. Stored even while their
+    # weights are zero, so the UI can show what they say and the numbers can be
+    # judged against real pairs BEFORE they are allowed to move any ranking.
+    ("score_phrase", "REAL"),
+    ("score_rhythm", "REAL"),
+    ("score_structure", "REAL"),
+    # P2.4 / spec §8 — what building this pair actually involves. Computed at
+    # scoring time from the stored per-section downbeats, so the ranked list can
+    # say it without the export step having to be reached first.
+    ("alignment_downbeat", "REAL"),
+    ("alignment_offset", "REAL"),
+    ("target_bpm", "REAL"),
+    ("tempo_adjustment", "REAL"),
+    ("pitch_adjustment", "INTEGER"),
+    ("reason", "TEXT"),
     # Phase C — how much WORK this pair costs to build, 0 (free) to 1. The four
     # sub-scores all measure similarity; none of them measures effort, but a
     # 12% stretch and a +5 semitone shift are real costs a producer weighs
@@ -479,6 +565,29 @@ _SECTIONS_OPTIONAL_COLUMNS = (
     ("mode", "TEXT"),
     ("camelot", "TEXT"),
     ("key_confidence", "REAL"),
+    # P2.1 — the section's OWN tempo and grid. Every bar count in the system was
+    # previously derived on the fly from bars_in(seconds, track_bpm), which is an
+    # average over a record that may change tempo and cannot express a section
+    # whose grid is simply unreadable. Measured inside detect_sections' existing
+    # segment loop, where the beat grid and onset envelope are already in memory.
+    ("bpm", "REAL"),
+    ("bpm_source", "TEXT"),          # 'section_estimate' | 'track_fallback'
+    ("bpm_confidence", "REAL"),      # steadiness x salience, as analyze.py means it
+    # energy above is normalised to the track's own 95th percentile, which says
+    # where this section sits WITHIN the record. Comparing two records needs the
+    # unnormalised figure as well.
+    ("energy_absolute", "REAL"),
+    ("energy_slope", "REAL"),        # signed, per second, over the section
+    ("energy_trend", "TEXT"),        # 'increasing' | 'decreasing' | 'stable'
+    ("beat_times_json", "TEXT"),
+    ("downbeats_json", "TEXT"),      # bar lines, from beat_times + beat phase
+    ("beat_count", "INTEGER"),
+    ("bar_count", "REAL"),
+    ("beats_per_bar", "INTEGER DEFAULT 4"),
+    ("phrase_length_bars", "REAL"),
+    # vocal|instrumental|mixed|unknown. vocal_presence is a continuous 0-1 and
+    # every caller re-invented its own threshold; this is the shared answer.
+    ("section_class", "TEXT"),
 )
 
 
@@ -538,6 +647,83 @@ def _migrate_candidates_unique_key(conn: sqlite3.Connection) -> None:
         conn.execute(idx)
 
 
+_PAIR_FEEDBACK_UNIQUE_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_pair_feedback_section "
+    "ON pair_feedback(vocal_song_id, inst_song_id, "
+    "COALESCE(vocal_section, -1), COALESCE(inst_section, -1))")
+
+_PAIR_FEEDBACK_OPTIONAL_COLUMNS = (
+    ("features_json", "TEXT"),
+)
+
+
+def _copy_pair_feedback(conn: sqlite3.Connection, col_list: str) -> None:
+    """Carry every legacy row into the rebuilt table.
+
+    Its own function so the row-count guard around it has a seam to be tested
+    through — this is the step whose failure would cost the user every verdict
+    they have ever given."""
+    conn.execute(f"INSERT INTO pair_feedback_new ({col_list}) "
+                 f"SELECT {col_list} FROM pair_feedback")
+
+
+def _migrate_pair_feedback_key(conn: sqlite3.Connection) -> None:
+    """Move the feedback key from (song, song) to (song, song, section, section).
+
+    The old UNIQUE(vocal_song_id, inst_song_id) sat directly above nullable
+    vocal_section/inst_section columns, so judging "chorus over drop" and then
+    "verse over breakdown" on the same two records DESTROYED the first verdict.
+    Since E.3 made the section pair the candidate row, that is the normal way to
+    use the app, and the loss compounds silently.
+
+    Unlike _migrate_candidates_unique_key, this table is NOT safe to rebuild
+    carelessly: score_all_pairs truncates mashup_candidates on every run, but
+    pair_feedback is irreplaceable user input and the only training signal the
+    learned scorer has. So: copy into a new table, swap, and only then drop —
+    all inside one transaction, and idempotent on re-entry.
+    """
+    existing = {row[1] for row in conn.execute(
+        "PRAGMA table_info(pair_feedback)").fetchall()}
+    if not existing:
+        return   # SCHEMA has just created it in the correct shape
+
+    for col, decl in _PAIR_FEEDBACK_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE pair_feedback ADD COLUMN {col} {decl}")
+
+    sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' "
+        "AND name='pair_feedback'").fetchone()
+    ddl = (sql[0] if sql else "") or ""
+    if "UNIQUE(vocal_song_id, inst_song_id)" not in ddl:
+        conn.execute(_PAIR_FEEDBACK_UNIQUE_INDEX)   # already migrated
+        return
+
+    cols = [r[1] for r in conn.execute(
+        "PRAGMA table_info(pair_feedback)").fetchall()]
+    col_list = ", ".join(cols)
+    new_ddl = ddl.replace("pair_feedback", "pair_feedback_new", 1)
+    new_ddl = re.sub(r",?\s*UNIQUE\(vocal_song_id,\s*inst_song_id\)", "", new_ddl)
+    new_ddl = re.sub(r",\s*\)\s*$", "\n)", new_ddl.strip())
+
+    conn.execute("DROP TABLE IF EXISTS pair_feedback_new")
+    conn.execute(new_ddl)
+    _copy_pair_feedback(conn, col_list)
+
+    moved = conn.execute("SELECT COUNT(*) FROM pair_feedback_new").fetchone()[0]
+    had = conn.execute("SELECT COUNT(*) FROM pair_feedback").fetchone()[0]
+    if moved != had:
+        # Never drop the original on a short copy. Leaving both tables in place
+        # is recoverable; losing every verdict the user ever gave is not.
+        conn.execute("DROP TABLE IF EXISTS pair_feedback_new")
+        raise RuntimeError(
+            f"pair_feedback migration copied {moved} of {had} rows; left untouched.")
+
+    conn.execute("DROP TABLE pair_feedback")
+    conn.execute("ALTER TABLE pair_feedback_new RENAME TO pair_feedback")
+    conn.execute(_PAIR_FEEDBACK_UNIQUE_INDEX)
+
+
 def _migrate_sections_columns(conn: sqlite3.Connection) -> None:
     existing = {row[1] for row in conn.execute(
         "PRAGMA table_info(sections)").fetchall()}
@@ -561,6 +747,22 @@ def _migrate_features_columns(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE features ADD COLUMN {col} {decl}")
 
 
+_CRATES_OPTIONAL_COLUMNS = (
+    # When a crate was last pushed to SoundCloud. Only ever set by the dormant
+    # OAuth write path, so it stays NULL for everyone without app credentials.
+    ("synced_at", "TEXT"),
+)
+
+
+def _migrate_crates_columns(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(crates)").fetchall()}
+    if not existing:
+        return   # table not created yet; SCHEMA will have made it complete
+    for col, decl in _CRATES_OPTIONAL_COLUMNS:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE crates ADD COLUMN {col} {decl}")
+
+
 def _migrate_songs_columns(conn: sqlite3.Connection) -> None:
     """Add SoundCloud metadata columns to existing DBs created before this schema."""
     existing = {row[1] for row in conn.execute("PRAGMA table_info(songs)").fetchall()}
@@ -573,6 +775,14 @@ def _migrate_songs_columns(conn: sqlite3.Connection) -> None:
            WHERE (release_year IS NULL OR release_year = 0)
              AND upload_date IS NOT NULL AND length(upload_date) >= 4"""
     )
+    # Discovery looks up "do I already have this?" by SoundCloud track id as well
+    # as by URL, which catches a track whose permalink was renamed. The index has
+    # to be created HERE rather than in SCHEMA: executescript(SCHEMA) runs before
+    # the ALTER TABLE loop above, so on a DB predating track_id the index would
+    # reference a column that does not exist yet and raise.
+    # Deliberately not UNIQUE — track_id is '' for every mixes-ingested row and
+    # every row older than the column, so a UNIQUE would collide immediately.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_songs_track_id ON songs(track_id)")
 
 
 def init_db(db_path: Path = DB_PATH) -> Path:
@@ -888,6 +1098,62 @@ def get_song_by_url(source_url: str, db_path: Path = DB_PATH) -> Optional[Dict]:
     return dict(row) if row else None
 
 
+def get_song_by_track_id(track_id: str, db_path: Path = DB_PATH) -> Optional[Dict]:
+    """Look up a song by its SoundCloud numeric track id.
+
+    A secondary key, not a primary one: track_id is '' for rows ingested through
+    the mixes path and for anything upserted before the column existed, so a miss
+    here means "unknown", never "not in the library". Check source_url first."""
+    if not track_id:
+        return None
+    conn = get_conn(db_path)
+    row = conn.execute("SELECT * FROM songs WHERE track_id=?", (str(track_id),)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def songs_by_identity(source_urls: Sequence[str] = (),
+                      track_ids: Sequence[str] = (),
+                      db_path: Path = DB_PATH) -> Dict[str, List[Dict]]:
+    """Which of these SoundCloud tracks are already in the library.
+
+    One query for a whole page of Discovery results — the alternative is a round
+    trip per row. Returns ``{"by_url": {url: row}, "by_track_id": {tid: row}}``
+    holding only the light fields a result row needs to render a badge.
+
+    Empty track ids are dropped before the query: '' is the default for rows that
+    never learned their id, so matching on it would claim every such row is the
+    track being looked at."""
+    urls = [u for u in {str(u) for u in source_urls} if u]
+    tids = [t for t in {str(t) for t in track_ids} if t]
+    out: Dict[str, Dict[str, Dict]] = {"by_url": {}, "by_track_id": {}}
+    if not urls and not tids:
+        return out
+
+    clauses, params = [], []
+    if urls:
+        clauses.append(f"source_url IN ({','.join('?' * len(urls))})")
+        params.extend(urls)
+    if tids:
+        clauses.append(f"(track_id != '' AND track_id IN ({','.join('?' * len(tids))}))")
+        params.extend(tids)
+
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        "SELECT id, title, artist, source_url, track_id, status, last_error "
+        f"FROM songs WHERE {' OR '.join(clauses)}", params).fetchall()
+    conn.close()
+
+    url_set, tid_set = set(urls), set(tids)
+    for row in rows:
+        r = dict(row)
+        if r["source_url"] in url_set:
+            out["by_url"][r["source_url"]] = r
+        if r["track_id"] and r["track_id"] in tid_set:
+            out["by_track_id"][r["track_id"]] = r
+    return out
+
+
 def delete_song(song_id: int, db_path: Path = DB_PATH) -> Dict:
     """Delete a song and every derived row (features, sections, stems, mashup
     candidates), and drop the back-reference from any mix_tracks. Returns
@@ -1132,8 +1398,13 @@ def replace_sections(song_id: int, sections: List[Dict],
                 energy, vocal_presence, repetition, confidence,
                 chroma_json, bass_chroma_json,
                 chroma_vocal_json, chroma_bed_json, key, mode, camelot,
-                key_confidence)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                key_confidence,
+                bpm, bpm_source, bpm_confidence,
+                energy_absolute, energy_slope, energy_trend,
+                beat_times_json, downbeats_json, beat_count, bar_count,
+                beats_per_bar, phrase_length_bars, section_class)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                   ?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 song_id, idx,
@@ -1147,6 +1418,14 @@ def replace_sections(song_id: int, sections: List[Dict],
                 json.dumps(s["chroma_bed"]) if s.get("chroma_bed") else None,
                 s.get("key"), s.get("mode"), s.get("camelot"),
                 s.get("key_confidence"),
+                s.get("bpm"), s.get("bpm_source"), s.get("bpm_confidence"),
+                s.get("energy_absolute"), s.get("energy_slope"),
+                s.get("energy_trend"),
+                json.dumps(s["beat_times"]) if s.get("beat_times") else None,
+                json.dumps(s["downbeats"]) if s.get("downbeats") else None,
+                s.get("beat_count"), s.get("bar_count"),
+                s.get("beats_per_bar"), s.get("phrase_length_bars"),
+                s.get("section_class"),
             )
             for idx, s in enumerate(sections)
         ],
@@ -1170,7 +1449,9 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
         for src, dest in (("chroma_json", "chroma"),
                           ("bass_chroma_json", "bass_chroma"),
                           ("chroma_vocal_json", "chroma_vocal"),
-                          ("chroma_bed_json", "chroma_bed")):
+                          ("chroma_bed_json", "chroma_bed"),
+                          ("beat_times_json", "beat_times"),
+                          ("downbeats_json", "downbeats")):
             if d.get(src):
                 d[dest] = json.loads(d.pop(src))
             else:
@@ -1211,12 +1492,19 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        vocal_section_idx, inst_section_idx,
        vocal_section_start, vocal_section_end,
        inst_section_start, inst_section_end, score_section,
+       vocal_section_label, inst_section_label,
+       section_bars_vocal, section_bars_bed,
+       section_loop_repeats, section_note,
+       score_phrase, score_rhythm, score_structure,
+       alignment_downbeat, alignment_offset, target_bpm,
+       tempo_adjustment, pitch_adjustment, reason,
        score_effort, effort_stretch, effort_pitch,
        effort_tempo_fold, effort_grid, effort_key_certainty,
        harmonic_shift, harmonic_confidence, bass_clash,
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+             ?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -1228,6 +1516,21 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        inst_section_start=excluded.inst_section_start,
        inst_section_end=excluded.inst_section_end,
        score_section=excluded.score_section,
+       vocal_section_label=excluded.vocal_section_label,
+       inst_section_label=excluded.inst_section_label,
+       section_bars_vocal=excluded.section_bars_vocal,
+       section_bars_bed=excluded.section_bars_bed,
+       section_loop_repeats=excluded.section_loop_repeats,
+       section_note=excluded.section_note,
+       score_phrase=excluded.score_phrase,
+       score_rhythm=excluded.score_rhythm,
+       score_structure=excluded.score_structure,
+       alignment_downbeat=excluded.alignment_downbeat,
+       alignment_offset=excluded.alignment_offset,
+       target_bpm=excluded.target_bpm,
+       tempo_adjustment=excluded.tempo_adjustment,
+       pitch_adjustment=excluded.pitch_adjustment,
+       reason=excluded.reason,
        score_effort=excluded.score_effort,
        effort_stretch=excluded.effort_stretch,
        effort_pitch=excluded.effort_pitch,
@@ -1258,10 +1561,19 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        scored_at=datetime('now')"""
 
 
+# Bind order for the section-pair block. MUST match the column list and the
+# placeholder count in _CANDIDATE_INSERT_SQL — candidate_row splats this, so
+# adding a name here without adding it there shifts every later binding.
 SECTION_PAIR_COLUMNS = (
     "vocal_section_idx", "inst_section_idx",
     "vocal_section_start", "vocal_section_end",
     "inst_section_start", "inst_section_end", "score_section",
+    "vocal_section_label", "inst_section_label",
+    "section_bars_vocal", "section_bars_bed",
+    "section_loop_repeats", "section_note",
+    "score_phrase", "score_rhythm", "score_structure",
+    "alignment_downbeat", "alignment_offset", "target_bpm",
+    "tempo_adjustment", "pitch_adjustment", "reason",
 )
 
 
@@ -1331,25 +1643,50 @@ def clear_candidates(db_path: Path = DB_PATH) -> None:
     conn.close()
 
 
+# The spec (§13) names four states: good | bad | saved | ignored. The repo has
+# had three verdicts plus two suppression tables since T2.1, and that shape is
+# BETTER than the spec's, because it separates "I judged this" from "stop
+# showing me this" — conflating them poisons the training set with rows the user
+# hid for reasons that have nothing to do with whether the mashup works.
+#
+# So the vocabulary is mapped, not migrated. The learned scorer trains on these
+# values today and a rename would invalidate every stored judgement:
+#
+#     spec 'good'    -> 'ok'            spec 'saved'   -> 'love'
+#     spec 'bad'     -> 'no'            spec 'ignored' -> pair_hidden / track_excluded
 VERDICTS = ("love", "ok", "no")
 
 
 def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int, verdict: str,
                          vocal_section: Optional[int] = None,
                          inst_section: Optional[int] = None,
+                         features: Optional[Dict] = None,
                          db_path: Path = DB_PATH) -> None:
-    """Record (or correct) the user's verdict on one pair."""
+    """Record (or correct) the user's verdict on one SECTION PAIR.
+
+    Keyed on the sections as well as the songs: "chorus over drop" and "verse
+    over breakdown" are different judgements about the same two records, and
+    before P2.0 the second silently overwrote the first.
+
+    `features` is the feature snapshot the judged candidate was generated from.
+    Stored because score_all_pairs truncates mashup_candidates on every run, so
+    a verdict is otherwise only as reproducible as the last re-score."""
     conn = get_conn(db_path)
     conn.execute(
         """INSERT INTO pair_feedback
-               (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict)
-           VALUES (?,?,?,?,?)
-           ON CONFLICT(vocal_song_id, inst_song_id) DO UPDATE SET
+               (vocal_song_id, inst_song_id, vocal_section, inst_section,
+                verdict, features_json)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(vocal_song_id, inst_song_id,
+                       COALESCE(vocal_section, -1), COALESCE(inst_section, -1))
+           DO UPDATE SET
                verdict=excluded.verdict,
-               vocal_section=excluded.vocal_section,
-               inst_section=excluded.inst_section,
+               -- Keep the original snapshot when the correction carries none,
+               -- rather than blanking what the first judgement recorded.
+               features_json=COALESCE(excluded.features_json, pair_feedback.features_json),
                created_at=datetime('now')""",
-        (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict),
+        (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict,
+         json.dumps(features, ensure_ascii=False) if features else None),
     )
     conn.commit()
     conn.close()
@@ -1856,3 +2193,259 @@ def get_candidates_for_song(song_id: int, role: str = "vocal",
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+# ── Crates (Discovery shortlists) ────────────────────────────────────────────
+# The local answer to "manipulate a playlist". A crate item does not require the
+# track to be in the library: you shortlist while browsing SoundCloud and decide
+# what to actually download later, which is the whole point of the surface.
+
+
+def create_crate(name: str, note: str = "", db_path: Path = DB_PATH) -> Dict:
+    """Create a crate. Names are unique, so this raises on a duplicate rather
+    than silently handing back someone else's crate."""
+    clean = (name or "").strip()
+    if not clean:
+        raise ValueError("crate name is required")
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute("INSERT INTO crates (name, note) VALUES (?, ?)",
+                           (clean, (note or "").strip()))
+        conn.commit()
+        return {"id": cur.lastrowid, "name": clean, "note": (note or "").strip()}
+    finally:
+        conn.close()
+
+
+def list_crates(db_path: Path = DB_PATH) -> List[Dict]:
+    """Every crate with its item count and how many of those are ingested.
+
+    The two counts are what the UI needs to say "12 tracks, 5 in library" without
+    a second query per crate."""
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        """SELECT c.*,
+                  COUNT(i.id)                             AS item_count,
+                  COALESCE(SUM(i.song_id IS NOT NULL), 0) AS ingested_count
+             FROM crates c
+             LEFT JOIN crate_items i ON i.crate_id = c.id
+            GROUP BY c.id
+            ORDER BY c.updated_at DESC, c.id DESC""").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_crate(crate_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
+    """One crate plus its items in order, each carrying the library status of the
+    song it maps to (a NULL song_id means "not ingested yet")."""
+    conn = get_conn(db_path)
+    try:
+        crate = conn.execute("SELECT * FROM crates WHERE id=?", (crate_id,)).fetchone()
+        if not crate:
+            return None
+        items = conn.execute(
+            """SELECT i.*, s.status AS song_status, s.last_error AS song_error
+                 FROM crate_items i
+                 LEFT JOIN songs s ON s.id = i.song_id
+                WHERE i.crate_id = ?
+                ORDER BY i.position, i.id""", (crate_id,)).fetchall()
+        out = dict(crate)
+        out["items"] = [dict(r) for r in items]
+        return out
+    finally:
+        conn.close()
+
+
+def update_crate(crate_id: int, *, name: Optional[str] = None,
+                 note: Optional[str] = None, db_path: Path = DB_PATH) -> bool:
+    """Rename a crate and/or change its note. False if it does not exist."""
+    sets, params = [], []
+    if name is not None:
+        clean = name.strip()
+        if not clean:
+            raise ValueError("crate name cannot be empty")
+        sets.append("name=?")
+        params.append(clean)
+    if note is not None:
+        sets.append("note=?")
+        params.append(note.strip())
+    if not sets:
+        return True
+    sets.append("updated_at=datetime('now')")
+    params.append(crate_id)
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(f"UPDATE crates SET {', '.join(sets)} WHERE id=?", params)
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_crate(crate_id: int, db_path: Path = DB_PATH) -> bool:
+    """Delete a crate and its items. No FK cascade is declared anywhere in this
+    schema, so children go explicitly — same as delete_song."""
+    conn = get_conn(db_path)
+    try:
+        conn.execute("DELETE FROM crate_items WHERE crate_id=?", (crate_id,))
+        cur = conn.execute("DELETE FROM crates WHERE id=?", (crate_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def add_crate_items(crate_id: int, rows: Iterable[Dict],
+                    db_path: Path = DB_PATH) -> Dict:
+    """Append rows to a crate, skipping ones already in it.
+
+    `rows` are canonical ingest rows — the shape ingest.soundcloud._normalise and
+    soundcloud_browse.track_row both produce. Callers pass already-normalised
+    source_urls; UNIQUE(crate_id, source_url) does the deduping, so re-adding a
+    page of search results is harmless.
+
+    Returns {"added", "skipped", "item_ids"} so the UI can say "3 added, 2 already
+    in this crate" rather than appearing to do nothing."""
+    conn = get_conn(db_path)
+    try:
+        if not conn.execute("SELECT 1 FROM crates WHERE id=?", (crate_id,)).fetchone():
+            raise ValueError(f"crate {crate_id} does not exist")
+
+        start = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS n FROM crate_items WHERE crate_id=?",
+            (crate_id,)).fetchone()["n"]
+
+        added, skipped, item_ids = 0, 0, []
+        seen: set = set()   # dedup within this request too, not only against the DB
+        for row in rows:
+            url = (row.get("source_url") or "").strip()
+            if not url or url in seen:
+                skipped += 1
+                continue
+            seen.add(url)
+            # Link straight to the library when we already have it, so a freshly
+            # added item shows its pipeline status without waiting for a relink.
+            existing = conn.execute(
+                "SELECT id FROM songs WHERE source_url=?", (url,)).fetchone()
+            cur = conn.execute(
+                """INSERT INTO crate_items
+                       (crate_id, position, source_url, track_id, song_id,
+                        payload_json, title, artist, duration_secs, thumbnail)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(crate_id, source_url) DO NOTHING""",
+                (crate_id, start + added, url, str(row.get("track_id") or ""),
+                 existing["id"] if existing else None,
+                 json.dumps(row, ensure_ascii=False),
+                 row.get("title") or "", row.get("artist") or "",
+                 float(row.get("duration_secs") or 0.0), row.get("thumbnail") or ""))
+            if cur.rowcount:
+                added += 1
+                item_ids.append(cur.lastrowid)
+            else:
+                skipped += 1
+        conn.execute("UPDATE crates SET updated_at=datetime('now') WHERE id=?", (crate_id,))
+        conn.commit()
+        return {"added": added, "skipped": skipped, "item_ids": item_ids}
+    finally:
+        conn.close()
+
+
+def remove_crate_items(crate_id: int, item_ids: Sequence[int],
+                       db_path: Path = DB_PATH) -> int:
+    """Remove items and close the gaps their positions leave behind, so position
+    stays dense and a later reorder has a contiguous range to work with."""
+    ids = [int(i) for i in item_ids]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" * len(ids))
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            f"DELETE FROM crate_items WHERE crate_id=? AND id IN ({placeholders})",
+            [crate_id, *ids])
+        removed = cur.rowcount
+        remaining = conn.execute(
+            "SELECT id FROM crate_items WHERE crate_id=? ORDER BY position, id",
+            (crate_id,)).fetchall()
+        for pos, row in enumerate(remaining):
+            conn.execute("UPDATE crate_items SET position=? WHERE id=?", (pos, row["id"]))
+        conn.execute("UPDATE crates SET updated_at=datetime('now') WHERE id=?", (crate_id,))
+        conn.commit()
+        return removed
+    finally:
+        conn.close()
+
+
+def reorder_crate(crate_id: int, item_ids: Sequence[int],
+                  db_path: Path = DB_PATH) -> bool:
+    """Rewrite positions to the given order. The id set must be exactly the
+    crate's items, each once — a partial list would silently drop tracks. Same
+    contract as /api/mixes/{id}/reorder, so the frontend reuses its handler."""
+    ids = [int(i) for i in item_ids]
+    conn = get_conn(db_path)
+    try:
+        current = {r["id"] for r in conn.execute(
+            "SELECT id FROM crate_items WHERE crate_id=?", (crate_id,)).fetchall()}
+        if set(ids) != current or len(ids) != len(current):
+            raise ValueError("item_ids must be exactly the crate's items, each once")
+        # Two-pass, parking in a non-colliding range first. crate_items has no
+        # UNIQUE on position today, but the mixes reorder does it this way and a
+        # future index on (crate_id, position) would otherwise break this.
+        for iid in ids:
+            conn.execute("UPDATE crate_items SET position = position + 100000 WHERE id=?", (iid,))
+        for pos, iid in enumerate(ids):
+            conn.execute("UPDATE crate_items SET position=? WHERE id=?", (pos, iid))
+        conn.execute("UPDATE crates SET updated_at=datetime('now') WHERE id=?", (crate_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def relink_crate_songs(crate_id: int, db_path: Path = DB_PATH) -> int:
+    """Point crate items at library songs that now exist, matching on source_url.
+    Run after ingesting a crate; returns how many items gained a song_id."""
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            """UPDATE crate_items
+                  SET song_id = (SELECT s.id FROM songs s
+                                  WHERE s.source_url = crate_items.source_url)
+                WHERE crate_id = ?
+                  AND song_id IS NULL
+                  AND EXISTS (SELECT 1 FROM songs s
+                               WHERE s.source_url = crate_items.source_url)""",
+            (crate_id,))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def crate_payloads(crate_id: int, only_unlinked: bool = True,
+                   db_path: Path = DB_PATH) -> List[Dict]:
+    """The canonical ingest rows for a crate, in order.
+
+    `only_unlinked` skips items already pointing at a library song, which is what
+    "Ingest this crate" wants — the ingest path would report them as skipped
+    duplicates anyway, but not asking is cheaper and makes the count honest."""
+    conn = get_conn(db_path)
+    sql = ("SELECT payload_json, source_url, title, artist FROM crate_items "
+           "WHERE crate_id=?" + (" AND song_id IS NULL" if only_unlinked else "") +
+           " ORDER BY position, id")
+    rows = conn.execute(sql, (crate_id,)).fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        try:
+            payload = json.loads(r["payload_json"]) if r["payload_json"] else {}
+        except (ValueError, TypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        # A row written before payload_json existed, or one whose JSON is corrupt,
+        # still has enough on the item itself to be ingestable.
+        payload.setdefault("source_url", r["source_url"])
+        payload.setdefault("title", r["title"] or "")
+        payload.setdefault("artist", r["artist"] or "")
+        out.append(payload)
+    return out

@@ -50,8 +50,12 @@ def client(tmp_path, monkeypatch):
 
 
 def _add(db_path, k, *, analysed=True, bands=False, quality=False,
-         chroma=False, sections=True, drums=False):
-    """A song with selectable generations of feature data present."""
+         chroma=False, grid=False, sections=True, drums=False):
+    """A song with selectable generations of feature data present.
+
+    Each flag is one generation the staleness check knows about, so a test can
+    say precisely which era a track was analysed in. `grid` is P2.1's per-section
+    tempo and beat grid."""
     from database.models import (
         get_conn, replace_sections, upsert_features, upsert_song, upsert_stem,
         update_stem_quality,
@@ -76,6 +80,10 @@ def _add(db_path, k, *, analysed=True, bands=False, quality=False,
                "confidence": 0.9}
         if chroma:
             sec["chroma"] = [0.1] * 12
+        if grid:
+            sec.update(bpm=120.0, bpm_source="section_estimate", bpm_confidence=0.8,
+                       beat_count=64, bar_count=16.0, beats_per_bar=4,
+                       section_class="vocal")
         replace_sections(sid, [sec], db_path=db_path)
     return sid
 
@@ -168,8 +176,8 @@ def test_env_pinned_knobs_report_their_source(client, monkeypatch):
 def test_staleness_counts_each_missing_feature_group(client):
     """Reported per group so the UI can say WHAT is missing, not just how many."""
     c, db = client
-    _add(db, 1, bands=True, quality=True, chroma=True)     # current
-    _add(db, 2, bands=False, quality=True, chroma=True)     # pre-Phase-D bands
+    _add(db, 1, bands=True, quality=True, chroma=True, grid=True)     # current
+    _add(db, 2, bands=False, quality=True, chroma=True, grid=True)  # pre-Phase-D bands
     _add(db, 3, bands=True, quality=True, chroma=False)     # pre-Phase-E chroma
     _add(db, 4, bands=True, quality=False, chroma=True)     # no stem quality
 
@@ -183,9 +191,23 @@ def test_staleness_counts_each_missing_feature_group(client):
 
 def test_a_current_library_reports_nothing_stale(client):
     c, db = client
-    _add(db, 1, bands=True, quality=True, chroma=True)
+    _add(db, 1, bands=True, quality=True, chroma=True, grid=True)
     got = c.get("/api/tracks/staleness").json()
     assert got["needs_analysis"] == 0
+
+
+def test_sections_without_their_own_grid_are_stale(client):
+    """P2.1 added per-section tempo/grid/class. A track analysed before it has
+    NULL bpm_source, and the re-analysis button has to offer to fix it — the
+    staleness badge and the button share one predicate so they cannot disagree."""
+    c, db = client
+    _add(db, 1, bands=True, quality=True, chroma=True, grid=False)
+    got = c.get("/api/tracks/staleness").json()
+    assert got["missing_section_grid"] == 1
+    assert got["needs_analysis"] == 1
+
+    from api.workers.bulk_worker import stale_song_ids
+    assert len(stale_song_ids("analyze", db_path=db)) == 1
 
 
 def test_tracks_with_no_sections_are_counted_separately(client):
@@ -202,7 +224,7 @@ def test_four_stem_staleness_only_counts_when_four_stem_is_on(client):
     """A user who does not want four-stem must not be told their library needs
     hours of work."""
     c, db = client
-    _add(db, 1, bands=True, quality=True, chroma=True, drums=False)
+    _add(db, 1, bands=True, quality=True, chroma=True, grid=True, drums=False)
     assert c.get("/api/tracks/staleness").json()["missing_four_stems"] == 0
 
     c.post("/api/settings", json={"stem_mode": "four", "stem_separator": "demucs"})
@@ -217,8 +239,8 @@ def test_bulk_stale_queues_only_what_needs_it(client):
     """So adding one track does not mean re-analysing the whole library."""
     from database.models import get_conn
     c, db = client
-    current = _add(db, 1, bands=True, quality=True, chroma=True)
-    stale = _add(db, 2, bands=False, quality=True, chroma=True)
+    current = _add(db, 1, bands=True, quality=True, chroma=True, grid=True)
+    stale = _add(db, 2, bands=False, quality=True, chroma=True, grid=True)
 
     r = c.post("/api/tracks/bulk", json={"action": "analyze", "scope": "stale"})
     assert r.status_code == 200
@@ -236,16 +258,16 @@ def test_bulk_stale_queues_only_what_needs_it(client):
 
 def test_bulk_all_queues_everything(client):
     c, db = client
-    _add(db, 1, bands=True, quality=True, chroma=True)
-    _add(db, 2, bands=True, quality=True, chroma=True)
+    _add(db, 1, bands=True, quality=True, chroma=True, grid=True)
+    _add(db, 2, bands=True, quality=True, chroma=True, grid=True)
     r = c.post("/api/tracks/bulk", json={"action": "analyze", "scope": "all"})
     assert r.json()["count"] == 2
 
 
 def test_bulk_ids_scope_targets_a_selection(client):
     c, db = client
-    a = _add(db, 1, bands=True, quality=True, chroma=True)
-    _add(db, 2, bands=True, quality=True, chroma=True)
+    a = _add(db, 1, bands=True, quality=True, chroma=True, grid=True)
+    _add(db, 2, bands=True, quality=True, chroma=True, grid=True)
     r = c.post("/api/tracks/bulk",
                json={"action": "analyze", "scope": "ids", "song_ids": [a]})
     assert r.json()["count"] == 1
@@ -264,7 +286,7 @@ def test_bulk_separate_rewinds_further_than_analyze(client):
     are deliberately different actions."""
     from database.models import get_conn
     c, db = client
-    sid = _add(db, 1, bands=True, quality=True, chroma=True)
+    sid = _add(db, 1, bands=True, quality=True, chroma=True, grid=True)
     c.post("/api/tracks/bulk",
            json={"action": "separate", "scope": "ids", "song_ids": [sid]})
     conn = get_conn(db)
@@ -275,7 +297,7 @@ def test_bulk_separate_rewinds_further_than_analyze(client):
 
 def test_nothing_stale_says_so_rather_than_queueing_nothing(client):
     c, db = client
-    _add(db, 1, bands=True, quality=True, chroma=True)
+    _add(db, 1, bands=True, quality=True, chroma=True, grid=True)
     r = c.post("/api/tracks/bulk", json={"action": "analyze", "scope": "stale"})
     assert r.status_code == 404
     assert "stale" in r.json()["detail"].lower()

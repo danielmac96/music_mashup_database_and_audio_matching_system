@@ -93,16 +93,21 @@ def _resolve_metadata(flat: dict) -> tuple[dict, bool]:
     return flat, False
 
 
-@router.post("/ingest")
-def ingest(req: IngestRequest) -> dict:
-    if not req.tracks:
-        raise HTTPException(status_code=400, detail="tracks list is empty")
+def ingest_rows(tracks: list[dict[str, Any]]) -> dict:
+    """Save tracks to the library and queue each through the full pipeline.
 
+    Extracted from the /ingest route so Discovery and crates land tracks by
+    exactly the same path — dedup, partial-metadata accounting, auto-process and
+    the skipped-duplicates report are all things a second implementation would
+    get subtly wrong. Rows are the canonical shape ingest.soundcloud._normalise
+    and soundcloud_browse.track_row produce; a row marked ``hydrated`` skips the
+    metadata refetch, which is why browse results ingest without touching the
+    network again."""
     # Metadata resolution runs in parallel (hydrated/cached rows return
     # instantly; only genuinely unfetched tracks hit the network). The DB
     # upserts + queueing below stay serial: fast writes, deterministic order.
     with ThreadPoolExecutor(max_workers=ENRICH_WORKERS) as pool:
-        resolved = list(pool.map(_resolve_metadata, [dict(t) for t in req.tracks]))
+        resolved = list(pool.map(_resolve_metadata, [dict(t) for t in tracks]))
 
     inserted_ids: list[int] = []
     skipped: list[dict] = []   # already in the library — reported, not re-processed
@@ -168,3 +173,10 @@ def ingest(req: IngestRequest) -> dict:
         "partial_count": partial_count,
         "job_ids": job_ids,
     }
+
+
+@router.post("/ingest")
+def ingest(req: IngestRequest) -> dict:
+    if not req.tracks:
+        raise HTTPException(status_code=400, detail="tracks list is empty")
+    return ingest_rows(req.tracks)

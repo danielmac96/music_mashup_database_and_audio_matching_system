@@ -1816,3 +1816,121 @@ input, select { font-family: inherit; }
   border: 1px solid rgba(245, 166, 35, 0.28);
 }
 .bulk-bar .btn { white-space: nowrap; }
+
+/* ── Discovery: SoundCloud browsing + crates ─────────────────────────────────
+   Additive. Reuses the house atoms (.seg, .btn, .mini-btn, .mix-info,
+   .mix-title, .mix-url, .mix-flag, .preview-check, .empty, .hint) and only
+   owns the layout the mixes table's grid does not fit. */
+
+.discovery-modebar {
+  display: flex; align-items: center; gap: 14px;
+  max-width: 1400px; margin: 0 auto; padding: 16px 28px 0;
+}
+.discovery-modebar .hint { margin: 0; }
+
+/* Results left, crate shortlist right. Collapses on narrow windows so the crate
+   sits under the results rather than squeezing both. */
+.sc-layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 16px; align-items: start; margin-top: 10px;
+}
+@media (max-width: 1100px) { .sc-layout { grid-template-columns: minmax(0, 1fr); } }
+
+.sc-results { min-width: 0; }
+
+.sc-breadcrumb {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  font-size: 12px; margin: 4px 0 10px;
+}
+.sc-breadcrumb .seg.sc-feed { margin-left: 8px; }
+
+.link-btn {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--accent-light); font: inherit; font-size: inherit;
+}
+.link-btn:hover { text-decoration: underline; }
+
+.sc-bulkbar {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--inset); border: 1px solid var(--border-ctrl);
+  border-radius: 9px; padding: 8px 12px; margin-bottom: 10px;
+  position: sticky; top: 0; z-index: 2;
+}
+
+.sc-rows { display: flex; flex-direction: column; gap: 1px; }
+.sc-row {
+  display: grid; align-items: center; gap: 10px;
+  grid-template-columns: 22px 38px minmax(0, 1fr) 52px auto auto auto;
+  padding: 6px 8px; border-radius: 7px; font-size: 13px;
+}
+.sc-row:hover { background: rgba(255, 255, 255, 0.03); }
+/* Already in the library: still readable, visibly not a candidate for import. */
+.sc-row.owned { opacity: 0.62; }
+.sc-row.nav { cursor: pointer; }
+.sc-row.nav:hover { background: var(--accent-tint); }
+
+.sc-art { width: 38px; height: 38px; border-radius: 5px; flex: none; }
+.sc-kind {
+  font-size: 9px; letter-spacing: 0.06em; color: var(--faint);
+  text-align: center; font-weight: 600;
+}
+.sc-meta {
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--muted); text-align: right;
+}
+.mix-flag.warn { color: var(--amber-light); background: rgba(245, 166, 35, 0.14); }
+.sc-snip { cursor: help; white-space: nowrap; }
+
+.sc-more { width: 100%; margin-top: 12px; }
+
+/* "Add N to crate ▾" */
+.crate-add { position: relative; }
+.crate-menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 10;
+  min-width: 200px; padding: 4px;
+  background: var(--raised); border: 1px solid var(--border-ctrl);
+  border-radius: 9px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.crate-menu button {
+  display: flex; justify-content: space-between; gap: 12px;
+  background: none; border: none; cursor: pointer; text-align: left;
+  color: var(--text-2); font: inherit; font-size: 12px;
+  padding: 7px 9px; border-radius: 6px;
+}
+.crate-menu button:hover { background: var(--accent-tint); color: var(--text); }
+.crate-menu button.new { color: var(--accent-light); border-top: 1px solid var(--hair); }
+
+.crate-panel { display: flex; flex-direction: column; gap: 12px; }
+.crate-panel .mix-list-bar { display: flex; flex-direction: column; gap: 6px; }
+.crate-panel .mix-list-head { display: flex; align-items: center; gap: 8px; }
+.crate-panel .mix-list-item {
+  display: flex; justify-content: space-between; gap: 10px;
+  width: 100%; text-align: left;
+}
+
+.crate-items { display: flex; flex-direction: column; gap: 1px; }
+.crate-item {
+  display: grid; align-items: center; gap: 8px;
+  grid-template-columns: 16px 22px minmax(0, 1fr) auto auto;
+  padding: 5px 6px; border-radius: 6px; font-size: 12px;
+}
+.crate-item:hover { background: rgba(255, 255, 255, 0.03); }
+
+.crate-actions {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--hair);
+}
+.crate-actions .btn { font-size: 12px; }
+/* The SoundCloud push is dormant for anyone without app credentials. Disabled
+   with its reason in the tooltip beats a banner nagging about a feature almost
+   nobody can turn on. */
+.crate-actions .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Spec §10's human-readable candidate line: "chorus 1:12–1:44 over drop
+   0:48–1:20 · 16 bars · 120→128 BPM · nudge the bed +300 ms". Deliberately
+   quiet — it is the answer to "and then what?", not the headline. */
+.pair-reason {
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
+  text-align: center; margin: 5px 0 2px; line-height: 1.45;
+}
