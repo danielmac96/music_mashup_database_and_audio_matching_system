@@ -97,7 +97,8 @@ def test_every_tunable_knob_is_reported(client):
     got = c.get("/api/settings").json()
     for key in ("stem_mode", "stem_separator", "effort_weight", "section_weight",
                 "stem_quality_min", "bpm_max_diff", "key_min_score",
-                "bpm_max_diff_model", "max_section_pairs", "match_weights"):
+                "bpm_max_diff_model", "max_section_pairs", "match_weights",
+                "section_weights"):
         assert key in got, f"{key} missing from /api/settings"
         assert "value" in got[key] and "source" in got[key]
 
@@ -136,6 +137,28 @@ def test_all_zero_weights_fall_back_rather_than_zeroing_the_library(client):
     assert r.status_code == 400
 
 
+def test_section_weights_round_trip(client):
+    """P2.3 shipped phrase/rhythm/structure at zero weight, to be raised once
+    the library carried the per-section grid they read. GET has reported them
+    since; without a matching POST the only way to raise them was editing
+    config.SECTION_WEIGHTS and restarting — for the one set of knobs whose
+    entire purpose is measure, adjust, re-score."""
+    import config
+    c, _ = client
+    assert config.current_section_weights()["phrase"] == 0.0
+
+    r = c.post("/api/settings", json={"section_weights": {
+        "label": 0.32, "duration": 0.30, "voice": 0.23,
+        "phrase": 0.15, "rhythm": 0.0, "structure": 0.0}})
+    assert r.status_code == 200 and r.json()["restart_required"] is False
+
+    w = config.current_section_weights()
+    assert w["phrase"] == pytest.approx(0.15)
+    assert sum(w.values()) == pytest.approx(1.0)   # normalised on read
+    assert c.get("/api/settings").json()["section_weights"]["value"]["phrase"] \
+        == pytest.approx(0.15)
+
+
 @pytest.mark.parametrize("payload", [
     {"effort_weight": 5},
     {"effort_weight": -1},
@@ -143,6 +166,13 @@ def test_all_zero_weights_fall_back_rather_than_zeroing_the_library(client):
     {"stem_mode": "eight"},
     {"match_weights": {"bogus": 1}},
     {"match_weights": {"bpm_score": -1}},
+    {"section_weights": {"bogus": 1}},
+    {"section_weights": {"phrase": -1}},
+    {"section_weights": {"phrase": "loud"}},
+    # All-zero would divide by zero in current_section_weights and silently
+    # fall back to the defaults, so it is refused rather than normalised.
+    {"section_weights": {"label": 0, "duration": 0, "voice": 0,
+                         "phrase": 0, "rhythm": 0, "structure": 0}},
 ])
 def test_invalid_settings_are_rejected(client, payload):
     c, _ = client
@@ -208,6 +238,40 @@ def test_sections_without_their_own_grid_are_stale(client):
 
     from api.workers.bulk_worker import stale_song_ids
     assert len(stale_song_ids("analyze", db_path=db)) == 1
+
+
+@pytest.mark.parametrize("grid,chroma,current", [
+    (True, True, True),
+    (False, True, False),    # pre-P2.1 grid
+    (True, False, False),    # pre-Phase-E chroma
+])
+def test_badge_and_structure_gate_share_one_definition(client, grid, chroma,
+                                                       current):
+    """The staleness badge and the pipeline's structure gate must agree.
+
+    They did not: the badge asked "are these sections current?" while
+    pipeline_worker asked "are there any section rows?". Every bulk re-analysis
+    on a library with pre-P2.1 sections was therefore a silent no-op — the rows
+    existed so structure was skipped, and structure is the only thing that
+    writes the columns the badge was counting. The library stayed permanently
+    stale behind a button that did nothing.
+    """
+    c, db = client
+    sid = _add(db, 1, bands=True, quality=True, chroma=chroma, grid=grid)
+
+    from api.workers.bulk_worker import sections_are_current
+    assert sections_are_current(sid, db_path=db) is current
+    assert (c.get("/api/tracks/staleness").json()["needs_analysis"] == 0) is current
+
+
+def test_a_track_with_no_sections_at_all_is_not_current(client):
+    """The gate's two cases collapse into one question: absent rows and stale
+    rows both want do_structure, so the predicate must say False for both."""
+    c, db = client
+    sid = _add(db, 1, bands=True, quality=True, sections=False)
+
+    from api.workers.bulk_worker import sections_are_current
+    assert sections_are_current(sid, db_path=db) is False
 
 
 def test_tracks_with_no_sections_are_counted_separately(client):

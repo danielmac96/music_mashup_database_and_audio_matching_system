@@ -53,15 +53,6 @@ def _status(song_id: int) -> str:
     return row["status"] if row else "queued"
 
 
-def _section_count(song_id: int) -> int:
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT COUNT(*) AS n FROM sections WHERE song_id=?", (song_id,)
-    ).fetchone()
-    conn.close()
-    return row["n"] if row else 0
-
-
 def next_stage(song_id: int) -> Optional[str]:
     """Which pipeline stage this track needs next, or None when fully analysed.
     Status-derived, so it is restart-safe and retry-safe (an error_* status
@@ -75,14 +66,44 @@ def next_stage(song_id: int) -> Optional[str]:
 
 def _structure_pass(job_id: str, song_id: int) -> None:
     """Non-fatal structure detection: matching still works without sections, so
-    a failure never fails the job or changes the track's 'analysed' status."""
-    if _section_count(song_id) > 0:
+    a failure never fails the job or changes the track's 'analysed' status.
+
+    Runs when the track has no sections AND when the sections it has predate a
+    generation of feature. Asking only "are there rows?" is what made every
+    bulk re-analysis a no-op for the whole Phase E / P2.1 backfill: the rows
+    existed, so this gate said done, while every per-section chroma and
+    tempo/grid column stayed NULL and the Settings badge went on reporting the
+    library as stale. sections_are_current shares its definition with that
+    badge, so the two can no longer disagree.
+    """
+    # Imported here rather than at module scope: bulk_worker resolves get_conn
+    # per call so its db_path is not frozen at import, and this module's own
+    # module-scope get_conn is exactly the binding the test suite has to reload
+    # around. Keep the new query on the lazily-bound side.
+    from api.workers.bulk_worker import sections_are_current
+
+    if sections_are_current(song_id):
         return
     jobs.update(job_id, stage="structure", progress=0, message="structure: starting…")
     try:
         stages.do_structure(song_id, jobs.progress_updater(job_id, "structure"))
-    except stages.StageError as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Deliberately wider than StageError: do_structure wraps only
+        # detect_sections, while replace_sections, _persist_hooks and
+        # warm_hooks(force=True) run after it unwrapped. Structure is
+        # documented as non-fatal, and on a whole-library backfill this
+        # exposure is taken once per track rather than once.
         log.warning("structure detection non-fatal failure for %s: %s", song_id, exc)
+        return
+
+    if not sections_are_current(song_id):
+        # Not an error: analysis/structure.py falls back to the track BPM when a
+        # section has no measurable grid. Logged because it is the difference
+        # between "the backfill did not run" and "the audio would not measure",
+        # and the staleness badge alone cannot tell you which.
+        log.warning("structure ran for song %s but its sections are still not "
+                    "current — the detector may have found nothing to measure",
+                    song_id)
 
 
 def _finalize(job_id: str, song_id: int) -> None:

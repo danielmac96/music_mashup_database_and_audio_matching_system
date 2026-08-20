@@ -83,21 +83,70 @@ def run(job_id: str, action: str, song_ids: list[int]) -> None:
 # unexplained count, and so a user who does not care about four-stem is not
 # told their library needs hours of work.
 
+# The section columns that mean "written by the CURRENT analyser". A section row
+# missing any of them predates a generation of feature and needs re-DETECTING,
+# not just re-analysing: only stages.do_structure writes them.
+#
+# Kept as a tuple with everything derived from it, so adding the next
+# generation's column is one edit and the staleness badge and the pipeline's
+# structure gate cannot drift apart. See sections_are_current().
+_SECTION_CURRENT_COLUMNS = (
+    "chroma_json",   # Phase E: per-section chroma, the measured transpose's input
+    # P2.1: the section's own tempo, grid and class. A section row that predates
+    # it has NULL bpm_source, which readers must treat as "not measured".
+    "bpm_source",
+)
+
+
+def _sections_stale_sql(song_ref: str) -> str:
+    """"This track's sections predate a generation of feature", as SQL.
+
+    ``song_ref`` is whatever identifies the song in the surrounding query — the
+    correlated column ``s.id``, or a named bind parameter for a single track.
+    With no section rows at all every clause is true, so the expression reads
+    "absent OR stale", which is exactly the set that wants do_structure.
+    """
+    return "\n    OR ".join(
+        f"NOT EXISTS (SELECT 1 FROM sections sec\n"
+        f"                   WHERE sec.song_id={song_ref} "
+        f"AND sec.{col} IS NOT NULL)"
+        for col in _SECTION_CURRENT_COLUMNS
+    )
+
+
 # One definition of "this track predates a generation of feature we now need".
 # It was duplicated across staleness() and stale_song_ids(), which is exactly how
 # a new column gets counted as stale in the badge but skipped by the button.
-_STALE_ANALYSIS_SQL = """
+_STALE_ANALYSIS_SQL = f"""
        NOT EXISTS (SELECT 1 FROM features f
                    WHERE f.song_id=s.id AND f.band_energy_json IS NOT NULL)
     OR NOT EXISTS (SELECT 1 FROM stems st
                    WHERE st.song_id=s.id AND st.quality IS NOT NULL)
-    OR NOT EXISTS (SELECT 1 FROM sections sec
-                   WHERE sec.song_id=s.id AND sec.chroma_json IS NOT NULL)
-    -- P2.1: the section's own tempo, grid and class. A section row that predates
-    -- it has NULL bpm_source, which readers must treat as "not measured".
-    OR NOT EXISTS (SELECT 1 FROM sections sec
-                   WHERE sec.song_id=s.id AND sec.bpm_source IS NOT NULL)
+    OR {_sections_stale_sql("s.id")}
 """
+
+
+def sections_are_current(song_id: int, db_path=None) -> bool:
+    """Were this track's sections written by the current analyser?
+
+    False both when the track has NO sections and when the ones it has predate
+    a generation of feature — the two cases that both want do_structure to run.
+
+    This exists so api/workers/pipeline_worker.py's structure gate and the
+    Settings staleness badge cannot disagree. They did: the gate asked "are
+    there section rows?" while the badge asked "are they current?", so a library
+    with pre-P2.1 sections was reported stale forever by a button that then
+    refused to re-detect anything.
+    """
+    from database.models import get_conn
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        row = conn.execute(
+            f"SELECT NOT ({_sections_stale_sql(':song_id')}) AS ok",
+            {"song_id": song_id}).fetchone()
+        return bool(row["ok"]) if row else False
+    finally:
+        conn.close()
 
 
 def staleness(db_path=None) -> dict:
