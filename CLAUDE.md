@@ -79,8 +79,10 @@ that had stood long enough to be documented as normal.
   alias silently promoted every breakdown above choruses as a bed.
 - **Three new scores at ZERO weight** (P2.3): phrase, rhythm, structure. They
   read the P2.1 columns, so they are computed and stored but weightless until the
-  library is backfilled. Raise them in `config.SECTION_WEIGHTS` afterwards.
-  Missing data scores 0.5, never 0 — a pre-P2.1 section is unmeasured, not bad.
+  library is backfilled. Missing data scores 0.5, never 0 — a pre-P2.1 section is
+  unmeasured, not bad. *(Superseded: the backfill happened and only `phrase`
+  earned weight — see the dated section at the top. Do not raise rhythm or
+  structure without re-reading it.)*
 - **Alignment is on the row** (P2.4): downbeat, offset, target BPM, tempo and
   pitch moves, plus a human-readable `reason`. The offset is measured AFTER the
   stretch, and is `None` (not 0.0) when there is no grid to measure.
