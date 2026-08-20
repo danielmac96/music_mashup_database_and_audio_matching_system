@@ -99,7 +99,7 @@ _SECTION_CURRENT_COLUMNS = (
 
 
 def _sections_stale_sql(song_ref: str) -> str:
-    """"This track's sections predate a generation of feature", as SQL.
+    """SQL for: this track's sections predate a generation of feature.
 
     ``song_ref`` is whatever identifies the song in the surrounding query — the
     correlated column ``s.id``, or a named bind parameter for a single track.
