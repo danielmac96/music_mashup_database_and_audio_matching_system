@@ -58,6 +58,14 @@ Effect: the same *records* are recommended (song-pair rank ρ 0.995, 3 of the
 top 50 changed) but a different *moment* within them (section-pair ρ 0.983, 25
 of the top 50 changed). Every new top row sits on a clean 8/11/12-bar span.
 
+The library was then re-separated into **four stems** (30/30) and structure
+re-detected against the real bass stems. That turned out to move the ranking
+*more* than the weights did — `score_collision` changed on all 1160 shared
+rows, song-pair ρ 0.951 with 11 of the top 50 changing. Spectral
+complementarity had been measured against a summed two-stem instrumental.
+If the ranked list ever looks like it disagrees with a past screenshot, this is
+why.
+
 ---
 
 ## Where the original audit stands

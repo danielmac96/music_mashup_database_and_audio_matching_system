@@ -41,7 +41,21 @@ Consequences, all measured on the backfilled library (30 tracks, 308 sections,
   `section_components` when all three weights are zero, and that shortcut is
   now gone. Irrelevant at 30 tracks; the number to watch at 900.
 
-**The suite is green** — 794 passing, 0 failing, from a baseline of 11 failures
+**The library is also on four stems now** (30/30 drums/bass/other, every
+staleness counter at zero), and structure was re-detected afterwards so
+`bass_chroma` is measured from the real bass stem rather than the fallback.
+
+Worth knowing: **that moved the ranked list more than the weight change did.**
+`score_collision` shifted on all 1160 shared rows (mean |Δ| 0.016, max 0.15),
+song-pair rank ρ 0.951 with 11 of the top 50 changing — against ρ 0.995 and 3
+rows for phrase. Spectral complementarity was being measured against a summed
+two-stem instrumental, and it shows. The N1 verdicts are unchanged on the
+four-stem data (rhythm stdev 0.0026, structure ρ +0.81 with label), though that
+re-measurement is a confirmation rather than an independent one: with phrase
+weighted, `top_section_pairs` now selects different pairs, so the second
+measurement is taken on a population the first one's decision reshaped.
+
+**The suite is green** — 799 passing, 0 failing, from a baseline of 11 failures
 that had stood long enough to be documented as normal.
 
 ### Phase 2 (shipped)
