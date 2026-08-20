@@ -1,0 +1,81 @@
+name: CI
+
+# Two bugs in one session were ordering-dependent: they passed when their file
+# was run alone and failed in the full suite. That is exactly what a developer
+# running one test file does not catch, and what this does.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false          # a Windows-only break must not hide a Linux one
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install ffmpeg
+        # librosa/soundfile decode through it, and the app checks for it on the
+        # PATH at startup.
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y ffmpeg
+          else
+            choco install ffmpeg -y --no-progress
+          fi
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # CPU wheels: requirements.txt pins torch 2.5.1 for Demucs, and the
+          # default index serves multi-GB CUDA builds no CI job can use.
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu \
+              -r requirements.txt -r requirements-dev.txt
+          # audio-separator is deliberately absent from requirements.txt: no
+          # release resolves against its numpy<2 pins. It is the optional "Fast"
+          # separator, not something the suite needs, so CI does not install it.
+          python -c "import numpy; assert numpy.__version__.startswith('1.'), numpy.__version__"
+
+      - name: Run the whole suite
+        # ONE invocation, never per-file. There is no conftest.py, no pytest.ini
+        # and no tests/__init__.py, so ~20 test files hand-roll a
+        # config -> database.models -> route-module importlib.reload dance whose
+        # ordering is load-bearing, and reload is not unwound at teardown.
+        # Splitting this up would hide the class of bug it exists to catch.
+        # Must run from the repo root: several files omit the sys.path.insert
+        # boilerplate and rely on pytest's rootdir insertion.
+        run: python -m pytest tests -q
+
+  frontend:
+    name: frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
