@@ -28,12 +28,17 @@ FIXTURES = sorted(p for p in FIXTURE_DIR.iterdir()
 
 @pytest.mark.parametrize("fixture", FIXTURES, ids=lambda p: p.name)
 def test_fixture_snapshot(fixture):
-    rows = parse_tracklist(fixture.read_text())
+    # encoding= is load-bearing here, not tidiness. festival_set.txt is UTF-8
+    # and the only fixture with non-ASCII separators; decoded as the Windows
+    # ANSI codepage its en dash arrives as three mojibake characters, _SPLIT_RE
+    # then finds no " - " to split on, and every line parses as title-only with
+    # parse_confidence 0.5 — a parser regression that never happened.
+    rows = parse_tracklist(fixture.read_text(encoding="utf-8"))
     snap_path = fixture.with_suffix(fixture.suffix + ".expected.json")
     if os.environ.get("UPDATE_SNAPSHOTS"):
-        snap_path.write_text(json.dumps(rows, indent=1) + "\n")
+        snap_path.write_text(json.dumps(rows, indent=1) + "\n", encoding="utf-8")
     assert snap_path.exists(), f"missing snapshot {snap_path.name}"
-    assert rows == json.loads(snap_path.read_text())
+    assert rows == json.loads(snap_path.read_text(encoding="utf-8"))
 
 
 def test_fixtures_present():
@@ -95,6 +100,6 @@ def test_no_network_imports():
     # The parser module must stay pure: importable without fastapi/yt-dlp,
     # no urllib/socket usage.
     import ingest.tracklist_parse as tp
-    src = Path(tp.__file__).read_text()
+    src = Path(tp.__file__).read_text(encoding="utf-8")
     for banned in ("urllib", "requests", "socket", "http.client", "fastapi"):
         assert banned not in src
