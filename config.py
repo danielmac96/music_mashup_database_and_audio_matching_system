@@ -455,6 +455,21 @@ SECTION_WEIGHT = 0.25
 # scoring on missing data — and flipping them on before the backfill would move
 # every ranking in an existing library for reasons the user cannot see. Raise
 # them (Settings → Tuning, or here) once "Re-analyse" reports nothing stale.
+#
+# These stay at zero as the SHIPPED default even after a backfill, because the
+# right values are a property of a library, not of the code — settings.json is
+# where a tuned set belongs. Measured once on a backfilled 30-track library
+# (1197 section pairs), for whoever tunes next:
+#
+#   phrase     stdev 0.31 over 362 distinct values, rho +0.37 vs duration.
+#              Real, independent signal — the one worth weighting.
+#   rhythm     stdev 0.0033, range 0.972-1.000. NOT a missing-data problem
+#              (0% at the neutral fallback): bar-profile cosine saturates
+#              because 4/4 dance records all have the same bar-level onset
+#              shape. Weighting it rescales the list rather than reordering it.
+#   structure  rho +0.88 with `label`. Both are functions of the same two
+#              section labels, so weighting both counts one signal twice.
+#              Any weight it gets should come OUT of label's budget.
 SECTION_WEIGHTS = {
     "label":     0.40,
     "duration":  0.35,

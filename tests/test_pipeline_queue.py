@@ -45,15 +45,36 @@ def env(tmp_path, monkeypatch):
     return models
 
 
-def _mock_stages(monkeypatch, *, fail_stems_for=None, fail_structure_for=None):
+# A section as the CURRENT analyser writes it: Phase E chroma plus the P2.1
+# tempo/grid block. bulk_worker._SECTION_CURRENT_COLUMNS is what decides whether
+# structure needs re-running, so a mock that omits these is a PRE-P2.1 section.
+_CURRENT_SECTION = {
+    "start_sec": 0, "end_sec": 5, "label": "intro",
+    "chroma": [0.1] * 12, "bpm": 128.0, "bpm_source": "section_estimate",
+}
+_LEGACY_SECTION = {"start_sec": 0, "end_sec": 5, "label": "intro"}
+
+
+def _mock_stages(monkeypatch, *, fail_stems_for=None, fail_structure_for=None,
+                 section=None):
+    """Mock the four heavy stages. Returns a {stage: count} call counter.
+
+    ``section`` is the row do_structure writes — defaults to one the current
+    analyser would produce, so the structure gate sees it as up to date.
+    """
     import api.workers.stages as stages
     import database.models as models
 
+    calls = {"download": 0, "stems": 0, "analyze": 0, "structure": 0}
+    row = _CURRENT_SECTION if section is None else section
+
     def dl(sid, on_progress=None):
+        calls["download"] += 1
         models.update_song_status(sid, "downloaded", raw_path=f"/f/{sid}.mp3")
         return {"path": f"/f/{sid}.mp3"}
 
     def st(sid, on_progress=None):
+        calls["stems"] += 1
         if fail_stems_for and sid in fail_stems_for:
             models.update_song_status(sid, "error_stems")
             raise stages.StageError("boom stems")
@@ -61,24 +82,27 @@ def _mock_stages(monkeypatch, *, fail_stems_for=None, fail_structure_for=None):
         return {}
 
     def an(sid, on_progress=None):
+        calls["analyze"] += 1
         models.update_song_status(sid, "analysed")
         return {}
 
     def sc(sid, on_progress=None):
+        calls["structure"] += 1
         if fail_structure_for and sid in fail_structure_for:
             raise stages.StageError("boom structure")
-        models.replace_sections(sid, [{"start_sec": 0, "end_sec": 5, "label": "intro"}])
+        models.replace_sections(sid, [dict(row)])
         return {"section_count": 1}
 
     monkeypatch.setattr(stages, "do_download", dl)
     monkeypatch.setattr(stages, "do_stems", st)
     monkeypatch.setattr(stages, "do_analyze", an)
     monkeypatch.setattr(stages, "do_structure", sc)
+    return calls
 
 
 def test_pipeline_worker_chains_to_analysed(env, monkeypatch):
     models = env
-    _mock_stages(monkeypatch)
+    calls = _mock_stages(monkeypatch)
     import api.workers.pipeline_worker as pw
     import api.jobs as jobs
 
@@ -89,6 +113,67 @@ def test_pipeline_worker_chains_to_analysed(env, monkeypatch):
     assert models.get_song(sid)["status"] == "analysed"
     assert len(models.get_sections(sid)) == 1
     assert jobs.get(job_id)["status"] == "completed"
+    # Exactly once: a gate that re-detects on every pass would re-cut hook clips
+    # for the whole library on every re-analysis.
+    assert calls["structure"] == 1
+
+
+# ── The structure gate: "are the sections CURRENT", not "are there any" ──────
+# Asking the second question made every bulk re-analysis a silent no-op for the
+# Phase E / P2.1 backfill — the rows existed, so structure was skipped, while
+# the columns it alone writes stayed NULL and the badge reported the library
+# stale forever.
+
+def test_structure_reruns_when_sections_predate_current_analyser(env, monkeypatch):
+    models = env
+    calls = _mock_stages(monkeypatch)
+    import api.workers.pipeline_worker as pw
+    import api.jobs as jobs
+
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/1",
+                             status="analysed")
+    models.replace_sections(sid, [dict(_LEGACY_SECTION)])   # pre-P2.1 rows exist
+    pw.run(jobs.new_job(kind="pipeline", song_id=sid), sid)
+
+    assert calls["structure"] == 1
+    assert models.get_sections(sid)[0]["bpm_source"] == "section_estimate"
+
+
+def test_structure_not_rerun_when_sections_are_current(env, monkeypatch):
+    models = env
+    calls = _mock_stages(monkeypatch)
+    import api.workers.pipeline_worker as pw
+    import api.jobs as jobs
+
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/1",
+                             status="analysed")
+    models.replace_sections(sid, [dict(_CURRENT_SECTION)])
+    pw.run(jobs.new_job(kind="pipeline", song_id=sid), sid)
+
+    assert calls["structure"] == 0
+
+
+def test_structure_pass_survives_a_failure_outside_stageerror(env, monkeypatch):
+    """do_structure wraps only detect_sections; replace_sections, _persist_hooks
+    and warm_hooks run after it unwrapped. Structure is documented as non-fatal,
+    so an OSError while cutting a hook clip must not fail the job either."""
+    models = env
+    _mock_stages(monkeypatch)
+    import api.workers.stages as stages
+    import api.workers.pipeline_worker as pw
+    import api.jobs as jobs
+
+    def boom(sid, on_progress=None):
+        raise OSError("disk full while writing a hook clip")
+    monkeypatch.setattr(stages, "do_structure", boom)
+
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/1",
+                             status="queued")
+    jid = jobs.new_job(kind="pipeline", song_id=sid)
+    pw.run(jid, sid)
+
+    assert models.get_song(sid)["status"] == "analysed"
+    assert jobs.get(jid)["status"] == "completed"
 
 
 def test_stage_failure_contains_to_one_track(env, monkeypatch):

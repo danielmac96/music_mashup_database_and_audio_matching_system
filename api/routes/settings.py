@@ -165,6 +165,40 @@ class SaveSettingsRequest(BaseModel):
     bpm_max_diff_model: Optional[float] = None
     max_section_pairs: Optional[int] = None
     match_weights: Optional[dict] = None
+    # The six section-fit weights. Reported by GET since P2.3 but never
+    # writable, so the only way to move them was editing config.SECTION_WEIGHTS
+    # and restarting — for the one set of knobs whose whole point is that you
+    # measure, adjust and re-score.
+    section_weights: Optional[dict] = None
+
+
+def _checked_weights(raw: dict, keys, name: str) -> dict:
+    """Validate one weight dict. Shared by match_weights and section_weights so
+    the two cannot drift into disagreeing about what a valid weight set is.
+
+    Weights are stored exactly as given — both readers (current_match_weights,
+    current_section_weights) normalise, so a user dragging sliders never has to
+    make them sum to 1. All-zero is rejected rather than normalised, because
+    that would divide by zero and silently fall back to the defaults.
+    """
+    unknown = set(raw) - set(keys)
+    if unknown:
+        raise HTTPException(status_code=400,
+                            detail=f"unknown weight(s): {sorted(unknown)}")
+    try:
+        weights = {k: float(v) for k, v in raw.items()}
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail=f"{name} values must be numbers")
+    if any(v < 0 for v in weights.values()):
+        raise HTTPException(status_code=400,
+                            detail=f"{name} cannot be negative")
+    if sum(weights.values()) <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"at least one {name.replace('_', ' ').rstrip('s')} must be "
+                   "above zero")
+    return weights
 
 
 @router.post("")
@@ -217,26 +251,14 @@ def save_settings(req: SaveSettingsRequest) -> dict:
                                 detail=f"max_section_pairs must be {lo}-{hi}")
         new["max_section_pairs"] = int(req.max_section_pairs)
     if req.match_weights is not None:
-        unknown = set(req.match_weights) - set(config._WEIGHT_KEYS)
-        if unknown:
-            raise HTTPException(
-                status_code=400,
-                detail=f"unknown weight(s): {sorted(unknown)}")
-        try:
-            weights = {k: float(v) for k, v in req.match_weights.items()}
-        except (TypeError, ValueError):
-            raise HTTPException(status_code=400,
-                                detail="match_weights values must be numbers")
-        if any(v < 0 for v in weights.values()):
-            raise HTTPException(status_code=400,
-                                detail="match_weights cannot be negative")
-        if sum(weights.values()) <= 0:
-            raise HTTPException(
-                status_code=400,
-                detail="at least one match weight must be above zero")
         # Stored as given; current_match_weights normalises on read, so the
         # sliders do not have to add up to 1.
-        new["match_weights"] = weights
+        new["match_weights"] = _checked_weights(
+            req.match_weights, config._WEIGHT_KEYS, "match_weights")
+
+    if req.section_weights is not None:
+        new["section_weights"] = _checked_weights(
+            req.section_weights, config._SECTION_WEIGHT_KEYS, "section_weights")
 
     path = config.save_settings(new)
 

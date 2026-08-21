@@ -67,6 +67,48 @@ const WEIGHTS = [
     "Needs a re-analysis to have any value."],
 ];
 
+// How the CHOSEN sections are scored against each other. Distinct from the
+// sub-scores above, which compare the two records as wholes.
+//
+// These do more than rank: score_section_pair also decides WHICH section pair
+// represents a song pair, so moving them changes what the list is about, not
+// just its order.
+const SECTION_WEIGHTS = [
+  ["label", "Section roles", "How well the two roles suit each other — a chorus over a drop " +
+    "beats a chorus over an intro. A hand-authored priority table, not a measurement."],
+  ["duration", "Length fit", "Whether the sections cover each other once the bed is stretched " +
+    "and looped."],
+  ["voice", "Vocal presence", "How much voice the separator actually found in the vocal " +
+    "section."],
+  ["phrase", "Phrase fit", "Whether the two run for the same number of BARS, or a clean " +
+    "multiple. Needs the per-section beat grid."],
+  ["rhythm", "Rhythm", "Bar-level onset agreement. Measured across this library it barely " +
+    "varies — nearly every pair scores above 0.97 — so weighting it mostly rescales the list."],
+  ["structure", "Transition", "Whether the pairing is a musically normal move. Largely says " +
+    "the same thing as Section roles, so weighting both counts it twice."],
+];
+
+// One group of weight sliders. Shared by the sub-scores and the section fit so
+// the two render — and normalise their percentages — identically.
+function WeightSliders({ specs, weights, disabled, onChange }) {
+  const total = Object.values(weights).reduce((a, b) => a + Number(b || 0), 0) || 1;
+  return specs.map(([key, label, help]) => (
+    <div key={key} style={{ padding: "5px 0" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <span style={{ flex: 1, fontSize: 12 }}>{label}</span>
+        <code className="mono" style={{ fontSize: 12 }}>
+          {Math.round(100 * Number(weights[key] || 0) / total)}%
+        </code>
+      </div>
+      <input type="range" min={0} max={1} step={0.01}
+        value={Number(weights[key] || 0)} disabled={disabled}
+        style={{ width: "100%" }}
+        onChange={(e) => onChange({ ...weights, [key]: parseFloat(e.target.value) })} />
+      <div className="faint" style={{ fontSize: 11, lineHeight: 1.4 }}>{help}</div>
+    </div>
+  ));
+}
+
 function Knob({ spec, setting, value, onChange }) {
   const locked = setting?.source === "env";
   const shown = value ?? setting?.value ?? spec.min;
@@ -100,19 +142,20 @@ export function TuningPanel() {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState({});          // knob key -> pending value
   const [weights, setWeights] = useState(null);    // null until loaded
+  const [secWeights, setSecWeights] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
   const load = () => api.getSettings()
-    .then((s) => { setSettings(s); setWeights(null); setDraft({}); })
+    .then((s) => { setSettings(s); setWeights(null); setSecWeights(null); setDraft({}); })
     .catch(() => setSettings(null));
   useEffect(() => { load(); }, []);
 
   if (!settings) return null;
 
   const w = weights || settings.match_weights?.value || {};
-  const weightTotal = Object.values(w).reduce((a, b) => a + Number(b || 0), 0) || 1;
-  const dirty = Object.keys(draft).length > 0 || weights != null;
+  const sw = secWeights || settings.section_weights?.value || {};
+  const dirty = Object.keys(draft).length > 0 || weights != null || secWeights != null;
 
   const save = async () => {
     setBusy(true);
@@ -120,6 +163,7 @@ export function TuningPanel() {
     try {
       const payload = { ...draft };
       if (weights) payload.match_weights = weights;
+      if (secWeights) payload.section_weights = secWeights;
       const out = await api.saveSettings(payload);
       toast(out.restart_required
         ? "Saved — restart the server to apply"
@@ -202,23 +246,23 @@ export function TuningPanel() {
               (normalised on save — they need not add up)
             </span>
           </h4>
-          {WEIGHTS.map(([key, label, help]) => (
-            <div key={key} style={{ padding: "5px 0" }}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                <span style={{ flex: 1, fontSize: 12 }}>{label}</span>
-                <code className="mono" style={{ fontSize: 12 }}>
-                  {Math.round(100 * Number(w[key] || 0) / weightTotal)}%
-                </code>
-              </div>
-              <input type="range" min={0} max={1} step={0.01}
-                value={Number(w[key] || 0)} disabled={busy}
-                style={{ width: "100%" }}
-                onChange={(e) => setWeights({
-                  ...w, [key]: parseFloat(e.target.value),
-                })} />
-              <div className="faint" style={{ fontSize: 11, lineHeight: 1.4 }}>{help}</div>
-            </div>
-          ))}
+          <WeightSliders specs={WEIGHTS} weights={w} disabled={busy}
+            onChange={setWeights} />
+
+          <h4 style={{ margin: "14px 0 2px", fontSize: 12 }}>
+            Section fit
+            <span className="faint" style={{ fontWeight: 400, marginLeft: 6 }}>
+              (normalised on save)
+            </span>
+          </h4>
+          <div className="faint" style={{ fontSize: 11, marginBottom: 4 }}>
+            These pick the section pair as well as rank it, so moving them
+            changes which pairing each song pair is offered as. Phrase, Rhythm
+            and Transition read the per-section beat grid — worthless until
+            Re-analyse reports nothing stale.
+          </div>
+          <WeightSliders specs={SECTION_WEIGHTS} weights={sw} disabled={busy}
+            onChange={setSecWeights} />
 
           <h4 style={{ margin: "14px 0 2px", fontSize: 12 }}>Candidate gate</h4>
           <div className="faint" style={{ fontSize: 11, marginBottom: 4 }}>

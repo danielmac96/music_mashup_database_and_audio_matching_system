@@ -4,12 +4,59 @@ current goal: **Phases 1 and 2 of the Discovery plan are done** (branch
 `discovery-tab`, commits D1.0–D1.6 and P2.0–P2.6). See
 `~/.claude/plans/using-the-current-repo-abstract-curry.md`.
 
-⚠ **RE-ANALYSE THE LIBRARY NOW, before the §5 seventeen-mix ingest.** Three
-things changed meaning: `features.bpm_confidence`, the per-section chroma, and
-(P2.1) the whole per-section tempo/grid/class block. Settings → "Re-analyse N"
-covers all of it in one pass. **Until that runs, the three new score components
-stay at zero weight and the ranked list is unchanged** — that is deliberate, not
-a bug (see below).
+### The library is backfilled, and the weights are measured (2026-08-19)
+
+The long-standing "⚠ RE-ANALYSE THE LIBRARY NOW" instruction that stood here
+**could not be followed**: `pipeline_worker._structure_pass` skipped structure
+detection whenever section rows already existed, and `stages.do_structure` is
+the only thing that writes the per-section chroma and the P2.1 tempo/grid
+block. So every bulk re-analysis re-ran features, silently skipped structure,
+and left the Settings badge reporting the same 30 stale tracks forever. The
+gate now asks whether the sections are CURRENT, sharing one definition with the
+badge (`bulk_worker.sections_are_current`), so the two cannot disagree again.
+
+Consequences, all measured on the backfilled library (30 tracks, 308 sections,
+1197 vocal section pairs):
+
+- 296/308 sections carry their own measured tempo (`bpm_source =
+  section_estimate`); only 12 fell back to the track BPM. 100% satisfy
+  `_bar_profile`'s precondition and have a `bar_count`.
+- **Only `phrase` earned weight.** It has real spread (stdev 0.31, 362 distinct
+  values) and is not redundant (ρ +0.37 vs `duration`).
+- **`rhythm` stays at zero** — and NOT for want of data (0% at its neutral
+  fallback). Its range is 0.972–1.000, stdev 0.0033: bar-profile cosine
+  saturates because 4/4 dance records share a bar-level onset shape. Weighting
+  it rescales the list instead of reordering it.
+- **`structure` stays at zero** — ρ +0.88 with `label`. Both are functions of
+  the same two section labels, so weighting both counts one signal twice.
+- Live weights are `label .32 / duration .30 / voice .23 / phrase .15` in
+  settings.json. `config.SECTION_WEIGHTS` stays at the shipped zeros on
+  purpose: the right values are a property of a library, not of the code.
+  They are now writable — `POST /api/settings {"section_weights": {...}}` and
+  six sliders in the Tuning panel.
+- Effect: the same *records* are recommended (song-pair rank ρ 0.995, 3 of the
+  top 50 changed) but a different *moment* inside them (section-pair ρ 0.983,
+  25 of the top 50 changed). Every new top row sits on a clean 8/11/12-bar span.
+- Cost: a re-score went 4.9s → 10.8s. `matcher/sections.py:165` short-circuits
+  `section_components` when all three weights are zero, and that shortcut is
+  now gone. Irrelevant at 30 tracks; the number to watch at 900.
+
+**The library is also on four stems now** (30/30 drums/bass/other, every
+staleness counter at zero), and structure was re-detected afterwards so
+`bass_chroma` is measured from the real bass stem rather than the fallback.
+
+Worth knowing: **that moved the ranked list more than the weight change did.**
+`score_collision` shifted on all 1160 shared rows (mean |Δ| 0.016, max 0.15),
+song-pair rank ρ 0.951 with 11 of the top 50 changing — against ρ 0.995 and 3
+rows for phrase. Spectral complementarity was being measured against a summed
+two-stem instrumental, and it shows. The N1 verdicts are unchanged on the
+four-stem data (rhythm stdev 0.0026, structure ρ +0.81 with label), though that
+re-measurement is a confirmation rather than an independent one: with phrase
+weighted, `top_section_pairs` now selects different pairs, so the second
+measurement is taken on a population the first one's decision reshaped.
+
+**The suite is green** — 799 passing, 0 failing, from a baseline of 11 failures
+that had stood long enough to be documented as normal.
 
 ### Phase 2 (shipped)
 
@@ -32,8 +79,10 @@ a bug (see below).
   alias silently promoted every breakdown above choruses as a bed.
 - **Three new scores at ZERO weight** (P2.3): phrase, rhythm, structure. They
   read the P2.1 columns, so they are computed and stored but weightless until the
-  library is backfilled. Raise them in `config.SECTION_WEIGHTS` afterwards.
-  Missing data scores 0.5, never 0 — a pre-P2.1 section is unmeasured, not bad.
+  library is backfilled. Missing data scores 0.5, never 0 — a pre-P2.1 section is
+  unmeasured, not bad. *(Superseded: the backfill happened and only `phrase`
+  earned weight — see the dated section at the top. Do not raise rhythm or
+  structure without re-reading it.)*
 - **Alignment is on the row** (P2.4): downbeat, offset, target BPM, tempo and
   pitch moves, plus a human-readable `reason`. The offset is measured AFTER the
   stretch, and is `None` (not 0.0) when there is no grid to measure.
@@ -122,8 +171,35 @@ The candidate row is now the SECTION PAIR, not the song pair. Next: run the §5
 runbook (import the ~17 Big Bootie mixes), then Phase G — the wider combo taxonomy
 (three-way, double-drop, transitions) and the multi-song set builder.
 
-⚠ `ingest/match_score.py` was missing from the repo and is currently a
-reconstruction (commit 7beb26c) — replace it with your original if you have it.
+`ingest/match_score.py` was missing from the repo and was reconstructed in
+commit 7beb26c. It has since been rebuilt **against its own test file**, which
+is a regression suite for two real reported mislinks and names the behaviour of
+the scorer it replaced — i.e. the tests are the surviving spec, and the
+reconstruction was the stale half. The title/artist split is unchanged; what
+was missing is that everything else is now a MULTIPLIER, exactly 1.0 when its
+signal is absent or agrees:
+
+    score = (0.65*title + 0.35*artist) * duration * padding * version * plays
+
+- **duration** marks down Go+ preview-length hits, kneeing at
+  `AUTO_LINK_MIN_DURATION` — the same threshold `is_trusted_link` uses.
+- **padding** charges for words in the hit's title that neither the wanted
+  title nor the wanted artist explains. This is what separates "On The World"
+  from "Katy Perry x Jeonghyeon - I Kissed A Girl x On The World": coverage
+  rates them identically by design, and the second is a mashup of it.
+- **version** penalises a rework nobody asked for, and the original when they
+  did. `_FORMAT_WORDS` is why "(Extended Version)" is not treated as one — an
+  extended cut of a record is that record, and reading it as a remix marked the
+  artist's own upload down against fan edits.
+- **plays** is a deliberately small tiebreak, and neutral when the key is
+  ABSENT: yt-dlp flat entries carry no counter, and not reporting popularity is
+  different from reporting zero. It must stay small because
+  `soundcloud_api.search_candidates` already sorts on `(score, plays)` and that
+  module is frozen — counting popularity twice is the hazard there.
+
+`W_TITLE` must stay below `AUTO_LINK_MIN_SCORE`, or a title-only match against
+an unrelated artist clears the auto-link floor on its own — the exact mislink
+the module exists to prevent.
 
 Earlier context: The onboarding flow is built and working. Pasting a SoundCloud link into the
 bar at the top of Library auto-processes every track through download → stems → analyze →

@@ -21,16 +21,50 @@ How to read the tiers:
 
 ---
 
-## ⚠ Do this first: re-analyse the library
+## ✅ Done: the library is backfilled and the weights are measured
 
-`Settings → Re-analyse N`. Three generations of feature changed meaning:
-`features.bpm_confidence`, the per-section chroma, and the whole per-section
-tempo/grid/class block added in P2.1.
+*(2026-08-19. This section used to say "⚠ Do this first: re-analyse the
+library". That instruction could not be carried out — see below.)*
 
-**Until it runs, the three new score components sit at zero weight and the
-ranked list is unchanged.** That is deliberate — they read per-section columns
-that are NULL on an un-backfilled library, and turning them on early would score
-on missing data. See **N1** below for the follow-up.
+`Settings → Re-analyse N` **did not work, and had not for as long as the P2.1
+columns existed.** `pipeline_worker._structure_pass` skipped structure
+detection whenever a track already had section rows, and
+`stages.do_structure` is the only thing that writes the per-section chroma and
+the P2.1 tempo/grid block. Every bulk re-analysis therefore re-ran features,
+silently skipped structure, and left the badge reporting the same 30 stale
+tracks. The evidence was sitting in the database the whole time:
+`features.band_energy_json` populated, `sections.chroma_json` NULL.
+
+The gate now asks whether the sections are *current*, sharing one definition
+with the staleness badge (`bulk_worker.sections_are_current`), so the two
+cannot disagree again.
+
+**N1 is done, and the answer was not "raise all three".** Measured on the
+backfilled library (1197 vocal section pairs):
+
+| component | verdict | why |
+|---|---|---|
+| `phrase` | **weighted 0.15** | stdev 0.31 over 362 distinct values; ρ +0.37 vs `duration`, so genuinely independent |
+| `rhythm` | stays 0 | range 0.972–1.000, stdev 0.0033 — and 0% at its neutral fallback, so this is not missing data. Bar-profile cosine saturates on 4/4 records |
+| `structure` | stays 0 | ρ +0.88 with `label`; weighting both counts one signal twice |
+
+Live weights are `label .32 / duration .30 / voice .23 / phrase .15`, stored in
+settings.json — `config.SECTION_WEIGHTS` keeps its shipped zeros, because the
+right values belong to a library rather than to the code. They are writable now
+(`POST /api/settings {"section_weights": …}`, plus sliders in the Tuning panel);
+before this they were reported by GET and settable nowhere.
+
+Effect: the same *records* are recommended (song-pair rank ρ 0.995, 3 of the
+top 50 changed) but a different *moment* within them (section-pair ρ 0.983, 25
+of the top 50 changed). Every new top row sits on a clean 8/11/12-bar span.
+
+The library was then re-separated into **four stems** (30/30) and structure
+re-detected against the real bass stems. That turned out to move the ranking
+*more* than the weights did — `score_collision` changed on all 1160 shared
+rows, song-pair ρ 0.951 with 11 of the top 50 changing. Spectral
+complementarity had been measured against a summed two-stem instrumental.
+If the ranked list ever looks like it disagrees with a past screenshot, this is
+why.
 
 ---
 
@@ -58,7 +92,7 @@ Kept rather than deleted, so the history stays readable.
 | D2 | Multi-resolution waveform peaks | live |
 | D3 | Master limiter + meters | **Half done** — see D3 below |
 | D4 | Job persistence across restarts | live |
-| D5 | requirements + CI | live |
+| D5 | requirements + CI | ✅ shipped — .github/workflows/ci.yml |
 
 Also shipped since, and not in the original audit: the **Discovery tab**
 (SoundCloud search/browse → local crates → bulk import), **section-level
@@ -70,53 +104,39 @@ analysis** (per-section tempo, grid, downbeats, energy shape, class),
 
 ## Tier N — New, and first in the queue
 
-### N1. Turn on the phrase / rhythm / structure weights
+### N1. Turn on the phrase / rhythm / structure weights — ✅ done
 
-They are computed and stored on every candidate row but weighted **zero**
-(`config.SECTION_WEIGHTS`). This is the one task that is blocked purely on the
-re-analysis above, and it is the payoff for all of Phase 2.
+Only `phrase` earned weight. See the section at the top of this file for the
+measurement, and `config.py`'s note above `SECTION_WEIGHTS` for the numbers a
+future tuner needs. The scratch scripts that produced it are gone with the
+scratchpad; the method is worth repeating, not the files:
 
-Do it empirically, not by taste: the numbers are already in the database, so you
-can see what they would do before letting them do it.
+1. distribution + share at the neutral fallback per component;
+2. Spearman against the three incumbent terms (recomputed, since
+   label/duration/voice are not stored on the row) to catch redundancy;
+3. a counterfactual over candidate weight vectors, computed offline from
+   `_apply_section_fit`'s shape rather than by re-scoring;
+4. one real re-score, diffed against a snapshot of the previous ranking.
 
-**Prompt:**
-> The library has been re-analysed, so sections now carry bar_count, beat_times,
-> downbeats and energy_trend. Before changing any weight, write a one-off script
-> under a scratch path that reads mashup_candidates and reports, for
-> score_phrase / score_rhythm / score_structure: the distribution (min, median,
-> p90, max), how many rows are at the neutral fallback (0.5 for rhythm and
-> structure), and the Spearman correlation of each against score_total and
-> against the stored pair_feedback verdicts. Then raise the three weights in
-> config.SECTION_WEIGHTS proportionally to how much signal each actually
-> carries, keeping label/duration/voice dominant, re-score, and report how much
-> the top 50 of the ranked list changed (rows added, rows dropped, rank
-> correlation). Do not raise a weight whose component is mostly sitting at its
-> neutral fallback — that would be adding noise, not signal.
+Note `pair_feedback` is EMPTY, so the "Spearman against stored verdicts" this
+item originally proposed is not available. The analysis is unsupervised until
+somebody judges some pairs.
 
-### N2. Resolve the 11 failing tests
+### N2. Resolve the 11 failing tests — ✅ done
 
-`tests/test_match_score.py` (9), `tests/test_mix_resolve.py` (1) and
-`tests/test_tracklist_parse.py` (1) fail on a clean checkout and have for a
-while. The first two are untracked WIP; the third is a tracked fixture snapshot.
+The suite is green: **794 passing, 0 failing**. What they turned out to be:
 
-This matters more than it looks: a permanently red suite means a real regression
-has nowhere to show up. `ingest/match_score.py` is itself a reconstruction
-(CLAUDE.md flags it), so the test and the module genuinely disagree about the
-intended weights — someone has to decide which is right.
+- **`test_tracklist_parse` (1)** — a bug in the *test*, not the parser.
+  `fixture.read_text()` with no `encoding=` decoded a UTF-8 fixture as the
+  Windows ANSI codepage, so an en dash arrived as mojibake, `_SPLIT_RE` found
+  no separator, and every line parsed as title-only. `festival_set.txt` is the
+  only non-ASCII fixture, which is why it was the only red one.
+- **`test_match_score` (9) + `test_mix_resolve` (1)** — the tests were right and
+  `ingest/match_score.py` was the stale half. It read neither `duration` nor
+  `plays`, deleted version tags before tokenising, and could not charge for
+  padding words. Rebuilt as multiplicative factors; see CLAUDE.md.
 
-**Prompt:**
-> Run pytest and triage the 11 failures. For tests/test_match_score.py, compare
-> what the tests assert against what ingest/match_score.py computes, using the
-> recorded responses in tests/fixtures/sc_search/ — that module is a
-> reconstruction, so decide per test whether the test encodes the intended
-> behaviour (fix the module) or a stale expectation (fix the test), and say
-> which you chose and why for each. For test_tracklist_parse's festival_set
-> fixture, the parser now returns artist='' and parse_confidence 0.5 where the
-> snapshot expects a parsed artist — work out whether the parser regressed or
-> the snapshot predates a deliberate change. Get the suite to zero failures,
-> then commit the previously-untracked test files so the baseline is defended.
-
----
+The previously-untracked test files are committed, so the baseline is defended.
 
 ## Tier A — Make the mashups sound better
 
@@ -385,34 +405,46 @@ but the UI has no job to attach to and the badge goes blank.
 > resume_pending() re-attach resumed tracks to a fresh job. Keep
 > MAX_TERMINAL_JOBS trimming, but do it in SQL.
 
-### D5. requirements + CI
+### D5. requirements + CI — ✅ done
 
-No `.github/workflows`. Two bugs this session were ordering-dependent — they
-passed alone and failed in the full suite — which is exactly what CI catches and
-a developer running one test file does not.
+`.github/workflows/ci.yml`: the whole suite on Ubuntu and Windows, plus the
+frontend build. Things worth knowing before editing it:
 
-**Prompt:**
-> Add a GitHub Actions workflow that installs requirements.txt +
-> requirements-dev.txt on Windows and Linux, runs the full pytest suite (not
-> individual files — several bugs here only appear from module reload ordering
-> across files), and builds the frontend. Pin the numpy<2 constraint explicitly
-> since the audio stack depends on it. Also run pytest with -p no:randomly if
-> ordering is deliberate, or add a shuffled run as a separate allowed-to-fail
-> job to surface more ordering coupling. Do not add a linter in the same PR.
+- `pytest tests` is ONE invocation and must stay that way. There is no
+  `conftest.py`, no `pytest.ini` and no `tests/__init__.py`, so ~20 test files
+  hand-roll a `config` → `database.models` → route-module `importlib.reload`
+  dance whose ordering is load-bearing, and `reload` is not unwound at
+  teardown. Splitting the run hides the class of bug the job exists to catch.
+- It installs from the PyTorch CPU index. `requirements.txt` pins
+  `torch==2.5.1` for Demucs and the default index serves multi-GB CUDA builds
+  no runner can use.
+- `numpy==1.26.4` is already pinned in `requirements.txt`; the job asserts it
+  rather than re-pinning, so a resolver that quietly walked to numpy 2 fails
+  loudly instead of failing later inside librosa.
+- `audio-separator` stays uninstalled, matching `requirements.txt`'s note that
+  no release resolves against these pins. It is the optional "Fast" separator,
+  not something the suite needs.
+- **No shuffled run.** The obvious way to add one is `pytest-randomly`, which
+  shuffles by DEFAULT once installed — that would make every local run
+  unstable to buy an allowed-to-fail signal. Worth revisiting behind an
+  explicit seed, not as a dev dependency.
 
 ---
 
 ## Suggested order of attack
 
-1. **Re-analyse the library**, then **N1** (turn on the new weights). Everything
-   in Phase 2 is waiting on this and it is a single click plus a measurement.
+*(Steps 1 and 5 are done — the backfill, N1 and N2, and D5's CI. What is left
+starts at A1.)*
+
+1. ~~**Re-analyse the library**, then **N1**~~ — done, and it was not a single
+   click: the button could not do it. See the top of this file.
 2. **A1 trim** → **A2 fades** → **B3 multiple clips**. These compound, in that
    order. A1 is half done already.
 3. **A3 EQ** — the most audible single addition left.
 4. **B2 auto-arrange**. Much cheaper now that the candidate row carries the
    whole arrangement; do it after A1 so it has clips to trim.
-5. **N2** (green suite) and **D5** (CI) together, before the codebase grows
-   further.
+5. ~~**N2** (green suite) and **D5** (CI)~~ — done. The suite is green at 794
+   passing and CI now defends it on two OSes.
 6. **A4 stereo** + **D3 limiter/meters** — fidelity, once the arrangement
    features are in.
 7. **C4 phrase matching** — the biggest engine win left, and it deserves its own
