@@ -1925,11 +1925,15 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             SELECT mc.*,
                    {reweight_cols}
                    sv.genre        AS vocal_genre,
+                   -- E.4: the contrast terms fall back to tags when a genre is
+                   -- blank, which on SoundCloud is most of the time.
+                   sv.tags         AS vocal_tags,
                    sv.release_year AS vocal_year,
                    sv.plays        AS vocal_plays,
                    sv.likes        AS vocal_likes,
                    pv.popularity   AS vocal_popularity,
                    si.genre        AS inst_genre,
+                   si.tags         AS inst_tags,
                    si.release_year AS inst_year,
                    si.plays        AS inst_plays,
                    si.likes        AS inst_likes,
@@ -2126,11 +2130,13 @@ def candidate_filter_options(combo_type: str = "",
             WHERE g IS NOT NULL AND g != ''
             GROUP BY g ORDER BY n DESC, g""",
         args * 2).fetchall()
-    # Tags that describe more than one track. A tag on a single upload is
-    # noise in a chip you cycle with a click; two is the point at which
-    # filtering on it can group anything.
+    # Tags that describe more than one TRACK. DISTINCT on the song id is doing
+    # real work: the join yields a row per (candidate x side), so counting rows
+    # would score a one-off hashtag on a track appearing in 300 candidates as
+    # 300 — the MIN_TAG_TRACKS floor would filter nothing — and would JSON-parse
+    # the whole candidates table twice on every /filters call.
     tag_rows = conn.execute(
-        f"""SELECT s.tags FROM mashup_candidates mc
+        f"""SELECT DISTINCT s.id, s.tags FROM mashup_candidates mc
               JOIN songs s ON s.id IN (mc.vocal_song_id, mc.inst_song_id)
             {where}
             AND s.tags IS NOT NULL AND s.tags != ''""",

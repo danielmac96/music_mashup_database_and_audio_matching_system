@@ -263,6 +263,12 @@ function BandOverlay({ edges, vocal, bed, collision }) {
   // the shape is readable rather than technically-correct-and-flat.
   const peak = Math.max(...vocal, ...bed) || 1;
   const pct = (v) => `${Math.max(1, (v / peak) * 100)}%`;
+  // The overlap block is absolutely positioned INSIDE its bar, so a percentage
+  // height resolves against that bar — which is already scaled by 1/peak.
+  // Scaling it by 1/peak again shrank the shaded part in every band but the
+  // loudest, i.e. it under-drew the very quantity it claims to equal.
+  const share = (part, whole) =>
+    `${whole > 0 ? Math.min(100, (part / whole) * 100) : 0}%`;
   return (
     <div className="band-overlay">
       <div className="band-head mono">
@@ -284,10 +290,10 @@ function BandOverlay({ edges, vocal, bed, collision }) {
                 + `overlapping ${Math.round(shared * 100)}%`}>
               <div className="band-pair">
                 <span className="band-bar vocal" style={{ height: pct(v) }}>
-                  <i style={{ height: pct(shared) }} />
+                  <i style={{ height: share(shared, v) }} />
                 </span>
                 <span className="band-bar bed" style={{ height: pct(b) }}>
-                  <i style={{ height: pct(shared) }} />
+                  <i style={{ height: share(shared, b) }} />
                 </span>
               </div>
               <div className="band-tick mono">{bandLabel(edges[n], edges[n + 1])}</div>
@@ -392,6 +398,7 @@ function PlanDetails({ vocalId, instId, candidate, comboType, onExport }) {
     vocalSectionIdx: sc.vocal_section_idx ?? null,
     instSectionIdx: sc.inst_section_idx ?? null,
     harmonicShift: sc.harmonic_shift ?? null,
+    comboType,
   });
 
   if (error) return <div className="plan-detail error-text">{error}</div>;
@@ -524,6 +531,10 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const queryRef = useRef(null);
+  // How many rows have been FETCHED, which is not how many are on screen:
+  // hiding a pair or excluding a track splices rows out locally. Paging from
+  // candidates.length after that would re-request rows already shown.
+  const fetchedRef = useRef(0);
   const sentinelRef = useRef(null);
   // ── T3.4 diversity: one 128 BPM 8A vocal otherwise owns the whole page ────
   const [maxPerSong, setMaxPerSong] = useState(3);
@@ -717,6 +728,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
       setCandidates(data.candidates);
       setHasMore(!!data.has_more);
       queryRef.current = opts;
+      fetchedRef.current = data.candidates.length;
     } catch (e) {
       setError(e.message);
     } finally {
@@ -736,10 +748,19 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     if (!base || loadingMore || !hasMore || shortlistOnly || grouped) return;
     setLoadingMore(true);
     try {
-      const data = await api.getMashups({ ...base, offset: candidates.length });
-      // Concatenate rather than replace: `id` is unique per candidate row, and
-      // the offset is applied after the cap, so pages cannot overlap.
-      setCandidates((rows) => [...rows, ...(data.candidates || [])]);
+      const data = await api.getMashups({
+        ...base, offset: fetchedRef.current,
+      });
+      const next = data.candidates || [];
+      fetchedRef.current += next.length;
+      // Hiding a pair changes the server's greedy per-song cap as well as the
+      // local list, so a later page CAN legitimately repeat a row we already
+      // hold. De-duplicate on id rather than trusting the offset — a duplicate
+      // React key is a rendering bug, not a cosmetic one.
+      setCandidates((rows) => {
+        const seen = new Set(rows.map((r) => r.id));
+        return [...rows, ...next.filter((r) => !seen.has(r.id))];
+      });
       setHasMore(!!data.has_more);
     } catch (e) {
       setError(e.message);
@@ -747,7 +768,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     } finally {
       setLoadingMore(false);
     }
-  }, [candidates.length, hasMore, loadingMore, shortlistOnly, grouped]);
+  }, [hasMore, loadingMore, shortlistOnly, grouped]);
 
   useEffect(() => {
     refresh(comboType, seed, minMatch);

@@ -179,8 +179,13 @@ export const api = {
   resetHook: (id, role = "vocal") =>
     jsonFetch(`/api/tracks/${id}/hook?role=${role}`, { method: "DELETE" }),
 
-  hookAudioUrl: (id, stem = "vocals") =>
-    `/api/tracks/${id}/hook/audio?stem=${stem}`,
+  // `v` is a cache-buster, not a server parameter. The clip is served with
+  // max-age=3600, so deleting it server-side is not enough: without a changing
+  // URL the browser keeps replaying the old bars for an hour after a save,
+  // which looks exactly like the save having failed.
+  hookAudioUrl: (id, stem = "vocals", version = "") =>
+    `/api/tracks/${id}/hook/audio?stem=${stem}`
+    + (version ? `&v=${encodeURIComponent(version)}` : ""),
 
   getWaveform: (id, stem) => jsonFetch(`/api/tracks/${id}/waveform?stem=${stem}`),
 
@@ -346,6 +351,7 @@ export const api = {
 
   getMashupPlan: (vocalId, instId, {
     vocalSectionIdx = null, instSectionIdx = null, harmonicShift = null,
+    comboType = "",
   } = {}) => {
     const params = new URLSearchParams({
       vocal_id: String(vocalId), inst_id: String(instId),
@@ -353,6 +359,9 @@ export const api = {
     if (vocalSectionIdx != null) params.set("vocal_section_idx", String(vocalSectionIdx));
     if (instSectionIdx != null) params.set("inst_section_idx", String(instSectionIdx));
     if (harmonicShift != null) params.set("harmonic_shift", String(harmonicShift));
+    // Decides which stem the TOP layer contributes — on the
+    // instrumental-over-instrumental path the "vocal" side is an instrumental.
+    if (comboType) params.set("combo_type", comboType);
     return jsonFetch(`/api/mashups/plan?${params}`);
   },
 

@@ -569,17 +569,23 @@ def list_feedback(verdict: str = "") -> dict:
 def get_plan(vocal_id: int, inst_id: int,
              vocal_section_idx: Optional[int] = None,
              inst_section_idx: Optional[int] = None,
-             harmonic_shift: Optional[int] = None) -> dict:
+             harmonic_shift: Optional[int] = None,
+             combo_type: str = "vocal_over_instrumental") -> dict:
     """The recipe for one pair.
 
     The section indices and the measured shift pin the plan to a candidate row.
     Without them the Plan expander re-chose its own sections and printed them
     directly beneath a row that named different ones.
     """
+    if combo_type not in _COMBO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
     plan = build_mashup_plan(vocal_id, inst_id,
                              vocal_section_idx=vocal_section_idx,
                              inst_section_idx=inst_section_idx,
-                             harmonic_shift=harmonic_shift)
+                             harmonic_shift=harmonic_shift,
+                             combo_type=combo_type)
     if plan is None:
         raise HTTPException(status_code=404, detail="song not found")
     return plan
@@ -798,8 +804,10 @@ def _reorder_by_surprise(rows: list, adventure: float) -> list:
 
     for r in rows:
         s = surprise_terms(
-            {"genre": r.get("vocal_genre"), "release_year": r.get("vocal_year")},
-            {"genre": r.get("inst_genre"), "release_year": r.get("inst_year")})
+            {"genre": r.get("vocal_genre"), "release_year": r.get("vocal_year"),
+             "tags": r.get("vocal_tags")},
+            {"genre": r.get("inst_genre"), "release_year": r.get("inst_year"),
+             "tags": r.get("inst_tags")})
         # Timbre distance is already on the row as its similarity score.
         surprise = (s["surprise_genre"] + s["surprise_era"]
                     + (1.0 - (r.get("score_timbre") or 0.5))) / 3.0

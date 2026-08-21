@@ -185,7 +185,9 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
                       db_path=None, *,
                       vocal_section_idx: Optional[int] = None,
                       inst_section_idx: Optional[int] = None,
-                      harmonic_shift: Optional[int] = None) -> Optional[Dict]:
+                      harmonic_shift: Optional[int] = None,
+                      combo_type: str = "vocal_over_instrumental",
+                      ) -> Optional[Dict]:
     """Full actionable plan for one vocal-over-instrumental pair.
     Returns None when either song is missing.
 
@@ -200,6 +202,9 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     Unresolvable indices (the track was re-analysed and the section is gone)
     fall through to the default pick rather than failing — a stale pin should
     cost you the exact moment, not the export.
+
+    `combo_type` decides which stem the top layer contributes: on the
+    instrumental-over-instrumental path the "vocal" side is an instrumental.
     """
     from database.models import (
         DB_PATH, get_conn, get_features_for_song, get_sections, get_song,
@@ -219,9 +224,17 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     # different answers to "what key is this" on the same screen.
     from matcher.match import _with_full_bpm
 
+    # Which stem the TOP layer contributes. On the instrumental-over-
+    # instrumental path the "vocal" side is an instrumental (matcher.match
+    # reuses the columns — see _emit), so reading its acapella would describe a
+    # stem that is not in the mashup: wrong band occupancy under a collision
+    # score measured between two beds, and a key off a discarded vocal.
+    top_stem = ("instrumental"
+                if combo_type == "instrumental_over_instrumental" else "vocals")
+
     v_full = get_features_for_song(vocal_song_id, "full", db_path=db) or {}
     i_full = get_features_for_song(inst_song_id, "full", db_path=db) or {}
-    v_feat = get_features_for_song(vocal_song_id, "vocals", db_path=db) or v_full or {}
+    v_feat = get_features_for_song(vocal_song_id, top_stem, db_path=db) or v_full or {}
     i_feat = get_features_for_song(inst_song_id, "instrumental", db_path=db) \
         or i_full or {}
     if v_full:

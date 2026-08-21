@@ -168,7 +168,9 @@ function HookEditor({ track, role }) {
             than replaying the browser's cached copy of the old bars. */}
         <audio ref={audioRef} controls preload="none"
           key={`${hook.hook_start}-${hook.hook_end}`}
-          src={api.hookAudioUrl(track.id, stem)} style={{ height: 30, flex: 1 }} />
+          src={api.hookAudioUrl(track.id, stem,
+            `${hook.hook_start}-${hook.hook_end}`)}
+          style={{ height: 30, flex: 1 }} />
         <button className="mini-btn" onClick={save} disabled={busy || !dirty}>
           {busy ? "Saving…" : "Save hook"}
         </button>

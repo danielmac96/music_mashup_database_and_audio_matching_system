@@ -205,3 +205,41 @@ def test_sections_do_not_ship_chroma_over_http_by_default(db_path):
     assert full["chroma_vocal"] == [0.2] * 12
     # Everything a screen actually draws survives the trim.
     assert lean["label"] == "chorus" and lean["end_sec"] == 30.0
+
+
+def test_a_tag_is_counted_once_per_track_not_once_per_candidate_row(db_path):
+    """The join yields a row per (candidate x side), so counting rows would
+    score a one-off hashtag on a track appearing in many candidates as many —
+    and the MIN_TAG_TRACKS floor would filter nothing at all."""
+    from database.models import candidate_filter_options
+
+    # One track carrying a unique tag, paired against five different beds.
+    v = _song(db_path, "hub", genre="", tags=["oneoff"], stem="vocals")
+    for n in range(5):
+        i = _song(db_path, f"bed{n}", genre="House", stem="instrumental")
+        _pair(db_path, v, i)
+
+    offered = [g["genre"] for g in
+               candidate_filter_options(db_path=db_path)["genres"]]
+    assert "oneoff" not in offered, \
+        "a tag on ONE track earned a chip by appearing in many rows"
+
+
+def test_the_adventure_slider_sees_tags_too(db_path):
+    """_reorder_by_surprise builds its own feature dicts off the candidate row,
+    so the tag fallback only fires if the row carries the tags."""
+    from api.routes.mashups import _reorder_by_surprise
+    from database.models import get_candidates_enriched
+
+    v = _song(db_path, "a", genre="", tags=["techno"], stem="vocals")
+    i = _song(db_path, "b", genre="", tags=["soul"], stem="instrumental")
+    _pair(db_path, v, i)
+
+    row = get_candidates_enriched(limit=5, db_path=db_path)[0]
+    assert row["vocal_tags"] and row["inst_tags"], \
+        "tags never reach the row the adventure reorder reads"
+
+    reordered = _reorder_by_surprise([dict(row)], adventure=1.0)
+    # Techno against soul is maximally cross-genre; without tags both sides
+    # would be unknown and the term would sit at the neutral 0.5.
+    assert reordered[0]["surprise"] > 0.5

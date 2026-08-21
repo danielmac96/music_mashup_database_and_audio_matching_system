@@ -18,6 +18,7 @@ export function usePlan(vocalId, instId, pin = null) {
   const vSec = pin?.vocalSectionIdx ?? null;
   const iSec = pin?.instSectionIdx ?? null;
   const shift = pin?.harmonicShift ?? null;
+  const combo = pin?.comboType ?? "";
 
   useEffect(() => {
     setPlan(null);
@@ -26,13 +27,14 @@ export function usePlan(vocalId, instId, pin = null) {
     let cancelled = false;
     api.getMashupPlan(vocalId, instId, {
       vocalSectionIdx: vSec, instSectionIdx: iSec, harmonicShift: shift,
+      comboType: combo,
     })
       .then((p) => { if (!cancelled) setPlan(p); })
       .catch((e) => { if (!cancelled) setError(`Plan: ${e.message}`); });
     return () => { cancelled = true; };
     // Primitives, not the `pin` object: a fresh object literal on every render
     // would refetch the plan continuously.
-  }, [vocalId, instId, vSec, iSec, shift]);
+  }, [vocalId, instId, vSec, iSec, shift, combo]);
 
   return { plan, error };
 }

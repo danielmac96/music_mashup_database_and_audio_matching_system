@@ -144,3 +144,29 @@ def test_a_plan_with_no_sections_has_no_section_keys(db_path):
     plan = build_mashup_plan(ids[0], ids[1], db_path=db_path)
     assert plan["section_keys"] is None
     assert plan["pairings"] == []
+
+
+def test_an_instrumental_blend_reads_its_instrumental_not_its_acapella(db_path):
+    """On the instrumental-over-instrumental path matcher.match reuses the
+    vocal_* columns for the TOP layer, which is an instrumental. Reading the
+    acapella there draws the band occupancy of a stem that is not in the mashup,
+    captioned with a collision score measured between two beds."""
+    from database.models import upsert_features
+    from matcher.plan import build_mashup_plan
+
+    v = _seed(db_path, track_camelot="8A", section_camelot="8A", bands=MID_HEAVY)
+    i = _seed(db_path, track_camelot="8A", section_camelot="8A", bands=LOW_HEAVY)
+    # Give the top track a DIFFERENT spectrum on its instrumental stem, so which
+    # one the plan picked is unambiguous.
+    other = [0.02, 0.04, 0.04, 0.10, 0.10, 0.30, 0.20, 0.20]
+    upsert_features(v, "instrumental", {
+        "bpm": 128.0, "key": "A", "mode": "minor", "camelot": "8A",
+        "loudness_rms": 0.05, "energy": 0.5, "band_energy": other,
+    }, db_path=db_path)
+
+    vocal_path = build_mashup_plan(v, i, db_path=db_path)
+    assert vocal_path["vocal"]["band_energy"] == MID_HEAVY
+
+    blend = build_mashup_plan(v, i, db_path=db_path,
+                              combo_type="instrumental_over_instrumental")
+    assert blend["vocal"]["band_energy"] == other

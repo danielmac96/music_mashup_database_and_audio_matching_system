@@ -335,9 +335,11 @@ def get_hook(song_id: int, role: str = "vocal") -> dict:
             detail="track has no analysed features yet — analyze it first")
 
     if feat.get("hook_start") is not None and feat.get("hook_end") is not None:
+        # hook_role travels with it: 'manual' is what tells the UI to offer the
+        # reset, and without it a hand-picked window could never be undone.
         return {"song_id": song_id, "role": role, "stem": stem,
                 "hook_start": feat["hook_start"], "hook_end": feat["hook_end"],
-                "cached": True}
+                "hook_role": feat.get("hook_role"), "cached": True}
 
     from analysis.hooks import pick_hook
     hook = pick_hook(get_sections(song_id), feat, role=role)
@@ -348,7 +350,7 @@ def get_hook(song_id: int, role: str = "vocal") -> dict:
     update_hook(song_id, stem, hook)
     return {"song_id": song_id, "role": role, "stem": stem,
             "hook_start": hook["hook_start"], "hook_end": hook["hook_end"],
-            "cached": False}
+            "hook_role": hook.get("hook_role"), "cached": False}
 
 
 @router.get("/{song_id}/hook/audio")
