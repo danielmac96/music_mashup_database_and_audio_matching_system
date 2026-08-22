@@ -8,9 +8,11 @@ same clip math offline (render/mixdown.py) so the export matches what was
 heard. The token is the render job id."""
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from database.models import get_conn
 
@@ -29,6 +31,28 @@ class Clip(BaseModel):
     rate: float = Field(default=1.0, gt=0)
     semitones: int = 0
     gain: float = Field(default=0.8, ge=0)
+    # Trim, in RAW content seconds into the stem — the Studio's clipStart /
+    # clipEnd. Both optional: absent means "play the whole stem", which is what
+    # every clip meant before trimming existed.
+    clip_start: Optional[float] = Field(default=None, ge=0)
+    clip_end: Optional[float] = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def _trim_is_a_real_window(self) -> "Clip":
+        if (self.clip_start is not None and self.clip_end is not None
+                and self.clip_end <= self.clip_start):
+            raise ValueError("clip_end must be after clip_start")
+        return self
+
+    def render_clip(self) -> dict:
+        """The dict render/mixdown.py expects. It calls the trim start_sec /
+        end_sec (it takes a segment out of a file); the Studio calls it
+        clipStart / clipEnd (it trims a clip). Translate here, once, rather
+        than teaching either side the other's vocabulary."""
+        d = self.model_dump()
+        d["start_sec"] = d.pop("clip_start")
+        d["end_sec"] = d.pop("clip_end")
+        return d
 
 
 class MixdownRequest(BaseModel):
@@ -58,7 +82,7 @@ def queue_mixdown(req: MixdownRequest, background: BackgroundTasks) -> dict:
 
     job_id = jobs.new_job(kind="mixdown", message="Queued for mixdown render")
     background.add_task(mixdown_worker.run, job_id,
-                        [c.model_dump() for c in req.clips])
+                        [c.render_clip() for c in req.clips])
     return {"job_id": job_id, "audio_url": f"/api/studio/mixdown/{job_id}/audio"}
 
 

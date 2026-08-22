@@ -61,6 +61,11 @@ const STEM_ORDER = ["vocals", "instrumental", "drums", "bass", "other", "full"];
 const VOCAL_BPM_CONFIDENCE_MIN = 0.35; // mirror of backend fallback threshold
 const MIN_PPS = 4, MAX_PPS = 240;
 const SNAP_PX = 12;
+// Trim handles: 8px grab zones on the clip edges, and a floor short enough to
+// trim down to a single hit but long enough that a clip can never be dragged
+// to zero length (which the renderer rejects).
+const HANDLE_PX = 8;
+const MIN_CLIP_SECS = 0.25;
 const HEADER_W = 236; // lane-header column width (must match .studio-grid CSS)
 const STORAGE_KEY = "mashup.studio.project.v1";
 
@@ -101,6 +106,17 @@ function shiftCamelot(camelot, semitones) {
   return `${num}${m[2].toUpperCase()}`;
 }
 
+// A lane's trim window in RAW content seconds, clamped to what actually
+// exists. `clipEnd: null` means "to the end", which is not the same as a number
+// that happens to equal the duration: a lane whose buffer has not decoded yet
+// has no end to store, and storing one would freeze the trim at 0.
+function clipRangeOf(lane) {
+  const rawDur = lane.buffer?.duration ?? lane.rawDur ?? 0;
+  const cs = Math.max(0, Math.min(lane.clipStart ?? 0, rawDur));
+  const ce = Math.max(cs, Math.min(lane.clipEnd ?? rawDur, rawDur));
+  return { cs, ce, rawDur, trimmed: cs > 1e-6 || ce < rawDur - 1e-6 };
+}
+
 function fmtBarsBeats(pos, bpm) {
   if (!bpm) return "—";
   const beat = 60 / bpm;
@@ -121,14 +137,28 @@ function paintLane(canvas, lane, viewStart, pps, selected) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
 
-  const rawDur = lane.buffer?.duration ?? lane.rawDur ?? 0;
+  const { cs, ce, rawDur, trimmed } = clipRangeOf(lane);
   if (!rawDur) return;
   const dispDur = rawDur / lane.rate;
-  const x0 = (lane.offsetSec - viewStart) * pps;
-  const x1 = (lane.offsetSec + dispDur - viewStart) * pps;
+  // Raw content seconds → px. The trim is a window over the content, so raw 0
+  // still sits at offsetSec and trimming the head moves nothing.
+  const px = (raw) => (lane.offsetSec + raw / lane.rate - viewStart) * pps;
+  const x0 = px(cs), x1 = px(ce);
   if (x1 < 0 || x0 > W) return;
 
   const rgb = LANE_COLORS[lane.colorIdx % LANE_COLORS.length].line;
+
+  // What was trimmed away, as a dashed ghost — otherwise a trim looks like a
+  // short track, and there is nothing to tell you which way to drag it back.
+  if (trimmed) {
+    const gx = Math.max(-2, px(0)), gw = Math.min(W + 2, px(rawDur)) - gx;
+    ctx.save();
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = `rgba(${rgb},0.22)`;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(gx, 9.5, gw, H - 11);
+    ctx.restore();
+  }
 
   // Clip body — makes the clip's extent visible even where audio is quiet.
   ctx.fillStyle = `rgba(${rgb},${selected ? 0.10 : 0.06})`;
@@ -140,6 +170,14 @@ function paintLane(canvas, lane, viewStart, pps, selected) {
   else ctx.rect(bx, 9, bw, H - 10);
   ctx.fill();
   ctx.stroke();
+
+  // Everything below draws in CONTENT coordinates over the whole stem, so it is
+  // clipped to the trimmed body: a waveform or beat line outside the trim is
+  // audio that will not play.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(bx, 0, bw, H);
+  ctx.clip();
 
   // Section ribbon (structure labels), scaled into display time.
   for (const sec of lane.sections || []) {
@@ -198,6 +236,17 @@ function paintLane(canvas, lane, viewStart, pps, selected) {
       ctx.moveTo(x, isBar ? 9 : H * 0.45);
       ctx.lineTo(x, H);
       ctx.stroke();
+    }
+  }
+
+  ctx.restore(); // end trim clip
+
+  // Trim grips on both edges, matching the 8px hit zones the lane div renders.
+  if (bw > 10) {
+    ctx.fillStyle = `rgba(${rgb},${selected ? 0.95 : 0.5})`;
+    for (const gx of [x0, x1 - 3]) {
+      if (gx < -4 || gx > W + 4) continue;
+      ctx.fillRect(gx, 9, 3, H - 10);
     }
   }
 }
@@ -291,6 +340,31 @@ function snapToGrid(rawOffset, lane, projectBpm, snapMode, viewStart, viewSecs, 
   return { offset: rawOffset, snapped: false };
 }
 
+// Snap a TRIM edge (display seconds) the way snapToGrid snaps a whole clip:
+// within SNAP_PX, click onto the nearest project grid line — or onto one of the
+// lane's own downbeats, which is the boundary that matters when the lane is not
+// tempo-synced and its bars do not coincide with the project's.
+// Returns { t, snapped }.
+function snapEdgeToGrid(t, lane, projectBpm, snapMode, pps) {
+  if (snapMode === "off") return { t, snapped: false };
+  const tol = SNAP_PX / pps;
+  const candidates = [];
+  if (projectBpm) {
+    const step = snapMode === "bar" ? (60 / projectBpm) * 4 : 60 / projectBpm;
+    candidates.push(Math.round(t / step) * step);
+  }
+  for (const d of downbeatsOf(lane.beatTimes || [], lane.beatPhase)) {
+    const dt = lane.offsetSec + d / lane.rate;
+    if (Math.abs(dt - t) <= tol) candidates.push(dt);
+  }
+  let best = null;
+  for (const c of candidates) {
+    if (best == null || Math.abs(c - t) < Math.abs(best - t)) best = c;
+  }
+  if (best == null || Math.abs(best - t) > tol) return { t, snapped: false };
+  return { t: best, snapped: true };
+}
+
 // ── main component ────────────────────────────────────────────────────────────
 
 export function MixStudio({ onStatus, seed, onSeedConsumed }) {
@@ -363,6 +437,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
   const projectLen = useMemo(() => {
     let end = 60;
     for (const l of lanes) {
+      // The full stem, not the trim: trimming a lane should not shrink the
+      // timeline out from under the audio you might drag back.
       const rawDur = l.buffer?.duration ?? l.rawDur ?? 0;
       end = Math.max(end, l.offsetSec + rawDur / l.rate);
     }
@@ -409,6 +485,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
       bpm: laneBpmFor(track, stem),
       colorIdx: (saved.colorIdx != null ? saved.colorIdx : laneUid) % LANE_COLORS.length,
       offsetSec: saved.offsetSec ?? 0,
+      clipStart: saved.clipStart ?? 0,
+      clipEnd: saved.clipEnd ?? null,   // null = play to the end of the stem
       rate: saved.rate ?? 1,
       semitones: saved.semitones ?? 0,
       gain: saved.gain ?? 0.8,
@@ -506,6 +584,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
         engine.setVoice(l.id, {
           buffer: l.buffer, offsetSec: l.offsetSec, rate: l.rate,
           semitones: l.semitones, gain: gainFor(l, idx),
+          clipStartSec: l.clipStart ?? 0, clipEndSec: l.clipEnd ?? null,
         });
         structural = true; // new voice needs arming if we're mid-playback
       } else {
@@ -515,6 +594,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
         engine.updateVoiceParams(l.id, {
           rate: l.rate, offsetSec: l.offsetSec,
           semitones: l.semitones, gain: gainFor(l, idx),
+          clipStartSec: l.clipStart ?? 0, clipEndSec: l.clipEnd ?? null,
         });
       }
     });
@@ -563,8 +643,14 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
 
   const resetLane = (lane) => {
     patchLane(lane.id, { offsetSec: 0, rate: 1, semitones: 0, gain: 0.8,
-                         muted: false, synced: false });
+                         muted: false, synced: false,
+                         clipStart: 0, clipEnd: null });
     toast("Lane reset");
+  };
+
+  const clearTrim = (lane) => {
+    patchLane(lane.id, { clipStart: 0, clipEnd: null });
+    toast("Trim cleared — playing the whole stem");
   };
 
   // ── persistence (localStorage, debounced) ───────────────────────────────
@@ -606,7 +692,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
         lanes: lanes.map((l) => ({
           songId: l.songId, stem: l.stem, offsetSec: l.offsetSec, rate: l.rate,
           semitones: l.semitones, gain: l.gain, muted: l.muted, synced: l.synced,
-          colorIdx: l.colorIdx,
+          colorIdx: l.colorIdx, clipStart: l.clipStart, clipEnd: l.clipEnd,
         })),
       };
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); } catch { /* full */ }
@@ -844,6 +930,39 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
     document.addEventListener("mouseup", onUp);
   };
 
+  // Trim drag: the clip's start/end edge, in raw content seconds. The lane does
+  // not move — offsetSec still marks where raw 0 sits — so trimming the head
+  // leaves everything after it exactly where it was on the timeline, which is
+  // the whole point of trimming rather than dragging.
+  const handleTrimDown = (e, lane, edge) => {
+    e.preventDefault();
+    e.stopPropagation(); // don't also start a clip move
+    setSelectedId(lane.id);
+    const startX = e.clientX;
+    const { cs, ce, rawDur } = clipRangeOf(lane);
+    const onMove = (me) => {
+      const live = lanesRef.current.find((l) => l.id === lane.id) || lane;
+      const deltaRaw = ((me.clientX - startX) / pps) * live.rate;
+      const lo = edge === "start" ? 0 : cs + MIN_CLIP_SECS;
+      const hi = edge === "start" ? ce - MIN_CLIP_SECS : rawDur;
+      let next = Math.max(lo, Math.min((edge === "start" ? cs : ce) + deltaRaw, hi));
+      const snap = snapEdgeToGrid(live.offsetSec + next / live.rate, live,
+                                  projectBpm, snapMode, pps);
+      setDragSnapped(snap.snapped);
+      if (snap.snapped) {
+        next = Math.max(lo, Math.min((snap.t - live.offsetSec) * live.rate, hi));
+      }
+      patchLane(lane.id, edge === "start" ? { clipStart: next } : { clipEnd: next });
+    };
+    const onUp = () => {
+      setDragSnapped(false);
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+
   // ── keyboard ────────────────────────────────────────────────────────────
   useEffect(() => {
     const onKey = (e) => {
@@ -887,10 +1006,18 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
   const handleExport = async () => {
     const clips = lanes
       .filter((l) => !l.muted && l.gain > 0)
-      .map((l) => ({
-        song_id: l.songId, stem: l.stem, offset_sec: l.offsetSec,
-        rate: l.rate, semitones: l.semitones, gain: l.gain,
-      }));
+      .map((l) => {
+        const { cs, ce, trimmed } = clipRangeOf(l);
+        return {
+          song_id: l.songId, stem: l.stem, offset_sec: l.offsetSec,
+          rate: l.rate, semitones: l.semitones, gain: l.gain,
+          // Send a trim only when there is one. An untrimmed clip must reach
+          // build_mixdown with start/end absent, which is how it reads "play
+          // the whole stem" — a clip that starts at 0.0 is a different
+          // instruction from one that was never given a start.
+          ...(trimmed ? { clip_start: cs, clip_end: ce } : {}),
+        };
+      });
     if (clips.length === 0) { toast("Nothing audible to export"); return; }
     setError(null);
     try {
@@ -1201,9 +1328,16 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
                     </button>
                     <button className="lh-btn"
                       onClick={(e) => { e.stopPropagation(); resetLane(l); }}
-                      title="Reset this lane's position, tempo, pitch and level">
+                      title="Reset this lane's position, tempo, pitch, level and trim">
                       ↺
                     </button>
+                    {clipRangeOf(l).trimmed && (
+                      <button className="lh-btn trim on"
+                        onClick={(e) => { e.stopPropagation(); clearTrim(l); }}
+                        title={`Trimmed to ${fmtTime(clipRangeOf(l).cs)}–${fmtTime(clipRangeOf(l).ce)} of the stem — click to play it whole`}>
+                        ✂ {fmtTime(clipRangeOf(l).ce - clipRangeOf(l).cs)}
+                      </button>
+                    )}
                   </div>
                   {(l.loading || l.loadError) && (
                     <div className="lh-note">{l.loadError || "decoding…"}</div>
@@ -1217,6 +1351,29 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
                     if (c) laneCanvasRefs.current.set(l.id, c);
                     else laneCanvasRefs.current.delete(l.id);
                   }} />
+                  {/* Trim hit zones — two per lane, over the clip edges the
+                      canvas draws grips on. DOM rather than canvas hit-testing
+                      so the resize cursor comes for free; two elements per lane
+                      is nothing like the per-beat DOM the painter avoids. */}
+                  {(() => {
+                    const { cs, ce, rawDur } = clipRangeOf(l);
+                    if (!rawDur) return null;
+                    const edgeX = (raw) => (l.offsetSec + raw / l.rate - viewStart) * pps;
+                    // Zoomed out far enough and the two zones would cover the
+                    // whole clip, leaving nowhere to grab it to MOVE it. Below
+                    // that width the clip is drag-only — zoom in to trim.
+                    if (edgeX(ce) - edgeX(cs) < HANDLE_PX * 3) return null;
+                    return ["start", "end"].map((edge) => {
+                      const x = edgeX(edge === "start" ? cs : ce);
+                      if (x < -HANDLE_PX || x > viewW + HANDLE_PX) return null;
+                      return (
+                        <div key={edge} className="lane-trim"
+                          style={{ left: x - HANDLE_PX / 2 }}
+                          title={`Drag to trim the clip's ${edge}`}
+                          onMouseDown={(e) => handleTrimDown(e, l, edge)} />
+                      );
+                    });
+                  })()}
                 </div>
               </Fragment>
             );
@@ -1245,7 +1402,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
         onChange={(e) => setViewStart(Number(e.target.value))}
       />
       <div className="hint" style={{ marginTop: 4 }}>
-        wheel = pan · ctrl+wheel = zoom · drag a clip to move it (snap: {snapMode}) ·{" "}
+        wheel = pan · ctrl+wheel = zoom · drag a clip to move it, its edges to trim it (snap: {snapMode}) ·{" "}
         <span className="kbd">space</span> play · <span className="kbd">←</span><span className="kbd">→</span> nudge ·{" "}
         <span className="kbd">L</span> loop · <span className="kbd">⌫</span> remove lane
       </div>

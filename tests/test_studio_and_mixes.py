@@ -117,3 +117,40 @@ def test_mixdown_token_is_sanitised(client):
     assert res.status_code == 400
     res = client.get("/api/studio/mixdown/deadbeefdeadbeef/audio")
     assert res.status_code == 404  # valid shape, nothing rendered
+
+
+# ── clip trim (A1) ────────────────────────────────────────────────────────────
+# render/mixdown.py has taken start_sec/end_sec since the candidate previews
+# landed; these pin the API half — the names the Studio sends, the validation
+# that keeps a nonsense trim out of a 15-minute render, and the mapping between
+# the two vocabularies.
+
+def test_mixdown_accepts_a_trimmed_clip(client):
+    res = client.post("/api/studio/mixdown",
+                      json={"clips": [{"song_id": 1, "stem": "full",
+                                       "clip_start": 12.5, "clip_end": 30.0}]})
+    assert res.status_code == 200
+
+
+@pytest.mark.parametrize("trim", [
+    {"clip_start": 30.0, "clip_end": 12.5},   # end before start
+    {"clip_start": 12.5, "clip_end": 12.5},   # zero-length
+    {"clip_start": -1.0, "clip_end": 12.5},   # negative start
+    {"clip_start": 12.5, "clip_end": 0.0},    # non-positive end
+])
+def test_mixdown_rejects_a_bad_trim(client, trim):
+    res = client.post("/api/studio/mixdown",
+                      json={"clips": [{"song_id": 1, "stem": "full", **trim}]})
+    assert res.status_code == 422
+
+
+def test_clip_trim_maps_to_the_renderer_vocabulary():
+    from api.routes.studio import Clip
+    render_clip = Clip(song_id=1, clip_start=12.5, clip_end=30.0).render_clip()
+    assert render_clip["start_sec"] == 12.5
+    assert render_clip["end_sec"] == 30.0
+    assert "clip_start" not in render_clip and "clip_end" not in render_clip
+    # None, not 0.0 — build_mixdown reads "no trim" from the absence of a
+    # number, and a clip genuinely starting at 0.0 is a different instruction.
+    untrimmed = Clip(song_id=1).render_clip()
+    assert untrimmed["start_sec"] is None and untrimmed["end_sec"] is None

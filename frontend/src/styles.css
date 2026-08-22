@@ -1526,6 +1526,13 @@ input, select { font-family: inherit; }
 .studio-lane:active { cursor: grabbing; }
 .studio-lane.snapped { box-shadow: inset 0 0 0 1px rgba(52,211,153,0.5); }
 .studio-lane canvas { width: 100%; height: 100%; display: block; }
+/* Trim grab zones on the clip edges (A1). Invisible — the canvas draws the
+   grip — but they own the cursor and the drag. */
+.lane-trim {
+  position: absolute; top: 9px; bottom: 0; width: 8px;
+  cursor: ew-resize; z-index: 2;
+}
+.lh-btn.trim { font-size: 9.5px; letter-spacing: 0; padding: 2px 5px; }
 
 .studio-playhead {
   position: absolute; top: 0; bottom: 0; width: 1px;

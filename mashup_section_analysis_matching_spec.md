@@ -42,8 +42,10 @@ phrase .15`, with `rhythm` and `structure` at **0 on purpose** (§4). They live
 in `%APPDATA%\mashup-engine\settings.json`, *not* in the repo;
 `config.SECTION_WEIGHTS` deliberately keeps its shipped zeros.
 
-**Code** — suite is green at **799 passing, 0 failing**. Eight commits sit on
-branch `unblock-phase2`, **not pushed**, ahead of `master` at `cfa02eb`.
+**Code** — suite is green at **805 passing, 0 failing** (2026-08-22; it was 799
+before A1's six trim tests). The `unblock-phase2` work this file was written
+against is **merged** — master is at `50f0310`, and the branch still exists but
+is behind.
 
 **Beware `data/settings/settings.json` in the repo — it is a decoy.** It holds
 only `{"stem_separator": "demucs"}`. The file the app reads is the one
@@ -207,8 +209,13 @@ stored on the row) → offline counterfactual over weight vectors using
 `top_section_pairs` selects different section pairs, so the second measurement
 ran on a population the first decision had reshaped.
 
-**3. Then pick from `Claude_next_steps.md`.** Its own suggested order starts at
-A1 (Studio clip trim), and the renderer half of that is already built.
+**3. Then pick from `Claude_next_steps.md`.** Its own suggested order started at
+A1 (Studio clip trim) — **done on 2026-08-22**: lane `clipStart`/`clipEnd`, edge
+handles, an engine that reads and stops inside the trim, and `clip_start` /
+`clip_end` on the mixdown Clip model. The order now starts at **A2 (fades)**,
+which a trimmed clip needs more than an untrimmed one did. Read that file's A1
+section before building on it — the trim is a window over the content, NOT a new
+clip origin, and `offsetSec` still marks where raw zero sits.
 
 **Not worth doing:** raising `rhythm` or `structure`, adding `time_signature` or
 `danceability` (nothing reads them), or building §12's extra external-id

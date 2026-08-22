@@ -14,6 +14,12 @@
 // where both voices advance at 1.0s per wall-clock second regardless of their
 // individual stretch. A voice's content time = displayPos - voice.offsetSec,
 // and the raw sample read position = contentTime * voice.rate.
+//
+// TRIM (clipStartSec / clipEndSec) is the one thing measured in RAW seconds:
+// it is a window over the buffer's own content, so it does not move when the
+// clip is dragged. offsetSec still marks where raw 0 sits on the timeline, so
+// the audible span is [offsetSec + clipStart/rate, offsetSec + clipEnd/rate]
+// and trimming the head does not shift the rest of the audio.
 import { SoundTouchNode } from "@soundtouchjs/audio-worklet";
 
 // The SoundTouch AudioWorklet processor is vendored into /public so it loads
@@ -72,13 +78,14 @@ export class MashupEngine {
   // (1.0 for an un-stretched voice, the stretch factor for the anchored one);
   // `semitones` is the pitch offset. Changing config while playing re-arms the
   // voices from the current position so the new settings take effect in sync.
-  setVoice(role, { buffer, offsetSec = 0, rate = 1, semitones = 0, gain = 1 }) {
+  setVoice(role, { buffer, offsetSec = 0, rate = 1, semitones = 0, gain = 1,
+                   clipStartSec = 0, clipEndSec = null }) {
     const existing = this.voices.get(role);
     const gainNode = existing?.gainNode ?? this.ctx.createGain();
     gainNode.gain.value = gain;
     if (!existing) gainNode.connect(this.master);
     this.voices.set(role, {
-      buffer, offsetSec, rate, semitones, gainNode,
+      buffer, offsetSec, rate, semitones, gainNode, clipStartSec, clipEndSec,
       loop: existing?.loop ?? null,          // per-voice loop {start,end} (display secs)
       src: existing?.src ?? null, st: existing?.st ?? null,
       _armWhen: 0, _looped: false,           // filled at arm for voicePosition()
@@ -141,12 +148,23 @@ export class MashupEngine {
   // Live-update mutable params without a hard restart where possible. Pitch can
   // change in place (SoundTouch handles it); rate/offset changes require a
   // re-arm because they remap the whole timeline.
-  updateVoiceParams(role, { rate, semitones, offsetSec, gain }) {
+  updateVoiceParams(role, { rate, semitones, offsetSec, gain,
+                            clipStartSec, clipEndSec }) {
     const v = this.voices.get(role);
     if (!v) return;
     let needsRearm = false;
     if (rate != null && rate !== v.rate) { v.rate = rate; needsRearm = true; }
     if (offsetSec != null && offsetSec !== v.offsetSec) { v.offsetSec = offsetSec; needsRearm = true; }
+    // A trim change remaps where the voice reads from, exactly like an offset
+    // change, so it re-arms rather than applying in place. `clipEndSec` is
+    // deliberately compared with `!==` including null — clearing a trim is a
+    // real change, and `!= null` would swallow it.
+    if (clipStartSec !== undefined && clipStartSec !== v.clipStartSec) {
+      v.clipStartSec = clipStartSec; needsRearm = true;
+    }
+    if (clipEndSec !== undefined && clipEndSec !== v.clipEndSec) {
+      v.clipEndSec = clipEndSec; needsRearm = true;
+    }
     if (gain != null) v.gainNode.gain.value = gain;
     if (semitones != null && semitones !== v.semitones) {
       v.semitones = semitones;
@@ -159,9 +177,21 @@ export class MashupEngine {
     let end = 0;
     for (const v of this.voices.values()) {
       if (!v.buffer) continue;
-      end = Math.max(end, v.offsetSec + v.buffer.duration / v.rate);
+      end = Math.max(end, v.offsetSec + this._clipEnd(v) / v.rate);
     }
     return end;
+  }
+
+  // The trim window in raw seconds, clamped to the buffer. Untrimmed voices
+  // answer [0, buffer.duration], so every caller below reads as it did before
+  // trimming existed.
+  _clipStart(v) {
+    return Math.max(0, Math.min(v.clipStartSec || 0, v.buffer.duration));
+  }
+
+  _clipEnd(v) {
+    const end = v.clipEndSec == null ? v.buffer.duration : v.clipEndSec;
+    return Math.max(this._clipStart(v), Math.min(end, v.buffer.duration));
   }
 
   async play(fromPos) {
@@ -243,7 +273,11 @@ export class MashupEngine {
     v._looped = false;
     v._armWhen = when;
     if (!v.buffer) return;
-    const displayDur = v.buffer.duration / v.rate;
+    // Trim bounds in raw seconds, and the display window they carve out.
+    const clipStart = this._clipStart(v), clipEnd = this._clipEnd(v);
+    if (clipEnd <= clipStart) { v.src = null; return; } // trimmed to nothing
+    const headDur = clipStart / v.rate;       // display secs before the clip sounds
+    const displayDur = clipEnd / v.rate;      // display secs at which it falls silent
     const contentAtStart = pos - v.offsetSec; // display seconds into this voice
     const loop = v.loop || this.loop;         // per-voice loop overrides global
 
@@ -260,9 +294,11 @@ export class MashupEngine {
       const lsRaw = (loop.start - v.offsetSec) * v.rate;
       const leRaw = (loop.end - v.offsetSec) * v.rate;
       // Only loop natively (gaplessly) when the loop window lies fully inside
-      // this voice's content; otherwise the voice would loop a shorter raw
-      // span and drift, so play it once and let it fall silent.
-      if (lsRaw >= 0 && leRaw <= v.buffer.duration && leRaw > lsRaw) {
+      // this voice's content — which now means inside its TRIM, not its buffer:
+      // looping past a trimmed edge would play audio the user cut away.
+      // Otherwise the voice would loop a shorter raw span and drift, so play it
+      // once and let it fall silent.
+      if (lsRaw >= clipStart && leRaw <= clipEnd && leRaw > lsRaw) {
         src.loop = true;
         src.loopStart = lsRaw;
         src.loopEnd = leRaw;
@@ -274,12 +310,17 @@ export class MashupEngine {
     }
 
     // Non-looped (or loop not covered): play the voice once from `pos`.
-    if (contentAtStart >= displayDur) { v.src = null; v.st = st; return; } // already past end
+    if (contentAtStart >= displayDur) { v.src = null; v.st = st; return; } // already past the trim end
     let startDelay = 0;
-    let rawOffset = 0;
-    if (contentAtStart < 0) startDelay = -contentAtStart; // voice begins later than pos
+    let rawOffset = clipStart;
+    // Before the clip's head (which includes every untrimmed voice placed later
+    // than `pos`, where headDur is 0): wait, then start at the trim.
+    if (contentAtStart < headDur) startDelay = headDur - contentAtStart;
     else rawOffset = contentAtStart * v.rate;
     src.start(when + startDelay, rawOffset);
+    // Stop at the trim's tail. Without this the source plays to the end of the
+    // buffer and the trim would be silent-looking but audible.
+    if (v.clipEndSec != null) src.stop(when + startDelay + (clipEnd - rawOffset) / v.rate);
     v.src = src; v.st = st;
   }
 

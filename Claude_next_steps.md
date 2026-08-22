@@ -74,7 +74,7 @@ Kept rather than deleted, so the history stays readable.
 
 | Ref | Item | Status |
 |-----|------|--------|
-| A1 | Clip trim (in/out) | **Half done** — see A1 below |
+| A1 | Clip trim (in/out) | ✅ shipped — drag a clip's edges (2026-08-22) |
 | A2 | Fades / crossfades | live |
 | A3 | Per-lane low/high-cut | live |
 | A4 | Stereo mixdown | live |
@@ -140,34 +140,45 @@ The previously-untracked test files are committed, so the baseline is defended.
 
 ## Tier A — Make the mashups sound better
 
-### A1. Clip trim in the Studio UI — *half done*
+### A1. Clip trim in the Studio UI — ✅ done
 
-**The renderer already supports it.** `render/mixdown.py` clips take optional
-`start_sec` / `end_sec` (added for candidate previews), and `load_segment` does
-the trimming. What is missing is the Studio half: a lane still plays the whole
-stem, so you cannot *build* the thing the engine can already render.
+*(2026-08-22.)* Drag a clip's left or right edge to trim it; the trim snaps the
+same way a clip move does, and survives a reload.
 
-Why it still matters most: it unlocks "vocal chorus over instrumental drop" as a
-thing you assemble by hand, not just something the candidate list hands you.
+What to know before building on it:
 
-**Prompt:**
-> Add per-lane clip trimming to the Studio (frontend/src/components/MixStudio.jsx).
-> render/mixdown.py ALREADY accepts start_sec/end_sec per clip — do not
-> reimplement that; this is the UI, engine and API-model half.
-> Add `clipStart` and `clipEnd` (raw content seconds) to lane state, persisted in
-> the localStorage project under the existing STORAGE_KEY. Render drag handles on
-> the left/right edges of the clip body in `paintLane`, plus invisible 8px hit
-> zones in the lane div; dragging a handle changes clipStart/clipEnd with the
-> same snap-to-grid behaviour as moving a clip. The waveform, beat grid and
-> section ribbon must only draw inside the trimmed range. Extend
-> engine/MashupEngine.js `setVoice`/`_armVoice` so a voice with
-> clipStartSec/clipEndSec starts reading at clipStartSec raw seconds and stops at
-> clipEndSec (src.start(when, rawOffset + clipStart), schedule src.stop at the
-> display-time end, and handle the loop path). Add clip_start/clip_end to the
-> Clip model in api/routes/studio.py (validated 0 <= start < end) and pass them
-> through as start_sec/end_sec. Keep the existing offset-drag behaviour when
-> grabbing the middle of a clip. Add a validation test to
-> tests/test_studio_and_mixes.py.
+- **`offsetSec` still means "the display time of RAW ZERO", not of the clip's
+  visible start.** The trim (`clipStart` / `clipEnd`, raw content seconds) is a
+  WINDOW over the content rather than a new origin. That is what leaves
+  `snapToGrid`, `alignLaneToGrid`, `claimDownbeat` and the beat/section painting
+  untouched, and it is why trimming the head does not shift the rest of the
+  audio along the timeline. Do not "simplify" it into an origin.
+- `clipEnd: null` means "to the end", and is NOT the same as a number equal to
+  the duration — a lane whose buffer has not decoded yet has no end to store,
+  and storing one would freeze the trim at zero length.
+- The export sends `clip_start`/`clip_end` **only when the clip is trimmed**, so
+  an untrimmed clip still reaches `build_mixdown` with `start_sec`/`end_sec`
+  absent. That absence is how the renderer reads "play the whole stem"; a clip
+  starting at 0.0 is a different instruction from one never given a start.
+- `api/routes/studio.py::Clip.render_clip()` is the single place the two
+  vocabularies meet (Studio's clipStart/clipEnd ↔ the renderer's
+  start_sec/end_sec). Translate there, not in either module.
+- The engine loops **inside the trim**: `_armVoice` only loops natively when the
+  loop window lies within `[clipStart, clipEnd]`, because looping past a trimmed
+  edge would play audio the user cut away.
+- Below `HANDLE_PX * 3` of clip width the hit zones are not rendered at all, so
+  a zoomed-out clip stays draggable instead of being all handle.
+
+Not verified by ear — the arithmetic is covered by a numeric harness against
+`_armVoice` (untrimmed regressions, rate ≠ 1, mid-clip playhead, loop
+containment, `totalDuration`), and the API half by
+`tests/test_studio_and_mixes.py`. There is no JS test runner in this repo, so
+the harness was throwaway; the maths it pinned is documented above.
+
+**Next on this thread:** A2 fades (a trimmed clip starting mid-waveform needs
+one far more than an untrimmed one did), then B3 multiple clips per lane, then
+B2 auto-arrange — which can now set `clipStart`/`clipEnd` from the candidate
+row's section spans.
 
 ### A2. Fades and crossfades per clip
 
@@ -433,13 +444,13 @@ frontend build. Things worth knowing before editing it:
 
 ## Suggested order of attack
 
-*(Steps 1 and 5 are done — the backfill, N1 and N2, and D5's CI. What is left
-starts at A1.)*
+*(Steps 1 and 5 are done — the backfill, N1 and N2, and D5's CI. A1 shipped on
+2026-08-22, so what is left starts at A2.)*
 
 1. ~~**Re-analyse the library**, then **N1**~~ — done, and it was not a single
    click: the button could not do it. See the top of this file.
-2. **A1 trim** → **A2 fades** → **B3 multiple clips**. These compound, in that
-   order. A1 is half done already.
+2. ~~**A1 trim**~~ → **A2 fades** → **B3 multiple clips**. These compound, in
+   that order. A1 shipped on 2026-08-22; A2 is next.
 3. **A3 EQ** — the most audible single addition left.
 4. **B2 auto-arrange**. Much cheaper now that the candidate row carries the
    whole arrangement; do it after A1 so it has clips to trim.
