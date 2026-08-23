@@ -203,3 +203,82 @@ def test_corrupt_pref_reads_as_absent(db):
 def test_pref_rejects_a_non_dict(db):
     with pytest.raises(ValueError):
         db.set_pref("sc", ["not", "a", "dict"])
+
+
+# ── crate membership: which crates already hold this Discovery row ───────────
+# Badging a page of results is one query, not one per row — the same contract
+# songs_by_identity holds for the "in library" flag.
+
+def test_membership_lists_every_crate_a_url_is_in_ordered_by_name(db):
+    url = "https://soundcloud.com/a/t1"
+    for name in ("Vocals", "Instrumentals"):
+        db.add_crate_items(db.create_crate(name)["id"], [_row(url)])
+
+    got = db.crate_membership(source_urls=[url])["by_url"][url]
+    assert [c["name"] for c in got] == ["Instrumentals", "Vocals"]
+    # item_id is the handle remove_crate_items takes; carried so a future
+    # per-row remove needs no reshaped response.
+    assert all(isinstance(c["item_id"], int) for c in got)
+    assert all(isinstance(c["crate_id"], int) for c in got)
+
+
+def test_membership_omits_a_url_in_no_crate(db):
+    db.add_crate_items(db.create_crate("c")["id"], [_row("https://soundcloud.com/a/t1")])
+    got = db.crate_membership(source_urls=["https://soundcloud.com/a/t1",
+                                           "https://soundcloud.com/a/unfiled"])
+    assert "https://soundcloud.com/a/unfiled" not in got["by_url"]
+    assert list(got["by_url"]) == ["https://soundcloud.com/a/t1"]
+
+
+def test_membership_never_matches_on_an_empty_track_id(db):
+    """'' is the default for a row that never learned its id. Matching on it
+    would claim every such row is in every crate holding any other such row —
+    the exact bug songs_by_identity guards against."""
+    cid = db.create_crate("c")["id"]
+    db.add_crate_items(cid, [_row("https://soundcloud.com/a/t1", track_id="")])
+    db.add_crate_items(cid, [_row("https://soundcloud.com/a/t2", track_id="99")])
+
+    got = db.crate_membership(track_ids=["", "99"])
+    assert "" not in got["by_track_id"]
+    assert [c["name"] for c in got["by_track_id"]["99"]] == ["c"]
+
+
+def test_membership_matches_on_track_id_when_the_url_differs(db):
+    db.add_crate_items(db.create_crate("c")["id"],
+                       [_row("https://soundcloud.com/a/t1", track_id="42")])
+    got = db.crate_membership(source_urls=["https://soundcloud.com/somewhere/else"],
+                              track_ids=["42"])
+    assert got["by_url"] == {}
+    assert [c["name"] for c in got["by_track_id"]["42"]] == ["c"]
+
+
+def test_membership_with_no_input_does_not_touch_the_database(db, monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("crate_membership opened a connection for no input")
+    monkeypatch.setattr(db, "get_conn", boom)
+    assert db.crate_membership() == {"by_url": {}, "by_track_id": {}}
+    assert db.crate_membership(source_urls=[""], track_ids=[""]) == {
+        "by_url": {}, "by_track_id": {}}
+
+
+def test_membership_is_one_query_for_a_whole_page(db, monkeypatch):
+    cid = db.create_crate("c")["id"]
+    urls = [f"https://soundcloud.com/a/t{n}" for n in range(50)]
+    db.add_crate_items(cid, [_row(u, track_id=str(n)) for n, u in enumerate(urls)])
+
+    real_conn = db.get_conn
+    calls = []
+
+    def counting_conn(*a, **kw):
+        # sqlite3.Connection.execute is read-only, so count through the trace
+        # callback instead of wrapping the method.
+        conn = real_conn(*a, **kw)
+        conn.set_trace_callback(
+            lambda sql: calls.append(sql) if "crate_items" in sql else None)
+        return conn
+
+    monkeypatch.setattr(db, "get_conn", counting_conn)
+    got = db.crate_membership(source_urls=urls, track_ids=[str(n) for n in range(50)])
+    assert len(calls) == 1, calls
+    assert len(got["by_url"]) == 50
+    assert len(got["by_track_id"]) == 50

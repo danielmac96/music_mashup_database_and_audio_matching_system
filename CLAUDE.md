@@ -6,6 +6,57 @@ current goal: **Phases 1 and 2 of the Discovery plan are done** (branch
 a connected profile and a library-seeded Suggestions pane — see the 2026-08-23
 section below.
 
+### SoundCloud API registration is open — it just costs (2026-08-23)
+
+This file, `ingest/soundcloud_oauth.py` and the `crates` DDL all used to say
+**"SoundCloud closed developer registration in 2019"**. That is false, and the
+crates feature was scoped around a limitation that does not exist. Per
+<https://developers.soundcloud.com/docs/api/register-app> and the API guide, as
+of today:
+
+- Registration is **open and self-serve, with no approval queue**, gated on a
+  **SoundCloud Artist Pro subscription**: "You need a SoundCloud Artist Pro
+  subscription to register API applications and receive credentials." There is
+  also a registration CLI (`sc-api-auth.mjs`, Node 18+, from `soundcloud/api`).
+- Playlist **writes exist**: `POST /playlists`, `PUT /playlists/{id}` (which
+  replaces the whole `tracks` array — add, remove and reorder are all
+  read-modify-write), `DELETE /playlists/{id}`. So are authenticated reads:
+  `GET /me`, `/me/playlists`, `/me/likes/tracks`, `/me/tracks`, `/me/followings`.
+- Auth is OAuth 2.1: **PKCE (S256) required**, `secure.soundcloud.com/authorize`
+  plus `/oauth/token`, base `https://api.soundcloud.com`, header
+  `Authorization: OAuth <token>` (**not** `Bearer`), ~1h access tokens,
+  **single-use** refresh tokens.
+- Rate limits: the global aggregate limit is *not currently enforced*; only
+  `/tracks/:id/stream` is capped (15,000 / 24h). Client-credentials tokens are
+  capped at 50 / 12h per app and 30 / h per IP.
+
+**`ingest/soundcloud_oauth.py` already matches that spec exactly** — PKCE, both
+endpoint URLs, the base host, the `OAuth` header scheme and refresh-token
+rotation are all correct. This correction changed prose only; not a line of its
+behaviour moved.
+
+**OAuth stays dormant anyway.** There is no Artist Pro subscription and buying
+one is not on the table right now, so crates remain the local answer and every
+write endpoint still answers 501. The difference is only that the reason is now
+*"costs a subscription"* rather than *"impossible"* — do not re-scope future
+work around a closed door.
+
+Two things are **unverified**. Check them before switching any of this on; do
+not assume either:
+
+1. whether `http://localhost` / `http://127.0.0.1` is an acceptable registered
+   redirect URI. The docs do not say, and a local-only app has nowhere else to
+   send the callback.
+2. whether the numeric track ids from the scraped `api-v2` browse layer are the
+   same id space `api.soundcloud.com` accepts in a playlist write. Crates freeze
+   v2 ids, so if the spaces disagree **every push would write the wrong tracks**.
+
+The same false claim still stands in six other files — `api/routes/crates.py`,
+`api/routes/discovery.py`, `config.py`, `frontend/src/api.js`,
+`frontend/src/components/ProfileShelf.jsx` and `readme.md`. Phase 3 of
+`docs/plans/discover-crates/PLAN.md` named only three places, so those were left
+alone deliberately, not missed.
+
 ### Discover knows who you are, and points back at your library (2026-08-23)
 
 Two gaps closed. Discover could search SoundCloud but had **no idea whose
@@ -168,9 +219,9 @@ bulk import) and **Find mashups** (the pre-existing ranked list, unmodified).
   `payload_json` freezes the whole canonical ingest row so a crate ingests with
   no further network calls.
 - `ingest/soundcloud_oauth.py` is **complete and dormant**. Writes need a
-  registered app and SoundCloud closed registration in 2019, so every write
-  endpoint answers **501 naming the settings keys**, never 500 and never a silent
-  no-op. Writes target `api.soundcloud.com` with an `Authorization` header; the
+  registered app, and every write endpoint answers **501 naming the settings
+  keys**, never 500 and never a silent no-op. *(Why it is dormant changed — see
+  the registration note at the top. It is a subscription, not a closed door.)* Writes target `api.soundcloud.com` with an `Authorization` header; the
   read layer sends none and **must never start** — attempting writes with a
   scraped client_id would risk the read path, and with it the frozen resolver.
 - Library membership is answered per page by `songs_by_identity`, matching

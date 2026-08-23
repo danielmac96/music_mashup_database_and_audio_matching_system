@@ -250,9 +250,10 @@ CREATE TABLE IF NOT EXISTS datasets (
 
 -- ── Crates: local shortlists built while browsing SoundCloud (Discovery) ─────
 -- A crate is this app's answer to "manipulate a playlist". SoundCloud's write
--- API needs a registered app and registration has been closed since 2019, so
--- the ordered list you build lives here instead. sc_playlist_id/permalink stay
--- empty until (and unless) credentials appear and a crate is pushed upstream.
+-- API needs a registered app, and registering one is open and self-serve but
+-- requires an Artist Pro subscription, so the ordered list you build lives here
+-- instead. sc_playlist_id/permalink stay empty until (and unless) credentials
+-- appear and a crate is pushed upstream.
 CREATE TABLE IF NOT EXISTS crates (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     name             TEXT NOT NULL,
@@ -288,6 +289,14 @@ CREATE TABLE IF NOT EXISTS crate_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_crate_items_crate ON crate_items(crate_id, position);
+-- Membership badging asks the other question: not "what is in this crate" but
+-- "which crates hold this URL", once for a whole page of Discovery rows. Without
+-- this that is a full scan. Safe in SCHEMA rather than a migration because both
+-- indexed columns are original to CREATE TABLE crate_items -- unlike
+-- idx_songs_track_id, which indexes a migrated column and so must run after the
+-- migrations. Do not copy that pattern here.
+CREATE INDEX IF NOT EXISTS idx_crate_items_url ON crate_items(source_url);
+CREATE INDEX IF NOT EXISTS idx_crate_items_track ON crate_items(track_id);
 
 -- ── App preferences: small, clearable, user-owned scraps of state ────────────
 -- Not settings.json. config.save_settings merges and drops empty values, so a
@@ -1162,6 +1171,64 @@ def songs_by_identity(source_urls: Sequence[str] = (),
             out["by_url"][r["source_url"]] = r
         if r["track_id"] and r["track_id"] in tid_set:
             out["by_track_id"][r["track_id"]] = r
+    return out
+
+
+def crate_membership(source_urls: Sequence[str] = (),
+                     track_ids: Sequence[str] = (),
+                     db_path: Path = DB_PATH) -> Dict[str, List[Dict]]:
+    """Which crates already hold these SoundCloud tracks.
+
+    The crate-badge counterpart to ``songs_by_identity``, and deliberately the
+    same contract: one query for a whole page of Discovery results rather than a
+    round trip per row. Returns
+    ``{"by_url": {url: [crate, ...]}, "by_track_id": {tid: [crate, ...]}}`` where
+    a crate is ``{"crate_id", "name", "item_id"}``. A row in no crate is simply
+    absent, so the caller can treat a missing key as "none".
+
+    ``item_id`` is the handle ``remove_crate_items`` takes. Nothing reads it yet;
+    it is carried so a per-row remove does not need a reshaped response.
+
+    Lists are ordered by crate name so chips do not reshuffle between renders.
+
+    Callers pass URLs already normalised — in this codebase the route normalises
+    and the model does not, matching ``add_crate_items``.
+
+    Empty track ids are dropped before the query, for the reason
+    ``songs_by_identity`` documents: '' is the default for a row that never
+    learned its id, so matching on it would claim every such row is a member."""
+    urls = [u for u in {str(u) for u in source_urls} if u]
+    tids = [t for t in {str(t) for t in track_ids} if t]
+    out: Dict[str, Dict[str, List[Dict]]] = {"by_url": {}, "by_track_id": {}}
+    if not urls and not tids:
+        return out
+
+    clauses, params = [], []
+    if urls:
+        clauses.append(f"i.source_url IN ({','.join('?' * len(urls))})")
+        params.extend(urls)
+    if tids:
+        clauses.append(
+            f"(i.track_id != '' AND i.track_id IN ({','.join('?' * len(tids))}))")
+        params.extend(tids)
+
+    conn = get_conn(db_path)
+    rows = conn.execute(
+        "SELECT i.id AS item_id, i.source_url, i.track_id, "
+        "       c.id AS crate_id, c.name AS name "
+        "FROM crate_items i JOIN crates c ON c.id = i.crate_id "
+        f"WHERE {' OR '.join(clauses)} "
+        "ORDER BY c.name COLLATE NOCASE, c.id", params).fetchall()
+    conn.close()
+
+    url_set, tid_set = set(urls), set(tids)
+    for row in rows:
+        r = dict(row)
+        crate = {"crate_id": r["crate_id"], "name": r["name"], "item_id": r["item_id"]}
+        if r["source_url"] in url_set:
+            out["by_url"].setdefault(r["source_url"], []).append(crate)
+        if r["track_id"] and r["track_id"] in tid_set:
+            out["by_track_id"].setdefault(r["track_id"], []).append(dict(crate))
     return out
 
 

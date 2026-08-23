@@ -1867,7 +1867,10 @@ input, select { font-family: inherit; }
 .sc-rows { display: flex; flex-direction: column; gap: 1px; }
 .sc-row {
   display: grid; align-items: center; gap: 10px;
-  grid-template-columns: 22px 38px minmax(0, 1fr) 52px auto auto auto;
+  /* check, art, info, duration, Go+ flag, crate chips, library flag, actions.
+     The trailing columns are auto and several are conditional, so a row that
+     renders fewer children simply leaves the last ones unused. */
+  grid-template-columns: 22px 38px minmax(0, 1fr) 52px auto auto auto auto;
   padding: 6px 8px; border-radius: 7px; font-size: 13px;
 }
 .sc-row:hover { background: rgba(255, 255, 255, 0.03); }
@@ -1887,6 +1890,23 @@ input, select { font-family: inherit; }
 }
 .mix-flag.warn { color: var(--amber-light); background: rgba(245, 166, 35, 0.14); }
 .sc-snip { cursor: help; white-space: nowrap; }
+
+/* Crate membership. Deliberately unlike .mix-flag.ok ("in library", green):
+   these mean different things — one is "you own the audio", the other is "you
+   shortlisted it". Accent-tinted and outlined so they read as a label you
+   applied rather than a status the app derived. Not interactive: chips are
+   read-only, adding happens through the tick-box and the bulk button. */
+.sc-crates {
+  display: flex; flex-wrap: wrap; gap: 3px;
+  justify-content: flex-end; max-width: 200px;
+}
+.crate-chip {
+  font-size: 10px; line-height: 1.5; padding: 1px 6px; border-radius: 999px;
+  color: var(--accent); background: var(--accent-tint);
+  border: 1px solid rgba(91, 140, 255, 0.35);
+  max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: help;
+}
 
 .sc-more { width: 100%; margin-top: 12px; }
 

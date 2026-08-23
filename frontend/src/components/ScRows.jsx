@@ -21,8 +21,10 @@ export function fmtPlays(n) {
 // fallback for anything SoundCloud returned without an id.
 export const rowKey = (r) => r.track_id || r.source_url;
 
+// `crates` is optional and defaults to undefined, so a caller that does not
+// pass it renders exactly as before.
 export function TrackRow({ row, checked, onToggle, onArtist, onRelated,
-                           onOpenLibrary }) {
+                           onOpenLibrary, crates }) {
   const owned = row.in_library;
   // `because` only exists on a suggestion. Saying which of your records led here
   // is what separates a recommendation from an unexplained list.
@@ -60,6 +62,19 @@ export function TrackRow({ row, checked, onToggle, onArtist, onRelated,
           Go+ preview
         </span>
       )}
+
+      {/* Which of your crates already hold this. Read-only on purpose: adding
+          stays on the tick-box plus the bulk "Add to crate" path, so a row
+          cannot half-commit you to something. */}
+      {crates?.length ? (
+        <span className="sc-crates">
+          {crates.map((c) => (
+            <span key={c.crate_id} className="crate-chip" title={`In crate: ${c.name}`}>
+              {c.name}
+            </span>
+          ))}
+        </span>
+      ) : null}
 
       {owned ? (
         <button className="mix-flag ok" onClick={onOpenLibrary}

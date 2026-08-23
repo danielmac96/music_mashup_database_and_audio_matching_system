@@ -4,6 +4,7 @@ import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
 import { useRowSelection } from "../hooks/useRowSelection";
 import { CrateAddButton, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
+import { useCrateMembership } from "../hooks/useCrateMembership";
 
 // "More like the records I already like." The browser's ↔ similar asks that of
 // one upload you happened to be looking at; this asks it of tracks YOU chose —
@@ -111,6 +112,11 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
   const { isChecked, toggle, toggleAll, allSelected, clear,
           selected, importable, selectedRows, selectedImportable } =
     useRowSelection(group === "tracks" ? rows : NO_ROWS);
+
+  // More load-bearing here than in the browser: a suggestion row excludes
+  // library-owned tracks, so the crate chip is the only membership signal it
+  // has. crateRefresh is bumped by addToCrate below.
+  const crateOf = useCrateMembership(rows, crateRefresh);
 
   const doImport = async () => {
     if (!selectedImportable.length) return;
@@ -308,7 +314,8 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
                 checked={isChecked(row)} onToggle={() => toggle(row)}
                 onArtist={() => onNavigate?.({ kind: "user", id: row.user?.id,
                                                label: row.user?.username })}
-                onOpenLibrary={onOpenLibrary} />
+                onOpenLibrary={onOpenLibrary}
+                crates={crateOf(row)} />
             ))}
           </div>
         </>

@@ -313,3 +313,72 @@ def test_import_urls_rejects_an_empty_list(app):
     client, _, _ = app
     assert client.post("/api/crates/import",
                        json={"name": "x", "urls": ["  "]}).status_code == 400
+
+
+# ── membership: crate badges on Discovery rows ───────────────────────────────
+
+def test_membership_resolves_a_messy_url_and_keys_by_the_string_as_sent(app):
+    """The route normalises, the model does not — the same split add_items uses.
+    The response is keyed by what the caller sent so the frontend can look up
+    row.source_url directly instead of re-implementing normalise in JS."""
+    client, _, _ = app
+    cid = make_crate(client, "Vocals")
+    messy = "http://www.soundcloud.com/a/t1/?si=abc123&utm_source=clipboard"
+    client.post(f"/api/crates/{cid}/items", json={"rows": [row(1, url=messy)]})
+
+    body = client.post("/api/crates/membership", json={"urls": [messy]}).json()
+    assert list(body["membership"]) == [messy]
+    assert [c["name"] for c in body["membership"][messy]] == ["Vocals"]
+
+
+def test_membership_resolves_an_unnormalised_variant_of_a_stored_url(app):
+    client, _, _ = app
+    cid = make_crate(client, "Vocals")
+    client.post(f"/api/crates/{cid}/items",
+                json={"rows": [row(1, url="https://soundcloud.com/a/t1")]})
+
+    variant = "http://m.soundcloud.com/a/t1?si=deadbeef"
+    body = client.post("/api/crates/membership", json={"urls": [variant]}).json()
+    assert [c["name"] for c in body["membership"][variant]] == ["Vocals"]
+
+
+def test_membership_of_an_empty_list_is_200_and_empty(app):
+    client, _, _ = app
+    r = client.post("/api/crates/membership", json={"urls": []})
+    assert r.status_code == 200
+    assert r.json() == {"membership": {}}
+
+
+def test_membership_reports_two_crates_for_one_row(app):
+    client, _, _ = app
+    url = "https://soundcloud.com/a/t1"
+    for name in ("Vocals", "Instrumentals"):
+        client.post(f"/api/crates/{make_crate(client, name)}/items",
+                    json={"rows": [row(1, url=url)]})
+    body = client.post("/api/crates/membership", json={"urls": [url]}).json()
+    assert [c["name"] for c in body["membership"][url]] == ["Instrumentals", "Vocals"]
+
+
+def test_membership_matches_on_track_id_too(app):
+    client, _, _ = app
+    cid = make_crate(client, "Vocals")
+    client.post(f"/api/crates/{cid}/items", json={"rows": [row(7)]})
+    body = client.post("/api/crates/membership",
+                       json={"urls": [], "track_ids": ["7"]}).json()
+    assert [c["name"] for c in body["membership"]["7"]] == ["Vocals"]
+
+
+def test_membership_caps_the_request(app):
+    client, _, _ = app
+    urls = [f"https://soundcloud.com/a/t{n}" for n in range(201)]
+    assert client.post("/api/crates/membership", json={"urls": urls}).status_code == 400
+
+
+def test_membership_does_not_collide_with_the_crate_detail_route(app):
+    """/{crate_id} is typed int, so /membership must be declared first or it
+    422s instead of resolving."""
+    client, _, _ = app
+    assert client.post("/api/crates/membership", json={"urls": []}).status_code == 200
+    cid = make_crate(client, "real")
+    assert client.get(f"/api/crates/{cid}").json()["name"] == "real"
+    assert client.get("/api/crates/membership").status_code in (405, 422)
