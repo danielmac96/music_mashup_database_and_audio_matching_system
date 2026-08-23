@@ -4,6 +4,7 @@ import { toast } from "../toast";
 import { CratePanel } from "./CratePanel";
 import { CrateAddButton, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
 import { useRowSelection } from "../hooks/useRowSelection";
+import { useCrateMembership } from "../hooks/useCrateMembership";
 import { ProfileShelf } from "./ProfileShelf";
 
 // Search is on Enter, and paging is a button. Both layers share one scraped
@@ -48,6 +49,11 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
   const { isChecked, toggle, toggleAll, allSelected, clear,
           selected, importable, selectedRows, selectedImportable } =
     useRowSelection(items);
+
+  // Live, not baked onto the rows: `items` is not re-fetched after an add, so a
+  // badge computed server-side would be stale the moment you shortlisted.
+  // crateRefresh is already bumped on a successful add.
+  const crateOf = useCrateMembership(items, crateRefresh);
 
   useEffect(() => {
     onStatus?.(loading
@@ -282,7 +288,8 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
                 onToggle={() => toggle(row)}
                 onArtist={() => openUser(row.user?.id, row.user?.username)}
                 onRelated={() => openRelated(row.track_id, row.title)}
-                onOpenLibrary={onOpenLibrary} />
+                onOpenLibrary={onOpenLibrary}
+                crates={crateOf(row)} />
             ))}
           </div>
 

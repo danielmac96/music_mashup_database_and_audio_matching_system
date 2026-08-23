@@ -25,9 +25,9 @@ from pydantic import BaseModel
 
 from api.routes.playlists import ingest_rows
 from database.models import (
-    add_crate_items, create_crate, crate_payloads, delete_crate, get_crate,
-    list_crates, relink_crate_songs, remove_crate_items, reorder_crate,
-    update_crate,
+    add_crate_items, crate_membership, create_crate, crate_payloads,
+    delete_crate, get_crate, list_crates, relink_crate_songs,
+    remove_crate_items, reorder_crate, update_crate,
 )
 from ingest.sources import normalize_url
 
@@ -61,6 +61,16 @@ class ImportUrlsRequest(BaseModel):
     urls: list[str]
 
 
+class MembershipRequest(BaseModel):
+    urls: list[str]
+    track_ids: list[str] = []
+
+
+# A page of Discovery results is <= 50 rows. The cap is a guard against a caller
+# turning a badge lookup into an unbounded IN clause, not a real limit.
+MAX_MEMBERSHIP_URLS = 200
+
+
 def _crate_or_404(crate_id: int) -> dict:
     crate = get_crate(crate_id)
     if crate is None:
@@ -83,6 +93,56 @@ def create(req: CrateRequest) -> dict:
         raise HTTPException(
             status_code=409, detail=f"A crate named {req.name!r} already exists.") from exc
     return _crate_or_404(crate["id"])
+
+
+# Declared before /{crate_id}: FastAPI matches in declaration order and that
+# path is typed int, so "membership" would 422 rather than resolve if this came
+# second.
+#
+# POST rather than GET for the same reason /{crate_id}/items/remove is a POST —
+# a page of 50 permalinks is ~3KB, too long to carry in a query string.
+@router.post("/membership")
+def membership(req: MembershipRequest) -> dict:
+    """Which crates already hold each of these Discovery rows.
+
+    Deliberately its own endpoint rather than a field on the rows: suggestion
+    rows never pass through ``discovery._annotate`` at all (the worker freezes
+    them onto the job), and even in the browser pane a baked-in badge goes stale
+    the moment "Add to crate" succeeds, because the result list is not
+    re-fetched. Fetching this live is what lets the chip appear immediately.
+
+    Keyed by the URL **as the caller sent it**, not the normalised form, so the
+    frontend can look up ``row.source_url`` directly instead of re-implementing
+    ``normalize_url`` in JS."""
+    if len(req.urls) > MAX_MEMBERSHIP_URLS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"too many urls ({len(req.urls)}); the cap is {MAX_MEMBERSHIP_URLS}")
+
+    # The route normalises and the model does not — the same split add_items uses.
+    # Keep every original that maps to a given normalised URL: two rows on one
+    # page can differ only by tracking params and both must get their chip.
+    originals: dict[str, list[str]] = {}
+    for raw in req.urls:
+        norm = normalize_url((raw or "").strip())
+        if norm:
+            originals.setdefault(norm, []).append(raw)
+
+    track_ids = [t for t in (str(t or "").strip() for t in req.track_ids) if t]
+    if not originals and not track_ids:
+        return {"membership": {}}
+
+    found = crate_membership(source_urls=list(originals), track_ids=track_ids)
+
+    out: dict[str, list[dict]] = {}
+    for norm, crates in found["by_url"].items():
+        for raw in originals.get(norm, []):
+            out[raw] = crates
+    # A row whose URL matched already has its chips; track_id is the fallback for
+    # anything SoundCloud returned under a different permalink.
+    for tid, crates in found["by_track_id"].items():
+        out.setdefault(tid, crates)
+    return {"membership": out}
 
 
 @router.get("/{crate_id}")

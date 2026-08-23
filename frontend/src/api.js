@@ -465,6 +465,15 @@ export const api = {
 
   getCrates: () => jsonFetch("/api/crates"),
 
+  // Which crates already hold these rows. POST because a page of permalinks is
+  // far too long for a query string. Keyed by the URL as sent, so the caller
+  // never has to re-implement normalize_url in JS.
+  crateMembership: (urls, trackIds = []) =>
+    jsonFetch("/api/crates/membership", {
+      method: "POST",
+      body: JSON.stringify({ urls, track_ids: trackIds }),
+    }),
+
   getCrate: (id) => jsonFetch(`/api/crates/${id}`),
 
   createCrate: (name, note = "") =>
