@@ -436,6 +436,33 @@ export const api = {
 
   discoveryStatus: () => jsonFetch("/api/discovery/status"),
 
+  // Your profile. This IDENTIFIES a public account rather than logging in —
+  // SoundCloud closed app registration in 2019, so only public sets, likes and
+  // uploads are readable, and the UI says as much.
+  discoveryProfile: () => jsonFetch("/api/discovery/profile"),
+
+  discoverySetProfile: (url) =>
+    jsonFetch("/api/discovery/profile", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+
+  discoveryDisconnect: () =>
+    jsonFetch("/api/discovery/profile", { method: "DELETE" }),
+
+  // Library tracks that can seed a suggestion run — i.e. the ones carrying a
+  // SoundCloud track id, since the fan-out is /tracks/{id}/related.
+  discoverySeeds: () => jsonFetch("/api/discovery/seeds"),
+
+  // Returns { job_id, seed_count, offered }; poll the job for the result. It is
+  // a job because one request per seed at the browse layer's deliberate pace is
+  // tens of seconds.
+  discoveryRecommend: (body) =>
+    jsonFetch("/api/discovery/recommend", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   getCrates: () => jsonFetch("/api/crates"),
 
   getCrate: (id) => jsonFetch(`/api/crates/${id}`),

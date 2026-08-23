@@ -1,15 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MashupSuggestions } from "./MashupSuggestions";
 import { SoundCloudBrowser } from "./SoundCloudBrowser";
+import { Suggestions } from "./Suggestions";
 
-// Discovery is two questions that share a tab because they are the same job at
-// two scales: "what should I add to the library?" and "what should I build out
-// of it?". Finding tracks feeds finding mashups, and the mashup list is what
-// tells you which kind of track you are short of.
+// Discovery is three questions that share a tab because they are one job at
+// three scales: "what should I add to the library?", "what would I like that I
+// don't have?", and "what should I build out of what I have?". Each feeds the
+// next — suggestions come from the library, and the mashup list is what tells
+// you which kind of track you are short of.
 const MODES = [
   ["tracks", "Find tracks"],
+  ["suggest", "Suggestions"],
   ["mashups", "Find mashups"],
 ];
+
+const HINTS = {
+  tracks: "Search SoundCloud, shortlist into a crate, then import the lot.",
+  suggest: "More like the records you already have — tracks, artists and sets.",
+  mashups: "Ranked section pairs from the tracks you already have.",
+};
 
 const MODE_KEY = "mashup.discovery.mode.v1";
 
@@ -31,6 +40,12 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
   // filters, cursor and scroll position (the same trick MixImporter uses for
   // its match board).
   const [mashupsMounted, setMashupsMounted] = useState(() => loadMode() === "mashups");
+  // Suggestions is cheap to mount, but its RESULT costs a job of tens of
+  // seconds. Unmounting on a tab switch would throw that away, so once visited
+  // it stays mounted and is hidden with CSS — the same trick as the mashups pane.
+  const [suggestMounted, setSuggestMounted] = useState(() => loadMode() === "suggest");
+  // An artist or set clicked in Suggestions opens in the browser pane.
+  const [nav, setNav] = useState(null);
 
   const modeRef = useRef(mode);
   modeRef.current = mode;
@@ -38,6 +53,7 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
   const switchMode = (next) => {
     if (next === mode) return;
     if (next === "mashups") setMashupsMounted(true);
+    if (next === "suggest") setSuggestMounted(true);
     onStatus?.(null);          // each pane owns the header readout while visible
     setMode(next);
     try { localStorage.setItem(MODE_KEY, next); } catch { /* full */ }
@@ -51,12 +67,17 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
     setMode("mashups");
   }, [seed]);
 
-  // A hidden MashupSuggestions still runs its effects, and would otherwise push
-  // its status into the header while you are looking at search results. The ref
-  // keeps this callback stable — deriving it from `mode` on each render would
-  // change its identity and churn the child's effects.
-  const gatedStatus = useCallback((status) => {
+  // A hidden pane still runs its effects, and would otherwise push its status
+  // into the header while you are looking at another one. One stable callback
+  // each: reading `mode` directly — or calling a factory inline in the JSX —
+  // would change the callback's identity every render and churn the child's
+  // effects, which is why this goes through the ref.
+  const mashupStatus = useCallback((status) => {
     if (modeRef.current === "mashups") onStatus?.(status);
+  }, [onStatus]);
+
+  const suggestStatus = useCallback((status) => {
+    if (modeRef.current === "suggest") onStatus?.(status);
   }, [onStatus]);
 
   return (
@@ -70,15 +91,26 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
             </button>
           ))}
         </div>
-        <span className="hint">
-          {mode === "tracks"
-            ? "Search SoundCloud, shortlist into a crate, then import the lot."
-            : "Ranked section pairs from the tracks you already have."}
-        </span>
+        <span className="hint">{HINTS[mode]}</span>
       </div>
 
       {mode === "tracks" && (
-        <SoundCloudBrowser onStatus={onStatus} onOpenLibrary={onOpenLibrary} />
+        <SoundCloudBrowser onStatus={onStatus} onOpenLibrary={onOpenLibrary}
+          nav={nav} onNavDone={() => setNav(null)} />
+      )}
+
+      {suggestMounted && (
+        <div style={mode === "suggest" ? undefined : { display: "none" }}>
+          <Suggestions
+            onStatus={suggestStatus}
+            onOpenLibrary={onOpenLibrary}
+            onNavigate={(target) => {
+              if (!target?.id) return;
+              setNav(target);
+              switchMode("tracks");
+            }}
+          />
+        </div>
       )}
 
       {mashupsMounted && (
@@ -87,7 +119,7 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
             seed={seed}
             onClearSeed={onClearSeed}
             onAudition={onAudition}
-            onStatus={gatedStatus}
+            onStatus={mashupStatus}
             showInstOverInst={showInstOverInst}
           />
         </div>

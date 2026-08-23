@@ -289,6 +289,17 @@ CREATE TABLE IF NOT EXISTS crate_items (
 
 CREATE INDEX IF NOT EXISTS idx_crate_items_crate ON crate_items(crate_id, position);
 
+-- ── App preferences: small, clearable, user-owned scraps of state ────────────
+-- Not settings.json. config.save_settings merges and drops empty values, so a
+-- key written there can never be unset — wrong for anything with a Disconnect
+-- button. This is also user data rather than configuration: it belongs beside
+-- the crates, in the database the user's library lives in.
+CREATE TABLE IF NOT EXISTS app_prefs (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,       -- JSON object
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
 -- ── Learned pairwise models (Phase 5) ────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS models (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2193,6 +2204,65 @@ def get_candidates_for_song(song_id: int, role: str = "vocal",
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+# ── App preferences ──────────────────────────────────────────────────────────
+# A tiny JSON key/value store for user-owned scraps of state that settings.json
+# cannot hold: `config.save_settings` ignores empty values, so nothing written
+# there is ever removable. Values are whole dicts so a caller stores one
+# coherent record rather than a spray of flat keys.
+
+
+def set_pref(key: str, value: Dict, db_path: Path = DB_PATH) -> Dict:
+    """Store (or replace) one preference. Returns the value as stored."""
+    clean = (key or "").strip()
+    if not clean:
+        raise ValueError("pref key is required")
+    if not isinstance(value, dict):
+        raise ValueError("pref value must be a dict")
+    conn = get_conn(db_path)
+    try:
+        conn.execute(
+            """INSERT INTO app_prefs (key, value, updated_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(key) DO UPDATE SET
+                   value=excluded.value, updated_at=excluded.updated_at""",
+            (clean, json.dumps(value, ensure_ascii=False)))
+        conn.commit()
+    finally:
+        conn.close()
+    return dict(value)
+
+
+def get_pref(key: str, db_path: Path = DB_PATH) -> Optional[Dict]:
+    """One preference, or None. A row whose JSON no longer parses reads as
+    absent rather than raising — a corrupt scrap of UI state must not be able to
+    take down the route that reads it."""
+    conn = get_conn(db_path)
+    try:
+        row = conn.execute("SELECT value FROM app_prefs WHERE key=?",
+                           ((key or "").strip(),)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    try:
+        parsed = json.loads(row["value"])
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def clear_pref(key: str, db_path: Path = DB_PATH) -> bool:
+    """Remove one preference. False if it was not set."""
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute("DELETE FROM app_prefs WHERE key=?",
+                           ((key or "").strip(),))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
 
 # ── Crates (Discovery shortlists) ────────────────────────────────────────────
 # The local answer to "manipulate a playlist". A crate item does not require the
