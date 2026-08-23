@@ -270,3 +270,160 @@ def test_status_reports_read_on_write_off(app):
     assert body["read_enabled"] is True
     assert body["write_enabled"] is False
     assert body["account"]["configured"] is False
+
+
+# ── your profile ─────────────────────────────────────────────────────────────
+# "Connect" identifies a public profile; it does not log in. soundcloud_oauth is
+# dormant, so there is nothing to authenticate with and only public pages exist.
+
+def user_hit(uid="55", username="Me"):
+    """A browse.user_row, as soundcloud_browse.resolve returns it for a profile."""
+    return {"kind": "user", "user_id": str(uid), "username": username,
+            "permalink_url": f"https://soundcloud.com/{username}",
+            "avatar_url": "", "followers": 12, "track_count": 4,
+            "verified": False, "city": "", "country": ""}
+
+
+def test_profile_is_absent_until_connected(app):
+    client, _, _ = app
+    assert client.get("/api/discovery/profile").json()["profile"] is None
+
+
+def test_connecting_stores_the_resolved_profile(app, monkeypatch):
+    client, disc, _ = app
+    monkeypatch.setattr(disc.browse, "resolve", lambda url, **kw: {
+        "kind": "user", "item": user_hit(), "raw_id": "55"})
+
+    saved = client.post("/api/discovery/profile",
+                        json={"url": "https://soundcloud.com/Me"}).json()["profile"]
+    assert saved["user_id"] == "55"
+    assert saved["username"] == "Me"
+    # Stored, not just echoed: the shelf must render on a fresh page load without
+    # re-resolving.
+    assert client.get("/api/discovery/profile").json()["profile"]["user_id"] == "55"
+    assert saved["connected_at"]
+
+
+def test_connecting_a_track_link_is_refused_not_stored(app, monkeypatch):
+    """Storing whatever resolved would give you a "profile" whose shelves are
+    empty for reasons nothing on screen could explain."""
+    client, disc, _ = app
+    monkeypatch.setattr(disc.browse, "resolve", lambda url, **kw: {
+        "kind": "track", "item": track(1, "One"), "raw_id": "1"})
+
+    r = client.post("/api/discovery/profile",
+                    json={"url": "https://soundcloud.com/a/one"})
+    assert r.status_code == 400
+    assert "not a profile" in r.json()["detail"]
+    assert client.get("/api/discovery/profile").json()["profile"] is None
+
+
+def test_connecting_a_non_soundcloud_link_is_refused(app):
+    client, _, _ = app
+    r = client.post("/api/discovery/profile",
+                    json={"url": "https://youtube.com/watch?v=x"})
+    assert r.status_code == 400
+
+
+def test_disconnecting_clears_the_profile(app, monkeypatch):
+    client, disc, _ = app
+    monkeypatch.setattr(disc.browse, "resolve", lambda url, **kw: {
+        "kind": "user", "item": user_hit(), "raw_id": "55"})
+    client.post("/api/discovery/profile", json={"url": "https://soundcloud.com/Me"})
+
+    assert client.delete("/api/discovery/profile").json()["profile"] is None
+    assert client.get("/api/discovery/profile").json()["profile"] is None
+
+
+# ── seeds ────────────────────────────────────────────────────────────────────
+
+def test_seeds_lists_only_songs_with_a_soundcloud_id(app):
+    """A song ingested through the mixes path has no track_id, and the fan-out is
+    /tracks/{id}/related — there is nothing to substitute for the id. Listing
+    exactly what can seed is also the answer to "why is this track missing"."""
+    client, _, models = app
+    models.upsert_song(title="Seedable", artist="A", track_id="900",
+                       source_url="https://soundcloud.com/a/seedable")
+    models.upsert_song(title="No id", artist="A",
+                       source_url="https://soundcloud.com/a/no-id")
+
+    body = client.get("/api/discovery/seeds").json()
+    assert [s["title"] for s in body["seeds"]] == ["Seedable"]
+    assert body["count"] == 1
+
+
+# ── recommend ────────────────────────────────────────────────────────────────
+
+def test_recommend_needs_a_seed_source(app):
+    client, _, _ = app
+    r = client.post("/api/discovery/recommend", json={})
+    assert r.status_code == 400
+    assert "seed from" in r.json()["detail"]
+
+
+def test_recommend_queues_a_job_for_library_seeds(app, monkeypatch):
+    """The run is one request per seed at the browse layer's deliberate pace, so
+    it must not happen inside the request."""
+    client, disc, models = app
+    sid = models.upsert_song(title="Seedable", artist="A", track_id="900",
+                             source_url="https://soundcloud.com/a/seedable")
+    seen = {}
+    monkeypatch.setattr(disc.discovery_worker, "suggest",
+                        lambda job_id, seeds, kinds: seen.update(
+                            job_id=job_id, seeds=seeds, kinds=kinds))
+
+    body = client.post("/api/discovery/recommend",
+                       json={"song_ids": [sid]}).json()
+    assert body["job_id"]
+    assert body["seed_count"] == 1
+    assert seen["seeds"][0]["track_id"] == "900"
+
+
+def test_recommend_refuses_seeds_that_cannot_seed(app):
+    client, _, models = app
+    sid = models.upsert_song(title="No id", artist="A",
+                             source_url="https://soundcloud.com/a/no-id")
+    r = client.post("/api/discovery/recommend", json={"song_ids": [sid]})
+    assert r.status_code == 400
+    assert "track id" in r.json()["detail"]
+
+
+def test_recommend_caps_the_seed_count(app, monkeypatch):
+    """MAX_SEEDS bounds one run's request budget; seed_count vs offered is what
+    lets the UI say "seeding from 25 of your 60"."""
+    client, disc, models = app
+    ids = [models.upsert_song(title=f"S{i}", artist="A", track_id=str(1000 + i),
+                              source_url=f"https://soundcloud.com/a/s{i}")
+           for i in range(disc.recommend.MAX_SEEDS + 5)]
+    monkeypatch.setattr(disc.discovery_worker, "suggest",
+                        lambda *a, **kw: None)
+
+    body = client.post("/api/discovery/recommend", json={"song_ids": ids}).json()
+    assert body["seed_count"] == disc.recommend.MAX_SEEDS
+    assert body["offered"] == len(ids)
+
+
+def test_recommend_seeds_from_a_pasted_set(app, monkeypatch):
+    """The "suggest me things like this set" half of the feature. A playlist
+    seeds from its tracks, not from the set row itself."""
+    client, disc, _ = app
+    monkeypatch.setattr(disc.browse, "resolve", lambda url, **kw: {
+        "kind": "playlist", "item": {"kind": "playlist"}, "raw_id": "77"})
+    monkeypatch.setattr(disc.browse, "playlist", lambda pid, **kw: {
+        "playlist": {}, "items": [track(1, "One"), track(2, "Two")],
+        "next_cursor": None})
+    seen = {}
+    monkeypatch.setattr(disc.discovery_worker, "suggest",
+                        lambda job_id, seeds, kinds: seen.update(seeds=seeds))
+
+    body = client.post("/api/discovery/recommend",
+                       json={"url": "https://soundcloud.com/a/sets/b"}).json()
+    assert body["seed_count"] == 2
+    assert [s["track_id"] for s in seen["seeds"]] == ["1", "2"]
+
+
+def test_recommend_rejects_an_unknown_kind(app):
+    client, _, _ = app
+    r = client.post("/api/discovery/recommend",
+                    json={"url": "https://soundcloud.com/a/b", "kinds": ["albums"]})
+    assert r.status_code == 400

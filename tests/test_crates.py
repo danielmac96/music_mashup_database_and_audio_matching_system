@@ -163,3 +163,43 @@ def test_counts_reflect_ingest_state(db):
     crate = db.list_crates()[0]
     assert crate["item_count"] == 2
     assert crate["ingested_count"] == 1
+
+
+# ── app_prefs ────────────────────────────────────────────────────────────────
+# The kv store behind the connected SoundCloud profile. It exists rather than a
+# settings.json key because config.save_settings ignores empty values, so nothing
+# written there can ever be unset — and this one has a Disconnect button.
+
+def test_pref_round_trips(db):
+    assert db.get_pref("sc") is None
+    db.set_pref("sc", {"user_id": "55", "username": "Me"})
+    assert db.get_pref("sc")["username"] == "Me"
+
+
+def test_pref_overwrites_rather_than_duplicating(db):
+    db.set_pref("sc", {"user_id": "55"})
+    db.set_pref("sc", {"user_id": "66"})
+    assert db.get_pref("sc") == {"user_id": "66"}
+
+
+def test_pref_clears(db):
+    db.set_pref("sc", {"user_id": "55"})
+    assert db.clear_pref("sc") is True
+    assert db.get_pref("sc") is None
+    # Clearing something that was never set is not an error, just False.
+    assert db.clear_pref("sc") is False
+
+
+def test_corrupt_pref_reads_as_absent(db):
+    """A scrap of UI state that no longer parses must not be able to take down
+    the route that reads it."""
+    conn = db.get_conn()
+    conn.execute("INSERT INTO app_prefs (key, value) VALUES ('sc', 'not json')")
+    conn.commit()
+    conn.close()
+    assert db.get_pref("sc") is None
+
+
+def test_pref_rejects_a_non_dict(db):
+    with pytest.raises(ValueError):
+        db.set_pref("sc", ["not", "a", "dict"])

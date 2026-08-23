@@ -17,14 +17,19 @@ Two things this layer adds on top of the browse module:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 
+from api import jobs
 from api.routes.playlists import ingest_rows
-from database.models import songs_by_identity
+from api.workers import discovery_worker
+from database.models import (clear_pref, crate_payloads, get_all_songs, get_pref,
+                             get_song, set_pref, songs_by_identity)
 from ingest import soundcloud_browse as browse
+from ingest import soundcloud_recommend as recommend
 from ingest.soundcloud_api import SoundCloudAPIError
 from ingest.soundcloud_browse import SoundCloudUnavailable
 from ingest.sources import classify_url
@@ -40,6 +45,19 @@ class ResolveRequest(BaseModel):
 
 class ImportRequest(BaseModel):
     rows: list[dict[str, Any]]
+
+
+class ProfileRequest(BaseModel):
+    url: str
+
+
+class RecommendRequest(BaseModel):
+    """At least one seed source. They combine: seeding from a crate AND a link
+    is a legitimate way to aim a run."""
+    song_ids: Optional[list[int]] = None
+    crate_id: Optional[int] = None
+    url: Optional[str] = None
+    kinds: Optional[list[str]] = None
 
 
 def _guard(fn, *args, **kwargs):
@@ -187,6 +205,141 @@ def status() -> dict:
     """What Discovery can do right now. Read always works; write needs an app."""
     return {"read_enabled": True, "account": _account_status(),
             "write_enabled": bool(_account_status().get("authorized"))}
+
+
+# ── your profile ─────────────────────────────────────────────────────────────
+# "Connect" here means IDENTIFY, not authenticate. There is no login to offer:
+# soundcloud_oauth is dormant because SoundCloud closed app registration in 2019,
+# so all we can do is remember whose public pages to open. Public sets, public
+# likes and public uploads are reachable; private ones are not, and the UI says
+# so rather than showing an empty shelf and letting you conclude it is broken.
+
+PROFILE_KEY = "soundcloud_profile"
+
+
+@router.get("/profile")
+def get_profile() -> dict:
+    return {"profile": get_pref(PROFILE_KEY)}
+
+
+@router.post("/profile")
+def set_profile(req: ProfileRequest) -> dict:
+    """Remember a SoundCloud profile from its URL.
+
+    Rejects a track or a set explicitly. Resolving one and storing whatever came
+    back would give you a "profile" whose shelves are empty for reasons nothing
+    on screen could explain."""
+    url = (req.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+
+    source, _ = classify_url(url)
+    if source != "soundcloud":
+        raise HTTPException(status_code=400,
+                            detail="Paste a SoundCloud profile link, e.g. "
+                                   "https://soundcloud.com/your-name")
+
+    out = _guard(browse.resolve, url)
+    if out["kind"] != "user":
+        raise HTTPException(
+            status_code=400,
+            detail=f"That link is a {out['kind']}, not a profile. Paste the "
+                   "artist page — the one that is just soundcloud.com/your-name.")
+
+    profile = dict(out["item"], connected_at=datetime.now(timezone.utc).isoformat())
+    set_pref(PROFILE_KEY, profile)
+    return {"profile": profile}
+
+
+@router.delete("/profile")
+def disconnect_profile() -> dict:
+    clear_pref(PROFILE_KEY)
+    return {"profile": None}
+
+
+# ── suggestions ──────────────────────────────────────────────────────────────
+
+@router.get("/seeds")
+def seeds() -> dict:
+    """Library tracks that can seed a suggestion run.
+
+    Only songs carrying a SoundCloud track_id qualify, because the fan-out is
+    /tracks/{id}/related and there is no substitute for the id. Listing exactly
+    the seedable songs is also the answer to "why is this track missing" — one
+    imported through the mixes path never learned its id."""
+    rows = [{"song_id": s["id"], "title": s["title"] or "", "artist": s["artist"] or "",
+             "track_id": str(s["track_id"] or ""), "genre": s["genre"] or "",
+             "thumbnail": s["thumbnail"] or "", "status": s["status"]}
+            for s in get_all_songs() if str(s.get("track_id") or "").strip()]
+    return {"seeds": rows, "count": len(rows)}
+
+
+def _seed_rows(req: RecommendRequest) -> list[dict]:
+    """Turn whichever seed source was given into canonical track rows.
+
+    Three sources, all reusing something that already exists: library songs are
+    rows already, a crate's payloads are frozen canonical rows, and a pasted link
+    goes through the same browse.resolve the search box uses — which is what
+    makes "suggest me things like this set" and "like these tracks of mine" one
+    feature instead of two."""
+    rows: list[dict] = []
+
+    for song_id in req.song_ids or []:
+        song = get_song(song_id)
+        if song:
+            rows.append(song)
+
+    if req.crate_id is not None:
+        rows.extend(crate_payloads(req.crate_id, only_unlinked=False))
+
+    url = (req.url or "").strip()
+    if url:
+        source, _ = classify_url(url)
+        if source != "soundcloud":
+            raise HTTPException(
+                status_code=400,
+                detail="Paste a SoundCloud link — a track, a set, or an artist page.")
+        out = _guard(browse.resolve, url)
+        if out["kind"] == "playlist":
+            rows.extend(_guard(browse.playlist, out["raw_id"])["items"])
+        elif out["kind"] == "user":
+            rows.extend(_guard(browse.user_tracks, out["raw_id"])["items"])
+        else:
+            rows.append(out["item"])
+
+    return rows
+
+
+@router.post("/recommend")
+def recommend_from(req: RecommendRequest, background: BackgroundTasks) -> dict:
+    """Find tracks, artists and sets like the ones you point at.
+
+    Runs as a job: one request per seed at the browse layer's deliberate pace is
+    tens of seconds, and that pacing exists to protect a client_id the frozen
+    mixes resolver shares. The result arrives on the job as `result`."""
+    if not (req.song_ids or req.crate_id is not None or (req.url or "").strip()):
+        raise HTTPException(
+            status_code=400,
+            detail="Pick some library tracks, a crate, or paste a link to seed from.")
+
+    kinds = [k for k in (req.kinds or recommend.KINDS) if k in recommend.KINDS]
+    if not kinds:
+        raise HTTPException(status_code=400,
+                            detail=f"kinds must be some of {list(recommend.KINDS)}")
+
+    candidates = _seed_rows(req)
+    seeds = recommend.prepare_seeds(candidates)
+    if not seeds:
+        raise HTTPException(
+            status_code=400,
+            detail="Nothing there can seed a search — a seed needs a SoundCloud "
+                   "track id, which songs imported outside the SoundCloud path "
+                   "do not have.")
+
+    job_id = jobs.new_job(kind="suggest", message="Queued for suggestions")
+    background.add_task(discovery_worker.suggest, job_id, seeds, kinds)
+    # seed_count vs offered lets the UI say "seeding from 25 of your 60".
+    return {"job_id": job_id, "seed_count": len(seeds), "offered": len(candidates)}
 
 
 # ── account (dormant until credentials exist) ────────────────────────────────

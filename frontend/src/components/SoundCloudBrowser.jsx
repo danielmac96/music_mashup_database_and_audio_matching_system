@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
-import { fmtDur } from "../theme";
-import { TrackArt } from "./TrackArt";
 import { CratePanel } from "./CratePanel";
+import { CrateAddButton, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
+import { useRowSelection } from "../hooks/useRowSelection";
+import { ProfileShelf } from "./ProfileShelf";
 
 // Search is on Enter, and paging is a button. Both layers share one scraped
 // client_id with the mixes auto-resolver, so search-as-you-type or infinite
@@ -20,18 +21,7 @@ const USER_FEEDS = [
   ["playlists", "Sets"],
 ];
 
-function fmtPlays(n) {
-  if (!n) return "";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${Math.round(n / 1000)}K`;
-  return String(n);
-}
-
-// A row's identity for selection. track_id is the stable one; the URL is the
-// fallback for anything SoundCloud returned without an id.
-const rowKey = (r) => r.track_id || r.source_url;
-
-export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
+export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("tracks");
   // Where we are. A breadcrumb rather than a single view, because the useful
@@ -43,7 +33,6 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
   const [loading, setLoading] = useState(false);
   const [paging, setPaging] = useState(false);
   const [error, setError] = useState("");
-  const [selected, setSelected] = useState(() => new Set());
   const [importing, setImporting] = useState(false);
   const [crateRefresh, setCrateRefresh] = useState(0);
   const [activeCrateId, setActiveCrateId] = useState(null);
@@ -53,6 +42,12 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
   const loadToken = useRef(0);
 
   const here = crumbs[crumbs.length - 1] || null;
+
+  // Only tracks are selectable; a set or an artist row is a place to go, not a
+  // thing to import. Shared with Suggestions, which shortlists the same rows.
+  const { isChecked, toggle, toggleAll, allSelected, clear,
+          selected, importable, selectedRows, selectedImportable } =
+    useRowSelection(items);
 
   useEffect(() => {
     onStatus?.(loading
@@ -73,7 +68,7 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
       if (!append) {
         // Selection is meaningful within one listing; carrying it across a
         // navigation would let you import tracks you can no longer see.
-        setSelected(new Set());
+        clear();
         if (crumb) setCrumbs((prev) => [...prev, crumb]);
       }
     } catch (e) {
@@ -123,6 +118,17 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
     run(() => api.discoveryUserFeed(here.id, feed), null);
   };
 
+  // Clicking an artist or a set in Suggestions lands you here, on that page.
+  // The two panes are separate components, so the click arrives as a prop rather
+  // than a call; acknowledging it stops the same nav replaying on every render.
+  useEffect(() => {
+    if (!nav) return;
+    setCrumbs([]);
+    if (nav.kind === "user") openUser(nav.id, nav.label);
+    else openPlaylist(nav.id, nav.label);
+    onNavDone?.();
+  }, [nav]);   // eslint-disable-line react-hooks/exhaustive-deps
+
   const goToCrumb = (idx) => {
     const crumb = crumbs[idx];
     setCrumbs(crumbs.slice(0, idx));
@@ -147,30 +153,6 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
     else run(() => api.discoverySearch(c?.q ?? query.trim(), c?.searchKind ?? kind, cursor), null, { append: true });
   };
 
-  // ── selection ──────────────────────────────────────────────────────────────
-  // Only tracks are selectable; a set or an artist row is a place to go, not a
-  // thing to import.
-  const trackRows = useMemo(() => items.filter((i) => !i.kind), [items]);
-  const importable = useMemo(
-    () => trackRows.filter((r) => !r.in_library), [trackRows]);
-  const selectedRows = useMemo(
-    () => trackRows.filter((r) => selected.has(rowKey(r))), [trackRows, selected]);
-  const selectedImportable = useMemo(
-    () => selectedRows.filter((r) => !r.in_library), [selectedRows]);
-
-  const toggle = (r) => setSelected((prev) => {
-    const next = new Set(prev);
-    const k = rowKey(r);
-    next.has(k) ? next.delete(k) : next.add(k);
-    return next;
-  });
-
-  const allSelected = importable.length > 0
-    && importable.every((r) => selected.has(rowKey(r)));
-
-  const toggleAll = () => setSelected(
-    allSelected ? new Set() : new Set(importable.map(rowKey)));
-
   const doImport = async () => {
     if (!selectedImportable.length) return;
     setImporting(true);
@@ -179,7 +161,7 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
       toast(`Saved ${res.count} track${res.count === 1 ? "" : "s"} — processing started`
             + (res.skipped_count ? `, ${res.skipped_count} already in library` : ""));
       // Re-run the current view so the imported rows pick up their badge.
-      setSelected(new Set());
+      clear();
       if (here) goToCrumb(crumbs.length - 1);
     } catch (e) {
       toast(`Import failed: ${e.message}`);
@@ -194,7 +176,7 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
       const res = await api.addCrateItems(crateId, selectedRows);
       toast(`Added ${res.added} to crate`
             + (res.skipped ? `, ${res.skipped} already there` : ""));
-      setSelected(new Set());
+      clear();
       setCrateRefresh((n) => n + 1);
     } catch (e) {
       toast(`Could not add to crate: ${e.message}`);
@@ -272,10 +254,19 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
             </div>
           )}
 
-          {!loading && !items.length && !error && (
-            <div className="empty">
-              Nothing yet. Search for an artist or a track, or paste a SoundCloud link.
-            </div>
+          {/* The landing state. Your own shelves are the useful thing to show
+              here; searching for your own name to reach them was the gap. */}
+          {!loading && !items.length && !error && !crumbs.length && (
+            <>
+              <ProfileShelf onOpenFeed={openUser} />
+              <div className="empty">
+                Or search for an artist or a track, or paste a SoundCloud link.
+              </div>
+            </>
+          )}
+
+          {!loading && !items.length && !error && crumbs.length > 0 && (
+            <div className="empty">Nothing here.</div>
           )}
 
           <div className="sc-rows">
@@ -287,7 +278,7 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
                 onOpen={() => openUser(row.user_id, row.username)} />
             ) : (
               <TrackRow key={`${rowKey(row)}-${i}`} row={row}
-                checked={selected.has(rowKey(row))}
+                checked={isChecked(row)}
                 onToggle={() => toggle(row)}
                 onArtist={() => openUser(row.user?.id, row.user?.username)}
                 onRelated={() => openRelated(row.track_id, row.title)}
@@ -307,139 +298,6 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary }) {
           onOpenLibrary={onOpenLibrary}
           activeCrateId={activeCrateId} onActiveCrate={setActiveCrateId} />
       </div>
-    </div>
-  );
-}
-
-function TrackRow({ row, checked, onToggle, onArtist, onRelated, onOpenLibrary }) {
-  const owned = row.in_library;
-  return (
-    <div className={`sc-row${owned ? " owned" : ""}`}>
-      <button className={`preview-check ${checked ? "on" : "off"}`}
-        onClick={onToggle} title="Select">{checked ? "✓" : ""}</button>
-
-      <TrackArt id={row.track_id} thumbnail={row.thumbnail} className="sc-art" />
-
-      <div className="mix-info">
-        <div className="mix-title">{row.title}</div>
-        <div className="mix-url">
-          <button className="link-btn" onClick={onArtist}>{row.artist}</button>
-          {row.genre && <span className="faint"> · {row.genre}</span>}
-          {row.plays ? <span className="faint"> · {fmtPlays(row.plays)} plays</span> : null}
-        </div>
-      </div>
-
-      <div className="sc-meta">
-        {fmtDur(row.duration_secs)}
-      </div>
-
-      {/* Go+ snippets stream ~30s. Better to say so here than to download one
-          and discover it in reverify. */}
-      {row.is_snip && (
-        <span className="mix-flag warn sc-snip" title="SoundCloud Go+ — only a ~30s preview is downloadable">
-          Go+ preview
-        </span>
-      )}
-
-      {owned ? (
-        <button className="mix-flag ok" onClick={onOpenLibrary}
-          title={`Already in your library (#${owned.song_id}) — ${owned.status}`}>
-          in library
-        </button>
-      ) : <span className="mix-flag" />}
-
-      <div className="mix-actions">
-        <button className="mini-btn" onClick={onRelated} title="Find similar tracks">↔ similar</button>
-        <a className="mini-btn" href={row.permalink_url} target="_blank"
-          rel="noreferrer" title="Open on SoundCloud">↗</a>
-      </div>
-    </div>
-  );
-}
-
-function PlaylistRow({ row, onOpen }) {
-  return (
-    <div className="sc-row nav" onClick={onOpen}>
-      <span className="sc-kind">SET</span>
-      <TrackArt id={row.playlist_id} thumbnail={row.thumbnail} className="sc-art" />
-      <div className="mix-info">
-        <div className="mix-title">{row.title}</div>
-        <div className="mix-url">
-          <span className="faint">{row.artist} · {row.track_count} tracks</span>
-        </div>
-      </div>
-      <div className="sc-meta">{fmtDur(row.duration_secs)}</div>
-      <div className="mix-actions"><span className="mini-btn">open →</span></div>
-    </div>
-  );
-}
-
-function UserRow({ row, onOpen }) {
-  return (
-    <div className="sc-row nav" onClick={onOpen}>
-      <span className="sc-kind">ARTIST</span>
-      <TrackArt id={row.user_id} thumbnail={row.avatar_url} className="sc-art" />
-      <div className="mix-info">
-        <div className="mix-title">
-          {row.username}{row.verified && <span className="faint" title="Verified"> ✓</span>}
-        </div>
-        <div className="mix-url">
-          <span className="faint">
-            {fmtPlays(row.followers)} followers · {row.track_count} tracks
-            {row.city ? ` · ${row.city}` : ""}
-          </span>
-        </div>
-      </div>
-      <div className="mix-actions"><span className="mini-btn">open →</span></div>
-    </div>
-  );
-}
-
-/** "Add to crate ▾" — picks the target crate, creating one on first use. */
-function CrateAddButton({ disabled, count, onAdd, refreshKey, onActive }) {
-  const [crates, setCrates] = useState([]);
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    api.getCrates().then((b) => setCrates(b.crates || [])).catch(() => setCrates([]));
-  }, [refreshKey]);
-
-  const addNew = async () => {
-    const name = window.prompt("Name this crate", "New crate");
-    if (!name) return;
-    try {
-      const crate = await api.createCrate(name.trim());
-      onActive?.(crate.id);
-      setOpen(false);
-      onAdd(crate.id);
-    } catch (e) {
-      toast(e.message);
-    }
-  };
-
-  if (!crates.length) {
-    return (
-      <button className="btn ghost" disabled={disabled} onClick={addNew}>
-        ＋ New crate ({count})
-      </button>
-    );
-  }
-
-  return (
-    <div className="crate-add">
-      <button className="btn ghost" disabled={disabled} onClick={() => setOpen((v) => !v)}>
-        ＋ Add {count} to crate ▾
-      </button>
-      {open && (
-        <div className="crate-menu">
-          {crates.map((c) => (
-            <button key={c.id} onClick={() => { setOpen(false); onActive?.(c.id); onAdd(c.id); }}>
-              {c.name} <span className="faint">{c.item_count}</span>
-            </button>
-          ))}
-          <button className="new" onClick={addNew}>＋ New crate…</button>
-        </div>
-      )}
     </div>
   );
 }

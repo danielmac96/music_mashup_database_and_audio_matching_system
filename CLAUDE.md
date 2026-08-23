@@ -2,7 +2,59 @@
 
 current goal: **Phases 1 and 2 of the Discovery plan are done** (branch
 `discovery-tab`, commits D1.0–D1.6 and P2.0–P2.6). See
-`~/.claude/plans/using-the-current-repo-abstract-curry.md`.
+`~/.claude/plans/using-the-current-repo-abstract-curry.md`. Discover now also has
+a connected profile and a library-seeded Suggestions pane — see the 2026-08-23
+section below.
+
+### Discover knows who you are, and points back at your library (2026-08-23)
+
+Two gaps closed. Discover could search SoundCloud but had **no idea whose
+account was using it** — reaching your own sets meant searching for your own
+name every time. And `↔ similar` only ever started from an *external* track you
+happened to be looking at, so **the library and discovery were two islands**.
+
+- **`ingest/soundcloud_recommend.py`** is the new engine: seeds in, ranked
+  tracks/artists/sets out. It is layered on `soundcloud_browse` and calls
+  **only endpoints this repo already uses in production** — related tracks, a
+  user, a user's playlists, playlist search. A v2 related-*artists* endpoint
+  exists and looks apt; nothing here calls it, so it is unproven and unused.
+  Artists are derived from who uploaded the recommendations instead, which is
+  grounded in the fan-out rather than in SoundCloud's opinion.
+- **Ranking is Reciprocal Rank Fusion** (`RRF_K = 10`), not a weighted blend. It
+  needs no tuning, scores "many seeds agreed" and "placed high" on one scale, and
+  the contributing seeds fall out of it as the `because` line the UI shows. The
+  tests pin an ORDER, not membership — reshuffling the list should fail a test.
+- **Artist scores are summed over the WHOLE pool**, before the library filter.
+  Filtering first scored an artist whose catalogue you half own as though they
+  had barely appeared; owning their records is evidence, not a disqualification.
+  Owned rows earn a count (`owned_tracks`/`new_tracks`) instead of a deletion.
+  Artists you seeded *from* are dropped — you already know them.
+- **Failure is per-seed.** A deleted or private upload 404s and lands in
+  `skipped`; only an all-seeds failure raises. `SoundCloudUnavailable` is the one
+  exception that propagates — the breaker being open means we are already backing
+  off, and looping past it would be a request storm against the client_id the
+  frozen mixes resolver shares.
+- **It is a job, not a request** (`api/workers/discovery_worker.py`, kind
+  `suggest`). 25 seeds is ~44 requests, and `MIN_INTERVAL_SECS` makes that ~20s.
+  If the breaker ever trips on a real run, lower `MAX_SEEDS` — do **not** touch
+  the interval, which exists to protect the frozen path.
+- `ingest/` still does not import `database` (only `matcher/` does). That
+  boundary is why the library filter arrives as an injected `owned` callable and
+  the worker supplies the DB-backed one.
+- **`app_prefs`** is a new JSON kv table holding the connected profile. It is not
+  a settings.json key because `config.save_settings` ignores empty values, so
+  nothing written there can ever be unset — and this has a Disconnect button.
+- **"Connect" identifies, it does not authenticate.** `soundcloud_oauth` is still
+  dormant, so only *public* sets, likes and uploads are readable. The UI says so
+  rather than letting you discover it as an empty Likes tab, and a track or set
+  URL pasted into Connect is a 400 naming the mistake.
+- Frontend: rows and selection were extracted to `components/ScRows.jsx` +
+  `hooks/useRowSelection.js` so the new **Suggestions** pane shortlists into
+  crates and imports through exactly the same path the browser does. A suggestion
+  row keeps the canonical `track_row` key set, which is what makes that work — a
+  test pins it.
+
+Suite: **797 passing, 10 skipped, 0 failing** (the skips need the audio stack).
 
 ### The library is backfilled, and the weights are measured (2026-08-19)
 
