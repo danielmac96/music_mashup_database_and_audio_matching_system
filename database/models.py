@@ -250,9 +250,10 @@ CREATE TABLE IF NOT EXISTS datasets (
 
 -- ── Crates: local shortlists built while browsing SoundCloud (Discovery) ─────
 -- A crate is this app's answer to "manipulate a playlist". SoundCloud's write
--- API needs a registered app and registration has been closed since 2019, so
--- the ordered list you build lives here instead. sc_playlist_id/permalink stay
--- empty until (and unless) credentials appear and a crate is pushed upstream.
+-- API needs a registered app, and registering one is open and self-serve but
+-- requires an Artist Pro subscription, so the ordered list you build lives here
+-- instead. sc_playlist_id/permalink stay empty until (and unless) credentials
+-- appear and a crate is pushed upstream.
 CREATE TABLE IF NOT EXISTS crates (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     name             TEXT NOT NULL,

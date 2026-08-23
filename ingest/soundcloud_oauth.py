@@ -1,10 +1,26 @@
 """SoundCloud OAuth 2.1 — the write path. Dormant until credentials exist.
 
 Creating a playlist on your account, liking, reposting: all of it needs OAuth
-against a *registered* app, and SoundCloud closed developer registration to new
-applicants in 2019. So this module is built, wired and tested, and reports
+against a *registered* app. Registration is open and self-serve — there is no
+approval queue — but it is gated on a **SoundCloud Artist Pro subscription**.
+The blocker is therefore a recurring cost this repo has not paid, not an
+impossibility. So this module is built, wired and tested, and reports
 ``configured: false`` until a client id and secret appear in settings. Every
 write endpoint answers 501 with an explanation rather than failing obscurely.
+
+The flow below was checked against the live spec on 2026-08-23 and matches it:
+OAuth 2.1 with PKCE (S256) required, ``secure.soundcloud.com`` for both
+authorize and token, ~1h access tokens and single-use refresh tokens.
+
+Two things are **unverified** and must be checked before any of this is
+switched on, rather than assumed:
+
+* whether ``http://localhost`` / ``http://127.0.0.1`` is an acceptable
+  registered redirect URI. The docs do not say, and a local-only app has
+  nowhere else to send the callback.
+* whether the numeric track ids the scraped ``api-v2`` browse layer returns are
+  the same id space ``api.soundcloud.com`` accepts in a playlist write. Crates
+  freeze v2 ids, so if the spaces disagree every push writes the wrong tracks.
 
 Deliberately different from the read layer in two ways, so nothing can leak
 between them:
@@ -49,9 +65,10 @@ _REFRESH_MARGIN_SECS = 60
 _SETUP_HINT = (
     "SoundCloud writing needs a registered app. Add soundcloud_client_id and "
     "soundcloud_client_secret in Settings (or set SOUNDCLOUD_CLIENT_ID and "
-    "SOUNDCLOUD_CLIENT_SECRET), then connect your account. Note that SoundCloud "
-    "has not accepted new API app registrations since 2019 — reading, searching "
-    "and building local crates all work without any of this."
+    "SOUNDCLOUD_CLIENT_SECRET), then connect your account. Registering an app "
+    "is open and self-serve, but SoundCloud requires an Artist Pro "
+    "subscription to issue credentials — reading, searching and building "
+    "local crates all work without any of this."
 )
 
 

@@ -1,9 +1,10 @@
 """The SoundCloud write layer while it is dormant — which is the normal state.
 
-SoundCloud closed developer registration in 2019, so almost nobody has app
-credentials. What matters is that the feature explains itself instead of failing
-obscurely, that nothing leaks a token to the browser, and that the flow is
-actually correct for the day a key does appear.
+Registering a SoundCloud app is open and self-serve but requires an Artist Pro
+subscription, so most installs will never have credentials. What matters is that
+the feature explains itself instead of failing obscurely, that nothing leaks a
+token to the browser, and that the flow is actually correct for the day a key
+does appear.
 """
 import importlib
 import json
@@ -65,7 +66,7 @@ def test_not_configured_without_credentials(env):
     assert oauth.is_configured() is False
     st = oauth.status()
     assert st["authorized"] is False
-    assert "not accepted new API app registrations" in st["reason"]
+    assert "Artist Pro" in st["reason"]
 
 
 def test_status_endpoint_says_read_yes_write_no(env):
