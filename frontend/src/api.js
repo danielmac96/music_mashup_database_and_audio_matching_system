@@ -437,8 +437,8 @@ export const api = {
   discoveryStatus: () => jsonFetch("/api/discovery/status"),
 
   // Your profile. This IDENTIFIES a public account rather than logging in —
-  // SoundCloud closed app registration in 2019, so only public sets, likes and
-  // uploads are readable, and the UI says as much.
+  // the write layer needs a registered app (Artist Pro) and is dormant, so only
+  // public sets, likes and uploads are readable, and the UI says as much.
   discoveryProfile: () => jsonFetch("/api/discovery/profile"),
 
   discoverySetProfile: (url) =>

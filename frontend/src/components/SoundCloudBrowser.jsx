@@ -5,6 +5,8 @@ import { CratePanel } from "./CratePanel";
 import { CrateAddButton, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
 import { useRowSelection } from "../hooks/useRowSelection";
 import { useCrateMembership } from "../hooks/useCrateMembership";
+import { useResultFilters } from "../hooks/useResultFilters";
+import { ResultFilters } from "./ResultFilters";
 import { ProfileShelf } from "./ProfileShelf";
 
 // Search is on Enter, and paging is a button. Both layers share one scraped
@@ -44,16 +46,25 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
 
   const here = crumbs[crumbs.length - 1] || null;
 
-  // Only tracks are selectable; a set or an artist row is a place to go, not a
-  // thing to import. Shared with Suggestions, which shortlists the same rows.
-  const { isChecked, toggle, toggleAll, allSelected, clear,
-          selected, importable, selectedRows, selectedImportable } =
-    useRowSelection(items);
-
   // Live, not baked onto the rows: `items` is not re-fetched after an add, so a
   // badge computed server-side would be stale the moment you shortlisted.
-  // crateRefresh is already bumped on a successful add.
+  // crateRefresh is already bumped on a successful add. Computed over every
+  // loaded row, not just the visible ones, so the in-crate facet can filter on it.
   const crateOf = useCrateMembership(items, crateRefresh);
+
+  // Filter/sort over what is loaded. `visible` is what renders.
+  const { filters, setFilters, reset: resetFilters, visible } =
+    useResultFilters(items, crateOf);
+
+  // Only tracks are selectable; a set or an artist row is a place to go, not a
+  // thing to import. Shared with Suggestions, which shortlists the same rows.
+  //
+  // Selection derives from `visible`, not `items`: "select all" must mean "all
+  // shown". Filtering a row out while it stays selected would import a track the
+  // user can no longer see -- the same hazard run()'s clear() guards against.
+  const { isChecked, toggle, toggleAll, allSelected, clear,
+          selected, importable, selectedRows, selectedImportable } =
+    useRowSelection(visible);
 
   useEffect(() => {
     onStatus?.(loading
@@ -73,8 +84,11 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
       setCursor(body.next_cursor || null);
       if (!append) {
         // Selection is meaningful within one listing; carrying it across a
-        // navigation would let you import tracks you can no longer see.
+        // navigation would let you import tracks you can no longer see. A
+        // filter is scoped the same way: a genre that made sense for the last
+        // listing may hide everything in this one.
         clear();
+        resetFilters();
         if (crumb) setCrumbs((prev) => [...prev, crumb]);
       }
     } catch (e) {
@@ -84,7 +98,7 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
     } finally {
       if (token === loadToken.current) { setLoading(false); setPaging(false); }
     }
-  }, []);
+  }, [clear, resetFilters]);
 
   const search = () => {
     const q = query.trim();
@@ -275,8 +289,20 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
             <div className="empty">Nothing here.</div>
           )}
 
+          {/* Loaded rows, all filtered out. Distinct from "nothing here" — the
+              fix is to widen the filter, not to search again. */}
+          {!loading && items.length > 0 && !visible.length && (
+            <div className="empty">
+              No loaded result matches these filters.{" "}
+              <button className="link-btn" onClick={resetFilters}>Clear filters</button>
+            </div>
+          )}
+
+          <ResultFilters items={items} filters={filters} onChange={setFilters}
+            visibleCount={visible.length} crateOf={crateOf} />
+
           <div className="sc-rows">
-            {items.map((row, i) => row.kind === "playlist" ? (
+            {visible.map((row, i) => row.kind === "playlist" ? (
               <PlaylistRow key={`p${row.playlist_id}`} row={row}
                 onOpen={() => openPlaylist(row.playlist_id, row.title)} />
             ) : row.kind === "user" ? (

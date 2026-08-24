@@ -174,9 +174,9 @@ that imports back into another crate. **Import** on a crate downloads and
 processes everything in it that is not already in your library.
 
 > **Why crates instead of real SoundCloud playlists?** Writing to a SoundCloud
-> account needs OAuth against a *registered* app, and SoundCloud stopped
-> accepting new API app registrations in 2019. Reading needs no credentials at
-> all. If you do have a client id and secret, put them in Settings and the
+> account needs OAuth against a *registered* app, and registering one — while
+> open and self-serve — requires a SoundCloud Artist Pro subscription. Reading
+> needs no credentials at all. If you do have a client id and secret, put them in Settings and the
 > greyed **Push to SoundCloud** button on a crate starts working — it creates a
 > private playlist and updates it in place on re-push.
 

@@ -6,6 +6,59 @@ current goal: **Phases 1 and 2 of the Discovery plan are done** (branch
 a connected profile and a library-seeded Suggestions pane — see the 2026-08-23
 section below.
 
+### Discover: crate badges, then filters and sorting (2026-08-23)
+
+Phases 1 and 2 of `docs/plans/discover-crates/PLAN.md`.
+
+**Crate membership is its own endpoint, fetched live — not a field on the row.**
+This is the load-bearing decision. Suggestion rows never pass through
+`discovery._annotate`: `discovery_worker.suggest` freezes the recommender output
+onto the job, so anything baked in there would lie the moment you shortlisted.
+And even in the browser pane `items` is not re-fetched after an add, so a
+server-side badge would go stale immediately. `POST /api/crates/membership` plus
+`useCrateMembership` re-firing on the existing `crateRefresh` counter is what
+makes a chip appear without a reload. **Do not move this into `_annotate`.**
+
+- `crate_membership()` mirrors `songs_by_identity` deliberately — one query per
+  page, empty inputs short-circuit before opening a connection, and empty
+  `track_id`s are dropped (`''` is the default for a row that never learned one,
+  so matching on it would claim every such row is a member).
+- The route normalises and the model does not, matching `add_crate_items`. The
+  response is keyed by **the URL as the caller sent it**, so the frontend never
+  re-implements `normalize_url` in JS. Two rows differing only by tracking
+  params both get their chip.
+- `/membership` is declared **before** `/{crate_id}`, which is typed `int` —
+  declaration order is what stops it 422ing.
+- `idx_crate_items_url` and `idx_crate_items_track` live in `SCHEMA`, not a
+  migration: both columns are original to `CREATE TABLE crate_items`. This is
+  the opposite of `idx_songs_track_id`, which indexes a *migrated* column and so
+  must run after the migrations. Do not copy that pattern here.
+- Chips are **read-only**. Adding stays on the tick-box plus `CrateAddButton`.
+
+**Filters and sorting are scoped to what is loaded, and say so.** The bar reads
+"showing 12 of 47 loaded"; Load more appends into the active filter. It never
+auto-fetches to make a sort look global — the browse layer shares one scraped
+`client_id` with the frozen mixes resolver, and spending that rate limit on a
+nicer sort is the trade this repo refuses. `applyFilters` is a pure exported
+function over rows already in memory; `ResultFilters.jsx` makes no API call at
+all, and a test greps both files for `fetch(`/`api.` to keep it that way.
+
+- **Sorting defaults to unsorted.** SoundCloud's relevance order is meaningful.
+- Numeric sorts push missing/zero **last in both directions**: a row with no
+  play count is unknown, not unpopular.
+- Genre is a dropdown built from the genres actually present — SoundCloud genre
+  strings are unbounded user input. Same for the in-crate facet, which is
+  derived from the Phase 1 membership map rather than a second request.
+- **Selection derives from `visible`, not `items`.** "Select all" must mean "all
+  shown", or the bulk import sends tracks the user filtered away — the hazard
+  `run()`'s `clear()` comment already names. Filters reset on navigation for the
+  same reason selection does.
+
+No JS test runner was added; that is a separate decision. Both phases' frontend
+contracts are pinned by Python tests that read the JSX
+(`tests/test_crate_badges_frontend.py`, `tests/test_result_filters_frontend.py`),
+the same trick `tests/test_stale_frontend.py` uses.
+
 ### SoundCloud API registration is open — it just costs (2026-08-23)
 
 This file, `ingest/soundcloud_oauth.py` and the `crates` DDL all used to say
@@ -51,11 +104,11 @@ not assume either:
    same id space `api.soundcloud.com` accepts in a playlist write. Crates freeze
    v2 ids, so if the spaces disagree **every push would write the wrong tracks**.
 
-The same false claim still stands in six other files — `api/routes/crates.py`,
-`api/routes/discovery.py`, `config.py`, `frontend/src/api.js`,
-`frontend/src/components/ProfileShelf.jsx` and `readme.md`. Phase 3 of
-`docs/plans/discover-crates/PLAN.md` named only three places, so those were left
-alone deliberately, not missed.
+Corrected everywhere it appeared: `ingest/soundcloud_oauth.py`, the `crates`
+DDL, this file, plus `api/routes/crates.py`, `api/routes/discovery.py`,
+`config.py`, `frontend/src/api.js`, `frontend/src/components/ProfileShelf.jsx`
+and `readme.md`. All prose. If you are adding a new one, the phrasing to use is
+"open and self-serve, requires an Artist Pro subscription".
 
 ### Discover knows who you are, and points back at your library (2026-08-23)
 

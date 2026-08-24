@@ -1908,6 +1908,26 @@ input, select { font-family: inherit; }
   cursor: help;
 }
 
+/* Filter + sort over the rows already loaded. Sits directly above the list so
+   the count it reports ("showing 12 of 47 loaded") reads as a caption for what
+   is underneath. Nothing in this bar triggers a fetch. */
+.sc-filterbar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 7px 8px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.sc-filterbar .mini-select { padding: 3px 5px; font-size: 11.5px; }
+.sc-filter-check {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11.5px; color: var(--muted); cursor: pointer; white-space: nowrap;
+}
+.sc-filter-range { display: inline-flex; align-items: center; gap: 4px; }
+.mini-num {
+  width: 52px; background: var(--panel); border: 1px solid var(--border-ctrl);
+  border-radius: 6px; color: var(--text); padding: 3px 6px; font-size: 11.5px;
+}
+.sc-filter-count { font-size: 11.5px; white-space: nowrap; }
+
 .sc-more { width: 100%; margin-top: 12px; }
 
 /* Why a row is here: the seeds that led to it, or the genre a set matched on.
