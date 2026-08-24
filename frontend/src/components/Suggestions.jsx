@@ -5,6 +5,8 @@ import { useJobPolling } from "../hooks/useJobPolling";
 import { useRowSelection } from "../hooks/useRowSelection";
 import { CrateAddButton, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
 import { useCrateMembership } from "../hooks/useCrateMembership";
+import { useResultFilters } from "../hooks/useResultFilters";
+import { ResultFilters } from "./ResultFilters";
 
 // "More like the records I already like." The browser's ↔ similar asks that of
 // one upload you happened to be looking at; this asks it of tracks YOU chose —
@@ -109,14 +111,23 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
 
   // ── results ────────────────────────────────────────────────────────────────
   const rows = result?.[group] || [];
-  const { isChecked, toggle, toggleAll, allSelected, clear,
-          selected, importable, selectedRows, selectedImportable } =
-    useRowSelection(group === "tracks" ? rows : NO_ROWS);
-
   // More load-bearing here than in the browser: a suggestion row excludes
   // library-owned tracks, so the crate chip is the only membership signal it
   // has. crateRefresh is bumped by addToCrate below.
   const crateOf = useCrateMembership(rows, crateRefresh);
+
+  const { filters, setFilters, reset: resetFilters, visible } =
+    useResultFilters(rows, crateOf);
+
+  // Selection follows what is shown, not what is loaded — see the same note in
+  // SoundCloudBrowser.
+  const { isChecked, toggle, toggleAll, allSelected, clear,
+          selected, importable, selectedRows, selectedImportable } =
+    useRowSelection(group === "tracks" ? visible : NO_ROWS);
+
+  // Switching group (tracks / artists / sets) or landing a new run is a new
+  // listing, and a filter built for the last one does not carry over.
+  useEffect(() => { resetFilters(); clear(); }, [group, result, resetFilters, clear]);
 
   const doImport = async () => {
     if (!selectedImportable.length) return;
@@ -300,8 +311,18 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
 
           {!rows.length && <div className="empty">Nothing in this group.</div>}
 
+          <ResultFilters items={rows} filters={filters} onChange={setFilters}
+            visibleCount={visible.length} crateOf={crateOf} />
+
+          {rows.length > 0 && !visible.length && (
+            <div className="empty">
+              No loaded result matches these filters.{" "}
+              <button className="link-btn" onClick={resetFilters}>Clear filters</button>
+            </div>
+          )}
+
           <div className="sc-rows">
-            {rows.map((row, i) => group === "artists" ? (
+            {visible.map((row, i) => group === "artists" ? (
               <UserRow key={`u${row.user_id}`} row={row}
                 onOpen={() => onNavigate?.({ kind: "user", id: row.user_id,
                                              label: row.username })} />
