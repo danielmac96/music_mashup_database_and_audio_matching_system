@@ -1435,6 +1435,41 @@ input, select { font-family: inherit; }
 }
 .studio-bpm::-webkit-outer-spin-button, .studio-bpm::-webkit-inner-spin-button { -webkit-appearance: none; }
 
+/* ── Studio timing pills ──────────────────────────────────────────────
+   The overlays Discover suggested for the pair the project was opened on.
+   Built on .snap-seg, which the transport already uses twice, so the row reads
+   as another Studio control rather than a visitor from another screen. */
+.timing-bar {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--border-accent);
+  border-radius: 9px; padding: 7px 11px; margin-bottom: 9px;
+}
+.timing-label { font-size: 10px; letter-spacing: .08em; color: var(--muted); }
+.timing-pills { flex: 1 1 380px; gap: 2px; flex-wrap: wrap; }
+.timing-pills button {
+  display: inline-flex; align-items: center; gap: 5px; flex: 0 1 auto;
+  white-space: nowrap; padding: 4px 9px; font-size: 11px;
+}
+.timing-pills button:disabled { opacity: .45; cursor: not-allowed; }
+.timing-pills .tp-n {
+  font-family: var(--font-mono); font-size: 9px; opacity: .55;
+  border: 1px solid var(--border-ctrl); border-radius: 3px; padding: 0 3px;
+}
+.timing-pills .tp-fit { font-family: var(--font-mono); font-size: 10px; opacity: .7; }
+/* .verdict-chip is display:block in the ranked list, where it owns its cell. */
+.timing-pills .verdict-chip { display: inline; font-size: 11px; }
+
+.timing-verdicts { display: flex; gap: 4px; }
+.verdict-btn {
+  cursor: pointer; border-radius: 6px; padding: 4px 9px; font-size: 11px;
+  background: var(--inset-2); border: 1px solid var(--border-ctrl); color: var(--muted);
+}
+.verdict-btn:disabled { opacity: .4; cursor: not-allowed; }
+.verdict-btn.love.on { border-color: #22c55e; color: #22c55e; background: rgba(34, 197, 94, .12); }
+.verdict-btn.ok.on { border-color: var(--amber-light, #fbbf24); color: var(--amber-light, #fbbf24); background: rgba(251, 191, 36, .12); }
+.verdict-btn.no.on { border-color: #ff9b9b; color: #ff9b9b; background: rgba(255, 155, 155, .12); }
+.timing-hint { font-size: 10.5px; }
+
 .studio-timeline {
   position: relative; background: var(--inset);
   border: 1px solid var(--border); border-radius: 10px; overflow: hidden;

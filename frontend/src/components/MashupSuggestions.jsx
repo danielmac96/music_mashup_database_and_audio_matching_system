@@ -40,6 +40,29 @@ const PER_SONG_CAPS = [3, 2, 1, 0];
 const BATCH_EXPORT_N = 10;
 const popOf = (c) => (c.vocal_popularity || 0) + (c.inst_popularity || 0);
 
+/** A candidate row, reshaped into the timing-option key set the plan emits.
+ *
+ * Studio holds one list of options and does not care which came from the plan
+ * and which from the row it was opened on — that only works while both speak
+ * the `_pair_row` vocabulary (matcher/sections.py). Keep these names in step
+ * with matcher.sections._pair_row if you add a field. */
+export function scoredOptionOf(c) {
+  return {
+    vocal_section_idx: c.vocal_section_idx ?? null,
+    inst_section_idx: c.inst_section_idx ?? null,
+    vocal_section_start: c.vocal_section_start,
+    vocal_section_end: c.vocal_section_end,
+    inst_section_start: c.inst_section_start,
+    inst_section_end: c.inst_section_end,
+    vocal_section_label: c.vocal_section_label,
+    inst_section_label: c.inst_section_label,
+    score_section: c.score_section,
+    section_bars_vocal: c.section_bars_vocal,
+    alignment_offset: c.alignment_offset ?? null,
+    reason: c.reason,
+  };
+}
+
 // Key drives 30% of the score and the suggested pitch shift, so an unreliable
 // one has to be visible on the row you are about to judge. See TrackList.jsx for
 // how key_confidence is derived; null means analysed before it existed.
@@ -93,7 +116,33 @@ function PlanDetails({ vocalId, instId, candidate }) {
       <ol>
         {plan.steps.map((s, i) => <li key={i}>{s.replace(/^\d+\.\s*/, "")}</li>)}
       </ol>
-      {plan.pairings?.length > 0 && (
+      {/* The timing options, best first. These are the SCORED section pairs
+          (matcher.sections.top_section_pairs) — the same ranked engine the row
+          above is built from, and exactly what the Studio's timing pills offer,
+          so the two screens cannot describe different moments. `pairings` is
+          the older label-priority list; it is still on the payload (the FL
+          session exporter reads it) and is the fallback for a pair scored
+          before section_options existed. */}
+      {plan.section_options?.length > 0 ? (
+        <div className="mono-grid" style={{ gridTemplateColumns: "1.2fr 1fr 1.2fr 1fr .6fr .6fr" }}>
+          <div className="muted">VOCAL SECTION</div>
+          <div className="muted">TIME</div>
+          <div className="muted">BED SECTION</div>
+          <div className="muted">TIME</div>
+          <div className="muted">BARS</div>
+          <div className="muted">FIT</div>
+          {plan.section_options.map((o, i) => (
+            <Fragment key={i}>
+              <div>{o.vocal_section_label}</div>
+              <div>{fmtTime(o.vocal_section_start)}–{fmtTime(o.vocal_section_end)}</div>
+              <div>{o.inst_section_label}</div>
+              <div>{fmtTime(o.inst_section_start)}–{fmtTime(o.inst_section_end)}</div>
+              <div>{o.section_bars_vocal ?? "—"}</div>
+              <div>{pc(o.score_section)}</div>
+            </Fragment>
+          ))}
+        </div>
+      ) : plan.pairings?.length > 0 && (
         <div className="mono-grid" style={{ gridTemplateColumns: "1.2fr 1fr 1.2fr 1fr 1fr" }}>
           <div className="muted">VOCAL SECTION</div>
           <div className="muted">TIME</div>
@@ -874,6 +923,13 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
                         semitoneShift: c.semitone_shift ?? 0,
                         vocalSectionStart: c.vocal_section_start ?? 0,
                         instSectionStart: c.inst_section_start ?? 0,
+                        // The pair the SCORER picked, in the same key set as an
+                        // entry in plan.section_options, so Studio can arm it as
+                        // a pill without special-casing it. Carried across
+                        // rather than looked up because top_section_pairs is
+                        // capped, and a row scored under different weights may
+                        // not be in the plan's six.
+                        scoredOption: scoredOptionOf(c),
                       })}>
                         ▶ Audition
                       </button>

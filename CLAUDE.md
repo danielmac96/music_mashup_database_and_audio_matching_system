@@ -4,7 +4,66 @@ current goal: **Phases 1 and 2 of the Discovery plan are done** (branch
 `discovery-tab`, commits D1.0–D1.6 and P2.0–P2.6). See
 `~/.claude/plans/using-the-current-repo-abstract-curry.md`. Discover now also has
 a connected profile and a library-seeded Suggestions pane — see the 2026-08-23
-section below.
+section below. The Studio now carries Discover's timing suggestions across as
+pills — see the 2026-08-24 section immediately below.
+
+### The Studio keeps the suggestions (2026-08-24)
+
+Discover's `Plan ▾` listed several overlays for a pair — this chorus over that
+drop, that verse over this breakdown — and **▶ Audition threw all but one
+away**. The seed carried five fields, Studio placed the lanes on the scorer's
+pick, and trying option 2 meant going back and reading the table again.
+
+Studio now shows a **TIMING** pill row: one pill per suggested overlay, each of
+which moves both lanes onto that moment, trims them to it and loops it, plus
+✓/~/✗ per option. `[` `]` cycle, `1`–`6` jump.
+
+- **The options are `matcher.sections.top_section_pairs`, surfaced on the plan
+  as `section_options`** — the same scored engine the ranked row is built from,
+  so Discover's table and the Studio's pills cannot describe different moments.
+  `matcher/plan.py` imports it **inside** `build_mashup_plan`: `matcher/sections`
+  imports `matcher.plan`, so a module-level import is circular.
+  `top_section_pairs` is **reused, never modified** — it feeds `matcher.match`'s
+  scoring loop. It emits at most one row per *vocal* section, so the pills never
+  offer the same chorus over two different drops; that cap is what stops scoring
+  multiplying the candidates table.
+- **`pairings` stays on the payload.** `render/session.py:322` trims the FL
+  session export from `plan["pairings"][0]`. `section_options` is additive, and
+  the plan table falls back to `pairings` when it is empty.
+- **Studio FETCHES the options from the pair ids, it does not receive them.**
+  Only `{vocalSongId, instSongId, scoredOption}` is persisted; `usePlan` re-fetches
+  the list. That is what makes the suggestions outlive `onSeedConsumed()` and a
+  reload, and it means a re-analysis can never leave stale timings on screen.
+  The row's own pair rides along on the seed as `scoredOption` because
+  `top_section_pairs` is capped and a row scored under different weights need
+  not be among the six.
+- **A pill applies `alignment_offset`**, which Audition ignored. Trim is in RAW
+  seconds and `offsetSec` in DISPLAY seconds, so `offsetSec + clipStart/rate`
+  puts both sections on the same instant; the nudge is already post-stretch in
+  vocal-time seconds and adds straight onto the bed. `null` means **no stored
+  grid**, never a measured zero. Measured nudges on the real library run to
+  −800 ms, so this is not cosmetic.
+- **The loop is the INTERSECTION of the two trims.** `MashupEngine._armVoice`
+  only loops natively while the loop window sits inside the trim; sized to the
+  longer side, the shorter lane plays once and falls silent.
+- **Verdicts go to `pair_feedback` keyed on the section indexes.** That table's
+  unique index already includes them, so ✓ on one overlay and ✗ on another of
+  the same two records coexist — verified live, two rows, one song pair.
+- **Lanes are resolved by `songId`, never by index.** Lanes can be reordered,
+  removed or joined by a third, at which point 0/1 stops meaning vocal/bed. With
+  either lane gone the bar disables and says so.
+- `loop` and `loopBars` are now persisted. They never were — a shift-dragged
+  loop was lost on reload too; the pills only made it visible, because a
+  restored project showing an armed pill with no loop is lying. Restore also
+  scrolls the viewport to the loop, since a trimmed pair two minutes in
+  otherwise restores to what looks like an empty project.
+
+Frontend contracts are pinned from Python (`tests/test_studio_timing_pills_frontend.py`),
+the same trick `tests/test_stale_frontend.py` uses; the plan payload has real
+assertions in `tests/test_plan_section_options.py`.
+
+Suite: **892 passing, 0 skipped, 0 failing** (the 10 audio-stack skips this file
+used to report now run in this environment).
 
 ### Discover: crate badges, then filters and sorting (2026-08-23)
 

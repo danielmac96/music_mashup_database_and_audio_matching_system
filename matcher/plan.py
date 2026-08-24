@@ -35,6 +35,12 @@ _VOCAL_LABEL_PRIORITY = priority_for(vocal_side=True)
 _INST_LABEL_PRIORITY = priority_for(vocal_side=False)
 
 
+# How many timing options the plan offers. The Studio renders one pill per
+# option, so this is a UI budget as much as a compute one; six fits the toolbar
+# and is more moments than anyone auditions in one sitting.
+SECTION_OPTION_LIMIT = 6
+
+
 def current_priority(vocal_side: bool) -> Dict[str, int]:
     """Live label priority for one side, honouring edited patterns."""
     return priority_for(vocal_side=vocal_side)
@@ -159,6 +165,23 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     i_sections = get_sections(inst_song_id, db_path=db)
     pairings = build_pairings(v_sections, i_sections, stretch or 1.0)
 
+    # The SCORED timing options — the same ranked section pairs the candidate
+    # row itself is built from, so Discover's plan table, the Studio's timing
+    # pills and the ranked list all describe the same moments. Imported here
+    # rather than at module scope because matcher.sections imports THIS module.
+    #
+    # Reuse only: top_section_pairs feeds matcher.match's scoring loop, so
+    # changing its selection would change the ranked list. Note it emits at most
+    # one row per VOCAL section, so the options never offer the same chorus over
+    # two different drops — that cap is what stops scoring multiplying the
+    # candidates table, and relaxing it here would mean re-ranking by hand.
+    from matcher.sections import top_section_pairs
+
+    section_options = top_section_pairs(
+        v_sections, i_sections, stretch or 1.0, bpm=v_bpm or None,
+        limit=SECTION_OPTION_LIMIT,
+    )
+
     # Phase E: prefer the MEASURED transpose over the Camelot-derived one.
     # Camelot says whether two scales are compatible; cross-correlating the two
     # sections' chroma says what actually makes the notes line up, and hands
@@ -247,6 +270,7 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
         "vocal_sections": v_sections,
         "inst_sections": i_sections,
         "pairings": pairings,
+        "section_options": section_options,
         "steps": steps,
         "files": {
             "vocals": paths.get((vocal_song_id, "vocals")),

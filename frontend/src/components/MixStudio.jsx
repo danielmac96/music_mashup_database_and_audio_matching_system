@@ -6,6 +6,7 @@ import { TrackArt } from "./TrackArt";
 import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
 import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
+import { usePlan } from "../hooks/usePlan";
 import { fmtTime, keyRel } from "../theme";
 import { toast } from "../toast";
 
@@ -365,6 +366,84 @@ function snapEdgeToGrid(t, lane, projectBpm, snapMode, pps) {
   return { t: best, snapped: true };
 }
 
+// The three verdicts pair_feedback accepts, with the mark shown on a pill.
+// Same vocabulary as the ranked list's keyboard triage, so a "no" means the
+// same thing on both screens.
+const VERDICTS = [
+  ["love", "✓", "This overlay works"],
+  ["ok", "~", "Usable, not exciting"],
+  ["no", "✗", "This overlay does not work"],
+];
+const VERDICT_MARK = { love: "✓", ok: "~", no: "✗" };
+
+// ── timing options (the pills) ────────────────────────────────────────────────
+// One option is one suggested overlay: this vocal section over that bed section.
+// They arrive from GET /api/mashups/plan as `section_options`, which is
+// matcher.sections.top_section_pairs — the same scored engine the Discover row
+// is built from. The row's OWN pair rides along on the seed as `scoredOption`,
+// because top_section_pairs is capped at six and a row scored under different
+// weights need not be among them.
+
+const optionKey = (o) =>
+  `${o?.vocal_section_idx ?? -1}:${o?.inst_section_idx ?? -1}`;
+
+/** An option is only usable if it names a real span on both sides. A pair whose
+ * tracks were never structure-analysed has no sections and no pills. */
+const usableOption = (o) =>
+  o && o.vocal_section_start != null && o.vocal_section_end > o.vocal_section_start
+    && o.inst_section_start != null && o.inst_section_end > o.inst_section_start;
+
+/** Scored pair first, then the plan's, deduped on the section-index pair. */
+export function mergeTimingOptions(scored, planOptions) {
+  const out = [];
+  const seen = new Set();
+  for (const o of [scored, ...(planOptions || [])]) {
+    if (!usableOption(o)) continue;
+    const k = optionKey(o);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(o);
+  }
+  return out;
+}
+
+/** Where an option puts the two lanes, in the engine's coordinate space.
+ *
+ * Trim (clipStart/clipEnd) is in RAW content seconds and offsetSec is in
+ * DISPLAY seconds, so a lane's audible start is `offsetSec + clipStart/rate` —
+ * which works out to `base` for both lanes, i.e. the two sections begin on the
+ * same instant. `alignment_offset` (matcher/alignment.py) is already expressed
+ * post-stretch in vocal-time seconds, so it adds straight onto the bed's
+ * display offset; null means there is no stored grid to measure against and
+ * must be read as "unknown", never as a known zero.
+ *
+ * Exported and pure so the arithmetic can be reasoned about on its own. */
+export function placementFor(opt, vRate, bRate) {
+  const vr = vRate || 1;
+  const br = bRate || 1;
+  const vAt = (opt.vocal_section_start || 0) / vr;
+  const bAt = (opt.inst_section_start || 0) / br;
+  const off = opt.alignment_offset ?? 0;
+  // Neither lane may hang off the front of the timeline — the viewport cannot
+  // scroll left of zero, so a negative offset is audio you cannot reach.
+  const base = Math.max(vAt, bAt - off);
+  const vLen = ((opt.vocal_section_end || 0) - (opt.vocal_section_start || 0)) / vr;
+  const bLen = ((opt.inst_section_end || 0) - (opt.inst_section_start || 0)) / br;
+  return {
+    base,
+    vocal: { offsetSec: base - vAt,
+             clipStart: opt.vocal_section_start,
+             clipEnd: opt.vocal_section_end },
+    bed: { offsetSec: base - bAt + off,
+           clipStart: opt.inst_section_start,
+           clipEnd: opt.inst_section_end },
+    // Loop the INTERSECTION. _armVoice only loops natively while the loop
+    // window sits inside the trim, so a loop sized to the longer side would
+    // make the shorter one play once and fall silent instead of cycling.
+    loop: { start: base, end: base + Math.max(1, Math.min(vLen, bLen)) },
+  };
+}
+
 // ── main component ────────────────────────────────────────────────────────────
 
 export function MixStudio({ onStatus, seed, onSeedConsumed }) {
@@ -398,6 +477,16 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
   const [sessionToken, setSessionToken] = useState(null);
   const [dragSnapped, setDragSnapped] = useState(false);
   const [restored, setRestored] = useState(false);
+
+  // ── the pair this project was opened on, and its timing options ─────────
+  // Kept so the suggestions survive the seed being consumed AND a reload: only
+  // the two ids and the scored pair are persisted, and the option list is
+  // re-fetched from the plan, so it can never go stale against a re-analysis.
+  const [pairCtx, setPairCtx] = useState(null);   // { vocalSongId, instSongId, scoredOption }
+  const [activeOptionKey, setActiveOptionKey] = useState(null);
+  // "vId:iId:vSec:iSec" -> love|ok|no, the same key MashupSuggestions builds so
+  // a timing judged in Discover already shows as judged here.
+  const [optionVerdicts, setOptionVerdicts] = useState({});
 
   const engineRef = useRef(null);
   const lanesRef = useRef(lanes); lanesRef.current = lanes;
@@ -537,6 +626,37 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
       return next;
     });
 
+  // Which lanes the timing pills act on. Resolved by songId rather than by
+  // position: lanes can be reordered, removed, or joined by a third, and index
+  // 0/1 stops meaning "the vocal" and "the bed" the moment any of that happens.
+  const pairLanes = useMemo(() => {
+    if (!pairCtx) return null;
+    const vocal = lanes.find((l) => l.songId === pairCtx.vocalSongId);
+    const bed = lanes.find((l) => l.songId === pairCtx.instSongId);
+    return vocal && bed ? { vocal, bed } : null;
+  }, [lanes, pairCtx]);
+
+  /** Snap both lanes onto one suggested overlay: move, trim, loop.
+   *
+   * Deliberately leaves the transport alone — clicking a second pill while the
+   * first is looping should move you to it, not stop the music, the same way
+   * arrowing the ranked list re-arms the audition instead of asking for play. */
+  const applyTimingOption = useCallback((opt) => {
+    const ls = lanesRef.current;
+    const vocal = ls.find((l) => l.songId === pairCtx?.vocalSongId);
+    const bed = ls.find((l) => l.songId === pairCtx?.instSongId);
+    if (!vocal || !bed || !usableOption(opt)) return;
+
+    const place = placementFor(opt, vocal.rate, bed.rate);
+    patchLane(vocal.id, place.vocal);
+    patchLane(bed.id, place.bed);
+    setLoop(place.loop);
+    setPosition(place.base);
+    engineRef.current?.seek(place.base);
+    setViewStart(Math.max(0, place.base - 2));
+    setActiveOptionKey(optionKey(opt));
+  }, [pairCtx]);
+
   // First lane with a BPM seeds the project tempo.
   useEffect(() => {
     if (projectBpm == null) {
@@ -674,6 +794,22 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
       const byId = new Map(d.tracks.map((t) => [t.id, t]));
       if (saved.projectBpm) setProjectBpm(saved.projectBpm);
       if (saved.snapMode) setSnapMode(saved.snapMode);
+      // The pair, not its options: the list is re-fetched from the plan below,
+      // so a re-analysis can never leave stale timings on screen.
+      if (saved.pairCtx?.vocalSongId != null && saved.pairCtx?.instSongId != null) {
+        setPairCtx(saved.pairCtx);
+        setActiveOptionKey(saved.activeOptionKey ?? null);
+      }
+      if (saved.loop?.end > saved.loop?.start) {
+        setLoop(saved.loop);
+        if (saved.loopBars) setLoopBars(saved.loopBars);
+        // Open on the audio rather than on bar 1. A timing pill trims its lanes
+        // to a section two minutes in, so a viewport left at 0 restores to what
+        // looks like an empty project.
+        setPosition(saved.loop.start);
+        engineRef.current?.seek(saved.loop.start);
+        setViewStart(Math.max(0, saved.loop.start - 2));
+      }
       let n = 0;
       for (const sl of saved.lanes) {
         const t = byId.get(sl.songId);
@@ -688,7 +824,11 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
     if (!restored) return;
     const t = setTimeout(() => {
       const payload = {
-        projectBpm, snapMode,
+        // `loop` rides along because a restored project that shows an armed
+        // timing pill but no loop is claiming a state it does not have. It was
+        // never persisted before, so a shift-dragged loop was lost on reload
+        // too; the pills just made that visible.
+        projectBpm, snapMode, pairCtx, activeOptionKey, loop, loopBars,
         lanes: lanes.map((l) => ({
           songId: l.songId, stem: l.stem, offsetSec: l.offsetSec, rate: l.rate,
           semitones: l.semitones, gain: l.gain, muted: l.muted, synced: l.synced,
@@ -698,7 +838,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); } catch { /* full */ }
     }, 400);
     return () => clearTimeout(t);
-  }, [lanes, projectBpm, snapMode, restored]);
+  }, [lanes, projectBpm, snapMode, restored, pairCtx, activeOptionKey, loop, loopBars]);
 
   // ── Discover hand-off — what the Audition tab used to be (T4.1) ─────────
   // Open on one pair: vocal over bed, bed conformed to the vocal's tempo and
@@ -748,24 +888,40 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
     const vRate = (bpm && vBpm && syncRateFor(vBpm, bpm)) || 1;
     const bRate = (bpm && bBpm && syncRateFor(bBpm, bpm)) || 1;
 
-    // Line the two chosen sections up on the same project instant. Both offsets
-    // stay ≥ 0 by pushing the pair forward instead of hanging one lane off the
-    // front of the timeline, where the viewport cannot scroll to it.
+    // Line the two chosen sections up on the same project instant. When the row
+    // handed over its full section pair we place through placementFor, so the
+    // arrival is trimmed, looped and bar-nudged exactly like clicking its pill
+    // — the seeded option IS the first pill. A seed carrying only section
+    // STARTS (an older sender, or a pair with no analysed sections) falls back
+    // to the plain "both starts on the same instant" placement.
+    const seeded = usableOption(seed.scoredOption) ? seed.scoredOption : null;
+    const place = seeded ? placementFor(seeded, vRate, bRate) : null;
     const vAt = (seed.vocalSectionStart ?? 0) / vRate;
     const bAt = (seed.instSectionStart ?? 0) / bRate;
-    const base = Math.max(vAt, bAt);
+    const base = place ? place.base : Math.max(vAt, bAt);
 
     engineRef.current?.stop();
     for (const l of lanesRef.current) engineRef.current?.removeVoice(l.id);
     setLanes([]);
-    setLoop(null); setSoloId(null); setCross(0.5);
+    setLoop(place ? place.loop : null); setSoloId(null); setCross(0.5);
     if (bpm) setProjectBpm(bpm);
     setPosition(base);
     engineRef.current?.seek(base);
+    setViewStart(Math.max(0, base - 2));
 
-    addLane(vTrack, vStem, { offsetSec: base - vAt, rate: vRate, semitones: 0,
+    setPairCtx({ vocalSongId: vTrack.id, instSongId: bTrack.id,
+                 scoredOption: seeded });
+    setActiveOptionKey(seeded ? optionKey(seeded) : null);
+
+    addLane(vTrack, vStem, { offsetSec: place ? place.vocal.offsetSec : base - vAt,
+                             clipStart: place ? place.vocal.clipStart : 0,
+                             clipEnd: place ? place.vocal.clipEnd : null,
+                             rate: vRate, semitones: 0,
                              gain: 0.85, synced: Boolean(bpm && vBpm), colorIdx: 0 });
-    addLane(bTrack, bStem, { offsetSec: base - bAt, rate: bRate,
+    addLane(bTrack, bStem, { offsetSec: place ? place.bed.offsetSec : base - bAt,
+                             clipStart: place ? place.bed.clipStart : 0,
+                             clipEnd: place ? place.bed.clipEnd : null,
+                             rate: bRate,
                              semitones: seed.semitoneShift ?? 0,
                              gain: 0.8, synced: Boolean(bpm && bBpm), colorIdx: 1 });
     setRestored(true);
@@ -775,10 +931,70 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed, tracks, addLane, restored]);
 
+  // ── timing options ─────────────────────────────────────────
+  // Fetched from the pair ids rather than carried on the seed, which is what
+  // makes the suggestions outlive onSeedConsumed() and a page reload.
+  const { plan: pairPlan } = usePlan(pairCtx?.vocalSongId, pairCtx?.instSongId);
+  const timingOptions = useMemo(
+    () => mergeTimingOptions(pairCtx?.scoredOption, pairPlan?.section_options),
+    [pairCtx, pairPlan]);
+
+  // Verdicts already recorded for this pair, so a timing judged in Discover
+  // shows as judged here. Keyed exactly as MashupSuggestions keys them.
+  useEffect(() => {
+    if (!pairCtx) { setOptionVerdicts({}); return; }
+    let cancelled = false;
+    api.getPairFeedback()
+      .then((d) => {
+        if (cancelled) return;
+        setOptionVerdicts(Object.fromEntries((d.feedback || []).map((f) => [
+          `${f.vocal_song_id}:${f.inst_song_id}:${f.vocal_section ?? -1}:${f.inst_section ?? -1}`,
+          f.verdict])));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [pairCtx]);
+
+  const verdictKey = useCallback((opt) => (pairCtx
+    ? `${pairCtx.vocalSongId}:${pairCtx.instSongId}:${opt?.vocal_section_idx ?? -1}:${opt?.inst_section_idx ?? -1}`
+    : null), [pairCtx]);
+
+  /** Record love/ok/no for one timing. The verdict is about THIS overlay, not
+   * about the two records — pair_feedback is keyed on the section indexes, so
+   * judging one moment leaves your verdict on the others intact. */
+  const judgeOption = useCallback(async (opt, verdict) => {
+    const k = verdictKey(opt);
+    if (!k) return;
+    const prev = optionVerdicts[k];
+    const next = prev === verdict ? undefined : verdict;   // clicking again clears
+    setOptionVerdicts((v) => ({ ...v, [k]: next }));
+    if (next === undefined) return;    // nothing to unsay server-side yet
+    try {
+      await api.savePairFeedback({
+        vocalSongId: pairCtx.vocalSongId, instSongId: pairCtx.instSongId,
+        verdict: next,
+        vocalSection: opt.vocal_section_idx ?? null,
+        instSection: opt.inst_section_idx ?? null,
+      });
+    } catch (e) {
+      setOptionVerdicts((v) => ({ ...v, [k]: prev }));    // put it back
+      toast(`Could not save that verdict: ${e.message}`);
+    }
+  }, [optionVerdicts, pairCtx, verdictKey]);
+
+  /** Step to the next/previous timing option (the [ and ] keys). */
+  const cycleOption = useCallback((dir) => {
+    if (!timingOptions.length) return;
+    const i = timingOptions.findIndex((o) => optionKey(o) === activeOptionKey);
+    const next = timingOptions[((i < 0 ? 0 : i + dir) + timingOptions.length) % timingOptions.length];
+    applyTimingOption(next);
+  }, [timingOptions, activeOptionKey, applyTimingOption]);
+
   const clearProject = () => {
     engineRef.current?.stop();
     for (const l of lanesRef.current) engineRef.current?.removeVoice(l.id);
     setLanes([]); setLoop(null); setPosition(0); setSoloId(null); setSelectedId(null);
+    setPairCtx(null); setActiveOptionKey(null);
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
     toast("Project cleared");
   };
@@ -980,6 +1196,14 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
         patchLane(selectedId, { offsetSec: lane.offsetSec + dir * (e.shiftKey ? 0.01 : beat) });
       } else if (e.key === "l" || e.key === "L") {
         toggleLoopBars(loopBars);
+      } else if (e.key === "[" || e.key === "]") {
+        // Cycle the suggested overlays. The whole point of the pills is that
+        // comparing four timings costs four keypresses, not four drags.
+        e.preventDefault();
+        cycleOption(e.key === "[" ? -1 : 1);
+      } else if (/^[1-9]$/.test(e.key) && timingOptions.length) {
+        const opt = timingOptions[Number(e.key) - 1];
+        if (opt) { e.preventDefault(); applyTimingOption(opt); }
       } else if ((e.key === "Delete" || e.key === "Backspace") && selectedId) {
         removeLane(selectedId);
       }
@@ -1193,6 +1417,59 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
           </a>
         )}
       </div>
+
+      {/* ── timing options ──
+          The overlays Discover suggested for this pair, kept where you can try
+          them. Each one moves both lanes onto that moment, trims them to it and
+          loops it, so comparing four ideas is four clicks rather than four trips
+          back to the ranked list. The ✓/~/✗ write to pair_feedback keyed on the
+          SECTION indexes, so a verdict here is about this overlay and not about
+          the two records. */}
+      {pairCtx && timingOptions.length > 0 && (
+        <div className="timing-bar">
+          <span className="timing-label">TIMING</span>
+          <div className="snap-seg timing-pills">
+            {timingOptions.map((o, i) => {
+              const k = optionKey(o);
+              const v = optionVerdicts[verdictKey(o)];
+              return (
+                <button key={k} className={k === activeOptionKey ? "active" : ""}
+                  disabled={!pairLanes}
+                  onClick={() => applyTimingOption(o)}
+                  title={o.reason
+                    || `${o.vocal_section_label} over ${o.inst_section_label}`}>
+                  <span className="tp-n">{i + 1}</span>
+                  {o.vocal_section_label || "vocal"} ▸ {o.inst_section_label || "bed"}
+                  {o.score_section != null && (
+                    <span className="tp-fit">{Math.round(o.score_section * 100)}%</span>
+                  )}
+                  {v && <span className={`verdict-chip ${v}`}>{VERDICT_MARK[v]}</span>}
+                </button>
+              );
+            })}
+          </div>
+          {pairLanes ? (
+            <div className="timing-verdicts">
+              {VERDICTS.map(([verdict, mark, hint]) => {
+                const opt = timingOptions.find((o) => optionKey(o) === activeOptionKey);
+                const on = opt && optionVerdicts[verdictKey(opt)] === verdict;
+                return (
+                  <button key={verdict} className={`verdict-btn ${verdict}${on ? " on" : ""}`}
+                    disabled={!opt} onClick={() => judgeOption(opt, verdict)}
+                    title={`${hint} — saved against this overlay only, and kept when the library is re-scored`}>
+                    {mark} {verdict}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <span className="muted" style={{ fontSize: 11.5 }}>
+              Both lanes of the pair have to be in the project to snap a timing.
+            </span>
+          )}
+          <span className="muted timing-hint">[ ] to cycle · 1–{Math.min(9, timingOptions.length)} to jump</span>
+        </div>
+      )}
 
       {/* ── timeline ── */}
       <div className="studio-timeline" ref={viewRef}>
