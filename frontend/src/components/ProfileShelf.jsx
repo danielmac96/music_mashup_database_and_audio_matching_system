@@ -4,10 +4,9 @@ import { toast } from "../toast";
 import { TrackArt } from "./TrackArt";
 
 // Your own shelves, so Discovery opens somewhere instead of on a blank search
-// box. "Connect" IDENTIFIES a public profile — it is not a login and cannot be:
-// soundcloud_oauth is dormant because SoundCloud closed app registration in
-// 2019. That limit is stated on screen rather than discovered as an empty Likes
-// tab.
+// box. "Connect" IDENTIFIES a public profile — it is not a login: soundcloud_oauth
+// is dormant because registering an app requires an Artist Pro subscription.
+// That limit is stated on screen rather than discovered as an empty Likes tab.
 
 const FEEDS = [
   ["playlists", "Your sets"],

@@ -349,8 +349,8 @@ AUTO_LINK_MIN_ARTIST   = 0.5
 #
 # WRITING (creating a playlist on your account, liking, reposting) needs OAuth 2.1
 # against a *registered* app — a client id AND secret from developers.soundcloud.com.
-# That registration has been closed to new applicants since 2019, so these are
-# empty for almost everyone and the write layer stays dormant: see
+# Registration is open and self-serve but requires an Artist Pro subscription, so
+# these are empty for almost everyone and the write layer stays dormant: see
 # ingest/soundcloud_oauth.py, which reports `configured: false` and makes every
 # write endpoint answer 501 with an explanation rather than failing obscurely.
 #

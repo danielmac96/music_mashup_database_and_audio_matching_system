@@ -278,9 +278,10 @@ def push(crate_id: int, req: PushRequest) -> dict:
     """Publish a crate as a real SoundCloud playlist on your account.
 
     Dormant: this answers 501 with setup instructions until a client id and
-    secret exist and an account is connected. SoundCloud has not accepted new
-    API app registrations since 2019, so for most people the crate stays local —
-    which is exactly why crates exist rather than being a thin playlist mirror.
+    secret exist and an account is connected. Registering an app is open and
+    self-serve but needs an Artist Pro subscription, so for most people the
+    crate stays local — which is exactly why crates exist rather than being a
+    thin playlist mirror.
 
     Private by default: pushing a shortlist should never publish to your
     followers unless you ask for it. Re-pushing updates the same playlist rather

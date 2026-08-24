@@ -209,8 +209,8 @@ def status() -> dict:
 
 # ── your profile ─────────────────────────────────────────────────────────────
 # "Connect" here means IDENTIFY, not authenticate. There is no login to offer:
-# soundcloud_oauth is dormant because SoundCloud closed app registration in 2019,
-# so all we can do is remember whose public pages to open. Public sets, public
+# soundcloud_oauth is dormant because registering an app needs an Artist Pro
+# subscription, so all we can do is remember whose public pages to open. Public sets, public
 # likes and public uploads are reachable; private ones are not, and the UI says
 # so rather than showing an empty shelf and letting you conclude it is broken.
 
