@@ -64,9 +64,9 @@ export function scoredOptionOf(c) {
 }
 
 // Key drives 30% of the score and the suggested pitch shift, so an unreliable
-// one has to be visible on the row you are about to judge. See TrackList.jsx for
+// one has to be visible on the row you are about to judge. See theme.js for
 // how key_confidence is derived; null means analysed before it existed.
-// Calibrated against the real library — see TrackList.jsx for the distribution.
+// Calibrated against the real library — see theme.js for the distribution.
 const KEY_CONFIDENCE_MIN = 0.012;
 const keyLooksOff = (kc) => kc != null && kc < KEY_CONFIDENCE_MIN;
 const keyWarnTitle = (kc) =>

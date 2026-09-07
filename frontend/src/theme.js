@@ -185,3 +185,79 @@ export function statusMeta(status) {
   }
   return { tag: (s || "—").toUpperCase(), color: "var(--muted)", bg: "rgba(138,147,166,0.12)", border: "var(--border-ctrl)", pulse: false };
 }
+
+/* ── library shelves ─────────────────────────────────────────────────────── */
+// The sidebar's saved views and the table's warning marks. These live here
+// rather than in a component because the sidebar counts them and the table
+// draws them, and two copies of "is this track ready" would drift.
+
+// A detected tempo outside this range is very often a half/double-time octave
+// error — the single most common way auto-analysis silently poisons matches.
+export const bpmLooksOff = (f) => f?.bpm != null && (f.bpm < 80 || f.bpm > 170);
+
+// key_confidence (T1.3) is margin-over-runner-up x chroma peakiness, so it is
+// low both when two keys are effectively tied and when there is no tonal centre
+// to find. Calibrated against a re-analysed 90-stem library, where it runs
+// p25=0.010, p50=0.023, p90=0.066, max=0.128 — real music simply does not
+// produce confident key estimates very often. The threshold marks the worst
+// ~quartile: flagging the median would put a ⚠ on three tracks in four and
+// train the eye to ignore it. null = analysed before this existed, say nothing.
+export const KEY_CONFIDENCE_MIN = 0.012;
+export const keyLooksOff = (f) =>
+  f?.key_confidence != null && f.key_confidence < KEY_CONFIDENCE_MIN;
+
+// Everything the matcher needs to place this track in a pair: a tempo and key,
+// the two stems a vocal-over-bed mashup is made of, and structure to pick a
+// section from. Missing any one of them and the track cannot be scored.
+export function isReadyToMash(track) {
+  return isAnalysed(track)
+    && (track?.section_count || 0) > 0
+    && !!track?.stems?.vocals
+    && !!track?.stems?.instrumental;
+}
+
+// Rows worth looking at by hand: a failed stage, a partial import, or a number
+// the analysis itself is not confident about.
+export function needsAttention(track) {
+  if (String(track?.status || "").startsWith("error")) return true;
+  if (track?.last_error) return true;
+  if (track?.metadata_partial) return true;
+  const f = track?.features?.full;
+  return bpmLooksOff(f) || keyLooksOff(f);
+}
+
+const RECENT_DAYS = 30;
+
+export function isRecentlyAdded(track, now = Date.now()) {
+  const t = Date.parse(String(track?.created_at || "").replace(" ", "T") + "Z");
+  if (!Number.isFinite(t)) return false;
+  return now - t < RECENT_DAYS * 86400_000;
+}
+
+/* ── numbers on a row ────────────────────────────────────────────────────── */
+
+// "1.2M" / "412k" / "980". Zero renders as "—": a track with no play count has
+// not been reported as unpopular, it has not been reported at all.
+export function fmtPlays(n) {
+  if (!n) return "—";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${Math.round(n / 1000)}k`;
+  return String(n);
+}
+
+// The number's colour carries popularity, so the column reads without being
+// compared row to row.
+export function playsColor(n) {
+  if (!n) return "var(--faint-2)";
+  if (n >= 500_000) return "var(--green)";
+  if (n >= 50_000) return "var(--text-2)";
+  return "var(--faint)";
+}
+
+// release_year is 0 for the large share of SoundCloud uploads that carry no
+// date. That is an absent value, not year zero — the column keeps its width and
+// shows an em dash rather than disappearing.
+export function fmtYear(year) {
+  return year ? String(year) : "—";
+}
+export const yearColor = (year) => (year ? "var(--text-2)" : "var(--faint-2)");

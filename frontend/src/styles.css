@@ -78,7 +78,129 @@ input, select { font-family: inherit; }
 .pulse { animation: eqpulse 1.6s infinite; }
 
 /* ── App shell ─────────────────────────────────────────────────────────── */
-.app-shell { min-height: 100vh; background: var(--bg); }
+/* ── Shell: 206px rail + main column ───────────────────────────────────── */
+/* The tab bar became a rail so the Library screen can carry a permanent pair
+   dock on its right. The rail spans the full viewport height and only the main
+   column scrolls — a page-level scroll would take the navigation with it. */
+.app-shell {
+  height: 100vh;
+  background: var(--bg);
+  display: grid;
+  grid-template-columns: 206px minmax(0, 1fr);
+  overflow: hidden;
+}
+/* The first-run wizard has no rail to navigate: nothing is configured yet. */
+.app-shell.setup { display: block; height: auto; min-height: 100vh; overflow: auto; }
+
+.app-main { min-width: 0; position: relative; display: flex; flex-direction: column; overflow: hidden; }
+.app-main > * { min-height: 0; }
+/* Screens that still use the old centred page container scroll inside the
+   column rather than moving the shell. */
+.app-main > .page { overflow: auto; flex: 1; }
+
+.rail {
+  background: var(--topbar);
+  border-right: 1px solid var(--border-top);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.rail-brand {
+  height: 46px; flex: none;
+  display: flex; align-items: center; gap: 8px; padding: 0 16px;
+  border-bottom: 1px solid var(--hair);
+  font-size: 13px; font-weight: 600; letter-spacing: -0.01em;
+}
+.rail-brand .diamond { color: var(--accent); font-size: 14px; }
+
+.rail-nav { display: flex; flex-direction: column; gap: 1px; padding: 10px 8px 4px; flex: none; }
+.rail-item {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 9px; border: none; border-radius: 6px; cursor: pointer;
+  background: transparent; color: var(--muted);
+  font-family: var(--font-ui); font-size: 12.5px; font-weight: 500;
+  text-align: left; width: 100%;
+}
+.rail-item:hover { color: var(--text-2); background: rgba(255, 255, 255, 0.03); }
+.rail-item.active { background: var(--raised); color: var(--text); font-weight: 600; }
+.rail-glyph { width: 14px; text-align: center; flex: none; }
+.rail-item.active .rail-glyph { color: var(--accent); }
+.rail-count {
+  margin-left: auto; font-family: var(--font-mono); font-size: 10.5px;
+  font-weight: 500; color: var(--faint); font-variant-numeric: tabular-nums;
+}
+.rail-dot {
+  margin-left: auto; width: 6px; height: 6px; border-radius: 3px;
+  background: var(--green);
+}
+
+/* The per-route slot. Library fills it with views and crates, Discover with
+   sources and saved profiles, Mixes with the tracklist importer. */
+.rail-slot { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.rail-label {
+  flex: none; padding: 14px 17px 6px;
+  font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: 0.09em; color: var(--faint);
+}
+.rail-group { flex: none; display: flex; flex-direction: column; gap: 1px; padding: 0 8px; }
+.rail-group.scroll { flex: 1; min-height: 0; overflow: auto; }
+.rail-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 9px; border: none; border-radius: 6px; cursor: pointer;
+  background: transparent; color: var(--muted);
+  font-family: var(--font-ui); font-size: 12px; font-weight: 500;
+  text-align: left; width: 100%;
+}
+.rail-row:hover { color: var(--text-2); background: rgba(255, 255, 255, 0.03); }
+.rail-row.active { color: var(--text); }
+.rail-swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.rail-rowglyph { color: var(--faint-2); flex: none; }
+.rail-rowlabel { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.rail-foot {
+  margin-top: auto; flex: none;
+  border-top: 1px solid var(--hair); padding: 10px 14px;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10px; color: var(--faint);
+}
+.rail-foot .mono { font-size: 10px; }
+.rail-judged { margin-left: auto; color: var(--amber-light); }
+.rail-gear {
+  cursor: pointer; font-size: 13px; line-height: 1; padding: 0;
+  background: transparent; border: none; color: var(--faint);
+}
+.rail-gear:hover { color: var(--text-2); }
+.rail-gear.on { color: var(--accent-light); }
+
+/* ── The 46px screen header ────────────────────────────────────────────── */
+.screen-bar {
+  height: 46px; flex: none;
+  display: flex; align-items: center; gap: 10px; padding: 0 16px;
+  border-bottom: 1px solid var(--border-top);
+  background: var(--topbar);
+}
+.screen-bar h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.015em; }
+.screen-sub { font-size: 11px; color: var(--faint); font-weight: 500; }
+
+/* Header status used to sit in the top bar. With no top bar it floats over the
+   screen it belongs to rather than being dropped. */
+.float-status {
+  position: absolute; top: 9px; right: 16px; z-index: 30;
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+  background: var(--inset-2); border: 1px solid var(--border-ctrl);
+  border-radius: 999px; padding: 4px 12px; pointer-events: none;
+}
+.float-status.locked {
+  color: var(--green);
+  background: rgba(46, 204, 113, 0.1);
+  border-color: rgba(46, 204, 113, 0.45);
+}
+.float-status .dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--green);
+  box-shadow: 0 0 8px var(--green);
+}
+
 
 .topbar {
   height: 60px;
@@ -2065,3 +2187,242 @@ input, select { font-family: inherit; }
   font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
   text-align: center; margin: 5px 0 2px; line-height: 1.45;
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Library (screen 1a)
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+.header-search {
+  margin-left: auto; display: flex; align-items: center; gap: 7px;
+  width: 250px; padding: 5px 10px;
+  background: var(--inset-2); border: 1px solid var(--border-ctrl); border-radius: 7px;
+}
+.header-search .glyph { color: var(--faint); font-size: 12px; }
+.header-search input {
+  all: unset; flex: 1; min-width: 0;
+  font: 400 12px var(--font-ui); color: var(--text);
+}
+.header-search input::placeholder { color: var(--faint); }
+.header-search .slash { font-size: 9.5px; font-weight: 500; color: var(--faint-2); }
+
+.head-btn {
+  cursor: pointer; white-space: nowrap;
+  font: 500 11.5px var(--font-ui); color: var(--text-2);
+  background: var(--raised); border: 1px solid var(--border-ctrl);
+  border-radius: 7px; padding: 5px 10px;
+}
+.head-btn:hover { color: var(--text); border-color: var(--accent); }
+
+.import-drop {
+  flex: none; padding: 12px 16px; background: var(--inset);
+  border-bottom: 1px solid var(--hair); max-height: 46vh; overflow: auto;
+}
+.import-drop .page { max-width: none; margin: 0; padding: 0; }
+
+/* ── the two filter bars ───────────────────────────────────────────────── */
+/* Every chip is flex:none and nowrap, and the row wraps. At this frame width
+   the row is only ~830px, so a chip allowed to shrink turns 122-136 into 12…,
+   and the number is the entire content of the chip. */
+.filter-bar {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center;
+  gap: 6px 7px; padding: 8px 16px;
+  border-bottom: 1px solid var(--hair); background: var(--inset);
+}
+.filter-bar.saved { padding: 7px 16px; background: var(--inset-2); }
+
+.fchip-wrap { position: relative; flex: none; }
+.fchip {
+  flex: none; white-space: nowrap; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel); border: 1px solid var(--border-ctrl); border-radius: 7px;
+  padding: 4px 9px; font: 500 11.5px var(--font-ui); color: var(--text-2);
+}
+.fchip:hover { border-color: var(--accent); }
+.fchip.on {
+  background: var(--accent-tint); border-color: var(--border-accent);
+  color: var(--accent-light);
+}
+.fchip-k { color: var(--faint); }
+.fchip-v { font-variant-numeric: tabular-nums; }
+.fchip-caret { color: var(--faint); font-size: 9px; }
+.fchip.star .fchip-caret { display: none; }
+
+.fclear {
+  flex: none; white-space: nowrap; cursor: pointer; border: none;
+  background: transparent; font: 500 11px var(--font-ui); color: var(--faint);
+  padding: 4px 2px;
+}
+.fclear:hover { color: var(--text-2); }
+
+.filter-count {
+  margin-left: auto; flex: none; white-space: nowrap;
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 500; color: var(--faint);
+}
+.filter-count .txt { color: var(--text-2); }
+
+.fmenu {
+  position: absolute; top: calc(100% + 5px); left: 0; z-index: 60;
+  background: var(--panel); border: 1px solid var(--border-ctrl);
+  border-radius: 8px; padding: 6px; max-height: 320px; overflow: auto;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.fmenu-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  cursor: pointer; border: none; background: transparent; border-radius: 5px;
+  padding: 5px 8px; text-align: left; width: 100%;
+  font: 500 11.5px var(--font-ui); color: var(--text-2);
+}
+.fmenu-opt:hover { background: var(--raised); color: var(--text); }
+.fmenu-opt.on { color: var(--accent-light); background: var(--accent-tint); }
+.fmenu-n { font-size: 10px; color: var(--faint); }
+.fmenu-empty { padding: 6px 8px; font-size: 11px; color: var(--faint); }
+.fmenu-row { display: flex; align-items: center; gap: 6px; padding: 4px; }
+.fmenu-row.tol { border-top: 1px solid var(--hair); margin-top: 4px; padding-top: 7px; }
+.fmenu-keys { display: flex; flex-wrap: wrap; gap: 3px; padding: 2px 4px; }
+.fmenu-key {
+  cursor: pointer; border: 1px solid var(--border-ctrl); border-radius: 4px;
+  background: var(--inset-2); padding: 3px 5px;
+  font: 600 10.5px var(--font-mono); color: var(--text-2);
+}
+.fmenu-key:hover { border-color: var(--accent); }
+.fmenu-key.on { background: var(--accent); color: #07090d; border-color: var(--accent); }
+.mini-btn.on {
+  background: var(--accent-tint); border-color: var(--border-accent);
+  color: var(--accent-light);
+}
+
+/* ── saved views + the two-key sort ────────────────────────────────────── */
+.saved-pill-wrap { flex: none; display: inline-flex; align-items: center; }
+.saved-pill {
+  flex: none; white-space: nowrap; cursor: pointer;
+  font: 500 11px var(--font-ui); color: var(--muted);
+  background: var(--panel); border: 1px solid var(--border-ctrl);
+  border-radius: 20px; padding: 3px 10px;
+}
+.saved-pill:hover { color: var(--accent-light); border-color: var(--border-accent); }
+.saved-pill.add { border-style: dashed; color: var(--faint); }
+.saved-pill.add:disabled { opacity: 0.45; cursor: default; }
+.saved-x {
+  cursor: pointer; border: none; background: transparent; color: var(--faint-2);
+  font-size: 12px; padding: 0 4px;
+}
+.saved-x:hover { color: var(--red); }
+
+.sort-cluster {
+  margin-left: auto; flex: none; white-space: nowrap;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; font-weight: 500; color: var(--faint);
+}
+.sort-key { display: inline-flex; align-items: center; gap: 2px; }
+.sort-key select {
+  cursor: pointer; font: 500 11px var(--font-mono); color: var(--text-2);
+  background: var(--panel); border: 1px solid var(--border-ctrl);
+  border-radius: 6px; padding: 3px 6px;
+}
+.sort-key.off select { opacity: 0.4; cursor: default; }
+.sort-key button {
+  cursor: pointer; border: 1px solid var(--border-ctrl); border-radius: 6px;
+  background: var(--panel); color: var(--text-2);
+  font: 500 11px var(--font-mono); padding: 3px 6px;
+}
+.sort-key.on select, .sort-key.on button { color: var(--text); }
+
+/* ── the table ─────────────────────────────────────────────────────────── */
+.track-table { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.tt-head {
+  flex: none; display: grid; gap: 8px; align-items: center;
+  padding: 7px 16px; background: var(--inset);
+  border-bottom: 1px solid var(--border);
+  font: 600 9.5px var(--font-mono); letter-spacing: 0.08em; color: var(--faint);
+}
+.tt-head .right { text-align: right; }
+.tt-body { flex: 1; min-height: 0; overflow: auto; }
+.tt-empty { padding: 26px 16px; font-size: 12.5px; color: var(--muted); }
+
+.tt-row {
+  display: grid; gap: 8px; align-items: center;
+  padding: 0 16px; height: 44px; cursor: pointer;
+  border-bottom: 1px solid var(--panel);
+}
+.tt-row:hover { background: var(--panel); }
+.tt-row.selected { background: var(--accent-tint); }
+.tt-row.selected:hover { background: rgba(91, 140, 255, 0.18); }
+.tt-row.playing .tt-title { color: var(--accent-light); }
+
+.tt-play {
+  width: 20px; height: 20px; cursor: pointer; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 4px; background: var(--raised);
+  border: 1px solid var(--border-ctrl); color: var(--text-2); font-size: 8px;
+}
+.tt-play:hover { border-color: var(--accent); color: var(--accent-light); }
+.tt-art { width: 28px; height: 28px; border-radius: 4px; }
+.tt-name { min-width: 0; }
+.tt-title {
+  font: 500 12.5px var(--font-ui); color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tt-artist {
+  font: 400 11px var(--font-ui); color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tt-cell { min-width: 0; }
+.tt-num { font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.tt-num.right { text-align: right; color: var(--faint); }
+.tt-genre {
+  display: inline-block; max-width: 100%;
+  font-size: 10px; letter-spacing: 0.04em; color: var(--text-2);
+  background: var(--raised); border-radius: 4px; padding: 3px 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tt-key {
+  display: inline-block; font-size: 11px; font-weight: 600;
+  color: #07090d; padding: 3px 6px; border-radius: 4px;
+}
+
+.tt-dots-cell { position: relative; }
+.tt-dots {
+  display: flex; gap: 3px; cursor: pointer; padding: 4px 2px;
+  background: transparent; border: none; border-radius: 4px;
+}
+.tt-dots:hover, .tt-dots.open { background: var(--raised); }
+.tt-dots span { width: 9px; height: 5px; border-radius: 2px; }
+
+.tt-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 70;
+  width: 232px; padding: 6px;
+  background: var(--panel); border: 1px solid var(--border-ctrl);
+  border-radius: 9px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  display: flex; flex-direction: column; gap: 2px; cursor: default;
+}
+.tt-menu-head {
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.08em;
+  color: var(--faint); padding: 3px 8px 5px; text-transform: uppercase;
+}
+.tt-menu-note { font-size: 10.5px; color: var(--amber-light); padding: 2px 8px 5px; }
+.tt-menu-err { font-size: 11px; color: var(--red); padding: 4px 8px; line-height: 1.4; }
+.tt-menu-item {
+  cursor: pointer; border: none; background: transparent; border-radius: 5px;
+  padding: 6px 8px; text-align: left; width: 100%;
+  font: 500 11.5px var(--font-ui); color: var(--text-2);
+}
+.tt-menu-item:hover:not(:disabled) { background: var(--raised); color: var(--text); }
+.tt-menu-item:disabled { color: var(--faint-2); cursor: default; }
+.tt-menu-item.danger { color: var(--red); }
+.tt-menu-item.danger:hover { background: rgba(248, 113, 113, 0.12); }
+.tt-menu-sep { height: 1px; background: var(--hair); margin: 4px 0; }
+.tt-menu-confirm { padding: 4px 8px 6px; display: flex; flex-direction: column; gap: 6px; }
+.tt-menu-confirm > div { display: flex; gap: 6px; }
+
+/* ── stars ─────────────────────────────────────────────────────────────── */
+.stars { letter-spacing: 0.5px; white-space: nowrap; }
+.stars.interactive { display: inline-flex; }
+.stars.interactive button {
+  cursor: pointer; border: none; background: transparent; padding: 0 0.5px;
+  font: inherit; color: var(--faint-2); line-height: 1;
+}
+.stars.interactive button.on { color: var(--amber); }
+.stars.interactive:hover button { color: var(--amber-light); }
+.stars.interactive button:hover ~ button { color: var(--faint-2); }
