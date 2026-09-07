@@ -12,7 +12,7 @@ from database.models import (
     BPM_BANDS, ENERGY_BANDS, ERA_BANDS, VERDICTS, best_bed_per_vocal,
     candidate_filter_options, exclude_track, get_candidates_enriched,
     get_pair_feedback, hide_pair, include_track, list_hidden, unhide_pair,
-    upsert_pair_feedback,
+    upsert_pair_feedback, verdict_for_rating,
 )
 
 from api import jobs
@@ -254,7 +254,11 @@ def list_suppressed() -> dict:
 class PairVerdict(BaseModel):
     vocal_song_id: int
     inst_song_id: int
-    verdict: str
+    # Either is enough. The dock sends a star, Discover's ✓/~/✗ sends a
+    # verdict, and the model derives whichever is missing — see
+    # database.models.RATING_TO_VERDICT.
+    verdict: Optional[str] = None
+    rating: Optional[int] = None
     vocal_section: Optional[int] = None
     inst_section: Optional[int] = None
 
@@ -268,15 +272,23 @@ def save_feedback(body: PairVerdict) -> dict:
     truncates mashup_candidates. Re-judging a pair corrects it rather than
     adding a second, contradictory row.
     """
-    if body.verdict not in VERDICTS:
+    if body.verdict is None and body.rating is None:
+        raise HTTPException(status_code=400,
+                            detail="one of verdict or rating is required")
+    if body.verdict is not None and body.verdict not in VERDICTS:
         raise HTTPException(status_code=400,
                             detail=f"verdict must be one of {sorted(VERDICTS)}")
+    if body.rating is not None and not 1 <= body.rating <= 5:
+        raise HTTPException(status_code=400, detail="rating must be 1-5")
     upsert_pair_feedback(
         body.vocal_song_id, body.inst_song_id, body.verdict,
         vocal_section=body.vocal_section, inst_section=body.inst_section,
+        rating=body.rating,
     )
+    verdict = body.verdict or verdict_for_rating(body.rating)
     return {"ok": True, "vocal_song_id": body.vocal_song_id,
-            "inst_song_id": body.inst_song_id, "verdict": body.verdict}
+            "inst_song_id": body.inst_song_id, "verdict": verdict,
+            "rating": body.rating}
 
 
 @router.get("/feedback")

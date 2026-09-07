@@ -134,6 +134,35 @@ def phrase_fit(vocal_secs: float, inst_secs_stretched: float,
             "bed_bars": round(b_bars, 2), "repeats": best_reps, "note": note}
 
 
+def section_terms(vocal: Dict, inst: Dict, stretch: float,
+                  bpm: Optional[float] = None) -> Dict[str, float]:
+    """The three weighted terms score_section_pair sums but does not keep.
+
+    Deliberately NOT called from score_section_pair, which runs once per
+    (vocal section x bed section) over the whole library — hundreds of
+    thousands of times per re-score — and must not pay for a dict allocation to
+    hand back numbers it is about to add together. This runs in _pair_row
+    instead, i.e. only for the rows that are actually stored, so the ranked
+    list can show WHY a score is what it is without slowing scoring down.
+
+    Keep the arithmetic here identical to score_section_pair's; the two are
+    pinned against each other by tests/test_section_terms.py.
+    """
+    v_dur = _duration(vocal)
+    i_dur = _duration(inst) / max(float(stretch or 1.0), 1e-6)
+    vp = vocal.get("vocal_presence")
+    return {
+        "score_label": round(
+            0.5 * _priority_term(vocal.get("label"), _VOCAL_LABEL_PRIORITY)
+            + 0.5 * _priority_term(inst.get("label"), _INST_LABEL_PRIORITY), 4),
+        "score_duration": round(
+            phrase_fit(v_dur, i_dur, bpm)["fit"] if bpm
+            else duration_fit(v_dur, i_dur), 4),
+        "score_voice": round(
+            0.5 if vp is None else min(max(float(vp), 0.0), 1.0), 4),
+    }
+
+
 def score_section_pair(vocal: Dict, inst: Dict, stretch: float,
                        bpm: Optional[float] = None) -> float:
     """Fit of one (vocal section, bed section) pair, 0-1.
@@ -231,6 +260,10 @@ def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
         (float(i.get("end_sec") or 0) - float(i.get("start_sec") or 0))
         / max(float(stretch or 1.0), 1e-6), bpm)
     parts = section_components(v, i, stretch)
+    # label / duration / voice were computed and thrown away on every write
+    # until now, so three of the four bars the pair card draws had no value to
+    # draw. Cheap here: this runs per STORED row, not per scored pair.
+    parts.update(section_terms(v, i, stretch, bpm))
     # Spec §8: the ranked list should say what building this involves, not just
     # that it is worth building. Computed from the stored per-section downbeats,
     # so it costs no audio and runs for every candidate rather than only for the
