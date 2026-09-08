@@ -3,6 +3,7 @@ import { api } from "../api";
 import { JobBadge } from "./JobBadge";
 import { KeyChip } from "./KeyChip";
 import { TrackArt } from "./TrackArt";
+import { StudioRail } from "./StudioRail";
 import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
 import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
@@ -67,8 +68,18 @@ const SNAP_PX = 12;
 // to zero length (which the renderer rejects).
 const HANDLE_PX = 8;
 const MIN_CLIP_SECS = 0.25;
-const HEADER_W = 236; // lane-header column width (must match .studio-grid CSS)
+// The label gutter: a 138px lane card plus the 12px grid gap. HARD-COUPLED to
+// `.studio-grid { grid-template-columns: 138px 1fr; column-gap: 12px }` and to
+// the playhead overlay, which is positioned at exactly this offset so one
+// cursor crosses the ruler, both lanes and the bar grid. Change one, change all
+// three. The lane cards are box-sizing:border-box for the same reason — that
+// was the bug that knocked the lanes 21px out of alignment in the prototype.
+const HEADER_W = 150; // lane-header column width (must match .studio-grid CSS)
 const STORAGE_KEY = "mashup.studio.project.v1";
+// Snapshots of arrangements worth coming back to. Separate key from the live
+// project so saving one cannot disturb what you are working on.
+const SNAPSHOT_KEY = "mashup.studio.snapshots.v1";
+const MAX_SNAPSHOTS = 20;
 
 let laneUid = 1;
 
@@ -446,7 +457,7 @@ export function placementFor(opt, vRate, bRate) {
 
 // ── main component ────────────────────────────────────────────────────────────
 
-export function MixStudio({ onStatus, seed, onSeedConsumed }) {
+export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null }) {
   const [tracks, setTracks] = useState([]);
   const [lanes, setLanes] = useState([]);
   const [projectBpm, setProjectBpm] = useState(null);
@@ -487,12 +498,16 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
   // "vId:iId:vSec:iSec" -> love|ok|no, the same key MashupSuggestions builds so
   // a timing judged in Discover already shows as judged here.
   const [optionVerdicts, setOptionVerdicts] = useState({});
+  // Stars on the same key as the verdicts. A star writes its mapped verdict
+  // too, so rating a build here reaches the learned scorer exactly as a ✓ does.
+  const [optionRatings, setOptionRatings] = useState({});
 
   const engineRef = useRef(null);
   const lanesRef = useRef(lanes); lanesRef.current = lanes;
   const viewRef = useRef(null);
   const laneCanvasRefs = useRef(new Map());
   const rulerRef = useRef(null);
+  const barGridRef = useRef(null);
 
   // ── engine lifecycle ────────────────────────────────────────────────────
   useEffect(() => {
@@ -947,9 +962,11 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
     api.getPairFeedback()
       .then((d) => {
         if (cancelled) return;
-        setOptionVerdicts(Object.fromEntries((d.feedback || []).map((f) => [
-          `${f.vocal_song_id}:${f.inst_song_id}:${f.vocal_section ?? -1}:${f.inst_section ?? -1}`,
-          f.verdict])));
+        const rows = d.feedback || [];
+        const key = (f) => `${f.vocal_song_id}:${f.inst_song_id}`
+          + `:${f.vocal_section ?? -1}:${f.inst_section ?? -1}`;
+        setOptionVerdicts(Object.fromEntries(rows.map((f) => [key(f), f.verdict])));
+        setOptionRatings(Object.fromEntries(rows.map((f) => [key(f), f.rating])));
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -982,6 +999,55 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
     }
   }, [optionVerdicts, pairCtx, verdictKey]);
 
+  /** Rate the build 1-5. Keyed on the SECTION indexes like every other
+   * judgement here, so a star is about this overlay and not about the two
+   * records — and the server derives the verdict the scorer trains on. */
+  const rateBuild = useCallback(async (opt, stars) => {
+    const k = verdictKey(opt);
+    if (!k || !pairCtx) return;
+    const prev = optionRatings[k];
+    setOptionRatings((m) => ({ ...m, [k]: stars }));
+    try {
+      const body = await api.savePairFeedback({
+        vocalSongId: pairCtx.vocalSongId, instSongId: pairCtx.instSongId,
+        rating: stars,
+        vocalSection: opt.vocal_section_idx ?? null,
+        instSection: opt.inst_section_idx ?? null,
+      });
+      setOptionVerdicts((v) => ({ ...v, [k]: body.verdict }));
+    } catch (e) {
+      setOptionRatings((m) => ({ ...m, [k]: prev }));
+      toast(`Could not save that rating: ${e.message}`);
+    }
+  }, [optionRatings, pairCtx, verdictKey]);
+
+  /** Keep this arrangement so you can come back to it.
+   *
+   * localStorage, next to the live project, because a snapshot is this
+   * browser's working state — there is no server-side session store, and
+   * inventing one to hold a scratch arrangement would be a bigger claim than
+   * the button makes. */
+  const saveSnapshot = useCallback(() => {
+    const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+    const payload = {
+      name: `${lanesRef.current.map((l) => l.title).join(" + ") || "empty"} · ${stamp}`,
+      at: Date.now(), projectBpm, loop, loopBars, pairCtx, activeOptionKey,
+      lanes: lanesRef.current.map((l) => ({
+        songId: l.songId, stem: l.stem, offsetSec: l.offsetSec, rate: l.rate,
+        semitones: l.semitones, gain: l.gain, muted: l.muted, synced: l.synced,
+        colorIdx: l.colorIdx, clipStart: l.clipStart, clipEnd: l.clipEnd,
+      })),
+    };
+    try {
+      const all = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || "[]");
+      all.unshift(payload);
+      localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(all.slice(0, MAX_SNAPSHOTS)));
+      toast(`Snapshot saved — ${all.length > MAX_SNAPSHOTS ? MAX_SNAPSHOTS : all.length} kept`);
+    } catch {
+      toast("Could not save the snapshot — this browser's storage is full");
+    }
+  }, [projectBpm, loop, loopBars, pairCtx, activeOptionKey]);
+
   /** Step to the next/previous timing option (the [ and ] keys). */
   const cycleOption = useCallback((dir) => {
     if (!timingOptions.length) return;
@@ -1006,6 +1072,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
       if (c) paintLane(c, l, viewStart, pps, l.id === selectedId);
     }
     if (rulerRef.current) paintRuler(rulerRef.current, viewStart, pps, projectBpm, loop);
+    // The bar grid is the same ruler a second time, at the foot of the stack:
+    // a clip edge is read against a bar number without counting ticks upwards
+    // past two lanes.
+    if (barGridRef.current) paintRuler(barGridRef.current, viewStart, pps, projectBpm, loop);
   }, [lanes, viewStart, pps, viewW, selectedId, projectBpm, loop]);
 
   // Follow the playhead while playing.
@@ -1301,11 +1371,99 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
 
   const scrollMax = Math.max(0, projectLen - viewSecs);
 
-  return (
-    <div className="page studio">
-      {error && <div className="error-text" style={{ marginBottom: 8 }}>{error}</div>}
+  // What the MATCHER suggested for this pair, which is what the rail's grey
+  // ticks and the alignment bar read from. The plan is re-fetched from the pair
+  // ids, so it survives the seed being consumed and a reload — and a re-analysis
+  // can never leave a stale suggestion on screen.
+  const activeOption = timingOptions.find((o) => optionKey(o) === activeOptionKey) || null;
+  const suggested = {
+    targetBpm: pairPlan?.target_bpm ?? activeOption?.target_bpm ?? null,
+    stretch: pairPlan?.stretch_factor ?? null,
+    semitones: pairPlan?.semitone_shift ?? null,
+    // null is NO STORED GRID, not a measured zero — the rail says so rather
+    // than drawing a tick at 0 ms that nothing measured.
+    nudgeSec: activeOption?.alignment_offset ?? null,
+  };
+  const bedLane = pairLanes?.bed ?? null;
+  const vocalLane = pairLanes?.vocal ?? null;
+  const selectedLane = lanes.find((l) => l.id === selectedId) || null;
+  const buildRating = activeOption ? (optionRatings[verdictKey(activeOption)] ?? null) : null;
+  // "edited" means the arrangement has diverged from the recipe the matcher
+  // handed over, not merely that something was touched.
+  const dirty = Boolean(
+    (suggested.stretch != null && bedLane
+      && Math.abs(bedLane.rate - suggested.stretch) > 1e-3)
+    || (suggested.semitones != null && bedLane
+      && bedLane.semitones !== suggested.semitones)
+    || (suggested.nudgeSec != null && bedLane && vocalLane
+      && Math.abs((bedLane.offsetSec - vocalLane.offsetSec) - suggested.nudgeSec) > 0.005),
+  );
 
-      {/* ── toolbar ── */}
+  const resetToSuggestion = () => {
+    if (activeOption) applyTimingOption(activeOption);
+    else if (bedLane && suggested.stretch != null) {
+      patchLane(bedLane.id, { rate: suggested.stretch, synced: false,
+                              semitones: suggested.semitones ?? bedLane.semitones });
+    }
+  };
+
+  return (
+    <div className="studio-screen">
+      {/* ── header ── */}
+      <header className="screen-bar">
+        <span className="diamond" style={{ color: "var(--accent)" }}>◈</span>
+        <h1>Studio</h1>
+        <span className="studio-seed">
+          {pairCtx
+            ? "seeded from a pair · both tracks loaded in full"
+            : `${lanes.length} lane${lanes.length === 1 ? "" : "s"}`}
+        </span>
+        {loop && isPlaying && (
+          <span className="studio-looping mono">
+            <span className="dot pulse" />
+            looping {loopBars} bars
+          </span>
+        )}
+        <span className="spacer" style={{ flex: 1 }} />
+        <button className="head-btn" onClick={handleSessionExport}
+          disabled={sessionJobId != null || !sessionPair}
+          title={sessionPair
+            ? "Export both stems conformed to the project tempo and key, trimmed to the chosen sections and aligned so bar 1 is at 0:00 — drop into FL at 0:00, no nudging. Includes a click track and the recipe."
+            : "Needs one audible vocal lane and one audible instrumental lane from different tracks."}>
+          FL session
+        </button>
+        {sessionJobId && (
+          <JobBadge jobId={sessionJobId} onComplete={(job) => {
+            setSessionJobId(null);
+            if (job.status === "completed") setSessionToken(job.id);
+          }} />
+        )}
+        {sessionToken && (
+          <a href={api.sessionArchiveUrl(sessionToken)} target="_blank" rel="noreferrer"
+            className="muted" style={{ fontSize: 11 }}>↓ session</a>
+        )}
+        <button className="studio-render" onClick={handleExport}
+          disabled={exportJobId != null || lanes.length === 0}>
+          Render mixdown
+        </button>
+        {exportJobId && (
+          <JobBadge jobId={exportJobId} onComplete={(job) => {
+            setExportJobId(null);
+            if (job.status === "completed") setExportToken(job.id);
+          }} />
+        )}
+        {exportToken && (
+          <a href={api.mixdownAudioUrl(exportToken)} target="_blank" rel="noreferrer"
+            className="muted" style={{ fontSize: 11 }}>↓ WAV</a>
+        )}
+      </header>
+
+      {error && <div className="error-text" style={{ padding: "6px 18px" }}>{error}</div>}
+
+      {/* ── transport + alignment ──
+          One row, because the alignment values are what you are listening FOR
+          and the transport is how you listen. Every value here is the matcher's
+          suggestion until you move it, and "reset to suggestion" puts it back. */}
       <div className="studio-toolbar">
         <button className={`play-btn ${isPlaying ? "playing" : "stopped"}`}
           onClick={togglePlay} disabled={lanes.every((l) => !l.buffer)}
@@ -1377,45 +1535,48 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
         <button className="studio-btn" onClick={() => zoom(1.4)} title="Zoom in (or ctrl+wheel)">+</button>
         <button className="studio-btn" onClick={zoomFit} title="Fit project">fit</button>
 
+        <span className="studio-sep" />
+
+        {/* ── alignment readout ──
+            The recipe the matcher handed over. Editable everywhere it appears,
+            and every edit shows up as a divergence from the grey tick on the
+            matching slider in the rail. */}
+        <span className="micro-label">ALIGN</span>
+        {suggested.targetBpm != null && (
+          <span className="align-chip mono" title="The tempo both sides are conformed to">
+            target {suggested.targetBpm.toFixed(1)}
+          </span>
+        )}
+        {bedLane && (
+          <span className="align-chip mono" title="Pitch shift applied to the bed">
+            bed {bedLane.semitones > 0 ? "+" : ""}{bedLane.semitones} st
+          </span>
+        )}
+        {bedLane && vocalLane && (
+          <span className="align-chip mono"
+            title={suggested.nudgeSec == null
+              ? "Neither side has a stored downbeat grid, so there is no measured offset"
+              : "How far the bed sits from the vocal"}>
+            nudge {Math.round((bedLane.offsetSec - vocalLane.offsetSec) * 1000)} ms
+          </span>
+        )}
+        <span className={`align-chip mono${suggested.nudgeSec == null ? " unknown" : " locked"}`}
+          title={suggested.nudgeSec == null
+            ? "No stored downbeat grid for this pair — the offset is unmeasured, not zero"
+            : "Both sides have a measured downbeat grid"}>
+          {suggested.nudgeSec == null ? "no grid" : "downbeat locked"}
+        </span>
+        {dirty && (
+          <button className="studio-btn" onClick={resetToSuggestion}
+            title="Put the tempo, pitch and nudge back to what the matcher suggested">
+            reset to suggestion
+          </button>
+        )}
+
         <span className="spacer" style={{ flex: 1 }} />
 
         <button className="studio-btn" onClick={clearProject} disabled={lanes.length === 0}
           title="Remove all lanes and clear the saved project">✕ clear</button>
-        <button className="export-btn" onClick={handleExport}
-          disabled={exportJobId != null || lanes.length === 0}>
-          ↓ Export WAV
-        </button>
-        {exportJobId && (
-          <JobBadge jobId={exportJobId} onComplete={(job) => {
-            setExportJobId(null);
-            if (job.status === "completed") setExportToken(job.id);
-          }} />
-        )}
-        {exportToken && (
-          <a href={api.mixdownAudioUrl(exportToken)} target="_blank" rel="noreferrer"
-            className="muted" style={{ fontSize: 12 }}>
-            ↓ download mixdown
-          </a>
-        )}
-        <button className="export-btn" onClick={handleSessionExport}
-          disabled={sessionJobId != null || !sessionPair}
-          title={sessionPair
-            ? "Export both stems conformed to the project tempo and key, trimmed to the chosen sections and aligned so bar 1 is at 0:00 — drop into FL at 0:00, no nudging. Includes a click track and the recipe."
-            : "Needs one audible vocal lane and one audible instrumental lane from different tracks."}>
-          ↓ Export FL session
-        </button>
-        {sessionJobId && (
-          <JobBadge jobId={sessionJobId} onComplete={(job) => {
-            setSessionJobId(null);
-            if (job.status === "completed") setSessionToken(job.id);
-          }} />
-        )}
-        {sessionToken && (
-          <a href={api.sessionArchiveUrl(sessionToken)} target="_blank" rel="noreferrer"
-            className="muted" style={{ fontSize: 12 }}>
-            ↓ download session
-          </a>
-        )}
       </div>
 
       {/* ── timing options ──
@@ -1471,13 +1632,21 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
         </div>
       )}
 
-      {/* ── timeline ── */}
+      {/* ── body: timeline + adjustments rail ── */}
+      <div className="studio-body">
+      <div className="studio-left">
+      {/* ── timeline ──
+          Four rows on ONE axis: the session-bar ruler, the lanes, and the bar
+          grid, with a single playhead crossing all of them. Both songs stay
+          loaded in full — the suggestion is a REGION over each, not a cut, so
+          the rest of every track is still there to scroll to. */}
       <div className="studio-timeline" ref={viewRef}>
         <div className="studio-grid">
           {/* header row: corner + ruler */}
           <div className="studio-corner">
+            <span className="micro-label">SESSION BARS</span>
             <button className="studio-add" onClick={() => { setPicker(true); setPickerSearch(""); }}>
-              ＋ Add track
+              ＋ Add
             </button>
           </div>
           <div className="studio-ruler" onMouseDown={handleRulerDown}
@@ -1492,129 +1661,34 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
             const syncRate = projectBpm ? syncRateFor(l.bpm, projectBpm) : null;
             return (
               <Fragment key={l.id}>
-                {/* lane header */}
+                {/* lane card — 138px, box-sizing:border-box.
+                    It carries only what the design draws: what the lane IS, what
+                    it is playing at, and solo/mute. Stem, sync, pitch, key-match,
+                    grid-snap and trim moved to the adjustments rail, which has
+                    room for them; at this width they were five dead controls in
+                    a column. */}
                 <div className={`studio-lanehead${isSel ? " selected" : ""}`}
                   style={{ borderLeft: `3px solid rgba(${rgb},0.9)` }}
                   onClick={() => setSelectedId(l.id)}>
-                  <div className="lh-row">
-                    <TrackArt id={l.songId} thumbnail={l.thumbnail} className="lh-art" />
-                    <div className="lh-id">
-                      <div className="lh-title" title={`${l.title}${l.artist ? ` — ${l.artist}` : ""}`}>
-                        {l.title}
-                      </div>
-                      <div className="lh-meta">
-                        {/* Stem switch in place (from Audition's deck picker):
-                            the lane keeps its placement, so you can hear the
-                            same arrangement with a different layer. */}
-                        <span className="lh-stem-seg" onClick={(e) => e.stopPropagation()}>
-                          {STEM_ORDER.map((s) => {
-                            const src = tracks.find((t) => t.id === l.songId);
-                            const ok = Boolean(src?.stems?.[s]);
-                            // Hide four-stem buttons entirely for two-stem
-                            // tracks rather than showing five dead controls.
-                            if (!ok && !["vocals", "instrumental", "full"].includes(s)) return null;
-                            return (
-                              <button key={s} disabled={!ok || l.stem === s}
-                                className={l.stem === s ? "active" : ""}
-                                style={l.stem === s ? { color: `rgb(${rgb})`, borderColor: `rgba(${rgb},0.6)` } : undefined}
-                                title={ok ? `Play the ${s} stem in this lane` : `No ${s} audio for this track`}
-                                onClick={() => setLaneStem(l, s)}>
-                                {STEM_LABEL[s]}
-                              </button>
-                            );
-                          })}
-                        </span>
-                        {effBpm ? <span className="mono">{effBpm.toFixed(1)}</span> : <span className="faint">no BPM</span>}
-                        <KeyChip camelot={shiftCamelot(l.camelot, l.semitones)} fallback="?"
-                          style={{ fontSize: 10, padding: "1px 5px" }} />
-                      </div>
-                    </div>
-                    <div className="lh-order">
-                      <button onClick={(e) => { e.stopPropagation(); moveLane(l.id, -1); }} title="Move up">▲</button>
-                      <button onClick={(e) => { e.stopPropagation(); moveLane(l.id, 1); }} title="Move down">▼</button>
-                    </div>
+                  <span className="lh-tag mono" style={{ color: `rgb(${rgb})` }}>
+                    {STEM_LABEL[l.stem] || l.stem} LANE
+                  </span>
+                  <div className="lh-title" title={`${l.title}${l.artist ? ` — ${l.artist}` : ""}`}>
+                    {l.title}
                   </div>
-
+                  <div className="lh-meta mono">
+                    {effBpm ? effBpm.toFixed(1) : "no BPM"}
+                    {" · "}
+                    {shiftCamelot(l.camelot, l.semitones) || "?"}
+                    {l.semitones ? ` (${l.semitones > 0 ? "+" : ""}${l.semitones})` : ""}
+                  </div>
                   <div className="lh-row lh-controls">
-                    <button className={`lh-btn${l.muted ? " on" : ""}`}
-                      onClick={(e) => { e.stopPropagation(); patchLane(l.id, { muted: !l.muted }); }}
-                      title="Mute">M</button>
                     <button className={`lh-btn solo${soloId === l.id ? " on" : ""}`}
                       onClick={(e) => { e.stopPropagation(); setSoloId(soloId === l.id ? null : l.id); }}
-                      title="Solo">S</button>
-                    <input className="lh-gain" type="range" min={0} max={1.25} step={0.01}
-                      value={l.gain}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => patchLane(l.id, { gain: Number(e.target.value) })}
-                      title={`Gain ${(l.gain * 24 - 12).toFixed(1)} dB`} />
-                    <button className="lh-x"
-                      onClick={(e) => { e.stopPropagation(); removeLane(l.id); }}
-                      title="Remove lane">✕</button>
-                  </div>
-
-                  <div className="lh-row lh-controls">
-                    <button
-                      className={`lh-btn sync${l.synced ? " on" : ""}`}
-                      disabled={!l.bpm || !projectBpm || !syncRate}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (l.synced) patchLane(l.id, { synced: false, rate: 1 });
-                        else patchLane(l.id, { synced: true, rate: syncRate });
-                      }}
-                      title={l.bpm && syncRate
-                        ? `Tempo-sync to ${projectBpm} BPM (stretch ×${syncRate.toFixed(3)})`
-                        : "Needs BPM analysis to sync"}>
-                      SYNC
-                    </button>
-                    {/* Editable while unsynced — Audition let you type a target
-                        BPM per deck, and SYNC alone cannot express "play this
-                        at 0.97× because it drags". */}
-                    <input className="lh-rate mono" type="number" step={0.005}
-                      min={0.5} max={2} value={Number(l.rate.toFixed(3))}
-                      disabled={l.synced}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => {
-                        const v = Number(e.target.value);
-                        if (Number.isFinite(v) && v >= 0.5 && v <= 2) patchLane(l.id, { rate: v });
-                      }}
-                      title={l.synced ? "Synced to the project tempo — turn SYNC off to set this by hand"
-                                      : "Stretch factor (speed). 1 = original tempo."} />
-                    <span className="lh-pitch">
-                      <button className="lh-btn" title="Pitch −1 st"
-                        onClick={(e) => { e.stopPropagation(); patchLane(l.id, { semitones: Math.max(-12, l.semitones - 1) }); }}>−</button>
-                      <span className="mono" style={{ minWidth: 30, textAlign: "center" }}>
-                        {l.semitones > 0 ? "+" : ""}{l.semitones}st
-                      </span>
-                      <button className="lh-btn" title="Pitch +1 st"
-                        onClick={(e) => { e.stopPropagation(); patchLane(l.id, { semitones: Math.min(12, l.semitones + 1) }); }}>+</button>
-                    </span>
-                  </div>
-                  <div className="lh-row lh-controls">
-                    <button className="lh-btn"
-                      disabled={!referenceLane || l.id === referenceLane.id || !l.camelot}
-                      onClick={(e) => { e.stopPropagation(); matchKeyToReference(l); }}
-                      title={referenceLane && l.id !== referenceLane.id
-                        ? `Pitch this lane into ${referenceLane.title}'s key`
-                        : "The first lane is the key reference"}>
-                      ⚡ key
-                    </button>
-                    <button className="lh-btn"
-                      onClick={(e) => { e.stopPropagation(); alignLaneToGrid(l); }}
-                      title="Snap this lane's nearest downbeat onto the bar grid">
-                      ⇥ grid
-                    </button>
-                    <button className="lh-btn"
-                      onClick={(e) => { e.stopPropagation(); resetLane(l); }}
-                      title="Reset this lane's position, tempo, pitch, level and trim">
-                      ↺
-                    </button>
-                    {clipRangeOf(l).trimmed && (
-                      <button className="lh-btn trim on"
-                        onClick={(e) => { e.stopPropagation(); clearTrim(l); }}
-                        title={`Trimmed to ${fmtTime(clipRangeOf(l).cs)}–${fmtTime(clipRangeOf(l).ce)} of the stem — click to play it whole`}>
-                        ✂ {fmtTime(clipRangeOf(l).ce - clipRangeOf(l).cs)}
-                      </button>
-                    )}
+                      title="Solo">solo</button>
+                    <button className={`lh-btn${l.muted ? " on" : ""}`}
+                      onClick={(e) => { e.stopPropagation(); patchLane(l.id, { muted: !l.muted }); }}
+                      title="Mute">mute</button>
                   </div>
                   {(l.loading || l.loadError) && (
                     <div className="lh-note">{l.loadError || "decoding…"}</div>
@@ -1651,6 +1725,15 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
                       );
                     });
                   })()}
+                  {/* Where this lane currently sits. The rest of the song runs
+                      off both edges — these say how far, so a lane scrolled out
+                      of view is legible rather than looking empty. */}
+                  <span className="lane-edge left mono">
+                    ◄ {fmtTime(Math.max(0, (viewStart - l.offsetSec) * l.rate))}
+                  </span>
+                  <span className="lane-edge right mono">
+                    {fmtTime(Math.max(0, l.rawDur))} ►
+                  </span>
                 </div>
               </Fragment>
             );
@@ -1663,11 +1746,27 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
               <div className="step"><span className="n">3</span> <span className="kbd">space</span> to play · <span className="kbd">←</span><span className="kbd">→</span> nudge the selected lane · <span className="kbd">L</span> 8-bar loop · pitch ± per lane to match keys · Export WAV when it slaps.</div>
             </div>
           )}
+          {/* bar grid — the same axis a fourth time, so a clip's edge can be
+              read against a bar number without counting ruler ticks. */}
+          {lanes.length > 0 && (
+            <>
+              <div className="studio-corner bargrid">
+                <span className="micro-label">BAR GRID</span>
+              </div>
+              <div className="studio-bargrid" onMouseDown={handleRulerDown}
+                title="Click/drag to scrub · shift-drag to set a loop">
+                <canvas ref={barGridRef} />
+              </div>
+            </>
+          )}
         </div>
 
-        {/* playhead overlay */}
+        {/* One playhead over every row, at exactly the gutter width, so both
+            songs read against a single time cursor. */}
         {playheadX >= 0 && playheadX <= viewW && lanes.length > 0 && (
-          <div className="studio-playhead" style={{ left: HEADER_W + playheadX }} />
+          <div className="studio-playhead" style={{ left: HEADER_W + playheadX }}>
+            <span className="ph-cap" />
+          </div>
         )}
       </div>
 
@@ -1678,10 +1777,40 @@ export function MixStudio({ onStatus, seed, onSeedConsumed }) {
         value={Math.min(viewStart, scrollMax)}
         onChange={(e) => setViewStart(Number(e.target.value))}
       />
-      <div className="hint" style={{ marginTop: 4 }}>
+      <div className="hint studio-hint">
         wheel = pan · ctrl+wheel = zoom · drag a clip to move it, its edges to trim it (snap: {snapMode}) ·{" "}
         <span className="kbd">space</span> play · <span className="kbd">←</span><span className="kbd">→</span> nudge ·{" "}
-        <span className="kbd">L</span> loop · <span className="kbd">⌫</span> remove lane
+        <span className="kbd">L</span> loop · <span className="kbd">[</span><span className="kbd">]</span> timings ·{" "}
+        <span className="kbd">⌫</span> remove lane
+      </div>
+
+      {pairPlan?.steps?.length > 0 && (
+        <div className="why-pair">
+          <span className="micro-label">WHY THIS PAIR</span>
+          <span className="why-text">
+            {activeOption?.reason || pairPlan.steps[0]}
+          </span>
+        </div>
+      )}
+      </div>
+
+      <StudioRail
+        vocalLane={vocalLane} bedLane={bedLane} selected={selectedLane}
+        lanes={lanes} tracks={tracks}
+        stemOrder={STEM_ORDER} stemLabel={STEM_LABEL}
+        suggested={suggested} cross={cross} setCross={setCross}
+        patchLane={patchLane} setLaneStem={setLaneStem}
+        moveLane={moveLane} removeLane={removeLane}
+        soloId={soloId} setSoloId={setSoloId}
+        referenceLane={referenceLane} matchKeyToReference={matchKeyToReference}
+        alignLaneToGrid={alignLaneToGrid} resetLane={resetLane}
+        clearTrim={clearTrim} trimOf={clipRangeOf} syncRateFor={syncRateFor}
+        projectBpm={projectBpm}
+        buildRating={buildRating}
+        onRateBuild={activeOption ? (n) => rateBuild(activeOption, n) : null}
+        onSaveSnapshot={saveSnapshot}
+        onNextPair={onNextPair} hasNextPair={Boolean(onNextPair)}
+        dirty={dirty} />
       </div>
 
       {/* ── track picker ── */}

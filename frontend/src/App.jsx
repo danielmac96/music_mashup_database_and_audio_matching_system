@@ -148,6 +148,18 @@ export default function App() {
     selectedTrackId, role: dockRole, ratings, onOpenStudio: pairToStudio,
   });
 
+  // "Next pair" in Studio walks the DOCK's list, so the order you are working
+  // through is the order you chose there — Studio has no list of its own and
+  // inventing a second one would give the two screens different ideas about
+  // what comes next.
+  const nextPair = () => {
+    const at = Math.min(dock.rows.length - 1, dock.cursor + 1);
+    const next = dock.rows[at];
+    if (!next) return;
+    dock.setCursor(at);
+    pairToStudio(next);
+  };
+
   // The dock owns the keyboard only while the Library screen is the one you are
   // looking at. Discover has its own model over the same rows, and two window
   // listeners racing for the space bar is exactly the bug this avoids.
@@ -248,6 +260,7 @@ export default function App() {
             seed={studioSeed}
             onSeedConsumed={() => setStudioSeed({ vocalId: null, instId: null })}
             onStatus={setHeaderStatus}
+            onNextPair={dock.rows.length > 1 ? nextPair : null}
           />
         )}
       </div>

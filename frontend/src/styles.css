@@ -1596,29 +1596,6 @@ input, select { font-family: inherit; }
   position: relative; background: var(--inset);
   border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
 }
-.studio-grid { display: grid; grid-template-columns: 236px 1fr; }
-.studio-corner {
-  border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; padding: 6px 10px; background: var(--panel);
-}
-.studio-add {
-  width: 100%; cursor: pointer; font-size: 12.5px; font-weight: 600;
-  border: 1px dashed var(--border-ctrl); background: transparent; color: var(--accent-light);
-  border-radius: 7px; padding: 6px 0;
-}
-.studio-add:hover { border-color: var(--accent); background: var(--accent-tint); }
-.studio-ruler {
-  height: 34px; border-bottom: 1px solid var(--border); cursor: ew-resize;
-  background: var(--panel);
-}
-.studio-ruler canvas { width: 100%; height: 100%; display: block; }
-
-.studio-lanehead {
-  border-right: 1px solid var(--border); border-bottom: 1px solid var(--border-top);
-  padding: 8px 10px 8px 8px; background: var(--panel); cursor: pointer;
-  display: flex; flex-direction: column; gap: 6px;
-}
-.studio-lanehead.selected { background: var(--raised); }
 .lh-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .lh-art { width: 30px; height: 30px; border-radius: 5px; flex-shrink: 0; background-size: cover; }
 .lh-id { min-width: 0; flex: 1; }
@@ -1675,14 +1652,8 @@ input, select { font-family: inherit; }
 .lh-pitch { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--text-2); }
 .lh-note { font-size: 10.5px; color: var(--amber-light, #f5a623); }
 
-/* Matches the four-row lane header (T4.1 added the key/grid/reset row). */
-.studio-lane {
-  position: relative; height: 118px; cursor: grab;
-  border-bottom: 1px solid var(--border-top);
-}
 .studio-lane:active { cursor: grabbing; }
 .studio-lane.snapped { box-shadow: inset 0 0 0 1px rgba(52,211,153,0.5); }
-.studio-lane canvas { width: 100%; height: 100%; display: block; }
 /* Trim grab zones on the clip edges (A1). Invisible — the canvas draws the
    grip — but they own the cursor and the drag. */
 .lane-trim {
@@ -1691,11 +1662,6 @@ input, select { font-family: inherit; }
 }
 .lh-btn.trim { font-size: 9.5px; letter-spacing: 0; padding: 2px 5px; }
 
-.studio-playhead {
-  position: absolute; top: 0; bottom: 0; width: 1px;
-  background: #ff5c5c; pointer-events: none; z-index: 3;
-  box-shadow: 0 0 6px rgba(255,92,92,0.7);
-}
 
 .studio-empty {
   grid-column: 1 / -1; padding: 26px 30px; display: flex; flex-direction: column; gap: 12px;
@@ -2803,3 +2769,213 @@ input, select { font-family: inherit; }
 .partner-top { display: flex; align-items: center; gap: 9px; }
 .partner-score { font-size: 17px; font-weight: 600; line-height: 1; }
 .partner-tags { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Studio (screen 1c) — re-layout
+ *
+ * The geometry is load-bearing. `.studio-grid`'s first column plus its
+ * column-gap MUST equal MixStudio's HEADER_W (150), because that constant is
+ * what converts pixels to seconds and what positions the playhead. The lane
+ * cards are box-sizing:border-box for the same reason: a card that measured its
+ * padding on top of its width would push every canvas out of line with the
+ * ruler above it.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+.studio-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.studio-seed { font: 400 11.5px var(--font-ui); color: var(--muted); }
+.studio-looping {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 500; color: var(--green);
+  background: rgba(46, 204, 113, 0.1);
+  border: 1px solid rgba(46, 204, 113, 0.35);
+  border-radius: 20px; padding: 4px 10px;
+}
+.studio-looping .dot {
+  width: 6px; height: 6px; border-radius: 3px; background: var(--green);
+}
+.studio-render {
+  cursor: pointer; border: none; border-radius: 7px; padding: 6px 12px;
+  font: 500 11.5px var(--font-ui); color: #07090d; background: var(--accent);
+}
+.studio-render:hover:not(:disabled) { background: var(--accent-light); }
+.studio-render:disabled { opacity: 0.45; cursor: default; }
+
+.studio-body {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr) 340px;
+}
+.studio-left {
+  min-width: 0; display: flex; flex-direction: column; gap: 10px;
+  padding: 14px 18px; overflow: auto;
+}
+.studio-left .studio-timeline { flex: none; }
+
+.align-chip {
+  flex: none; white-space: nowrap;
+  font-size: 11px; font-weight: 500; color: var(--text-2);
+  background: var(--panel); border: 1px solid var(--border-ctrl);
+  border-radius: 6px; padding: 4px 9px;
+}
+.align-chip.locked { color: var(--green); border-color: rgba(46, 204, 113, 0.35); }
+.align-chip.unknown { color: var(--faint); }
+
+.studio-hint { margin-top: 0; }
+
+.why-pair {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; background: var(--inset);
+  border: 1px solid var(--border); border-radius: 9px;
+}
+.why-text { font: 400 12px var(--font-ui); color: var(--text-2); }
+
+/* ── the four-row grid ─────────────────────────────────────────────────── */
+.studio-grid {
+  display: grid;
+  grid-template-columns: 138px minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 12px;
+  padding: 12px;
+}
+.studio-grid > * { box-sizing: border-box; }
+
+.studio-corner {
+  border: none; background: transparent; padding: 0;
+  display: flex; flex-direction: column; align-items: flex-end;
+  justify-content: center; gap: 5px;
+}
+.studio-corner.bargrid { justify-content: center; }
+.studio-add {
+  width: 100%; cursor: pointer; font-size: 11px; font-weight: 600;
+  border: 1px dashed var(--border-ctrl); background: transparent;
+  color: var(--accent-light); border-radius: 6px; padding: 4px 0;
+}
+.studio-add:hover { border-color: var(--accent); background: var(--accent-tint); }
+
+.studio-ruler {
+  height: 20px; border: none; background: transparent; cursor: ew-resize;
+}
+.studio-ruler canvas { width: 100%; height: 100%; display: block; }
+
+.studio-bargrid {
+  height: 26px; cursor: ew-resize;
+  background: var(--inset-2); border: 1px solid var(--border); border-radius: 7px;
+  overflow: hidden;
+}
+.studio-bargrid canvas { width: 100%; height: 100%; display: block; }
+
+/* ── the 138px lane card ───────────────────────────────────────────────── */
+.studio-lanehead {
+  border: 1px solid var(--border-accent); border-radius: 9px;
+  background: var(--panel); padding: 10px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.studio-lanehead.selected { border-color: var(--accent); background: var(--raised); }
+.lh-tag { font-size: 9px; font-weight: 600; letter-spacing: 0.08em; }
+.lh-title {
+  font: 500 12px var(--font-ui); line-height: 1.25; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.lh-meta { font-size: 10.5px; color: var(--muted); display: block; }
+.studio-lanehead .lh-controls { margin-top: auto; gap: 4px; }
+.studio-lanehead .lh-btn {
+  font-size: 10px; font-weight: 600; border-radius: 5px; padding: 3px 7px;
+  background: var(--raised); border: 1px solid transparent; color: var(--muted);
+}
+.studio-lanehead .lh-btn.on { color: var(--text); }
+.lh-note { font-size: 10px; color: var(--amber-light); }
+
+.studio-lane {
+  position: relative; height: 132px; overflow: hidden; cursor: grab;
+  background: var(--inset-2); border: 1px solid var(--border); border-radius: 9px;
+}
+.studio-lane canvas { width: 100%; height: 100%; display: block; }
+.lane-edge {
+  position: absolute; bottom: 6px; font-size: 9.5px; font-weight: 500;
+  color: var(--faint-2); pointer-events: none;
+}
+.lane-edge.left { left: 8px; }
+.lane-edge.right { right: 8px; }
+
+/* One playhead over every row. `left` is set inline to exactly HEADER_W plus
+   the pixel offset, which is why the gutter arithmetic has to agree. */
+.studio-playhead {
+  position: absolute; top: 0; bottom: 0; width: 1.5px;
+  background: var(--playhead); pointer-events: none; z-index: 5;
+}
+.ph-cap {
+  position: absolute; top: -2px; left: 50%; transform: translateX(-50%);
+  width: 9px; height: 9px; background: var(--playhead);
+  clip-path: polygon(50% 100%, 0 0, 100% 0);
+}
+
+/* ── adjustments rail ──────────────────────────────────────────────────── */
+.studio-rail {
+  min-width: 0; border-left: 1px solid var(--border-top); background: var(--topbar);
+  display: flex; flex-direction: column; overflow: auto;
+}
+.rail-bar {
+  height: 44px; flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 0 14px; border-bottom: 1px solid var(--border-top);
+}
+.rail-dirty { margin-left: auto; font-size: 10.5px; color: var(--amber-light); }
+.rail-knobs { padding: 14px; display: flex; flex-direction: column; gap: 16px; }
+.rail-empty { padding: 4px 0 8px; line-height: 1.5; }
+
+.knob { display: flex; flex-direction: column; gap: 6px; }
+.knob.off { opacity: 0.5; }
+.knob-head { display: flex; align-items: baseline; gap: 8px; }
+.knob-label { font: 500 11.5px var(--font-ui); color: var(--text-2); }
+.knob-edited { font-size: 9.5px; color: var(--amber-light); }
+.knob-value {
+  margin-left: auto; font-size: 11.5px; font-weight: 600; color: var(--text);
+}
+.knob-track { position: relative; height: 4px; border-radius: 2px; background: var(--raised); }
+.knob-track input[type="range"] {
+  position: absolute; inset: -8px 0; width: 100%; height: 20px;
+  opacity: 0; cursor: pointer; margin: 0;
+}
+.knob-fill {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  border-radius: 2px; background: var(--accent);
+}
+/* The matcher's suggestion. Grey and thin on purpose — it is a reference mark,
+   not a control, and a manual edit reads as distance from it. */
+.knob-tick {
+  position: absolute; top: -3px; width: 2px; height: 10px;
+  background: var(--faint); pointer-events: none;
+}
+.knob-dot {
+  position: absolute; top: -4px; width: 12px; height: 12px; margin-left: -6px;
+  border-radius: 6px; background: var(--text); border: 2px solid var(--accent);
+  pointer-events: none;
+}
+.knob-hint { font-size: 10px; color: var(--faint); line-height: 1.4; }
+
+.rail-lane {
+  border-top: 1px solid var(--hair); padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.rail-lane-head { display: flex; align-items: baseline; gap: 8px; }
+.rail-lane-title {
+  font: 500 11.5px var(--font-ui); color: var(--text);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rail-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.rail-row .lh-btn.danger { color: var(--red); border-color: rgba(248, 113, 113, 0.4); }
+
+.rail-foot {
+  margin-top: auto; flex: none;
+  border-top: 1px solid var(--border-top); padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px; background: var(--inset-2);
+}
+.rail-rate { display: flex; align-items: center; gap: 8px; }
+.rail-rate .hint { font-size: 11px; }
+.rail-rate .stars { margin-left: auto; }
+.rail-buttons { display: flex; gap: 6px; }
+.rail-buttons .head-btn { flex: 1; text-align: center; }
+.rail-next {
+  flex: 1; cursor: pointer; border: none; border-radius: 7px; padding: 7px 0;
+  font: 500 11.5px var(--font-ui); color: #07090d; background: var(--green);
+}
+.rail-next:disabled { opacity: 0.4; cursor: default; }
