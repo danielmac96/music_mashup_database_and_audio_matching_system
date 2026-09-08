@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { MixImporter } from "./components/MixImporter";
 import { LibraryScreen } from "./components/LibraryScreen";
+import { PairDock } from "./components/PairDock";
+import { TransportBar } from "./components/TransportBar";
 import { Discovery } from "./components/Discovery";
 import { MixStudio } from "./components/MixStudio";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
@@ -9,6 +11,8 @@ import { SetupWizard } from "./components/SetupWizard";
 import { Sidebar } from "./shell/Sidebar";
 import { useLibrary } from "./hooks/useLibrary";
 import { useRatings } from "./hooks/useRatings";
+import { usePairDock } from "./hooks/usePairDock";
+import { scoredOptionOf } from "./components/MashupSuggestions";
 import { api } from "./api";
 import { onToast } from "./toast";
 
@@ -67,6 +71,10 @@ export default function App() {
   // The library row the pair dock is scoped to, and the track the detail view
   // is open on. Selecting re-scopes; opening is a separate, deliberate act.
   const [selectedTrackId, setSelectedTrackId] = useState(null);
+  // Which side of a pair the selected track is being looked at as. A track can
+  // be the vocal on top or the bed underneath, and the dock has to be told
+  // which question you are asking.
+  const [dockRole, setDockRole] = useState("vocal");
   // What the rail's per-route slot is showing. Each screen registers its own
   // block here rather than the rail knowing every screen's internals.
   const [railSlot, setRailSlot] = useState(null);
@@ -122,6 +130,28 @@ export default function App() {
     setRoute("discovery");
   };
 
+  // A pair goes to Studio with both tracks in full and the suggestion marked as
+  // a region — nothing is trimmed away. `scoredOption` rides along because
+  // top_section_pairs is capped at six, so the row you are looking at need not
+  // be among the options Studio re-fetches for itself.
+  const pairToStudio = (c) => sendToStudio({
+    vocalId: c.vocal_song_id,
+    instId: c.inst_song_id,
+    semitoneShift: c.semitone_shift ?? 0,
+    vocalSectionStart: c.vocal_section_start ?? 0,
+    instSectionStart: c.inst_section_start ?? 0,
+    scoredOption: scoredOptionOf(c),
+  });
+
+  const dock = usePairDock({
+    selectedTrackId, role: dockRole, ratings, onOpenStudio: pairToStudio,
+  });
+
+  // The dock owns the keyboard only while the Library screen is the one you are
+  // looking at. Discover has its own model over the same rows, and two window
+  // listeners racing for the space bar is exactly the bug this avoids.
+  useEffect(() => dock.bindKeys(route === "library"), [dock.bindKeys, route]);
+
   const counts = useMemo(() => ({
     library: library.tracks.length,
   }), [library.tracks]);
@@ -129,6 +159,11 @@ export default function App() {
   // Selecting a row scopes the dock; it does not navigate. Clearing it is what
   // puts the dock back on "the best pairs in the library".
   const selectTrack = (id) => setSelectedTrackId((cur) => (cur === id ? null : id));
+
+  const selectedTrack = useMemo(
+    () => library.tracks.find((t) => t.id === selectedTrackId) || null,
+    [library.tracks, selectedTrackId],
+  );
 
   if (configured === false) {
     return (
@@ -163,15 +198,26 @@ export default function App() {
 
         {route === "mixes" && <MixImporter />}
         {route === "library" && (
-          <LibraryScreen
-            library={library}
-            ratings={ratings}
-            selectedId={selectedTrackId}
-            onSelect={selectTrack}
-            onOpen={(id) => setSelectedTrackId(id)}
-            onRailSlot={setRailSlot}
-            onStatus={setHeaderStatus}
-          />
+          <div className="lib-layout">
+            <main className="lib-main">
+              <LibraryScreen
+                library={library}
+                ratings={ratings}
+                selectedId={selectedTrackId}
+                onSelect={selectTrack}
+                onOpen={(id) => setSelectedTrackId(id)}
+                onRailSlot={setRailSlot}
+                onStatus={setHeaderStatus}
+              />
+            </main>
+            <PairDock dock={dock} ratings={ratings}
+              scopeTitle={selectedTrack?.title || null}
+              role={dockRole} onRole={setDockRole} />
+            <TransportBar candidate={dock.current} audio={dock.audio}
+              rating={ratings.ratingOf(dock.current)}
+              onRate={(n) => ratings.rate(dock.current, n)}
+              onStudio={() => dock.openStudio(dock.current)} />
+          </div>
         )}
         {route === "discovery" && (
           <Discovery

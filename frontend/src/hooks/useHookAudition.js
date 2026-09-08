@@ -40,18 +40,61 @@ export function hookUrlsFor(c) {
   ];
 }
 
+// Both stems, or one soloed. Gains rather than mute so switching is a fader
+// move on a running voice — re-arming would restart the loop and lose your
+// place in the bar.
+export const STEM_MODES = [["both", "Both"], ["vox", "Vox"], ["bed", "Bed"]];
+const VOCAL_GAIN = 0.95;
+const BED_GAIN = 0.8;
+
 export function useHookAudition() {
   const engineRef = useRef(null);
   const [playingId, setPlayingId] = useState(null);
   const [error, setError] = useState(null);
+  // Transport readout for the player bar. The engine emits a position on every
+  // frame; a position that jumped BACKWARDS is a loop wrap, which is the only
+  // way to count passes — the engine loops natively in the audio thread and
+  // never reports having done so.
+  const [position, setPosition] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [loopCount, setLoopCount] = useState(0);
+  const [loopLength, setLoopLength] = useState(0);
+  const [stemMode, setStemModeState] = useState("both");
+  const lastPos = useRef(0);
+  const stemModeRef = useRef("both");
   // Monotonic token: a late-arriving decode from a row you have already moved
   // past must not hijack the transport. Compared on every await boundary.
   const armToken = useRef(0);
 
   const engine = useCallback(() => {
-    if (!engineRef.current) engineRef.current = new MashupEngine();
+    if (!engineRef.current) {
+      engineRef.current = new MashupEngine();
+      engineRef.current.onTick((pos, isPlaying) => {
+        // A wrap is a jump backwards. The 0.05s guard keeps a seek jitter from
+        // counting as a pass.
+        if (pos < lastPos.current - 0.05) setLoopCount((n) => n + 1);
+        lastPos.current = pos;
+        setPosition(pos);
+        setPlaying(isPlaying);
+      });
+    }
     return engineRef.current;
   }, []);
+
+  // Applied on every arm as well as on change, so a newly armed pair inherits
+  // the solo you were already listening in.
+  const applyStems = useCallback((mode) => {
+    const e = engineRef.current;
+    if (!e) return;
+    e.setVoiceGain("vocal", mode === "bed" ? 0 : VOCAL_GAIN);
+    e.setVoiceGain("inst", mode === "vox" ? 0 : BED_GAIN);
+  }, []);
+
+  const setStemMode = useCallback((mode) => {
+    stemModeRef.current = mode;
+    setStemModeState(mode);
+    applyStems(mode);
+  }, [applyStems]);
 
   const stop = useCallback(() => {
     armToken.current += 1;           // invalidate anything mid-flight
@@ -62,6 +105,7 @@ export function useHookAudition() {
       e.removeVoice("inst");
     }
     setPlayingId(null);
+    setPlaying(false);
   }, []);
 
   /** Warm the decode cache for upcoming rows so stepping down is instant. */
@@ -118,7 +162,11 @@ export function useHookAudition() {
       const bedDisplay = bedBuf.duration / (candidate.stretch_factor || 1);
       const len = Math.max(1, Math.min(vocalBuf.duration, bedDisplay));
       e.setLoop({ start: 0, end: len });
+      applyStems(stemModeRef.current);
 
+      lastPos.current = 0;
+      setLoopCount(0);
+      setLoopLength(len);
       await e.play(0);
       if (armToken.current !== token) { e.stop(); return; }
       setPlayingId(candidate.id);
@@ -127,7 +175,7 @@ export function useHookAudition() {
       setError(err?.message || "Could not load this pair's hooks");
       setPlayingId(null);
     }
-  }, [engine]);
+  }, [engine, applyStems]);
 
   const toggle = useCallback((candidate) => {
     if (candidate && playingId === candidate.id) stop();
@@ -142,5 +190,6 @@ export function useHookAudition() {
     engineRef.current = null;
   }, []);
 
-  return { audition, toggle, stop, prefetch, playingId, error };
+  return { audition, toggle, stop, prefetch, playingId, error,
+           position, playing, loopCount, loopLength, stemMode, setStemMode };
 }
