@@ -8,6 +8,7 @@ import { Discovery } from "./components/Discovery";
 import { MixStudio } from "./components/MixStudio";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { TuningPanel } from "./components/TuningPanel";
+import { MlPanel } from "./components/MlPanel";
 import { SetupWizard } from "./components/SetupWizard";
 import { Sidebar } from "./shell/Sidebar";
 import { useLibrary } from "./hooks/useLibrary";
@@ -253,6 +254,7 @@ export default function App() {
             onStatus={setHeaderStatus}
             showInstOverInst={prefs.showInstOverInst}
             onOpenLibrary={() => setRoute("library")}
+            onRailSlot={setRailSlot}
           />
         )}
         {route === "studio" && (
@@ -291,6 +293,20 @@ export default function App() {
 
             <div className="drawer-body">
               <TuningPanel />
+            </div>
+
+            <div className="drawer-section">
+              <h3>Train from the imported mixes</h3>
+              <span className="hint">
+                The <code>w/</code> overlay lines in every imported mix are
+                documented vocal-over-instrumental mashups. Once their tracks are
+                ingested and analysed, build a dataset and train a model that
+                scores new matches. It lives here rather than on Mixes because it
+                acts on the whole library, not on the set you are matching.
+              </span>
+            </div>
+            <div className="drawer-body">
+              <MlPanel />
             </div>
 
             <div className="drawer-section">

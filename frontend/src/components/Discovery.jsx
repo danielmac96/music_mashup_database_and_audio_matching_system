@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { MashupSuggestions } from "./MashupSuggestions";
 import { SoundCloudBrowser } from "./SoundCloudBrowser";
 import { Suggestions } from "./Suggestions";
+import { ScreenHeader } from "../shell/ScreenHeader";
+import { RailRow, RailSection } from "../shell/Sidebar";
+import { api } from "../api";
 
 // Discovery is three questions that share a tab because they are one job at
 // three scales: "what should I add to the library?", "what would I like that I
@@ -32,7 +35,7 @@ function loadMode() {
 }
 
 export function Discovery({ seed, onClearSeed, onAudition, onStatus,
-                            showInstOverInst, onOpenLibrary }) {
+                            showInstOverInst, onOpenLibrary, onRailSlot }) {
   const [mode, setMode] = useState(loadMode);
   // Mashups is expensive to mount — it fetches a ranked list, filter
   // vocabularies, scorer status and every stored verdict. Once visited it stays
@@ -60,11 +63,14 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
   };
 
   // A seed means "find beds for this track", sent from Library. It is only
-  // meaningful in the mashups pane, so honour it by switching.
+  // meaningful in the mashups pane, so honour it by switching — and persist the
+  // mode like any other switch, so arriving by seed and arriving by click leave
+  // you in the same place next time.
   useEffect(() => {
     if (!seed) return;
     setMashupsMounted(true);
     setMode("mashups");
+    try { localStorage.setItem(MODE_KEY, "mashups"); } catch { /* full */ }
   }, [seed]);
 
   // A hidden pane still runs its effects, and would otherwise push its status
@@ -80,27 +86,54 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
     if (modeRef.current === "suggest") onStatus?.(status);
   }, [onStatus]);
 
+  // The rail's per-route furniture. SOURCES are the four ways in — they map
+  // onto the modes and the browser's `kind`, so the rail is a shortcut to a
+  // state the panes already have rather than a fifth thing to keep in sync.
+  useEffect(() => {
+    onRailSlot?.(
+      <>
+        <RailSection label="SOURCES">
+          <RailRow label="Search" active={mode === "tracks" && !nav}
+            onClick={() => switchMode("tracks")} />
+          <RailRow label="Similar to library" active={mode === "suggest"}
+            onClick={() => switchMode("suggest")}
+            title="Ranked from the tracks you already own" />
+          <RailRow label="Find mashups" active={mode === "mashups"}
+            onClick={() => switchMode("mashups")}
+            title="Pairs inside the library you already have" />
+        </RailSection>
+        <SavedProfiles onOpen={(profile) => {
+          setNav({ kind: "user", id: profile.user_id, label: profile.username });
+          switchMode("tracks");
+        }} />
+      </>,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, nav]);
+
   return (
     <>
-      <div className="discovery-modebar">
-        <div className="seg">
+      <ScreenHeader title="Discover">
+        <div className="pd-seg">
           {MODES.map(([id, label]) => (
-            <button key={id} className={mode === id ? "active" : ""}
+            <button key={id} className={mode === id ? "on" : ""}
               onClick={() => switchMode(id)}>
               {label}
             </button>
           ))}
         </div>
         <span className="hint">{HINTS[mode]}</span>
-      </div>
+      </ScreenHeader>
 
-      {mode === "tracks" && (
-        <SoundCloudBrowser onStatus={onStatus} onOpenLibrary={onOpenLibrary}
-          nav={nav} onNavDone={() => setNav(null)} />
-      )}
+      <div className="disc-body">
+        {mode === "tracks" && (
+          <SoundCloudBrowser onStatus={onStatus} onOpenLibrary={onOpenLibrary}
+            nav={nav} onNavDone={() => setNav(null)} />
+        )}
 
       {suggestMounted && (
-        <div style={mode === "suggest" ? undefined : { display: "none" }}>
+        <div className="disc-pane"
+          style={mode === "suggest" ? undefined : { display: "none" }}>
           <Suggestions
             onStatus={suggestStatus}
             onOpenLibrary={onOpenLibrary}
@@ -114,16 +147,44 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
       )}
 
       {mashupsMounted && (
-        <div style={mode === "mashups" ? undefined : { display: "none" }}>
+        <div className="disc-pane"
+          style={mode === "mashups" ? undefined : { display: "none" }}>
           <MashupSuggestions
             seed={seed}
             onClearSeed={onClearSeed}
             onAudition={onAudition}
             onStatus={mashupStatus}
             showInstOverInst={showInstOverInst}
+            active={mode === "mashups"}
           />
         </div>
       )}
+      </div>
     </>
+  );
+}
+
+// The rail's profile shelf. NOT "followed profiles": followings need
+// /me/followings, which needs OAuth, which ships dormant — and the browse layer
+// has no followings scrape. These are bookmarks, kept in app_prefs, and there
+// is no "n new" badge because nothing snapshots a profile to diff against.
+function SavedProfiles({ onOpen }) {
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    let live = true;
+    api.discoverySavedProfiles()
+      .then((b) => { if (live) setRows(b.profiles || []); })
+      .catch(() => { if (live) setRows([]); });
+    return () => { live = false; };
+  }, []);
+  if (!rows.length) return null;
+  return (
+    <RailSection label="SAVED PROFILES" scroll>
+      {rows.map((p) => (
+        <RailRow key={p.user_id} label={p.username} count={p.track_count}
+          glyph="◍" onClick={() => onOpen(p)}
+          title={`${p.track_count || 0} public tracks`} />
+      ))}
+    </RailSection>
   );
 }

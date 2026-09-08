@@ -6,7 +6,6 @@ import { api } from "../api";
 import { classifyUrl } from "../sources";
 import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
-import { MlPanel } from "./MlPanel";
 import { MixMatchBoard } from "./MixMatchBoard";
 
 function SortableRow({ track, children }) {
@@ -483,59 +482,64 @@ export function MixImporter() {
   }, [detail]);
 
   return (
-    <div className="page mixes">
-      <div className="screen-head" style={{ display: "block" }}>
-        <h1>Mixes — learn from real DJ sets</h1>
-        <div className="hint" style={{ marginTop: 5 }}>
-          Import a set's tracklist (Big Bootie, festival sets, 1001tracklists…),
-          link each entry to a playable track, then ingest them into the library.
+    <div className="mixes-screen">
+      {/* The importer lives in the rail: it is how a mix GETS here, not
+          something you use while working on one, and at the top of the page it
+          pushed the tracklist below the fold. */}
+      <div className="mix-rail">
+        <div className="mix-rail-block">
+          <span className="micro-label">IMPORT A SET</span>
+          <input className="mix-url-input" type="url"
+            placeholder="tracklist URL…"
+            value={url} onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && url.trim()) importUrl(); }} />
+          <button className="mix-scrape" onClick={importUrl} disabled={busy || !url.trim()}>
+            {busy ? "Scraping…" : "Scrape tracklist"}
+          </button>
+          <span className="hint">
+            1001tracklists, Big Bootie, festival set pages. Add or remove tracks
+            after.
+          </span>
         </div>
+        {error && <div className="error-text" style={{ padding: "0 12px" }}>{error}</div>}
       </div>
 
-      {error && <div className="error-text" style={{ marginBottom: 10 }}>{error}</div>}
-
-      <div className="import-input-row">
-        <div className="import-input">
-          <span className="faint">🔗</span>
-          <input
-            type="url"
-            placeholder="tracklist URL (e.g. a 1001tracklists set page)"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-          />
+      <div className="mix-column">
+        <div className="pd-head">
+          <span className="pd-title">Mixes</span>
+          <span className="pd-count mono">{mixes.length}</span>
         </div>
-        <button className="btn" onClick={importUrl} disabled={busy || !url.trim()}>
-          {busy ? "…" : "Scrape URL"}
-        </button>
-      </div>
-      <div className="faint" style={{ fontSize: 11, margin: "4px 0 10px" }}>
-        Scraping a set page imports its whole tracklist — you can add or remove
-        individual tracks afterwards.
-      </div>
-
-      <div className="mix-stack">
-        <div className="mix-list-bar">
-          <div className="mix-list-head">Imported mixes ({mixes.length})</div>
-          {mixes.length === 0 ? (
-            <div className="empty" style={{ padding: "6px 2px" }}>None yet.</div>
-          ) : (
-            <div className="mix-list-items">
-              {mixes.map((m) => (
-                <div
-                  key={m.id}
-                  className={`mix-list-item${m.id === activeId ? " active" : ""}`}
-                  onClick={() => setActiveId(m.id)}
-                >
-                  <div className="mix-list-title">{m.title}</div>
-                  <div className="faint" style={{ fontSize: 11 }}>
-                    {m.track_count} tracks · {m.resolved_count} linked
-                  </div>
-                </div>
-              ))}
+        <div className="mix-column-list">
+          {mixes.length === 0 && (
+            <div className="pd-msg">
+              No sets yet.
+              <span className="hint">
+                Paste a tracklist URL on the left. A scrape imports the whole
+                running order at once.
+              </span>
             </div>
           )}
+          {mixes.map((m) => {
+            const done = m.track_count ? m.resolved_count / m.track_count : 0;
+            return (
+              <button key={m.id}
+                className={`mix-card${m.id === activeId ? " active" : ""}`}
+                onClick={() => setActiveId(m.id)}>
+                <div className="mix-card-title">{m.title}</div>
+                <div className="mix-card-meta mono">
+                  <span>{m.track_count} tracks</span>
+                  <span className="done">{m.resolved_count} matched</span>
+                </div>
+                <div className="mix-card-bar">
+                  <span style={{ width: `${Math.round(done * 100)}%` }} />
+                </div>
+              </button>
+            );
+          })}
         </div>
+      </div>
 
+      <main className="mix-board">
         <div className="mix-detail">
           {!detail ? (
             <p className="empty">Select a mix to see its tracklist.</p>
@@ -766,19 +770,7 @@ export function MixImporter() {
             </>
           )}
         </div>
-      </div>
-
-      <div className="mix-train-section" style={{ marginTop: 18 }}>
-        <div className="screen-head" style={{ display: "block", marginBottom: 8 }}>
-          <h2 style={{ margin: 0, fontSize: 15 }}>Train from these mixes</h2>
-          <div className="hint" style={{ marginTop: 4 }}>
-            The <code>w/</code> overlay lines in every imported mix are documented
-            vocal-over-instrumental mashups. Once their tracks are ingested and
-            analysed, build a dataset and train a model that scores new matches.
-          </div>
-        </div>
-        <MlPanel />
-      </div>
+      </main>
     </div>
   );
 }

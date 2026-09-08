@@ -3,7 +3,8 @@ import { api } from "../api";
 import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
 import { useRowSelection } from "../hooks/useRowSelection";
-import { CrateAddButton, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
+import { ScHeader, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
+import { ShortlistDock } from "./ShortlistDock";
 import { useCrateMembership } from "../hooks/useCrateMembership";
 import { useResultFilters } from "../hooks/useResultFilters";
 import { ResultFilters } from "./ResultFilters";
@@ -159,7 +160,8 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
   const count = useCallback((k) => (result?.[k] || []).length, [result]);
 
   return (
-    <div className="page mixes">
+    <>
+      <main className="disc-main sugg">
       <div className="screen-head">
         <h1>Suggestions</h1>
         <span className="hint">
@@ -291,21 +293,19 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
             </div>
           )}
 
+          {/* Importing and crate-adding moved to the shortlist dock, where you
+              can see WHAT is queued rather than only how many. What stays here
+              is the one action that is about this list: take everything shown.
+              Shown, not loaded — filtering a row away must not import it. */}
           {group === "tracks" && importable.length > 0 && (
             <div className="sc-bulkbar">
               <button className={`preview-check ${allSelected ? "on" : "off"}`}
-                onClick={toggleAll} title="Select every suggestion">
+                onClick={toggleAll} title="Select every suggestion shown">
                 {allSelected ? "✓" : ""}
               </button>
-              <span className="faint">{selected.size} selected of {importable.length}</span>
-              <span style={{ flex: 1 }} />
-              <CrateAddButton disabled={!selectedRows.length}
-                count={selectedRows.length} onAdd={addToCrate}
-                refreshKey={crateRefresh} />
-              <button className="btn" disabled={!selectedImportable.length || importing}
-                onClick={doImport}>
-                {importing ? "Saving…" : `＋ Import ${selectedImportable.length} & process`}
-              </button>
+              <span className="faint">
+                {selected.size} shortlisted of {importable.length} shown
+              </span>
             </div>
           )}
 
@@ -321,6 +321,7 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
             </div>
           )}
 
+          <ScHeader />
           <div className="sc-rows">
             {visible.map((row, i) => group === "artists" ? (
               <UserRow key={`u${row.user_id}`} row={row}
@@ -341,6 +342,16 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
           </div>
         </>
       )}
-    </div>
+      </main>
+
+      <ShortlistDock
+        rows={selectedRows} importable={selectedImportable}
+        onDrop={(r) => toggle(r)} onClear={clear}
+        onImport={doImport} importing={importing}
+        crateRefresh={crateRefresh} onCrateAdd={addToCrate}
+        onActiveCrate={() => {}} activeCrateId={null}
+        onCratesChanged={() => setCrateRefresh((n) => n + 1)}
+        onOpenLibrary={onOpenLibrary} />
+    </>
   );
 }

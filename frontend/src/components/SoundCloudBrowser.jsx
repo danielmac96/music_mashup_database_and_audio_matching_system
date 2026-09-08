@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
-import { CratePanel } from "./CratePanel";
-import { CrateAddButton, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
+import { ScHeader, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
+import { ShortlistDock } from "./ShortlistDock";
 import { useRowSelection } from "../hooks/useRowSelection";
 import { useCrateMembership } from "../hooks/useCrateMembership";
 import { useResultFilters } from "../hooks/useResultFilters";
@@ -204,91 +204,105 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
   };
 
   return (
-    <div className="page mixes">
-      <div className="screen-head">
-        <h1>Discover tracks</h1>
-        <span className="hint">
-          Search SoundCloud, follow an artist into their uploads or likes,
-          shortlist what you want into a crate, then import the lot in one go.
-        </span>
-      </div>
+    <>
+      <main className="disc-main">
+        {/* ── search block ──
+            One wide input taking a query OR a pasted profile / set / track URL,
+            because "find me X" and "open this link" are the same act from the
+            user's side. Search is on Enter and paging is a button: both layers
+            share one scraped client_id with the mixes auto-resolver, so
+            search-as-you-type would spend someone else's rate limit too. */}
+        <div className="disc-search">
+          <div className="disc-input">
+            <span className="glyph">⌕</span>
+            <input ref={inputRef} value={query}
+              placeholder="Search SoundCloud…"
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
+            <span className="disc-or mono">or paste a profile / set / track URL</span>
+            <button className="head-btn" onClick={search}
+              disabled={loading || !query.trim()}>
+              {loading ? "Searching…" : "Search"}
+            </button>
+          </div>
 
-      <div className="import-input-row">
-        <div className="seg">
-          {KINDS.map(([id, label]) => (
-            <button key={id} className={kind === id ? "active" : ""}
-              onClick={() => setKind(id)}>{label}</button>
-          ))}
-        </div>
-        <div className="import-input">
-          <input ref={inputRef} value={query}
-            placeholder="Search SoundCloud, or paste a track / set / artist link"
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
-        </div>
-        <button className="btn" onClick={search} disabled={loading || !query.trim()}>
-          {loading ? "Searching…" : "Search"}
-        </button>
-      </div>
-
-      {crumbs.length > 0 && (
-        <div className="sc-breadcrumb">
-          {crumbs.map((c, i) => (
-            <span key={i}>
-              {i > 0 && <span className="faint"> / </span>}
-              <button className="link-btn" onClick={() => goToCrumb(i)}>{c.label}</button>
-            </span>
-          ))}
-          {here?.kind === "user" && (
-            <span className="seg sc-feed">
-              {USER_FEEDS.map(([id, label]) => (
-                <button key={id} className={(here.feed || "tracks") === id ? "active" : ""}
-                  onClick={() => switchFeed(id)}>{label}</button>
+          <div className="disc-chips">
+            <div className="pd-seg">
+              {KINDS.map(([id, label]) => (
+                <button key={id} className={kind === id ? "on" : ""}
+                  onClick={() => setKind(id)}>{label}</button>
               ))}
-            </span>
-          )}
-        </div>
-      )}
-
-      {error && <div className="error-text">{error}</div>}
-
-      <div className="sc-layout">
-        <div className="sc-results">
-          {importable.length > 0 && (
-            <div className="sc-bulkbar">
-              <button className={`preview-check ${allSelected ? "on" : "off"}`}
-                onClick={toggleAll} title="Select every importable track">
-                {allSelected ? "✓" : ""}
-              </button>
-              <span className="faint">
-                {selected.size} selected of {importable.length} not yet in library
-              </span>
-              <span style={{ flex: 1 }} />
-              <CrateAddButton disabled={!selectedRows.length}
-                count={selectedRows.length} onAdd={addToCrate}
-                refreshKey={crateRefresh} onActive={setActiveCrateId} />
-              <button className="btn" disabled={!selectedImportable.length || importing}
-                onClick={doImport}>
-                {importing ? "Saving…" : `＋ Import ${selectedImportable.length} & process`}
-              </button>
             </div>
-          )}
+
+            <ResultFilters items={items} filters={filters} onChange={setFilters}
+              visibleCount={visible.length} crateOf={crateOf} />
+
+            <span className="disc-page mono">
+              {items.length} loaded{cursor ? " · more available" : ""}
+            </span>
+          </div>
+        </div>
+
+        {crumbs.length > 0 && (
+          <div className="sc-breadcrumb">
+            {crumbs.map((c, i) => (
+              <span key={i}>
+                {i > 0 && <span className="faint"> / </span>}
+                <button className="link-btn" onClick={() => goToCrumb(i)}>{c.label}</button>
+              </span>
+            ))}
+            {here?.kind === "user" && (
+              <span className="pd-seg sc-feed">
+                {USER_FEEDS.map(([id, label]) => (
+                  <button key={id} className={(here.feed || "tracks") === id ? "on" : ""}
+                    onClick={() => switchFeed(id)}>{label}</button>
+                ))}
+              </span>
+            )}
+            {importable.length > 0 && (
+              <button className="link-btn" onClick={toggleAll}
+                style={{ marginLeft: "auto" }}
+                title="Selection is over the SHOWN rows, not everything loaded — filtering something away must not import it">
+                {allSelected ? "clear selection" : `select all ${importable.length} shown`}
+              </button>
+            )}
+          </div>
+        )}
+
+        {error && <div className="error-text" style={{ padding: "8px 16px" }}>{error}</div>}
+
+        <ScHeader />
+
+        <div className="sc-rows">
+          {visible.map((row, i) => row.kind === "playlist" ? (
+            <PlaylistRow key={`p${row.playlist_id}`} row={row}
+              onOpen={() => openPlaylist(row.playlist_id, row.title)} />
+          ) : row.kind === "user" ? (
+            <UserRow key={`u${row.user_id}`} row={row}
+              onOpen={() => openUser(row.user_id, row.username)} />
+          ) : (
+            <TrackRow key={`${rowKey(row)}-${i}`} row={row}
+              checked={isChecked(row)}
+              onToggle={() => toggle(row)}
+              onArtist={() => openUser(row.user?.id, row.user?.username)}
+              onRelated={() => openRelated(row.track_id, row.title)}
+              onOpenLibrary={onOpenLibrary}
+              crates={crateOf(row)} />
+          ))}
 
           {/* The landing state. Your own shelves are the useful thing to show
               here; searching for your own name to reach them was the gap. */}
           {!loading && !items.length && !error && !crumbs.length && (
-            <>
+            <div className="disc-landing">
               <ProfileShelf onOpenFeed={openUser} />
               <div className="empty">
                 Or search for an artist or a track, or paste a SoundCloud link.
               </div>
-            </>
+            </div>
           )}
-
           {!loading && !items.length && !error && crumbs.length > 0 && (
             <div className="empty">Nothing here.</div>
           )}
-
           {/* Loaded rows, all filtered out. Distinct from "nothing here" — the
               fix is to widen the filter, not to search again. */}
           {!loading && items.length > 0 && !visible.length && (
@@ -298,27 +312,6 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
             </div>
           )}
 
-          <ResultFilters items={items} filters={filters} onChange={setFilters}
-            visibleCount={visible.length} crateOf={crateOf} />
-
-          <div className="sc-rows">
-            {visible.map((row, i) => row.kind === "playlist" ? (
-              <PlaylistRow key={`p${row.playlist_id}`} row={row}
-                onOpen={() => openPlaylist(row.playlist_id, row.title)} />
-            ) : row.kind === "user" ? (
-              <UserRow key={`u${row.user_id}`} row={row}
-                onOpen={() => openUser(row.user_id, row.username)} />
-            ) : (
-              <TrackRow key={`${rowKey(row)}-${i}`} row={row}
-                checked={isChecked(row)}
-                onToggle={() => toggle(row)}
-                onArtist={() => openUser(row.user?.id, row.user?.username)}
-                onRelated={() => openRelated(row.track_id, row.title)}
-                onOpenLibrary={onOpenLibrary}
-                crates={crateOf(row)} />
-            ))}
-          </div>
-
           {cursor && (
             <button className="btn ghost sc-more" onClick={loadMore} disabled={paging}>
               {paging ? "Loading…" : "Load more"}
@@ -326,11 +319,24 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
           )}
         </div>
 
-        <CratePanel refreshKey={crateRefresh}
-          onChanged={() => setCrateRefresh((n) => n + 1)}
-          onOpenLibrary={onOpenLibrary}
-          activeCrateId={activeCrateId} onActiveCrate={setActiveCrateId} />
-      </div>
-    </div>
+        <div className="disc-keys">
+          <span className="mono"><b>enter</b> search</span>
+          <span className="mono"><b>click</b> shortlist</span>
+          <span className="mono"><b>▶</b> open on SoundCloud</span>
+          <span className="mono disc-keys-note">
+            nothing downloads until you import
+          </span>
+        </div>
+      </main>
+
+      <ShortlistDock
+        rows={selectedRows} importable={selectedImportable}
+        onDrop={(r) => toggle(r)} onClear={clear}
+        onImport={doImport} importing={importing}
+        crateRefresh={crateRefresh} onCrateAdd={addToCrate}
+        onActiveCrate={setActiveCrateId} activeCrateId={activeCrateId}
+        onCratesChanged={() => setCrateRefresh((n) => n + 1)}
+        onOpenLibrary={onOpenLibrary} />
+    </>
   );
 }
