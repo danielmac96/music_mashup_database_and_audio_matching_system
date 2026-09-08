@@ -257,6 +257,78 @@ def disconnect_profile() -> dict:
     return {"profile": None}
 
 
+# ── saved profiles ───────────────────────────────────────────────────────────
+# The sidebar's shelf of people to check back on. It is deliberately NOT
+# "followed profiles": followings need /me/followings, which needs OAuth, which
+# is dormant — and the browse layer has no followings scrape. Nor does a saved
+# profile carry an "n new" count: that would need a stored last-seen track id
+# per profile and a poll per profile against the client_id the frozen mixes
+# resolver shares. Saving is a bookmark, and the UI says so.
+#
+# Kept in app_prefs rather than settings.json because config.save_settings
+# ignores empty values, so an emptied list could never be written back.
+
+SAVED_PROFILES_KEY = "soundcloud_saved_profiles"
+SAVED_PROFILE_FIELDS = ("user_id", "username", "avatar_url",
+                        "permalink_url", "track_count", "verified")
+MAX_SAVED_PROFILES = 100
+
+
+def _saved_profiles() -> list:
+    """The stored list. app_prefs holds a JSON object, so the list rides in one."""
+    return (get_pref(SAVED_PROFILES_KEY) or {}).get("profiles", [])
+
+
+def _trim_profile(item: dict) -> dict:
+    return {k: item.get(k) for k in SAVED_PROFILE_FIELDS}
+
+
+@router.get("/saved-profiles")
+def list_saved_profiles() -> dict:
+    rows = _saved_profiles()
+    return {"count": len(rows), "profiles": rows}
+
+
+@router.post("/saved-profiles")
+def save_profile(req: ProfileRequest) -> dict:
+    """Bookmark a profile from its URL, or re-save one to refresh its counts.
+
+    Same rejection as /profile: a track or set URL is a 400 naming the mistake
+    rather than a shelf that is empty for reasons nothing on screen explains."""
+    url = (req.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    source, _ = classify_url(url)
+    if source != "soundcloud":
+        raise HTTPException(status_code=400,
+                            detail="Paste a SoundCloud profile link, e.g. "
+                                   "https://soundcloud.com/your-name")
+    out = _guard(browse.resolve, url)
+    if out["kind"] != "user":
+        raise HTTPException(
+            status_code=400,
+            detail=f"That link is a {out['kind']}, not a profile. Paste the "
+                   "artist page — the one that is just soundcloud.com/your-name.")
+
+    profile = _trim_profile(out["item"])
+    rows = [r for r in _saved_profiles()
+            if str(r.get("user_id")) != str(profile["user_id"])]
+    rows.insert(0, profile)
+    del rows[MAX_SAVED_PROFILES:]
+    set_pref(SAVED_PROFILES_KEY, {"profiles": rows})
+    return {"count": len(rows), "profiles": rows, "profile": profile}
+
+
+@router.delete("/saved-profiles/{user_id}")
+def forget_saved_profile(user_id: str) -> dict:
+    rows = _saved_profiles()
+    kept = [r for r in rows if str(r.get("user_id")) != str(user_id)]
+    if len(kept) == len(rows):
+        raise HTTPException(status_code=404, detail="not a saved profile")
+    set_pref(SAVED_PROFILES_KEY, {"profiles": kept})
+    return {"count": len(kept), "profiles": kept}
+
+
 # ── suggestions ──────────────────────────────────────────────────────────────
 
 @router.get("/seeds")

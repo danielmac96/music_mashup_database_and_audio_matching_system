@@ -1,27 +1,29 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { MixImporter } from "./components/MixImporter";
-import { TrackList } from "./components/TrackList";
+import { LibraryScreen } from "./components/LibraryScreen";
+import { PairDock } from "./components/PairDock";
+import { TransportBar } from "./components/TransportBar";
+import { TrackDetail } from "./components/TrackDetail";
 import { Discovery } from "./components/Discovery";
 import { MixStudio } from "./components/MixStudio";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { TuningPanel } from "./components/TuningPanel";
+import { MlPanel } from "./components/MlPanel";
+import { BulkReprocess } from "./components/BulkReprocess";
 import { SetupWizard } from "./components/SetupWizard";
+import { Sidebar } from "./shell/Sidebar";
+import { useLibrary } from "./hooks/useLibrary";
+import { useRatings } from "./hooks/useRatings";
+import { usePairDock } from "./hooks/usePairDock";
+import { scoredOptionOf } from "./components/MashupSuggestions";
 import { api } from "./api";
 import { onToast } from "./toast";
 
-// Four tabs, in the order the work happens: get tracks in, tag the documented
-// mixes, find pairs, build them (T4.3). Import folded into Library (T4.2),
-// Audition into Studio (T4.1), and the database browser sits behind Settings —
-// it is a debugging window, not a step.
-// Discover holds two panes: finding tracks on SoundCloud and finding mashups in
-// what you already have. They are the same job at two scales — the mashup list
-// is what tells you which kind of track you are short of.
-const TABS = [
-  ["library", "Library"],
-  ["mixes", "Mixes"],
-  ["discovery", "Discover"],
-  ["studio", "Studio"],
-];
+// The four tabs became a sidebar. Not cosmetics: with navigation down the left,
+// the Library screen has room for a permanent pair dock on the right, so
+// judging a pair and browsing the library stop being two places you switch
+// between. The order is still the order the work happens in — get tracks in,
+// tag the documented mixes, find pairs, build them.
 
 // Client-side preferences. Kept in localStorage rather than the server settings
 // table because they are about this browser's view, not how audio is processed.
@@ -57,23 +59,38 @@ function Toast() {
 }
 
 export default function App() {
-  // Library is the landing screen (T4.2): importing is a paste bar at the top
-  // of it, not a place you have to go to first.
-  const [tab, setTabState] = useState("library");
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [route, setRouteState] = useState("library");
   // null = still loading, true/false = configured flag from GET /api/settings.
   const [configured, setConfigured] = useState(null);
-  // Pair handed to Studio from Library/Discover. Audition used to be a separate
-  // tab over the same engine (T4.1); it is now Studio opened on this pair.
-  // `at` is bumped on every send so re-sending the same pair still re-seeds.
+  // Pair handed to Studio from Library/Discover. `at` is bumped on every send
+  // so re-sending the same pair still re-seeds.
   const [studioSeed, setStudioSeed] = useState({ vocalId: null, instId: null });
-  // Seed passed into the Mashups tab for a directed "find matches" search.
+  // Seed passed into the Mashups pane for a directed "find matches" search.
   const [mashupSeed, setMashupSeed] = useState(null); // { songId, role }
   // Right-side header status readout — each screen reports its own.
   const [headerStatus, setHeaderStatus] = useState(null); // { locked, text }
-  // Settings drawer: view preferences plus the database browser (T4.3).
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prefs, setPrefs] = useState(loadPrefs);
+  // The library row the pair dock is scoped to, and the track the detail view
+  // is open on. Selecting re-scopes; opening is a separate, deliberate act.
+  const [selectedTrackId, setSelectedTrackId] = useState(null);
+  // Which side of a pair the selected track is being looked at as. A track can
+  // be the vocal on top or the bed underneath, and the dock has to be told
+  // which question you are asking.
+  const [dockRole, setDockRole] = useState("vocal");
+  // What the rail's per-route slot is showing. Each screen registers its own
+  // block here rather than the rail knowing every screen's internals.
+  const [railSlot, setRailSlot] = useState(null);
+
+  // The library is fetched once, here, because the rail counts it, the table
+  // lists it and (from the next phase) the dock scopes to a row of it. Four
+  // independent fetches of the same unpaginated endpoint would be four answers
+  // that can disagree while the pipeline is running.
+  const library = useLibrary();
+  // Judgements are loaded once, here: the library's star column, the pair dock
+  // and the track screen's partners rail all read the same map, and three
+  // copies of it would disagree the moment one of them posted a rating.
+  const ratings = useRatings();
 
   const setPref = (key, value) => {
     const next = { ...prefs, [key]: value };
@@ -90,16 +107,17 @@ export default function App() {
 
   // On load, check whether the app has been configured (first-run wizard gate).
   // If /api/settings is unreachable, assume configured so a transient error
-  // doesn't wall off the whole UI.
+  // does not wall off the whole UI.
   useEffect(() => {
     api.getSettings()
       .then((s) => setConfigured(Boolean(s.configured)))
       .catch(() => setConfigured(true));
   }, []);
 
-  const setTab = (next) => {
+  const setRoute = (next) => {
     setHeaderStatus(null);
-    setTabState(next);
+    setRailSlot(null);
+    setRouteState(next);
   };
 
   // Each send is its own instruction, not a patch over the last one: a pair
@@ -107,17 +125,64 @@ export default function App() {
   // one lane to whatever is already arranged.
   const sendToStudio = (patch) => {
     setStudioSeed({ ...patch, at: Date.now() });
-    setTab("studio");
+    setRoute("studio");
   };
 
   const findMatches = (songId, role) => {
     setMashupSeed({ songId, role });
-    setTab("discovery");
+    setRoute("discovery");
   };
+
+  // A pair goes to Studio with both tracks in full and the suggestion marked as
+  // a region — nothing is trimmed away. `scoredOption` rides along because
+  // top_section_pairs is capped at six, so the row you are looking at need not
+  // be among the options Studio re-fetches for itself.
+  const pairToStudio = (c) => sendToStudio({
+    vocalId: c.vocal_song_id,
+    instId: c.inst_song_id,
+    semitoneShift: c.semitone_shift ?? 0,
+    vocalSectionStart: c.vocal_section_start ?? 0,
+    instSectionStart: c.inst_section_start ?? 0,
+    scoredOption: scoredOptionOf(c),
+  });
+
+  const dock = usePairDock({
+    selectedTrackId, role: dockRole, ratings, onOpenStudio: pairToStudio,
+  });
+
+  // "Next pair" in Studio walks the DOCK's list, so the order you are working
+  // through is the order you chose there — Studio has no list of its own and
+  // inventing a second one would give the two screens different ideas about
+  // what comes next.
+  const nextPair = () => {
+    const at = Math.min(dock.rows.length - 1, dock.cursor + 1);
+    const next = dock.rows[at];
+    if (!next) return;
+    dock.setCursor(at);
+    pairToStudio(next);
+  };
+
+  // The dock owns the keyboard only while the Library screen is the one you are
+  // looking at. Discover has its own model over the same rows, and two window
+  // listeners racing for the space bar is exactly the bug this avoids.
+  useEffect(() => dock.bindKeys(route === "library"), [dock.bindKeys, route]);
+
+  const counts = useMemo(() => ({
+    library: library.tracks.length,
+  }), [library.tracks]);
+
+  // Selecting a row scopes the dock; it does not navigate. Clearing it is what
+  // puts the dock back on "the best pairs in the library".
+  const selectTrack = (id) => setSelectedTrackId((cur) => (cur === id ? null : id));
+
+  const selectedTrack = useMemo(
+    () => library.tracks.find((t) => t.id === selectedTrackId) || null,
+    [library.tracks, selectedTrackId],
+  );
 
   if (configured === false) {
     return (
-      <div className="app-shell">
+      <div className="app-shell setup">
         <header className="topbar">
           <div className="brand">
             <span className="diamond">◈</span> Mashup Engine
@@ -130,63 +195,79 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <div className="brand">
-          <span className="diamond">◈</span> Mashup Engine
-        </div>
-        <nav className="tab-switch">
-          {TABS.map(([id, label]) => (
-            <button
-              key={id}
-              className={tab === id ? "active" : ""}
-              onClick={() => setTab(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-        <div className="spacer" />
-        {headerStatus?.locked ? (
-          <div className="status-pill locked">
-            <span className="dot pulse" />
-            <span className="txt">◈ {headerStatus.text}</span>
-          </div>
-        ) : headerStatus?.text ? (
-          <div className="status-pill plain">{headerStatus.text}</div>
-        ) : null}
-        <button className={`settings-btn${settingsOpen ? " on" : ""}`}
-          onClick={() => setSettingsOpen((v) => !v)}
-          title="Settings and the database browser">
-          ⚙
-        </button>
-      </header>
+      <Sidebar route={route === "track" ? "library" : route}
+        onRoute={setRoute} counts={counts}
+        settingsOpen={settingsOpen}
+        onOpenSettings={() => setSettingsOpen((v) => !v)}>
+        {railSlot}
+      </Sidebar>
 
-      {tab === "mixes" && <MixImporter />}
-      {tab === "library" && (
-        <TrackList
-          refreshKey={refreshKey}
-          onSendToAudition={sendToStudio}
-          onFindMatches={findMatches}
-          onStatus={setHeaderStatus}
-        />
-      )}
-      {tab === "discovery" && (
-        <Discovery
-          seed={mashupSeed}
-          onClearSeed={() => setMashupSeed(null)}
-          onAudition={(patch) => sendToStudio(patch)}
-          onStatus={setHeaderStatus}
-          showInstOverInst={prefs.showInstOverInst}
-          onOpenLibrary={() => setTab("library")}
-        />
-      )}
-      {tab === "studio" && (
-        <MixStudio
-          seed={studioSeed}
-          onSeedConsumed={() => setStudioSeed({ vocalId: null, instId: null })}
-          onStatus={setHeaderStatus}
-        />
-      )}
+      <div className="app-main">
+        {headerStatus?.text ? (
+          <div className={`float-status${headerStatus.locked ? " locked" : ""}`}>
+            {headerStatus.locked && <span className="dot pulse" />}
+            <span className="txt">
+              {headerStatus.locked ? `◈ ${headerStatus.text}` : headerStatus.text}
+            </span>
+          </div>
+        ) : null}
+
+        {route === "mixes" && <MixImporter />}
+        {route === "library" && (
+          <div className="lib-layout">
+            <main className="lib-main">
+              <LibraryScreen
+                library={library}
+                ratings={ratings}
+                selectedId={selectedTrackId}
+                onSelect={selectTrack}
+                onOpen={(id) => { setSelectedTrackId(id); setRoute("track"); }}
+                onRailSlot={setRailSlot}
+                onStatus={setHeaderStatus}
+              />
+            </main>
+            <PairDock dock={dock} ratings={ratings}
+              scopeTitle={selectedTrack?.title || null}
+              role={dockRole} onRole={setDockRole} />
+            <TransportBar candidate={dock.current} audio={dock.audio}
+              rating={ratings.ratingOf(dock.current)}
+              onRate={(n) => ratings.rate(dock.current, n)}
+              onStudio={() => dock.openStudio(dock.current)} />
+          </div>
+        )}
+        {route === "track" && (
+          <TrackDetail
+            track={selectedTrack}
+            tracks={library.tracks}
+            ratings={ratings}
+            role={dockRole}
+            onRole={setDockRole}
+            onBack={() => setRoute("library")}
+            onStudio={pairToStudio}
+            onStatus={setHeaderStatus}
+          />
+        )}
+        {route === "discovery" && (
+          <Discovery
+            seed={mashupSeed}
+            onClearSeed={() => setMashupSeed(null)}
+            onAudition={(patch) => sendToStudio(patch)}
+            onStatus={setHeaderStatus}
+            showInstOverInst={prefs.showInstOverInst}
+            onOpenLibrary={() => setRoute("library")}
+            onRailSlot={setRailSlot}
+          />
+        )}
+        {route === "studio" && (
+          <MixStudio
+            seed={studioSeed}
+            onSeedConsumed={() => setStudioSeed({ vocalId: null, instId: null })}
+            onStatus={setHeaderStatus}
+            onNextPair={dock.rows.length > 1 ? nextPair : null}
+          />
+        )}
+      </div>
+
       {settingsOpen && (
         <>
           <div className="drawer-scrim" onClick={() => setSettingsOpen(false)} />
@@ -211,14 +292,40 @@ export default function App() {
               </span>
             </label>
 
+            <div className="drawer-section">
+              <h3>Re-process the library</h3>
+              <span className="hint">
+                Bulk re-analysis and stem separation. It belongs here rather
+                than on the Library screen because it acts on everything at
+                once — the per-track stages are on each row's pipeline dots.
+              </span>
+            </div>
+            <div className="drawer-body">
+              <BulkReprocess onQueued={() => library.refresh()} />
+            </div>
+
             <div className="drawer-body">
               <TuningPanel />
             </div>
 
             <div className="drawer-section">
+              <h3>Train from the imported mixes</h3>
+              <span className="hint">
+                The <code>w/</code> overlay lines in every imported mix are
+                documented vocal-over-instrumental mashups. Once their tracks are
+                ingested and analysed, build a dataset and train a model that
+                scores new matches. It lives here rather than on Mixes because it
+                acts on the whole library, not on the set you are matching.
+              </span>
+            </div>
+            <div className="drawer-body">
+              <MlPanel />
+            </div>
+
+            <div className="drawer-section">
               <span className="hint">
                 The database browser is a debugging window, not a step in the
-                workflow — which is why it lives here rather than in the tab bar.
+                workflow — which is why it lives here rather than in the rail.
               </span>
             </div>
             <div className="drawer-body">

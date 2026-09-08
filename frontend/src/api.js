@@ -75,12 +75,15 @@ export const api = {
   getPairFeedback: (verdict = "") =>
     jsonFetch(`/api/mashups/feedback${verdict ? `?verdict=${verdict}` : ""}`),
 
-  savePairFeedback: ({ vocalSongId, instSongId, verdict,
+  // `rating` is the dock's 1-5 star; `verdict` is Discover's ✓/~/✗. Send
+  // either — the server derives the other, so the learned scorer keeps seeing
+  // the verdict it trains on whichever control the judgement came from.
+  savePairFeedback: ({ vocalSongId, instSongId, verdict = null, rating = null,
                        vocalSection = null, instSection = null }) =>
     jsonFetch("/api/mashups/feedback", {
       method: "POST",
       body: JSON.stringify({
-        vocal_song_id: vocalSongId, inst_song_id: instSongId, verdict,
+        vocal_song_id: vocalSongId, inst_song_id: instSongId, verdict, rating,
         vocal_section: vocalSection, inst_section: instSection,
       }),
     }),
@@ -446,6 +449,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ url }),
     }),
+
+  // Bookmarked profiles for Discover's sidebar. NOT "followed profiles":
+  // followings need /me/followings, i.e. OAuth, which ships dormant. Saving is
+  // a bookmark, and there is no "n new" count because nothing snapshots them.
+  discoverySavedProfiles: () => jsonFetch("/api/discovery/saved-profiles"),
+
+  discoverySaveProfile: (url) =>
+    jsonFetch("/api/discovery/saved-profiles", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
+
+  discoveryForgetProfile: (userId) =>
+    jsonFetch(`/api/discovery/saved-profiles/${userId}`, { method: "DELETE" }),
 
   discoveryDisconnect: () =>
     jsonFetch("/api/discovery/profile", { method: "DELETE" }),

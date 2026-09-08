@@ -89,13 +89,42 @@ def _features_by_song(stem_type: str) -> dict[int, dict]:
     return out
 
 
-def _section_counts_by_song() -> dict[int, int]:
+def _section_counts_by_song() -> dict[int, dict]:
+    """Per song: how many sections, and how they break down by class.
+
+    The class tally rides along on the count query the list already ran, so the
+    library can be filtered by "is this a vocal or a bed" without a request per
+    track. section_class is 'vocal' | 'instrumental' | 'mixed' | 'unknown', and
+    unknown means the stem was never measured — NOT that the section is quiet,
+    which is why it is reported rather than folded into one of the others.
+    """
     conn = get_conn()
     rows = conn.execute(
-        "SELECT song_id, COUNT(*) AS n FROM sections GROUP BY song_id"
+        "SELECT song_id, COALESCE(section_class, 'unknown') AS cls, "
+        "       COUNT(*) AS n "
+        "FROM sections GROUP BY song_id, cls"
     ).fetchall()
     conn.close()
-    return {r["song_id"]: r["n"] for r in rows}
+    out: dict[int, dict] = {}
+    for r in rows:
+        e = out.setdefault(r["song_id"], {"count": 0, "classes": {}})
+        e["count"] += r["n"]
+        e["classes"][r["cls"]] = r["n"]
+    return out
+
+
+def _dominant_class(classes: dict) -> Optional[str]:
+    """Which of vocal / instrumental / mixed this track mostly is.
+
+    'unknown' never wins: a track whose stems were never measured has no class,
+    and saying 'unknown' would put it in a filter bucket alongside tracks that
+    were measured and came out ambiguous. None means "we have not measured this",
+    and the UI shows it as such.
+    """
+    known = {k: v for k, v in (classes or {}).items() if k != "unknown"}
+    if not known:
+        return None
+    return max(known.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
 @router.get("")
@@ -142,7 +171,9 @@ def list_tracks() -> dict:
                 "separator": stem_paths.get("__separator__"),
             },
             "features": feats or None,
-            "section_count": section_counts.get(sid, 0),
+            "section_count": section_counts.get(sid, {}).get("count", 0),
+            "section_classes": section_counts.get(sid, {}).get("classes", {}),
+            "track_class": _dominant_class(section_counts.get(sid, {}).get("classes")),
             "variant_count": variant_sizes.get(s.get("variant_cluster"), 0),
         })
     return {"count": len(rows), "tracks": rows}

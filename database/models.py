@@ -143,6 +143,12 @@ CREATE TABLE IF NOT EXISTS pair_feedback (
     vocal_section   INTEGER,
     inst_section    INTEGER,
     verdict         TEXT NOT NULL CHECK(verdict IN ('love','ok','no')),
+    -- The 1-5 star the UI actually collects. Kept ALONGSIDE verdict rather
+    -- than replacing it: verdict is the learned scorer's only training signal
+    -- (matcher/features.py, dataset/), and every star writes its mapped
+    -- verdict too, so that path is untouched. NULL on rows judged before
+    -- stars existed; readers derive one back from the verdict.
+    rating          INTEGER,
     -- The exact feature values the judged candidate was generated from. A
     -- verdict without them is only as reproducible as the last re-score, and
     -- score_all_pairs truncates mashup_candidates on every run.
@@ -525,6 +531,12 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("score_phrase", "REAL"),
     ("score_rhythm", "REAL"),
     ("score_structure", "REAL"),
+    # The three terms score_section is built from that were computed and
+    # discarded before this. NULL means "this row predates them", which the UI
+    # must render as unmeasured rather than as zero.
+    ("score_label", "REAL"),
+    ("score_duration", "REAL"),
+    ("score_voice", "REAL"),
     # P2.4 / spec §8 — what building this pair actually involves. Computed at
     # scoring time from the stored per-section downbeats, so the ranked list can
     # say it without the export step having to be reached first.
@@ -674,6 +686,7 @@ _PAIR_FEEDBACK_UNIQUE_INDEX = (
 
 _PAIR_FEEDBACK_OPTIONAL_COLUMNS = (
     ("features_json", "TEXT"),
+    ("rating", "INTEGER"),
 )
 
 
@@ -1574,6 +1587,7 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        section_bars_vocal, section_bars_bed,
        section_loop_repeats, section_note,
        score_phrase, score_rhythm, score_structure,
+       score_label, score_duration, score_voice,
        alignment_downbeat, alignment_offset, target_bpm,
        tempo_adjustment, pitch_adjustment, reason,
        score_effort, effort_stretch, effort_pitch,
@@ -1582,7 +1596,7 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -1603,6 +1617,9 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_phrase=excluded.score_phrase,
        score_rhythm=excluded.score_rhythm,
        score_structure=excluded.score_structure,
+       score_label=excluded.score_label,
+       score_duration=excluded.score_duration,
+       score_voice=excluded.score_voice,
        alignment_downbeat=excluded.alignment_downbeat,
        alignment_offset=excluded.alignment_offset,
        target_bpm=excluded.target_bpm,
@@ -1650,6 +1667,7 @@ SECTION_PAIR_COLUMNS = (
     "section_bars_vocal", "section_bars_bed",
     "section_loop_repeats", "section_note",
     "score_phrase", "score_rhythm", "score_structure",
+    "score_label", "score_duration", "score_voice",
     "alignment_downbeat", "alignment_offset", "target_bpm",
     "tempo_adjustment", "pitch_adjustment", "reason",
 )
@@ -1734,11 +1752,31 @@ def clear_candidates(db_path: Path = DB_PATH) -> None:
 #     spec 'bad'     -> 'no'            spec 'ignored' -> pair_hidden / track_excluded
 VERDICTS = ("love", "ok", "no")
 
+# Stars and verdicts are two views of one judgement, and the mapping is total in
+# both directions so neither column can be the only truth. The scorer trains on
+# `verdict`; the UI collects `rating`. A star always writes both; a row judged
+# before stars existed still reads back as one.
+RATING_TO_VERDICT = {5: "love", 4: "love", 3: "ok", 2: "no", 1: "no"}
+VERDICT_TO_RATING = {"love": 5, "ok": 3, "no": 1}
 
-def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int, verdict: str,
+
+def verdict_for_rating(rating: Optional[int]) -> Optional[str]:
+    """The verdict a star implies, or None when there is no star."""
+    return RATING_TO_VERDICT.get(int(rating)) if rating is not None else None
+
+
+def rating_for_verdict(verdict: Optional[str]) -> Optional[int]:
+    """The star a verdict implies. Used to fill NULL `rating` on legacy rows —
+    4 and 2 are unreachable this way, which is correct: they were never said."""
+    return VERDICT_TO_RATING.get(verdict) if verdict else None
+
+
+def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int,
+                         verdict: Optional[str] = None,
                          vocal_section: Optional[int] = None,
                          inst_section: Optional[int] = None,
                          features: Optional[Dict] = None,
+                         rating: Optional[int] = None,
                          db_path: Path = DB_PATH) -> None:
     """Record (or correct) the user's verdict on one SECTION PAIR.
 
@@ -1748,23 +1786,39 @@ def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int, verdict: str,
 
     `features` is the feature snapshot the judged candidate was generated from.
     Stored because score_all_pairs truncates mashup_candidates on every run, so
-    a verdict is otherwise only as reproducible as the last re-score."""
+    a verdict is otherwise only as reproducible as the last re-score.
+
+    Pass a `rating` (1-5), a `verdict`, or both. A rating alone derives its
+    verdict, so the learned scorer keeps seeing the signal it trains on without
+    knowing stars exist. A verdict alone leaves `rating` NULL rather than
+    inventing a star the user never picked; readers fill it in."""
+    if rating is not None:
+        rating = int(rating)
+        if not 1 <= rating <= 5:
+            raise ValueError(f"rating must be 1-5, got {rating}")
+    if verdict is None:
+        verdict = verdict_for_rating(rating)
+    if verdict not in VERDICTS:
+        raise ValueError("a verdict or a rating is required")
     conn = get_conn(db_path)
     conn.execute(
         """INSERT INTO pair_feedback
                (vocal_song_id, inst_song_id, vocal_section, inst_section,
-                verdict, features_json)
-           VALUES (?,?,?,?,?,?)
+                verdict, rating, features_json)
+           VALUES (?,?,?,?,?,?,?)
            ON CONFLICT(vocal_song_id, inst_song_id,
                        COALESCE(vocal_section, -1), COALESCE(inst_section, -1))
            DO UPDATE SET
                verdict=excluded.verdict,
+               -- Same rule as features_json: a correction that carries no star
+               -- (the ✓/~/✗ path in Discover) must not wipe one already given.
+               rating=COALESCE(excluded.rating, pair_feedback.rating),
                -- Keep the original snapshot when the correction carries none,
                -- rather than blanking what the first judgement recorded.
                features_json=COALESCE(excluded.features_json, pair_feedback.features_json),
                created_at=datetime('now')""",
         (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict,
-         json.dumps(features, ensure_ascii=False) if features else None),
+         rating, json.dumps(features, ensure_ascii=False) if features else None),
     )
     conn.commit()
     conn.close()
@@ -1781,7 +1835,15 @@ def get_pair_feedback(verdict: str = "", db_path: Path = DB_PATH) -> List[Dict]:
     sql += " ORDER BY created_at DESC, id DESC"
     rows = conn.execute(sql, params).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        row = dict(r)
+        # Rows judged before stars existed carry no rating. Deriving one here
+        # rather than in the UI means every caller sees one shape.
+        if row.get("rating") is None:
+            row["rating"] = rating_for_verdict(row.get("verdict"))
+        out.append(row)
+    return out
 
 
 def get_candidates(min_score: float = 0.0, limit: int = 100,

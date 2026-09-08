@@ -64,9 +64,9 @@ export function scoredOptionOf(c) {
 }
 
 // Key drives 30% of the score and the suggested pitch shift, so an unreliable
-// one has to be visible on the row you are about to judge. See TrackList.jsx for
+// one has to be visible on the row you are about to judge. See theme.js for
 // how key_confidence is derived; null means analysed before it existed.
-// Calibrated against the real library — see TrackList.jsx for the distribution.
+// Calibrated against the real library — see theme.js for the distribution.
 const KEY_CONFIDENCE_MIN = 0.012;
 const keyLooksOff = (kc) => kc != null && kc < KEY_CONFIDENCE_MIN;
 const keyWarnTitle = (kc) =>
@@ -177,7 +177,7 @@ function PlanDetails({ vocalId, instId, candidate }) {
 // about the scoring path changes — the pairs are still scored and stored, they
 // just are not offered here unless asked for.
 export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
-                                    showInstOverInst = false }) {
+                                    showInstOverInst = false, active = true }) {
   const [candidates, setCandidates] = useState([]);
   const [comboType, setComboType] = useState("vocal_over_instrumental");
   const [minMatch, setMinMatch] = useState(50);
@@ -527,7 +527,13 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     setCursor((i) => Math.min(i + 1, sortedCandidates.length - 1));
   }, [cursor, judge, sortedCandidates]);
 
+  // `active` is what stops this firing while the pane is hidden. Discover keeps
+  // it mounted under display:none so its ranked list, filters, scorer status and
+  // verdicts survive a mode switch — but a mounted pane still runs its effects,
+  // and a window listener that does not know whether it is on screen will take
+  // the space bar from whatever is.
   useEffect(() => {
+    if (!active) return undefined;
     const onKey = (e) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const t = e.target;
@@ -574,7 +580,7 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cursor, sortedCandidates, judgeAndAdvance, hide]);
+  }, [active, cursor, sortedCandidates, judgeAndAdvance, hide]);
 
   // Switching away from the tab must not leave an AudioContext playing.
   useEffect(() => stop, [stop]);
