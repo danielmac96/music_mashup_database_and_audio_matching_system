@@ -1,11 +1,127 @@
 # CLAUDE.md — AI Assistant Guide
 
-current goal: **Phases 1 and 2 of the Discovery plan are done** (branch
-`discovery-tab`, commits D1.0–D1.6 and P2.0–P2.6). See
-`~/.claude/plans/using-the-current-repo-abstract-curry.md`. Discover now also has
-a connected profile and a library-seeded Suggestions pane — see the 2026-08-23
-section below. The Studio now carries Discover's timing suggestions across as
-pills — see the 2026-08-24 section immediately below.
+current goal: **the frontend revamp is done** (branch `frontend-revamp`, Phases
+0–7). The four tabs are a sidebar, the pair dock is permanent beside the
+library, and there is a track-detail screen. See
+`~/.claude/plans/using-the-design-handoff-mashup-frontend-sleepy-book.md` and the
+2026-09-07 section below. Before that: Phases 1 and 2 of the Discovery plan
+(`~/.claude/plans/using-the-current-repo-abstract-curry.md`), a connected
+profile and a library-seeded Suggestions pane (2026-08-23), and the Studio's
+timing pills (2026-08-24).
+
+### The frontend revamp (2026-09-07)
+
+`design_handoff_mashup_frontend/` — a README plus a five-artboard `.dc.html`
+prototype — specified the whole UI. Executed in seven phases; the artboards are
+the reference, but three of them describe data that does not exist and those
+departures are listed at the end.
+
+**The change everything else rests on: the tab bar became a 206px rail.** Not
+cosmetics. With navigation down the left, the Library screen has room for a
+permanent 404px **pair dock** on its right, so judging a pair and browsing the
+library stop being two places you switch between. Judging is the expensive part
+of this app; it now costs one keypress (`↑↓` move · `space` loop · `1–5` rate ·
+`V`/`B` solo · `⏎` Studio).
+
+#### The load-bearing decisions
+
+- **A pair is keyed by its four ids, NEVER by `candidate.id`.**
+  `score_all_pairs` truncates `mashup_candidates` on every run, so an id
+  survives exactly until the next re-score — and a rating keyed on one would
+  attach itself to whatever row inherited it. `components/pairs/pairModel.js`
+  holds `keyOf` / `feedbackKey` once, and it is the same key
+  `ux_pair_feedback_section` uses.
+- **Stars sit ALONGSIDE the verdict.** `pair_feedback.rating` is new and
+  nullable; the mapping is total both ways (5,4→love · 3→ok · 2,1→no on write,
+  love→5 · ok→3 · no→1 on read). Every star writes its verdict, so
+  `matcher/features.py` and `dataset/` are untouched and were not changed. A
+  ✓/~/✗ correction `COALESCE`s rather than blanking a star already given.
+  **Do not repoint the training path at `rating`.**
+- **`score_label` / `score_duration` / `score_voice` are stored now.**
+  `score_section_pair` computed all three inline and discarded them, so three
+  of the pair card's four bars had nothing to draw. `section_terms()` returns
+  them and `_pair_row` stores them; they are in `SECTION_PAIR_COLUMNS`, which
+  is the tuple that actually binds — the P2.0 bug repeats itself if you add a
+  term and forget it. **`score_section_pair` deliberately does NOT call
+  `section_terms`**: it runs once per (vocal section × bed section) over the
+  whole library, while `_pair_row` runs only for stored rows. The two copies of
+  the arithmetic are pinned against each other by summing the six weighted
+  terms back to `score_section`.
+- **NULL is unmeasured, never zero.** A row scored before those columns existed
+  draws its bars hatched. `alignment_offset` is null when neither side has a
+  stored downbeat grid — the Studio's chip says "no grid" and the rail draws no
+  tick, because "unmeasured" and "measured zero" are opposite claims.
+- **Filtering never fetches.** `GET /api/tracks` is unpaginated, so
+  `hooks/useLibraryFilters.js` is arithmetic over rows already in memory and a
+  test greps it for `fetch(`/`api.` — the same rule `ResultFilters` follows for
+  Discover, and for the same reason.
+- **One fetch of the library and one of the judgements, both in `App.jsx`.**
+  The rail counts them, the table lists them, the dock scopes to them and the
+  detail screen reads them. Four copies would disagree mid-pipeline.
+- **The Studio's gutter is arithmetic, not styling.** `HEADER_W = 150` is the
+  138px lane card plus the 12px grid gap, and it both converts pixels to
+  seconds and positions the playhead. If it disagrees with
+  `.studio-grid`'s first column, every clip draws at the wrong time and
+  **nothing looks broken** — `tests/test_studio_geometry_frontend.py` parses
+  both out of the source and asserts they are equal.
+- **The 138px lane card cannot hold the old lane header**, so stem select,
+  sync, rate, pitch, ⚡key, ⇥grid, ↺, ✂ and remove live in the 340px
+  adjustments rail, acting on the selected lane. Every rail slider carries a
+  grey tick at the matcher's suggested value, so a manual edit reads as a
+  divergence from the recipe.
+- **A hidden pane must not own the keyboard.** Discover keeps its Suggestions
+  and Find-mashups panes mounted under `display:none`, and
+  `MashupSuggestions`' `j/k/f/d/s/h` listener was taking keys from whatever was
+  actually on screen. It is now gated on `active`, and the dock's on
+  `route === "library"`.
+- **A track's star is the best any pairing it appears in has earned.** There is
+  no per-song rating store and this deliberately does not add one: the thing
+  being judged is a pairing.
+
+#### Departures from the artboards, and why
+
+1. **No "score" sort key on the library.** It would come from the truncated
+   ranked list, so it would order the rows that happened to be fetched and
+   silently mis-place the rest. Rating is the second key instead.
+2. **No `~BPM` column in Discover.** Nothing external has been analysed, so it
+   would be a column of em dashes. LIKES is on `track_row` already.
+3. **`▶` on a Discover row opens SoundCloud rather than previewing.** This app
+   never streams external audio, and adding a preview path would spend the
+   scraped `client_id` the frozen mixes resolver shares. The footer says
+   "nothing downloads until you import" instead of the artboard's "audio
+   previews stream from the API", which is not true.
+4. **`FOLLOWED PROFILES` is `SAVED PROFILES`.** Followings need
+   `/me/followings`, i.e. OAuth, which ships dormant; `soundcloud_browse` has no
+   followings scrape. These are bookmarks in `app_prefs`, and there is no "n
+   new" badge because nothing snapshots a profile to diff against.
+5. **The rail stays visible on the track-detail screen.** The artboard omits it,
+   but the screen has a "Library /" breadcrumb — it is a place inside Library,
+   not a fifth destination.
+
+Also: `GET /api/tracks` rows gained `section_classes` and `track_class`, which
+the Class chip needs. Not new analysis — `sections.section_class` has been
+measured since P2.1; the tally rides on the COUNT query the list already ran.
+`'unknown'` never wins the vote, because a track whose stems were never measured
+has no class rather than an ambiguous one.
+
+`TrackList.jsx` and `PlayerBar.jsx` are gone. PlayerBar emitted `.player-*` and
+the stylesheet only ever defined `.pb-*`, so its whole interior had been
+unstyled; `.chip.active` was used in four places and never existed either. Both
+are fixed. ~90 CSS rules this revamp orphaned were deleted; the audition-era
+leftovers (`.aud-*`, `.wave-*`, `.anchor-*`, `.lane-*`, `.module-*`) were
+already dead before it and are a separate sweep.
+
+Frontend contracts are pinned from Python as usual —
+`tests/test_shell_frontend.py`, `test_library_filters_frontend.py`,
+`test_pair_dock_frontend.py`, `test_studio_geometry_frontend.py` — plus
+`test_pair_rating.py` and `test_section_terms.py` on the backend.
+
+**Not verified in a browser.** Chrome blocked `localhost` for the whole session
+("This site is blocked by your site permissions"), so every screen was checked
+by build, by test and by curling the data behind it — not by eye. Walk the five
+artboards before trusting the pixels.
+
+Suite: **955 passing, 0 skipped, 0 failing.**
 
 ### The Studio keeps the suggestions (2026-08-24)
 

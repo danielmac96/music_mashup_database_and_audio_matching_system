@@ -9,6 +9,7 @@ import { MixStudio } from "./components/MixStudio";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { TuningPanel } from "./components/TuningPanel";
 import { MlPanel } from "./components/MlPanel";
+import { BulkReprocess } from "./components/BulkReprocess";
 import { SetupWizard } from "./components/SetupWizard";
 import { Sidebar } from "./shell/Sidebar";
 import { useLibrary } from "./hooks/useLibrary";
@@ -290,6 +291,18 @@ export default function App() {
                 </span>
               </span>
             </label>
+
+            <div className="drawer-section">
+              <h3>Re-process the library</h3>
+              <span className="hint">
+                Bulk re-analysis and stem separation. It belongs here rather
+                than on the Library screen because it acts on everything at
+                once — the per-track stages are on each row's pipeline dots.
+              </span>
+            </div>
+            <div className="drawer-body">
+              <BulkReprocess onQueued={() => library.refresh()} />
+            </div>
 
             <div className="drawer-body">
               <TuningPanel />
