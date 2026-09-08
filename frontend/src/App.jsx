@@ -3,6 +3,7 @@ import { MixImporter } from "./components/MixImporter";
 import { LibraryScreen } from "./components/LibraryScreen";
 import { PairDock } from "./components/PairDock";
 import { TransportBar } from "./components/TransportBar";
+import { TrackDetail } from "./components/TrackDetail";
 import { Discovery } from "./components/Discovery";
 import { MixStudio } from "./components/MixStudio";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
@@ -180,7 +181,8 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <Sidebar route={route} onRoute={setRoute} counts={counts}
+      <Sidebar route={route === "track" ? "library" : route}
+        onRoute={setRoute} counts={counts}
         settingsOpen={settingsOpen}
         onOpenSettings={() => setSettingsOpen((v) => !v)}>
         {railSlot}
@@ -205,7 +207,7 @@ export default function App() {
                 ratings={ratings}
                 selectedId={selectedTrackId}
                 onSelect={selectTrack}
-                onOpen={(id) => setSelectedTrackId(id)}
+                onOpen={(id) => { setSelectedTrackId(id); setRoute("track"); }}
                 onRailSlot={setRailSlot}
                 onStatus={setHeaderStatus}
               />
@@ -218,6 +220,18 @@ export default function App() {
               onRate={(n) => ratings.rate(dock.current, n)}
               onStudio={() => dock.openStudio(dock.current)} />
           </div>
+        )}
+        {route === "track" && (
+          <TrackDetail
+            track={selectedTrack}
+            tracks={library.tracks}
+            ratings={ratings}
+            role={dockRole}
+            onRole={setDockRole}
+            onBack={() => setRoute("library")}
+            onStudio={pairToStudio}
+            onStatus={setHeaderStatus}
+          />
         )}
         {route === "discovery" && (
           <Discovery
