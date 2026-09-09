@@ -245,10 +245,34 @@ def frontend_build_state() -> dict:
     }
 
 
+# Vite fingerprints everything under /assets (index-<hash>.js), so a changed
+# file is a changed URL and the old one is never asked for again — those are
+# safe to cache forever. index.html is the opposite: one fixed URL whose whole
+# job is to name the current hashes. Served with no Cache-Control it gets
+# HEURISTICALLY cached (browsers use ~10% of the age since Last-Modified), so
+# after a rebuild the browser can serve the OLD index.html without asking, and
+# the old bundle it names is still in cache too — the entire previous UI, with
+# no network request to reveal it. `no-cache` means "revalidate", not "do not
+# store" — and since a bare FileResponse does no conditional handling, that
+# revalidation re-sends index.html in full. It is 920 bytes; never serving a
+# stale shell is worth them.
+_IMMUTABLE = "public, max-age=31536000, immutable"
+_REVALIDATE = "no-cache"
+
+
+class _ImmutableStatics(StaticFiles):
+    """StaticFiles that marks content-addressed bundles as immutable."""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["cache-control"] = _IMMUTABLE
+        return resp
+
+
 if _DIST.exists():
     _ASSETS = _DIST / "assets"
     if _ASSETS.exists():
-        app.mount("/assets", StaticFiles(directory=_ASSETS), name="assets")
+        app.mount("/assets", _ImmutableStatics(directory=_ASSETS), name="assets")
 
     state = frontend_build_state()
     if state["stale"]:
@@ -264,7 +288,10 @@ if _DIST.exists():
             raise HTTPException(status_code=404, detail="Not found")
         candidate = _DIST / full_path
         if full_path and candidate.is_file():
-            return FileResponse(candidate)
+            # Not under /assets, so NOT fingerprinted — public/ is copied to the
+            # dist root under its own name (soundtouch-processor.js, the audio
+            # worklet). Same fixed-URL hazard as index.html.
+            return FileResponse(candidate, headers={"cache-control": _REVALIDATE})
 
         index = _DIST / "index.html"
         # Checked per request, not once at startup: rebuilding while the server
@@ -273,7 +300,8 @@ if _DIST.exists():
         if frontend_build_state()["stale"]:
             try:
                 html = index.read_text(encoding="utf-8")
-                return HTMLResponse(html.replace("<body>", "<body>" + _STALE_BANNER, 1))
+                return HTMLResponse(html.replace("<body>", "<body>" + _STALE_BANNER, 1),
+                                    headers={"cache-control": _REVALIDATE})
             except OSError:
                 pass
-        return FileResponse(index)
+        return FileResponse(index, headers={"cache-control": _REVALIDATE})
