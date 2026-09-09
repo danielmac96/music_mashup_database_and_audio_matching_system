@@ -116,12 +116,51 @@ Frontend contracts are pinned from Python as usual —
 `test_pair_dock_frontend.py`, `test_studio_geometry_frontend.py` — plus
 `test_pair_rating.py` and `test_section_terms.py` on the backend.
 
-**Not verified in a browser.** Chrome blocked `localhost` for the whole session
-("This site is blocked by your site permissions"), so every screen was checked
-by build, by test and by curling the data behind it — not by eye. Walk the five
-artboards before trusting the pixels.
+**Not verified in a browser** at the time this was written — Chrome blocked
+`localhost` for the whole session, so every screen was checked by build, by test
+and by curling the data behind it. **Library and the track detail have since
+been walked by eye** (2026-09-08, Playwright at 1440x900, four-track library);
+Discover, Mixes and Studio still have not. Walk those three artboards before
+trusting their pixels.
 
 Suite: **955 passing, 0 skipped, 0 failing.**
+
+### The track detail screen had no way in (2026-09-08)
+
+Screen 1b was built in full and reachable only by **double-clicking** a library
+row, with a `title=` tooltip as its entire affordance. A screen nobody can find
+is a screen nobody built, and the failure is silent — the app works, the tests
+pass, the feature is gone.
+
+- **The row still scopes the dock; the TITLE is the link.** Both gestures were
+  already spoken for (click scopes, double-click opens), so navigation needed a
+  surface of its own. `.tt-name` is a button now, and its `stopPropagation` is
+  load-bearing: without it one click navigates *and* re-toggles the selection
+  behind you. Double-click still opens, undocumented, for muscle memory.
+- **The chevron sits OUTSIDE the ellipsised span.** Inside `.tt-title` it was
+  clipped away on exactly the rows that truncate — which is most of them at that
+  column width. `.tt-text` carries the ellipsis, `.tt-go` is `flex: none`. Same
+  split in the partners rail (`.pc-text` / `.partner-go`).
+- **A partner in the rail walks to ITS track, and the role flips.** You reached
+  it looking at this track as the vocal, so the row you clicked is a bed — open
+  it as one, or its rail immediately re-scopes to *its* beds and answers a
+  different question than the one you clicked. `onRole` was already threaded
+  into `TrackDetail` and never called; this is what it was for.
+- **`.partner-open`'s hover treatment is scoped to `.partner`.** `.pc-title` is
+  shared with `PairCard`, where nothing is clickable — a rule on the bare class
+  would put a phantom link on every pair in the dock.
+- **The detail screen publishes NO float status.** `.float-status` is absolutely
+  positioned at the top right of the main column, which on this screen is
+  `song #N` and the `esc` button — measured in the browser, the pill covered
+  both. It has `pointer-events: none`, so `esc` still worked; a dismiss control
+  you cannot see is the same bug as an entrance you cannot see. Nothing was
+  lost: the count it showed is the SECTIONS tile, and the partner count is the
+  rail's own sub-line.
+- No history stack. `esc` returns to Library from any depth, per §1b.
+
+Pinned by `tests/test_track_detail_frontend.py`.
+
+Suite: **966 passing, 0 skipped, 0 failing.**
 
 ### The Studio keeps the suggestions (2026-08-24)
 

@@ -24,7 +24,7 @@ const STEMS = [["full", "Full"], ["vocals", "Vocals"], ["instrumental", "Bed"]];
 const PAIR_LIMIT = 500;
 
 export function TrackDetail({ track, tracks, ratings, role, onRole, onBack,
-                              onStudio, onStatus }) {
+                              onStudio, onOpenTrack, onStatus }) {
   const [sections, setSections] = useState([]);
   const [candidates, setCandidates] = useState([]);
   const [stem, setStem] = useState("full");
@@ -33,6 +33,7 @@ export function TrackDetail({ track, tracks, ratings, role, onRole, onBack,
   const [playingKey, setPlayingKey] = useState(null);
   const [error, setError] = useState(null);
   const audioRef = useRef(null);
+  const mainRef = useRef(null);
 
   useEffect(() => {
     if (!track) return undefined;
@@ -53,6 +54,13 @@ export function TrackDetail({ track, tracks, ratings, role, onRole, onBack,
     return () => { live = false; };
   }, [track, role]);
 
+  // Walking to a partner replaces the whole screen without unmounting it, so
+  // the scroll position survives — and you land halfway down a page you have
+  // not seen, below a hero that is now somebody else's.
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0 });
+  }, [track?.id]);
+
   useEffect(() => {
     const onKey = (e) => {
       const el = e.target;
@@ -64,9 +72,12 @@ export function TrackDetail({ track, tracks, ratings, role, onRole, onBack,
     return () => window.removeEventListener("keydown", onKey);
   }, [onBack]);
 
-  useEffect(() => {
-    onStatus(track ? { text: `${sections.length} sections · ${candidates.length} scored pairings` } : null);
-  }, [track, sections.length, candidates.length, onStatus]);
+  // This screen publishes NO float status. The pill is absolutely positioned at
+  // the top right of the main column, which is exactly where this screen's
+  // `song #N` and its `esc` button are — so anything reported here buries the
+  // way out. Nothing is lost: the count it used to show is the SECTIONS tile,
+  // and the partner count is the rail's own sub-line.
+  useEffect(() => { onStatus(null); }, [track, onStatus]);
 
   // Energy is a raw analysis number whose scale means nothing on its own, so it
   // is shown as this library's own percentile — which is the only reading that
@@ -116,6 +127,15 @@ export function TrackDetail({ track, tracks, ratings, role, onRole, onBack,
     playSpan(track.id, stem, s.start_sec, s.end_sec, `sec:${s.section_index}`);
   };
 
+  // Opening a partner flips which side of a pair you are asking about. You got
+  // here by looking at this track as the vocal, so the partner you clicked is a
+  // bed — open it as one. Without the flip its rail would immediately re-scope
+  // to ITS beds, which is a different question than the one you clicked.
+  const openPartner = (id) => {
+    onRole(role === "instrumental" ? "vocal" : "instrumental");
+    onOpenTrack(id);
+  };
+
   const playPair = (c) => {
     const mine = role === "instrumental"
       ? [c.inst_song_id, "instrumental", c.inst_section_start, c.inst_section_end]
@@ -159,7 +179,7 @@ export function TrackDetail({ track, tracks, ratings, role, onRole, onBack,
       </header>
 
       <div className="detail-body">
-        <div className="detail-main">
+        <div className="detail-main" ref={mainRef}>
           <div className="hero">
             <TrackArt id={track.id} thumbnail={track.thumbnail} className="hero-art" />
             <div className="hero-text">
@@ -220,7 +240,8 @@ export function TrackDetail({ track, tracks, ratings, role, onRole, onBack,
 
         <PartnersRail candidates={candidates} role={role} ratings={ratings}
           judgedCount={ratings.count}
-          playingKey={playingKey} onPlay={playPair} onStudio={onStudio} />
+          playingKey={playingKey} onPlay={playPair} onStudio={onStudio}
+          onOpenTrack={openPartner} />
       </div>
 
       <audio ref={audioRef} style={{ display: "none" }}

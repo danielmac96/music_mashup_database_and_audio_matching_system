@@ -68,7 +68,7 @@ function TrackRow({ t, selected, playing, running, menuOpen, onMenu,
       style={{ gridTemplateColumns: COLS }}
       onClick={() => onSelect(t.id)}
       onDoubleClick={() => onOpen(t.id)}
-      title="Click to scope the pair list · double-click to open the track">
+      title="Click to scope the pair list">
       <button className="tt-play" title={playing ? "Stop" : "Play"}
         onClick={(e) => { e.stopPropagation(); onPlay(t); }}>
         {playing ? "❚❚" : "▶"}
@@ -76,10 +76,21 @@ function TrackRow({ t, selected, playing, running, menuOpen, onMenu,
 
       <TrackArt id={t.id} thumbnail={t.thumbnail} className="tt-art" />
 
-      <div className="tt-name">
-        <div className="tt-title">{t.title}</div>
-        <div className="tt-artist">{t.artist || "—"}</div>
-      </div>
+      {/* The title is the link into the track's own screen. The row itself
+          still belongs to the dock — clicking it scopes the pair list — so
+          navigation needs a surface of its own, and it has to look like one.
+          stopPropagation is what stops one click doing both. */}
+      <button className="tt-name" title={`Open ${t.title}`}
+        onClick={(e) => { e.stopPropagation(); onOpen(t.id); }}>
+        <span className="tt-title">
+          {/* The chevron sits OUTSIDE the ellipsised span. Inside it, a title
+              long enough to truncate — which is most of them at this column
+              width — eats the only affordance the row has. */}
+          <span className="tt-text">{t.title}</span>
+          <span className="tt-go">›</span>
+        </span>
+        <span className="tt-artist">{t.artist || "—"}</span>
+      </button>
 
       <div className="tt-cell">
         {t.genre

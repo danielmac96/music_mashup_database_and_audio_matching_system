@@ -1955,15 +1955,38 @@ input, select { font-family: inherit; }
 }
 .tt-play:hover { border-color: var(--accent); color: var(--accent-light); }
 .tt-art { width: 28px; height: 28px; border-radius: 4px; }
-.tt-name { min-width: 0; }
+/* A button, but it has to keep behaving like the grid cell it replaced —
+   default button padding and centring would break the ellipsis. */
+.tt-name {
+  min-width: 0; display: block; width: 100%; text-align: left;
+  padding: 0; background: none; border: 0; cursor: pointer;
+}
 .tt-title {
+  display: flex; align-items: baseline; min-width: 0;
   font: 500 12.5px var(--font-ui); color: var(--text);
+  transition: color 0.12s;
+}
+.tt-text {
+  min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .tt-artist {
+  display: block;
   font: 400 11px var(--font-ui); color: var(--muted);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* The only thing that says this screen exists. Hidden until the row is under
+   the cursor so the table stays quiet, then lit on the title itself. */
+.tt-go {
+  flex: none; margin-left: 5px; font-size: 11px; color: var(--faint-2);
+  opacity: 0; transition: opacity 0.12s, color 0.12s;
+}
+.tt-row:hover .tt-go { opacity: 1; }
+.tt-name:hover .tt-text {
+  color: var(--accent-light);
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.tt-name:hover .tt-go { color: var(--accent-light); opacity: 1; }
 .tt-cell { min-width: 0; }
 .tt-num { font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-2); }
 .tt-num.right { text-align: right; color: var(--faint); }
@@ -2130,6 +2153,7 @@ input, select { font-family: inherit; }
 .pc-art { width: 24px; height: 24px; flex: none; border-radius: 4px; }
 .pc-sidetext { min-width: 0; flex: 1; }
 .pc-title {
+  display: block;
   font: 500 11.5px var(--font-ui); color: var(--text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -2399,6 +2423,31 @@ input, select { font-family: inherit; }
 .partner-top { display: flex; align-items: center; gap: 9px; }
 .partner-score { font-size: 17px; font-weight: 600; line-height: 1; }
 .partner-tags { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+
+/* The partner's title walks to ITS track. Scoped under .partner on purpose:
+   .pc-title is shared with PairCard, where nothing is clickable, and giving
+   that class a link treatment would put a phantom affordance on every pair. */
+.partner-open {
+  display: block; width: 100%; min-width: 0; text-align: left;
+  padding: 0; background: none; border: 0; cursor: pointer;
+}
+/* Same trick as .tt-title: the ellipsis lives on the text, not on the line, or
+   a long partner title swallows its own chevron. */
+.partner-line { display: flex; align-items: baseline; min-width: 0; }
+.pc-text {
+  min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.partner-go {
+  flex: none; margin-left: 5px; font-size: 10.5px; color: var(--faint-2);
+  opacity: 0; transition: opacity 0.12s, color 0.12s;
+}
+.partner:hover .partner-go { opacity: 1; }
+.partner-open:hover .pc-text {
+  color: var(--accent-light);
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.partner-open:hover .partner-go { color: var(--accent-light); opacity: 1; }
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Studio (screen 1c) — re-layout

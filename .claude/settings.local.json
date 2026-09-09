@@ -158,7 +158,13 @@
       "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q 2>&1 | Select-Object -Last 15)",
       "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest tests/ -q --ignore=tests/test_mix_resolve.py 2>&1 | Select-Object -Last 15)",
       "PowerShell(git add *)",
-      "PowerShell(git push *)"
+      "PowerShell(git push *)",
+      "PowerShell(.venv\\\\Scripts\\\\python.exe -m pytest tests/test_track_detail_frontend.py -q 2>&1 | Select-Object -Last 30)",
+      "PowerShell(& \".\\\\.venv\\\\Scripts\\\\python.exe\" -m pytest tests/test_track_detail_frontend.py -q 2>&1 | Select-Object -Last 40)",
+      "PowerShell(Start-Sleep -Seconds 6; try { \\(Invoke-WebRequest -Uri \"http://localhost:8000/api/health\" -UseBasicParsing\\).Content } catch { \"API not up: $_\" }; try { $r = \\(Invoke-WebRequest -Uri \"http://localhost:5173/\" -UseBasicParsing\\); \"VITE ok $\\($r.StatusCode\\)\" } catch { \"Vite not up: $_\" })",
+      "PowerShell($t = \\(Invoke-WebRequest -Uri \"http://localhost:8000/api/tracks\" -UseBasicParsing\\).Content | ConvertFrom-Json; \"tracks: $\\($t.tracks.Count\\)\"; $t.tracks | Select-Object -First 3 | ForEach-Object { \"$\\($_.id\\)  $\\($_.title\\)\" })",
+      "mcp__playwright__browser_hover",
+      "mcp__playwright__browser_close"
     ]
   }
 }

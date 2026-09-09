@@ -10,7 +10,7 @@ import { bpmTag, keyRel } from "../theme";
 // are looking at.
 
 export function PartnersRail({ candidates, role, ratings, judgedCount,
-                               onPlay, playingKey, onStudio }) {
+                               onPlay, playingKey, onStudio, onOpenTrack }) {
   const other = role === "instrumental" ? "vocals" : "beds";
   return (
     <aside className="partners">
@@ -56,7 +56,16 @@ export function PartnersRail({ candidates, role, ratings, judgedCount,
                 </div>
                 <TrackArt id={songId} className="pc-art" />
                 <div className="pc-sidetext">
-                  <div className="pc-title">{title}</div>
+                  {/* The partner's own screen. Without this the rail is a dead
+                      end: it tells you what this track goes with and gives you
+                      no way to go and look at any of it. */}
+                  <button className="partner-open" title={`Open ${title}`}
+                    onClick={(e) => { e.stopPropagation(); onOpenTrack(songId); }}>
+                    <span className="pc-title partner-line">
+                      <span className="pc-text">{title}</span>
+                      <span className="partner-go">›</span>
+                    </span>
+                  </button>
                   <div className="pc-span mono">{span}</div>
                 </div>
                 {c.effort_label && (

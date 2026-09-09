@@ -244,6 +244,7 @@ export default function App() {
             onRole={setDockRole}
             onBack={() => setRoute("library")}
             onStudio={pairToStudio}
+            onOpenTrack={setSelectedTrackId}
             onStatus={setHeaderStatus}
           />
         )}
