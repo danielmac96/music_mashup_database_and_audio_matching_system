@@ -1,6 +1,12 @@
 services:
   app:
     build: .
+    # `docker compose up` reuses an existing image by default, so a plain `up`
+    # would keep serving the frontend bundle from whenever the image was last
+    # built — the backend restarts, the UI does not change, and nothing says so.
+    # `build` rebuilds on every `up`; the layer cache makes an unchanged tree
+    # near-instant, and a touched frontend/ re-runs `npm run build`.
+    pull_policy: build
     ports:
       - "8000:8000"
     volumes:

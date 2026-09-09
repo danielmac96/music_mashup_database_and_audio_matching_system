@@ -35,6 +35,12 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . .
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+# BuildKit stamps context files with the time their COPY ran, not the host
+# mtime, so frontend/src (copied one layer up) always ends up NEWER than the
+# dist stage 1 built minutes earlier — and api.server.frontend_build_state()
+# then flags a "Stale UI" on a bundle it just built from that exact source.
+# The bundle IS this source; stamp it so.
+RUN find frontend/dist -exec touch {} +
 
 # Docker always sets these, so the Setup Wizard's folder step is skipped
 # (readme.md "Settings & configuration"). ./data is the compose volume mount.

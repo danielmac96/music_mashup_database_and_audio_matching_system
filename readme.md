@@ -23,7 +23,7 @@ All three open the same app at a URL you paste a SoundCloud link into.
 
 | I want to… | Do this | Open |
 |---|---|---|
-| **Just use it** | `docker compose up --build` | http://localhost:8000 |
+| **Just use it** | `docker compose up` | http://localhost:8000 |
 | **Run it locally** (no Docker) | build once, then serve — see below | http://localhost:8000 |
 | **Work on the UI** (hot reload) | run API + Vite in two terminals — see below | http://localhost:5173 |
 
@@ -64,11 +64,12 @@ The sections below expand each path with what to expect on first run.
 
 ## Quick start (Docker — recommended)
 
-One command builds the frontend, installs a CPU-only PyTorch + Demucs + librosa,
-and serves the whole app (UI + API) from a single process:
+One command rebuilds the frontend bundle, installs a CPU-only PyTorch + Demucs +
+librosa, and serves the whole app (UI + API) from a single process. `up` rebuilds
+every time (`pull_policy: build`), so the UI you get is always the source you have:
 
 ```bash
-docker compose up --build
+docker compose up
 ```
 
 Then open **http://localhost:8000**. Everything the app writes — downloaded
