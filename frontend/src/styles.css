@@ -2899,3 +2899,51 @@ input, select { font-family: inherit; }
 
 .mix-board { min-width: 0; overflow: auto; padding: 14px 16px; }
 .mix-board .mix-detail { border: none; padding: 0; background: transparent; }
+
+/* ── Library groups ─────────────────────────────────────────────────────────
+   A crate, seen from the library side. The rail rows and the Group chip reuse
+   the existing filter furniture (.rail-row, .fmenu-opt) because a group IS a
+   filter — giving it a look of its own would suggest it does something the
+   other chips do not. What is new here is only the three places a group is
+   NAMED: the detail hero, the importer's save box and Discover's dock. */
+
+/* On the track screen: which shelves this record is on. .crate-chip already
+   says "a crate holds this", and it is the same claim. */
+.hero-groups {
+  display: flex; flex-wrap: wrap; gap: 4px; margin: -6px 0 12px;
+}
+.hero-groups .crate-chip { max-width: 180px; cursor: default; }
+
+/* The importer's "save this import as a group" box. It sits between the preview
+   and the Save button because that is the order the decision happens in: you
+   look at what you are importing, then name it. */
+.group-save {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-top: 12px; padding: 9px 11px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+  font: 500 12px var(--font-ui); color: var(--text-2); cursor: pointer;
+}
+.group-save .group-name {
+  flex: 1; min-width: 160px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--border-ctrl); border-radius: 6px;
+  padding: 4px 8px; font: 500 12px var(--font-ui);
+}
+.group-save .group-name:disabled { opacity: 0.45; cursor: not-allowed; }
+/* The hint takes the whole second line: at this width it would otherwise squeeze
+   the name field down to a few characters. */
+.group-save .hint { flex-basis: 100%; font-size: 10.5px; line-height: 1.45; }
+
+/* Discover's dock: import the set you are looking at AS a set. */
+.sl-group {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 8px;
+  font: 500 11px var(--font-ui); color: var(--text-2); cursor: pointer;
+}
+.sl-group span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* A group this track is already on. Not disabled-looking by accident: the
+   button IS disabled, because adding it twice is a no-op the server would
+   report as a skip. */
+.tt-menu-item.on { color: var(--accent); }

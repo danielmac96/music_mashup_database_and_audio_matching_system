@@ -14,6 +14,7 @@ import { isAnalysed, isReadyToMash, isRecentlyAdded, needsAttention, parseCamelo
 export const EMPTY_FILTERS = {
   search: "",
   view: "",            // "" | ready | recent | attention — the rail's shelves
+  group: "",           // a crate id — the library, narrowed to one shelf
   key: "",             // a Camelot key, e.g. "8A"
   keyTolerance: 1,     // +/- n steps around the wheel
   bpmMin: "", bpmMax: "",
@@ -63,9 +64,16 @@ export const SORT_KEYS = [
   ["duration", "length"],
   ["rating", "rating"],
   ["sections", "sections"],
+  ["group", "group order"],
 ];
 
 const feat = (t) => t?.features?.full || {};
+
+// Group membership arrives as a pair of lookups over ids already in memory
+// (hooks/useLibraryGroups.js). The default answers "no groups" so every function
+// here stays callable with rows alone — a filter must never depend on a fetch
+// having landed.
+export const NO_GROUPS = { has: () => false, positionOf: () => null };
 
 // Missing values sort LAST in both directions. A track with no play count is
 // unknown, not unpopular — the same rule Discover's result filters use.
@@ -128,9 +136,9 @@ export function facetsOf(rows) {
 }
 
 export function isActive(f) {
-  return !!(f.search || f.view || f.key || f.bpmMin || f.bpmMax || f.cls
-    || (f.genres && f.genres.length) || f.playsMin || f.yearMin || f.yearMax
-    || f.minStars);
+  return !!(f.search || f.view || f.group || f.key || f.bpmMin || f.bpmMax
+    || f.cls || (f.genres && f.genres.length) || f.playsMin || f.yearMin
+    || f.yearMax || f.minStars);
 }
 
 export function countView(rows, id) {
@@ -140,7 +148,8 @@ export function countView(rows, id) {
 
 /* ── apply ───────────────────────────────────────────────────────────────── */
 
-export function applyLibraryFilters(rows, f, starOf = () => null) {
+export function applyLibraryFilters(rows, f, starOf = () => null,
+                                    groups = NO_GROUPS) {
   const filters = { ...EMPTY_FILTERS, ...(f || {}) };
   const needle = filters.search.trim().toLowerCase();
   const genres = new Set(filters.genres.map((g) => g.toLowerCase()));
@@ -153,6 +162,9 @@ export function applyLibraryFilters(rows, f, starOf = () => null) {
 
   return rows.filter((t) => {
     if (view && !view[3](t)) return false;
+    // A group is a set of song ids the app already has, so this is a lookup and
+    // never a request — the same rule every other control on this bar follows.
+    if (filters.group && !groups.has(filters.group, t.id)) return false;
     if (needle) {
       const hay = `${t.title || ""} ${t.artist || ""} ${t.genre || ""}`.toLowerCase();
       if (!hay.includes(needle)) return false;
@@ -187,8 +199,23 @@ export function applyLibraryFilters(rows, f, starOf = () => null) {
   });
 }
 
-function compare(rows, key, dir, starOf) {
+function compare(rows, key, dir, ctx) {
   const sign = dir === "asc" ? 1 : -1;
+  const { starOf, groups, groupId } = ctx;
+  // The order the tracks sit in inside the selected group — a saved playlist's
+  // running order, which is most of why you saved it as one. With no group
+  // selected every row is unplaced, so this sorts nothing rather than
+  // inventing an order across shelves.
+  if (key === "group") {
+    return (a, b) => {
+      const x = groupId ? groups.positionOf(groupId, a.id) : null;
+      const y = groupId ? groups.positionOf(groupId, b.id) : null;
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (x - y) * sign;
+    };
+  }
   if (key === "rating") {
     return (a, b) => {
       const x = starOf(a.id) || null, y = starOf(b.id) || null;
@@ -223,24 +250,27 @@ function compare(rows, key, dir, starOf) {
 
 // Unsorted is the default and a real choice: rows arrive in import order, which
 // is the order you added them, and that is often what you are looking for.
-export function sortLibrary(rows, sort, starOf = () => null) {
+export function sortLibrary(rows, sort, starOf = () => null,
+                            groups = NO_GROUPS, groupId = "") {
   const s = { ...EMPTY_SORT, ...(sort || {}) };
-  const first = compare(rows, s.primary, s.primaryDir, starOf);
+  const ctx = { starOf, groups, groupId };
+  const first = compare(rows, s.primary, s.primaryDir, ctx);
   if (!first) return rows;
-  const second = compare(rows, s.secondary, s.secondaryDir, starOf);
+  const second = compare(rows, s.secondary, s.secondaryDir, ctx);
   const out = [...rows];
   out.sort((a, b) => first(a, b) || (second ? second(a, b) : 0));
   return out;
 }
 
-export function useLibraryFilters(rows, starOf) {
+export function useLibraryFilters(rows, starOf, groups = NO_GROUPS) {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [sort, setSort] = useState(EMPTY_SORT);
 
   const facets = useMemo(() => facetsOf(rows), [rows]);
   const visible = useMemo(
-    () => sortLibrary(applyLibraryFilters(rows, filters, starOf), sort, starOf),
-    [rows, filters, sort, starOf],
+    () => sortLibrary(applyLibraryFilters(rows, filters, starOf, groups),
+                      sort, starOf, groups, filters.group),
+    [rows, filters, sort, starOf, groups],
   );
 
   return {

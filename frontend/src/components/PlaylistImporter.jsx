@@ -23,6 +23,13 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
   const [previewId, setPreviewId] = useState(null);   // hydration session
   const [hydration, setHydration] = useState(null);   // { done, hydrated_count, count }
   const [separator, setSeparator] = useState(null);   // "demucs" | "mdx" (null = loading)
+  // Save this import as a named library group as well. Prefilled from the
+  // playlist's own name, which came back in the same yt-dlp JSON as the tracks,
+  // and defaulted ON for a playlist: a set you imported as a set is one you
+  // want to find again as a set. A single track gets no name and no box —
+  // "group" is a word for more than one thing.
+  const [groupOn, setGroupOn] = useState(false);
+  const [groupName, setGroupName] = useState("");
 
   const { source: urlSource, kind: urlKind } = classifyUrl(url);
   const isPlaylist = urlKind === "playlist";
@@ -73,6 +80,8 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
     try {
       const data = await api.previewPlaylist(url.trim());
       const src = data.source || urlSource;
+      setGroupName(data.playlist_title || "");
+      setGroupOn(Boolean(data.playlist_title));
       setSource(src);
       const cleaned = cleanRows(data.tracks, src);
       setTracks(cleaned);
@@ -131,12 +140,17 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
     setIngesting(true);
     try {
       const kept = tracks.filter((_, i) => selected[i] !== false);
-      const res = await api.ingestTracks(kept, previewId);
+      const wantGroup = groupOn && groupName.trim() ? groupName.trim() : null;
+      const res = await api.ingestTracks(kept, previewId, wantGroup);
       const parts = [];
       if (res.count)
         parts.push(`Auto-processing ${res.count} track${res.count === 1 ? "" : "s"}: download → stems → analyze → structure`);
       if (res.skipped_count)
         parts.push(`${res.skipped_count} already in library (skipped)`);
+      // The group holds the WHOLE import, the already-owned tracks included, so
+      // its count is the one worth reporting — not the number of new rows.
+      if (res.group)
+        parts.push(`saved as the group “${res.group.name}” (${res.group.song_ids.length})`);
       toast(parts.join(" · ") || "Nothing new to add.");
 
       if (res.count) {
@@ -147,6 +161,8 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
         setPreviewId(null);
         setHydration(null);
         setUrl("");
+        setGroupOn(false);
+        setGroupName("");
         if (onIngested) onIngested();
       } else {
         // Everything was a duplicate — stay put and show which ones.
@@ -315,6 +331,21 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
               );
             })}
           </div>
+          <label className="group-save"
+            title="A group is a crate you can filter the library down to. Importing the same playlist again lands in the same group rather than making a second one.">
+            <input type="checkbox" checked={groupOn}
+              onChange={(e) => setGroupOn(e.target.checked)} />
+            <span>Save as a library group</span>
+            <input className="group-name" type="text" value={groupName}
+              placeholder="Name this group"
+              disabled={!groupOn}
+              onChange={(e) => setGroupName(e.target.value)} />
+            <span className="hint">
+              Filterable from the library rail. Tracks you already own are
+              included — the group is the playlist, not just what was new.
+            </span>
+          </label>
+
           <div className="import-footer">
             <button
               className="cancel"
@@ -327,7 +358,9 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
             >
               Cancel
             </button>
-            <button className="save" onClick={handleIngest} disabled={ingesting || keptCount === 0}>
+            <button className="save" onClick={handleIngest}
+              disabled={ingesting || keptCount === 0 || (groupOn && !groupName.trim())}
+              title={groupOn && !groupName.trim() ? "Name the group first" : undefined}>
               {ingesting ? "Saving…" : `＋ Save ${keptCount} to library & auto-process`}
             </button>
           </div>

@@ -1270,6 +1270,10 @@ def delete_song(song_id: int, db_path: Path = DB_PATH) -> Dict:
         (song_id, song_id))
     # Keep the tracklist rows but drop the link so the mix can be re-ingested.
     conn.execute("UPDATE mix_tracks SET song_id=NULL WHERE song_id=?", (song_id,))
+    # Same for crates: the shortlist entry survives a deleted download (that is
+    # the point of a crate), but it must stop claiming to be a library group's
+    # member or the group's count outruns the rows it can filter to.
+    conn.execute("UPDATE crate_items SET song_id=NULL WHERE song_id=?", (song_id,))
     conn.execute("DELETE FROM songs WHERE id=?", (song_id,))
     conn.commit()
     conn.close()
@@ -2415,6 +2419,28 @@ def create_crate(name: str, note: str = "", db_path: Path = DB_PATH) -> Dict:
         conn.close()
 
 
+def get_or_create_crate(name: str, note: str = "", db_path: Path = DB_PATH) -> Dict:
+    """The crate with this name, made if it is not there yet.
+
+    Create-or-get rather than create, because this is what "save this import as
+    a group" needs: re-importing the rest of a playlist a week later must land in
+    the same group rather than 409ing on the UNIQUE(name) that create_crate
+    deliberately raises on. Matching is case-insensitive, so "Bootie 21" and
+    "bootie 21" are one shelf — a name is a label a person typed, not a key."""
+    clean = (name or "").strip()
+    if not clean:
+        raise ValueError("crate name is required")
+    conn = get_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM crates WHERE name = ? COLLATE NOCASE", (clean,)).fetchone()
+    finally:
+        conn.close()
+    if row:
+        return dict(row)
+    return create_crate(clean, note, db_path=db_path)
+
+
 def list_crates(db_path: Path = DB_PATH) -> List[Dict]:
     """Every crate with its item count and how many of those are ingested.
 
@@ -2600,20 +2626,25 @@ def reorder_crate(crate_id: int, item_ids: Sequence[int],
         conn.close()
 
 
-def relink_crate_songs(crate_id: int, db_path: Path = DB_PATH) -> int:
+def relink_crate_songs(crate_id: Optional[int] = None, db_path: Path = DB_PATH) -> int:
     """Point crate items at library songs that now exist, matching on source_url.
-    Run after ingesting a crate; returns how many items gained a song_id."""
+    Returns how many items gained a song_id.
+
+    ``crate_id=None`` relinks every crate, which is what the shared ingest path
+    runs: a track imported from the Library paste bar can be the same record a
+    crate has been holding for a week, and that crate only becomes a library
+    group once the item knows its song."""
     conn = get_conn(db_path)
     try:
         cur = conn.execute(
             """UPDATE crate_items
                   SET song_id = (SELECT s.id FROM songs s
                                   WHERE s.source_url = crate_items.source_url)
-                WHERE crate_id = ?
+                WHERE (? IS NULL OR crate_id = ?)
                   AND song_id IS NULL
                   AND EXISTS (SELECT 1 FROM songs s
                                WHERE s.source_url = crate_items.source_url)""",
-            (crate_id,))
+            (crate_id, crate_id))
         conn.commit()
         return cur.rowcount
     finally:
@@ -2648,3 +2679,147 @@ def crate_payloads(crate_id: int, only_unlinked: bool = True,
         payload.setdefault("artist", r["artist"] or "")
         out.append(payload)
     return out
+
+
+# ── Crates as library groups ─────────────────────────────────────────────────
+# The same table, asked the other question. Discover asks "which crates hold
+# this SoundCloud URL" (crate_membership, keyed on the permalink, because the
+# track may not be in the library at all). The Library asks "which of MY songs
+# are in this group", keyed on song_id, and gets the answer for every group at
+# once because the rail draws all their counts on first paint.
+
+
+def library_groups(db_path: Path = DB_PATH) -> List[Dict]:
+    """Every crate with the library songs it holds, in crate order.
+
+    Two queries for the whole screen rather than one per crate. ``song_ids`` is
+    ordered by the crate's own positions, so a saved SoundCloud playlist keeps
+    its running order when the library is sorted by "group order".
+
+    The join against songs is a second guard on top of delete_song clearing
+    song_id: a group must never report a track the library no longer has, or its
+    count disagrees with the rows it filters to.
+    """
+    conn = get_conn(db_path)
+    try:
+        crates = conn.execute(
+            """SELECT c.id, c.name, c.note, c.updated_at, c.created_at,
+                      COUNT(i.id)                             AS item_count,
+                      COALESCE(SUM(i.song_id IS NOT NULL), 0) AS ingested_count
+                 FROM crates c
+                 LEFT JOIN crate_items i ON i.crate_id = c.id
+                GROUP BY c.id
+                ORDER BY c.name COLLATE NOCASE, c.id""").fetchall()
+        linked = conn.execute(
+            """SELECT i.crate_id AS crate_id, i.song_id AS song_id
+                 FROM crate_items i
+                 JOIN songs s ON s.id = i.song_id
+                WHERE i.song_id IS NOT NULL
+                ORDER BY i.crate_id, i.position, i.id""").fetchall()
+    finally:
+        conn.close()
+
+    by_crate: Dict[int, List[int]] = {}
+    for row in linked:
+        by_crate.setdefault(row["crate_id"], []).append(row["song_id"])
+    return [dict(c, song_ids=by_crate.get(c["id"], [])) for c in crates]
+
+
+# A library song that was never imported from a link (or whose URL was lost) has
+# no permalink to key a crate item on, and '' would collide across every such
+# song under UNIQUE(crate_id, source_url) -- silently making them one item. The
+# sentinel is deliberately not a URL: nothing may ever try to fetch it, and the
+# URL export filters it out for the same reason.
+LOCAL_SONG_URL = "local:song/{id}"
+
+
+def add_songs_to_crate(crate_id: int, song_ids: Sequence[int],
+                       db_path: Path = DB_PATH) -> Dict:
+    """Put library songs into a crate — the Library's counterpart to Discover's
+    "add these browse rows to a crate".
+
+    The item is written already linked (song_id set) rather than waiting for a
+    relink: the track is in the library by definition, so there is nothing left
+    to ingest and ``crate_payloads(only_unlinked=True)`` correctly skips it.
+
+    Returns {"added", "skipped", "item_ids"}, the same shape add_crate_items
+    returns, so the UI says "3 added, 2 already in this group"."""
+    ids = [int(s) for s in song_ids]
+    if not ids:
+        return {"added": 0, "skipped": 0, "item_ids": []}
+
+    conn = get_conn(db_path)
+    try:
+        if not conn.execute("SELECT 1 FROM crates WHERE id=?", (crate_id,)).fetchone():
+            raise ValueError(f"crate {crate_id} does not exist")
+
+        start = conn.execute(
+            "SELECT COALESCE(MAX(position), -1) + 1 AS n FROM crate_items WHERE crate_id=?",
+            (crate_id,)).fetchone()["n"]
+
+        added, skipped, item_ids = 0, 0, []
+        seen: set = set()
+        for song_id in ids:
+            if song_id in seen:
+                skipped += 1
+                continue
+            seen.add(song_id)
+            song = conn.execute("SELECT * FROM songs WHERE id=?", (song_id,)).fetchone()
+            if song is None:
+                skipped += 1
+                continue
+            row = dict(song)
+            url = (row.get("source_url") or "").strip() or LOCAL_SONG_URL.format(id=song_id)
+            # An item already pointing at this song is a duplicate even when its
+            # URL differs (the same record re-imported under a tidied permalink).
+            dupe = conn.execute(
+                "SELECT 1 FROM crate_items WHERE crate_id=? AND song_id=?",
+                (crate_id, song_id)).fetchone()
+            if dupe:
+                skipped += 1
+                continue
+            payload = {k: row.get(k) for k in (
+                "title", "artist", "genre", "artist_id", "track_id", "duration_str",
+                "upload_date", "likes", "reposts", "comments", "plays", "thumbnail",
+                "tags", "release_year", "duration_secs")}
+            payload["source_url"] = url
+            cur = conn.execute(
+                """INSERT INTO crate_items
+                       (crate_id, position, source_url, track_id, song_id,
+                        payload_json, title, artist, duration_secs, thumbnail)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(crate_id, source_url) DO NOTHING""",
+                (crate_id, start + added, url, str(row.get("track_id") or ""), song_id,
+                 json.dumps(payload, ensure_ascii=False),
+                 row.get("title") or "", row.get("artist") or "",
+                 float(row.get("duration_secs") or 0.0), row.get("thumbnail") or ""))
+            if cur.rowcount:
+                added += 1
+                item_ids.append(cur.lastrowid)
+            else:
+                skipped += 1
+        conn.execute("UPDATE crates SET updated_at=datetime('now') WHERE id=?", (crate_id,))
+        conn.commit()
+        return {"added": added, "skipped": skipped, "item_ids": item_ids}
+    finally:
+        conn.close()
+
+
+def remove_songs_from_crate(crate_id: int, song_ids: Sequence[int],
+                            db_path: Path = DB_PATH) -> int:
+    """Take library songs out of a group. Returns how many items went.
+
+    Resolves to item ids and hands them to remove_crate_items so the positions
+    are re-densed by the one function that knows how."""
+    ids = [int(s) for s in song_ids]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" * len(ids))
+    conn = get_conn(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT id FROM crate_items WHERE crate_id=? AND song_id IN ({placeholders})",
+            [crate_id, *ids]).fetchall()
+    finally:
+        conn.close()
+    return remove_crate_items(crate_id, [r["id"] for r in rows], db_path=db_path)

@@ -24,7 +24,8 @@ const USER_FEEDS = [
   ["playlists", "Sets"],
 ];
 
-export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
+export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone,
+                                    onGroupsChanged }) {
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("tracks");
   // Where we are. A breadcrumb rather than a single view, because the useful
@@ -39,12 +40,20 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
   const [importing, setImporting] = useState(false);
   const [crateRefresh, setCrateRefresh] = useState(0);
   const [activeCrateId, setActiveCrateId] = useState(null);
+  // Import the set you are looking at AS a set. Only a playlist listing offers
+  // it: a search page or an artist's uploads is not a set, and naming a group
+  // after “House” would make a shelf nobody asked for. Defaulted on where it is
+  // offered, and switched off the moment you navigate away from the playlist
+  // (the crumb changes, the name goes with it).
+  const [groupOn, setGroupOn] = useState(true);
 
   const inputRef = useRef(null);
   // Monotonic token: a slow first page must not overwrite a faster later one.
   const loadToken = useRef(0);
 
   const here = crumbs[crumbs.length - 1] || null;
+  const playlistHere = here?.kind === "playlist" ? here.label : null;
+  const groupName = groupOn && playlistHere ? playlistHere : null;
 
   // Live, not baked onto the rows: `items` is not re-fetched after an add, so a
   // badge computed server-side would be stale the moment you shortlisted.
@@ -177,9 +186,13 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
     if (!selectedImportable.length) return;
     setImporting(true);
     try {
-      const res = await api.discoveryImport(selectedImportable);
+      const res = await api.discoveryImport(selectedImportable, groupName);
       toast(`Saved ${res.count} track${res.count === 1 ? "" : "s"} — processing started`
-            + (res.skipped_count ? `, ${res.skipped_count} already in library` : ""));
+            + (res.skipped_count ? `, ${res.skipped_count} already in library` : "")
+            + (res.group ? ` · group “${res.group.name}”` : ""));
+      // The library rail is a floor up; it only learns about a new group if
+      // someone tells it.
+      if (res.group) onGroupsChanged?.();
       // Re-run the current view so the imported rows pick up their badge.
       clear();
       if (here) goToCrumb(crumbs.length - 1);
@@ -333,9 +346,10 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone }) {
         rows={selectedRows} importable={selectedImportable}
         onDrop={(r) => toggle(r)} onClear={clear}
         onImport={doImport} importing={importing}
+        playlistName={playlistHere} groupOn={groupOn} onGroupOn={setGroupOn}
         crateRefresh={crateRefresh} onCrateAdd={addToCrate}
         onActiveCrate={setActiveCrateId} activeCrateId={activeCrateId}
-        onCratesChanged={() => setCrateRefresh((n) => n + 1)}
+        onCratesChanged={() => { setCrateRefresh((n) => n + 1); onGroupsChanged?.(); }}
         onOpenLibrary={onOpenLibrary} />
     </>
   );

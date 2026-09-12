@@ -35,7 +35,8 @@ function loadMode() {
 }
 
 export function Discovery({ seed, onClearSeed, onAudition, onStatus,
-                            showInstOverInst, onOpenLibrary, onRailSlot }) {
+                            showInstOverInst, onOpenLibrary, onRailSlot,
+                            onGroupsChanged }) {
   const [mode, setMode] = useState(loadMode);
   // Mashups is expensive to mount — it fetches a ranked list, filter
   // vocabularies, scorer status and every stored verdict. Once visited it stays
@@ -128,7 +129,8 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
       <div className="disc-body">
         {mode === "tracks" && (
           <SoundCloudBrowser onStatus={onStatus} onOpenLibrary={onOpenLibrary}
-            nav={nav} onNavDone={() => setNav(null)} />
+            nav={nav} onNavDone={() => setNav(null)}
+            onGroupsChanged={onGroupsChanged} />
         )}
 
       {suggestMounted && (

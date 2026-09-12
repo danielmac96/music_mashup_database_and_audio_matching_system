@@ -25,9 +25,10 @@ from pydantic import BaseModel
 
 from api.routes.playlists import ingest_rows
 from database.models import (
-    add_crate_items, crate_membership, create_crate, crate_payloads,
-    delete_crate, get_crate, list_crates, relink_crate_songs,
-    remove_crate_items, reorder_crate, update_crate,
+    add_crate_items, add_songs_to_crate, crate_membership, create_crate,
+    crate_payloads, delete_crate, get_crate, library_groups, list_crates,
+    relink_crate_songs, remove_crate_items, remove_songs_from_crate,
+    reorder_crate, update_crate,
 )
 from ingest.sources import normalize_url
 
@@ -64,6 +65,10 @@ class ImportUrlsRequest(BaseModel):
 class MembershipRequest(BaseModel):
     urls: list[str]
     track_ids: list[str] = []
+
+
+class SongIdsRequest(BaseModel):
+    song_ids: list[int]
 
 
 # A page of Discovery results is <= 50 rows. The cap is a guard against a caller
@@ -145,6 +150,24 @@ def membership(req: MembershipRequest) -> dict:
     return {"membership": out}
 
 
+@router.get("/groups")
+def groups() -> dict:
+    """Every crate as a LIBRARY GROUP: its name, its counts and the ids of the
+    library songs it holds, in crate order.
+
+    Declared before /{crate_id} — that path is typed int, so "groups" would 422
+    rather than resolve if this came second. The same ordering hazard
+    /membership documents.
+
+    This is the Library's side of a crate. Discover asks "which crates hold this
+    permalink", because the track need not be in the library at all; the Library
+    asks "which of my songs are in this group", and gets every group in one
+    request because the rail draws all their counts at once. Filtering by a group
+    is then arithmetic over rows already in memory, exactly like every other
+    library filter — the group is a set of ids, not a query."""
+    return {"groups": library_groups()}
+
+
 @router.get("/{crate_id}")
 def detail(crate_id: int) -> dict:
     return _crate_or_404(crate_id)
@@ -198,6 +221,35 @@ def remove_items(crate_id: int, req: ItemIdsRequest) -> dict:
     return {"removed": removed, "crate": _crate_or_404(crate_id)}
 
 
+@router.post("/{crate_id}/songs")
+def add_songs(crate_id: int, req: SongIdsRequest) -> dict:
+    """Add tracks that are ALREADY in the library to a crate.
+
+    The Library's counterpart to /items, which takes browse rows for tracks that
+    may not be here yet. Grouping what you own is the other half of the feature:
+    a crate stops being only a shopping list and becomes a shelf.
+
+    The items are written already linked, so the group filters immediately
+    without a relink pass."""
+    _crate_or_404(crate_id)
+    if not req.song_ids:
+        raise HTTPException(status_code=400, detail="song_ids list is empty")
+    try:
+        result = add_songs_to_crate(crate_id, req.song_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {**result, "crate": _crate_or_404(crate_id)}
+
+
+@router.post("/{crate_id}/songs/remove")
+def remove_songs(crate_id: int, req: SongIdsRequest) -> dict:
+    """Take library songs out of a group, by song id rather than item id — the
+    Library screen knows which track you clicked, not which crate row it is."""
+    _crate_or_404(crate_id)
+    removed = remove_songs_from_crate(crate_id, req.song_ids)
+    return {"removed": removed, "crate": _crate_or_404(crate_id)}
+
+
 @router.post("/{crate_id}/reorder")
 def reorder(crate_id: int, req: ItemIdsRequest) -> dict:
     _crate_or_404(crate_id)
@@ -215,17 +267,27 @@ def ingest(crate_id: int) -> dict:
     Items already pointing at a library song are skipped before the call rather
     than being reported as duplicates afterwards, so the count means what it
     says. The relink afterwards is why this lives here instead of the frontend
-    calling /api/playlists/ingest directly."""
-    _crate_or_404(crate_id)
+    calling /api/playlists/ingest directly — and it is what turns a crate into a
+    library group: an item only groups the song it knows about.
+
+    ``linked`` is measured rather than taken from the relink's rowcount, because
+    the shared ingest path relinks every crate itself: an item this crate holds
+    can be linked by that pass, by this one, or by having been in the library all
+    along, and the number that means something to the caller is how many of its
+    items point at a song now that did not before."""
+    crate = _crate_or_404(crate_id)
+    before = sum(1 for i in crate["items"] if i.get("song_id"))
     payloads = crate_payloads(crate_id, only_unlinked=True)
     if not payloads:
         return {"count": 0, "skipped_count": 0, "inserted_ids": [], "skipped": [],
-                "partial_count": 0, "job_ids": {}, "linked": 0,
-                "crate": _crate_or_404(crate_id)}
+                "partial_count": 0, "job_ids": {}, "linked": 0, "group": None,
+                "crate": crate}
 
     result = ingest_rows([dict(p, hydrated=True) for p in payloads])
-    linked = relink_crate_songs(crate_id)
-    return {**result, "linked": linked, "crate": _crate_or_404(crate_id)}
+    relink_crate_songs(crate_id)
+    after = _crate_or_404(crate_id)
+    linked = sum(1 for i in after["items"] if i.get("song_id")) - before
+    return {**result, "linked": linked, "crate": after}
 
 
 @router.get("/{crate_id}/export")
@@ -243,8 +305,12 @@ def export(crate_id: int, format: str = Query("urls", pattern="^(urls|json|m3u)$
             headers={"Content-Disposition": f'attachment; filename="{stem}.{ext}"'})
 
     if format == "urls":
-        return _attach("\n".join(i["source_url"] for i in items) + "\n",
-                       "txt", "text/plain")
+        # A library song with no permalink is keyed on a local:song/<id>
+        # sentinel. Writing that into a URL file would hand the importer
+        # something it can never resolve, so those lines are omitted.
+        urls = [i["source_url"] for i in items
+                if str(i["source_url"] or "").startswith(("http://", "https://"))]
+        return _attach("\n".join(urls) + "\n", "txt", "text/plain")
 
     if format == "json":
         return _attach(json.dumps(crate_payloads(crate_id, only_unlinked=False),

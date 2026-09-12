@@ -18,7 +18,8 @@ import { fmtPlays, fmtYear } from "../theme";
 export function ShortlistDock({ rows, importable, onDrop, onClear, onImport,
                                 importing, crateRefresh, onCrateAdd,
                                 onActiveCrate, activeCrateId, onCratesChanged,
-                                onOpenLibrary, queueLine }) {
+                                onOpenLibrary, queueLine,
+                                playlistName, groupOn, onGroupOn }) {
   const [tab, setTab] = useState("shortlist");
 
   return (
@@ -73,6 +74,17 @@ export function ShortlistDock({ rows, importable, onDrop, onClear, onImport,
           </div>
 
           <div className="sl-foot">
+            {/* Importing a set from Discover should land it in the library AS a
+                set — otherwise the grouping you were looking at is thrown away
+                at exactly the moment it becomes useful. Offered only while the
+                listing IS a playlist. */}
+            {playlistName && (
+              <label className="sl-group" title="Files this import under a library group you can filter to, named after the set.">
+                <input type="checkbox" checked={groupOn}
+                  onChange={(e) => onGroupOn(e.target.checked)} />
+                <span>Save as the group “{playlistName}”</span>
+              </label>
+            )}
             <div className="sl-pipeline mono">
               <span>On import</span>
               <span className="sl-stages">download → analyse → split stems</span>

@@ -109,8 +109,12 @@ export function CratePanel({ refreshKey, onChanged, onOpenLibrary,
     try {
       const res = await api.ingestCrate(crate.id);
       setCrate(res.crate);
+      // Ingesting is what turns a crate into a library GROUP: its items now
+      // know which songs they are, so the library can be filtered down to this
+      // crate from the rail. Worth saying, because the crate looks unchanged.
       toast(res.count
         ? `Saved ${res.count} track${res.count === 1 ? "" : "s"} — processing started`
+          + ` · “${crate.name}” is now a library group`
         : "Everything in this crate is already in your library");
       reload();
     } catch (e) { toast(`Ingest failed: ${e.message}`); }
