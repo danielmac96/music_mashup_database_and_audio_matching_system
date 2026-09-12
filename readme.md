@@ -144,8 +144,11 @@ on its own — no per-track clicking. The Library tab shows a warning banner if
 ffmpeg/yt-dlp/demucs/librosa are missing, so you find out before a big import.
 
 Open the app → **Library** tab → paste a playlist or track link into the bar at
-the top → **Preview** → **Save to library**. The tracks appear in the list
-directly below and walk the pipeline live (per-track progress + an overall batch
+the top → **Preview** → **Save to library**. Tick **Save as a library group** in
+the preview (prefilled with the playlist's own name, and on by default for a
+playlist) to keep the set together: the group appears under **GROUPS** in the
+left rail and clicking it narrows the library to just those tracks. The tracks
+appear in the list directly below and walk the pipeline live (per-track progress + an overall batch
 banner) — there is no separate Import screen. Processing is bounded
 (`MASHUP_PIPELINE_WORKERS`, default 1) so a big playlist won't thrash the machine,
 and it **resumes** unfinished tracks if you restart the server mid-import. A
@@ -173,6 +176,14 @@ have to be downloaded — that is the point: collect while browsing, decide late
 Crates are drag-reorderable, dedupe on add, and export as a URL list or as JSON
 that imports back into another crate. **Import** on a crate downloads and
 processes everything in it that is not already in your library.
+
+Once its tracks *are* in the library, the same crate is a **library group**: it
+appears under GROUPS in the Library rail, and clicking it turns the library into
+a smaller library of just that set. Everything else on the filter bar still
+applies inside it, "group order" sorts by the crate's own running order, and a
+row's PIPE menu adds that track to a group (or makes a new one) without going
+near SoundCloud. Browsing a SoundCloud set in Discover offers the same thing on
+import: **Save as the group "…"** in the shortlist dock.
 
 > **Why crates instead of real SoundCloud playlists?** Writing to a SoundCloud
 > account needs OAuth against a *registered* app, and registering one — while

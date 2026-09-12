@@ -27,10 +27,15 @@ export const api = {
   getPreviewStatus: (previewId) =>
     jsonFetch(`/api/playlists/preview/${previewId}`),
 
-  ingestTracks: (tracks, previewId = null) =>
+  // `groupName` also files the import under a named library group (a crate), so
+  // a SoundCloud set stays a set once it is in the library. The group holds the
+  // WHOLE import, including tracks that were already here and came back as
+  // skipped duplicates.
+  ingestTracks: (tracks, previewId = null, groupName = null) =>
     jsonFetch("/api/playlists/ingest", {
       method: "POST",
-      body: JSON.stringify({ tracks, preview_id: previewId }),
+      body: JSON.stringify({ tracks, preview_id: previewId,
+                             group_name: groupName || null }),
     }),
 
   getTracks: () => jsonFetch("/api/tracks"),
@@ -431,10 +436,10 @@ export const api = {
     jsonFetch(`/api/discovery/tracks/${trackId}/related${cursor
       ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
 
-  discoveryImport: (rows) =>
+  discoveryImport: (rows, groupName = null) =>
     jsonFetch("/api/discovery/import", {
       method: "POST",
-      body: JSON.stringify({ rows }),
+      body: JSON.stringify({ rows, group_name: groupName || null }),
     }),
 
   discoveryStatus: () => jsonFetch("/api/discovery/status"),
@@ -481,6 +486,27 @@ export const api = {
     }),
 
   getCrates: () => jsonFetch("/api/crates"),
+
+  // Every crate as a LIBRARY GROUP: name, counts, and the ids of the library
+  // songs it holds, in crate order. One request for the whole screen — the rail
+  // draws every group's count at once, and filtering by one is then arithmetic
+  // over rows already in memory rather than a query.
+  getLibraryGroups: () => jsonFetch("/api/crates/groups"),
+
+  // The Library's counterpart to addCrateItems, which takes browse rows for
+  // tracks that may not be here yet. These are already in the library, so the
+  // item is written already linked.
+  addSongsToCrate: (id, songIds) =>
+    jsonFetch(`/api/crates/${id}/songs`, {
+      method: "POST",
+      body: JSON.stringify({ song_ids: songIds }),
+    }),
+
+  removeSongsFromCrate: (id, songIds) =>
+    jsonFetch(`/api/crates/${id}/songs/remove`, {
+      method: "POST",
+      body: JSON.stringify({ song_ids: songIds }),
+    }),
 
   // Which crates already hold these rows. POST because a page of permalinks is
   // far too long for a query string. Keyed by the URL as sent, so the caller

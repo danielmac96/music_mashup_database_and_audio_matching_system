@@ -55,6 +55,22 @@ def fetch_playlist_flat(url: str) -> list:
     artist/duration. Per-track extraction is skipped, so geo-restricted or
     auth-required tracks are still listed.
     """
+    return fetch_playlist_flat_meta(url)["tracks"]
+
+
+def fetch_playlist_flat_meta(url: str) -> dict:
+    """The same enumeration, plus the playlist's OWN name.
+
+    Split out rather than changing fetch_playlist_flat's return shape, because
+    the rows are the canonical ingest shape and a playlist title is not a
+    property of a track — hanging it on every row would put a key in the ingest
+    rows that ingest.soundcloud._normalise does not emit, which is exactly the
+    equivalence tests/test_scraped_rows.py pins.
+
+    Returns ``{"title": str, "tracks": [...]}``. The title is what the Library
+    prefills the group name with, so saving a SoundCloud set as a library group
+    costs no extra request: yt-dlp already returned it in the same JSON.
+    """
     log.info(f"Flat-enumerating playlist: {url}")
     try:
         result = subprocess.run(
@@ -70,26 +86,29 @@ def fetch_playlist_flat(url: str) -> list:
         )
     except FileNotFoundError:
         log.error("Python or yt-dlp not found. Install with: pip install yt-dlp")
-        return []
+        return {"title": "", "tracks": []}
     except subprocess.TimeoutExpired:
         log.error("yt-dlp flat enumerate timed out")
-        return []
+        return {"title": "", "tracks": []}
 
     if result.returncode != 0 and not result.stdout.strip():
         err = (result.stderr or "").strip().splitlines()
         log.error(f"yt-dlp flat enumerate failed: {'; '.join(err[:3])[:300]}")
-        return []
+        return {"title": "", "tracks": []}
 
     try:
         info = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         log.error(f"yt-dlp flat enumerate returned unparseable JSON ({exc})")
-        return []
+        return {"title": "", "tracks": []}
 
     entries = info.get("entries") if isinstance(info, dict) else None
+    # A single-track URL handed to a flat call has a title, but it is the
+    # TRACK's — naming a group after it would be a lie, so only a real playlist
+    # reports one.
     if not entries:
-        # Single-track URL handed to a flat call — still wrap consistently.
-        return [_normalise_flat(info)] if isinstance(info, dict) else []
+        return {"title": "",
+                "tracks": [_normalise_flat(info)] if isinstance(info, dict) else []}
 
     out = []
     for entry in entries:
@@ -98,7 +117,7 @@ def fetch_playlist_flat(url: str) -> list:
             continue
         out.append(_normalise_flat(entry))
     log.info(f"Flat-enumerated {len(out)} tracks")
-    return out
+    return {"title": str(info.get("title") or "").strip(), "tracks": out}
 
 
 def enrich_track(url: str) -> Optional[dict]:

@@ -11,8 +11,11 @@ from pydantic import BaseModel
 from config import ENRICH_WORKERS
 
 from api import preview_hydrator, queue_runner
-from database.models import get_song_by_url, upsert_song
-from ingest.soundcloud import enrich_track, fetch_playlist_flat, fetch_single
+from database.models import (
+    add_songs_to_crate, get_or_create_crate, get_song_by_url, library_groups,
+    relink_crate_songs, upsert_song,
+)
+from ingest.soundcloud import enrich_track, fetch_playlist_flat_meta, fetch_single
 from ingest.sources import classify_url, normalize_url
 
 log = logging.getLogger(__name__)
@@ -27,6 +30,10 @@ class PreviewRequest(BaseModel):
 class IngestRequest(BaseModel):
     tracks: list[dict[str, Any]]
     preview_id: Optional[str] = None
+    # Save this import as a named library group (a crate) as well. Optional, and
+    # empty means what it says: import without grouping, the behaviour every
+    # existing caller gets.
+    group_name: Optional[str] = None
 
 
 @router.post("/preview")
@@ -49,19 +56,24 @@ def preview(req: PreviewRequest) -> dict:
         if track and track.get("source_url"):
             preview_hydrator.cache_put(track["source_url"], track)
         return {"is_single": True, "source": source, "count": len(tracks),
-                "tracks": tracks, "preview_id": None}
+                "tracks": tracks, "preview_id": None, "playlist_title": ""}
 
     # Flat enumerate so geo-restricted / Go+ / removed tracks still appear in the count.
     # This is the fix for the old `/sets/`-only check, which silently ingested
     # just the first track of a YouTube playlist (…?list=… with no v=).
     # Flat rows are metadata-sparse; the hydrator back-fills title/artist/etc.
     # in the background and the frontend polls GET /preview/{id} to merge them.
-    tracks = fetch_playlist_flat(url)
+    flat = fetch_playlist_flat_meta(url)
+    tracks = flat["tracks"]
     preview_id = preview_hydrator.start(tracks) if tracks else None
     session = preview_hydrator.get(preview_id) if preview_id else None
     rows = session["tracks"] if session else []
+    # The playlist's own name rides along so the importer can offer "save this
+    # as a library group" already filled in. It came back in the same yt-dlp
+    # JSON as the tracks, so it costs nothing.
     return {"is_single": False, "source": source, "count": len(rows),
-            "tracks": rows, "preview_id": preview_id}
+            "tracks": rows, "preview_id": preview_id,
+            "playlist_title": flat["title"]}
 
 
 @router.get("/preview/{preview_id}")
@@ -93,7 +105,8 @@ def _resolve_metadata(flat: dict) -> tuple[dict, bool]:
     return flat, False
 
 
-def ingest_rows(tracks: list[dict[str, Any]]) -> dict:
+def ingest_rows(tracks: list[dict[str, Any]],
+                group_name: Optional[str] = None) -> dict:
     """Save tracks to the library and queue each through the full pipeline.
 
     Extracted from the /ingest route so Discovery and crates land tracks by
@@ -112,6 +125,12 @@ def ingest_rows(tracks: list[dict[str, Any]]) -> dict:
     inserted_ids: list[int] = []
     skipped: list[dict] = []   # already in the library — reported, not re-processed
     partial_count = 0
+    # Every row's library id, IN THE ORDER THEY WERE IMPORTED, whether it was
+    # saved now or was already here. A saved playlist has to be the whole
+    # playlist: a group built only from the new rows would be missing exactly
+    # the tracks you already owned, which is most of them the second time you
+    # import from an artist you follow.
+    ordered_song_ids: list[int] = []
     for merged, is_rich in resolved:
         source_url = normalize_url(merged.get("source_url") or "")
 
@@ -125,6 +144,8 @@ def ingest_rows(tracks: list[dict[str, Any]]) -> dict:
                     "url": source_url,
                     "id": existing.get("id"),
                 })
+                if existing.get("id"):
+                    ordered_song_ids.append(int(existing["id"]))
                 continue
 
         if not is_rich:
@@ -155,6 +176,7 @@ def ingest_rows(tracks: list[dict[str, Any]]) -> dict:
             source=source,
         )
         inserted_ids.append(sid)
+        ordered_song_ids.append(sid)
 
     # Auto-process: queue every saved track through the full
     # download → stems → analyse → structure pipeline. This is what makes the
@@ -165,6 +187,16 @@ def ingest_rows(tracks: list[dict[str, Any]]) -> dict:
     for sid in inserted_ids:
         job_ids[sid] = queue_runner.enqueue_song(sid)
 
+    # Every crate, not just one: a track imported from the paste bar can be the
+    # same record a crate has been holding since you shortlisted it on Discover,
+    # and that crate only becomes a usable library group once its item knows
+    # which song it is. One UPDATE over an indexed column, run on the path every
+    # import already takes.
+    if inserted_ids:
+        relink_crate_songs()
+
+    group = _save_as_group(group_name, ordered_song_ids)
+
     return {
         "inserted_ids": inserted_ids,
         "count": len(inserted_ids),
@@ -172,11 +204,35 @@ def ingest_rows(tracks: list[dict[str, Any]]) -> dict:
         "skipped_count": len(skipped),
         "partial_count": partial_count,
         "job_ids": job_ids,
+        "group": group,
     }
+
+
+def _save_as_group(group_name: Optional[str], song_ids: list[int]) -> Optional[dict]:
+    """Put this import into a named library group, making it if needed.
+
+    Returns the group as the Library's rail sees it — name, counts and the song
+    ids — or None when no name was given, which is every caller that is not the
+    importer's "save as a group" box.
+
+    Failure here must not fail the import. The tracks are already saved and
+    queued by the time this runs, and telling the user the whole import failed
+    because a shelf label collided would be a lie about what happened to their
+    audio."""
+    name = (group_name or "").strip()
+    if not name or not song_ids:
+        return None
+    try:
+        crate = get_or_create_crate(name)
+        add_songs_to_crate(crate["id"], song_ids)
+        return next((g for g in library_groups() if g["id"] == crate["id"]), None)
+    except Exception:  # noqa: BLE001 — the import itself already succeeded
+        log.exception("could not save import as the group %r", name)
+        return None
 
 
 @router.post("/ingest")
 def ingest(req: IngestRequest) -> dict:
     if not req.tracks:
         raise HTTPException(status_code=400, detail="tracks list is empty")
-    return ingest_rows(req.tracks)
+    return ingest_rows(req.tracks, group_name=req.group_name)

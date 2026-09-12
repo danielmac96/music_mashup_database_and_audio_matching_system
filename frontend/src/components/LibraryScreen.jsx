@@ -29,8 +29,8 @@ function loadSavedViews() {
   }
 }
 
-export function LibraryScreen({ library, ratings, selectedId, onSelect, onOpen,
-                                onRailSlot, onStatus }) {
+export function LibraryScreen({ library, ratings, groups, selectedId, onSelect,
+                                onOpen, onRailSlot, onStatus }) {
   const { tracks, pipeJobs, loading, error, refresh } = library;
 
   const starOf = useCallback((songId) => ratings.bySong[songId] ?? null,
@@ -38,7 +38,7 @@ export function LibraryScreen({ library, ratings, selectedId, onSelect, onOpen,
 
   const {
     filters, patch, reset, sort, setSort, facets, visible, total, active,
-  } = useLibraryFilters(tracks, starOf);
+  } = useLibraryFilters(tracks, starOf, groups.membership);
 
   const [savedViews, setSavedViews] = useState(loadSavedViews);
   const [search, setSearch] = useState("");
@@ -86,6 +86,7 @@ export function LibraryScreen({ library, ratings, selectedId, onSelect, onOpen,
   );
 
   const ready = useMemo(() => countView(tracks, "ready"), [tracks]);
+  const groupName = groups.byId(filters.group)?.name || null;
 
   // The rail's per-route furniture. Registered from here rather than known by
   // the rail, so a screen owns its own sidebar block.
@@ -101,11 +102,14 @@ export function LibraryScreen({ library, ratings, selectedId, onSelect, onOpen,
               onClick={() => patch({ view: filters.view === id ? "" : id })} />
           ))}
         </RailSection>
-        <CrateShelf />
+        <GroupShelf groups={groups.groups} active={filters.group}
+          onPick={(id) => patch({
+            group: String(filters.group) === String(id) ? "" : String(id),
+          })} />
       </>,
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tracks, filters.view]);
+  }, [tracks, filters.view, filters.group, groups.groups]);
 
   useEffect(() => {
     const active_ = pipeJobs.filter((j) => j.status === "running"
@@ -117,10 +121,15 @@ export function LibraryScreen({ library, ratings, selectedId, onSelect, onOpen,
         text: `Processing ${active_.length} tracks · ${running} running`
           + ` · ${active_.length - running} queued`,
       });
+    } else if (groupName) {
+      // Inside a group the denominator that matters is the group, not the
+      // library: "12 of 2,000" reads like a broken filter when you deliberately
+      // asked for one shelf.
+      onStatus({ text: `${groupName} · ${rows.length} of ${tracks.length} tracks` });
     } else {
       onStatus({ text: `${rows.length} of ${tracks.length} tracks · ${ready} ready` });
     }
-  }, [pipeJobs, rows.length, tracks.length, ready, onStatus]);
+  }, [pipeJobs, rows.length, tracks.length, ready, groupName, onStatus]);
 
   const runningKind = useCallback((t) => {
     const j = jobs[t.id];
@@ -147,7 +156,7 @@ export function LibraryScreen({ library, ratings, selectedId, onSelect, onOpen,
   }, [player]);
 
   const saveView = () => {
-    const name = (filters.genres[0] || filters.key || filters.view || "View")
+    const name = (groupName || filters.genres[0] || filters.key || filters.view || "View")
       + (filters.yearMin ? ` ${filters.yearMin}+` : "");
     const next = [...savedViews.filter((v) => v.name !== name),
                   { name, filters: { ...filters } }];
@@ -181,14 +190,15 @@ export function LibraryScreen({ library, ratings, selectedId, onSelect, onOpen,
 
       {importOpen && (
         <div className="import-drop">
-          <PlaylistImporter embedded onIngested={() => { refresh(); setImportOpen(false); }} />
+          <PlaylistImporter embedded
+            onIngested={() => { refresh(); groups.refresh(); setImportOpen(false); }} />
         </div>
       )}
 
       <LibraryFilters
         filters={filters} patch={patch} reset={() => { reset(); setSearch(""); }}
         active={active} facets={facets}
-        shown={rows.length} total={total}
+        shown={rows.length} total={total} groups={groups.groups}
         sort={sort} setSort={setSort}
         savedViews={savedViews} onSaveView={saveView} onDropView={dropView} />
 
@@ -217,6 +227,7 @@ export function LibraryScreen({ library, ratings, selectedId, onSelect, onOpen,
         onMenu={setMenuId}
         renderMenu={(t) => (
           <TrackActions track={t} job={jobs[t.id]} pipeJob={pipeBySong[t.id]}
+            groups={groups} activeGroup={filters.group}
             onStarted={(id, kind, jobId) => {
               setJobs((p) => ({ ...p, [id]: { kind, jobId } }));
               setMenuId(null);
@@ -234,23 +245,27 @@ export function LibraryScreen({ library, ratings, selectedId, onSelect, onOpen,
   );
 }
 
-// Crates in the rail. Read-only here: adding to a crate stays on Discover's
-// tick-box and CrateAddButton, which is where the tracks you would add are.
-function CrateShelf() {
-  const [crates, setCrates] = useState([]);
-  useEffect(() => {
-    let live = true;
-    api.getCrates()
-      .then((b) => { if (live) setCrates(b.crates || []); })
-      .catch(() => { if (live) setCrates([]); });
-    return () => { live = false; };
-  }, []);
-  if (!crates.length) return null;
+// Groups in the rail: a crate, seen from the library side.
+//
+// Clicking one narrows the library to it — which is the whole feature. Before,
+// these rows were decoration: they listed the crates and did nothing, so a
+// playlist you had saved was visible and unusable.
+//
+// The count is how many of the crate's tracks are IN THE LIBRARY, not how many
+// items it holds. They differ while a crate is still a shopping list, and the
+// number next to a filter has to be the number of rows that filter will show —
+// otherwise clicking it looks broken.
+function GroupShelf({ groups, active, onPick }) {
+  if (!groups.length) return null;
   return (
-    <RailSection label="CRATES" scroll>
-      {crates.map((c) => (
-        <RailRow key={c.id} glyph="▨" label={c.name} count={c.item_count}
-          title={`${c.ingested_count || 0} of ${c.item_count} already in the library`} />
+    <RailSection label="GROUPS" scroll>
+      {groups.map((g) => (
+        <RailRow key={g.id} glyph="▨" label={g.name} count={g.song_ids.length}
+          active={String(active) === String(g.id)}
+          onClick={() => onPick(g.id)}
+          title={g.song_ids.length === g.item_count
+            ? `${g.item_count} tracks`
+            : `${g.song_ids.length} in the library · ${g.item_count - g.song_ids.length} still to import`} />
       ))}
     </RailSection>
   );

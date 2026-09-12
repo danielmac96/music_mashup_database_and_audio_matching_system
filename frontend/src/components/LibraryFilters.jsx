@@ -57,7 +57,7 @@ function MenuChip({ label, value, on, width = 200, title, children }) {
 }
 
 export function LibraryFilters({ filters, patch, reset, active, facets,
-                                 shown, total, sort, setSort,
+                                 shown, total, sort, setSort, groups = [],
                                  views, savedViews, onSaveView, onDropView }) {
   const bpmLabel = filters.bpmMin || filters.bpmMax
     ? `${filters.bpmMin || "0"}–${filters.bpmMax || "∞"}`
@@ -66,6 +66,7 @@ export function LibraryFilters({ filters, patch, reset, active, facets,
     : filters.genres.length === 1 ? filters.genres[0]
       : `${filters.genres[0]} +${filters.genres.length - 1}`;
   const playsLabel = (PLAYS_BANDS.find(([v]) => v === filters.playsMin) || [, "Any"])[1];
+  const group = groups.find((g) => String(g.id) === String(filters.group));
   const yearLabel = filters.yearMin || filters.yearMax
     ? `${filters.yearMin || "…"}–${String(filters.yearMax || "").slice(2) || "…"}`
     : "Any";
@@ -79,6 +80,34 @@ export function LibraryFilters({ filters, patch, reset, active, facets,
   return (
     <>
       <div className="filter-bar">
+        <MenuChip label="Group" value={group ? group.name : "Any"} width={240}
+          on={!!filters.group}
+          title="A crate, seen from the library side: the tracks you saved together. A SoundCloud set imported with a name is one of these.">
+          {(close) => (
+            <>
+              <button className="fmenu-opt"
+                onClick={() => { patch({ group: "" }); close(); }}>
+                Any group
+              </button>
+              {groups.map((g) => (
+                <button key={g.id}
+                  className={`fmenu-opt${String(filters.group) === String(g.id) ? " on" : ""}`}
+                  title={g.song_ids.length === g.item_count ? undefined
+                    : `${g.item_count - g.song_ids.length} of its ${g.item_count} tracks are not in the library yet`}
+                  onClick={() => { patch({ group: String(g.id) }); close(); }}>
+                  <span>{g.name}</span>
+                  <span className="fmenu-n mono">{g.song_ids.length}</span>
+                </button>
+              ))}
+              {groups.length === 0 && (
+                <div className="fmenu-empty">
+                  No groups yet. Save an import as one, or add tracks to a crate.
+                </div>
+              )}
+            </>
+          )}
+        </MenuChip>
+
         <MenuChip label="Key" on={!!filters.key} width={218}
           value={filters.key ? `${filters.key} ±${filters.keyTolerance}` : "Any"}
           title="Camelot key, within n steps around the wheel. The relative major/minor counts as the same place.">
@@ -215,18 +244,28 @@ export function LibraryFilters({ filters, patch, reset, active, facets,
         <div className="sort-cluster mono">
           <span>sort</span>
           <SortKey value={sort.primary} dir={sort.primaryDir}
-            onKey={(k) => setSort({ ...sort, primary: k })}
+            onKey={(k) => setSort({ ...sort, primary: k, primaryDir: dirFor(k, sort.primaryDir) })}
             onDir={(d) => setSort({ ...sort, primaryDir: d })} />
+          {(sort.primary === "group" || sort.secondary === "group") && !filters.group && (
+            <span className="faint" title="Group order is a position inside one group, so it needs a group chosen.">
+              (pick a group)
+            </span>
+          )}
           <span className="faint">then</span>
           <SortKey value={sort.secondary} dir={sort.secondaryDir}
             disabled={!sort.primary}
-            onKey={(k) => setSort({ ...sort, secondary: k })}
+            onKey={(k) => setSort({ ...sort, secondary: k, secondaryDir: dirFor(k, sort.secondaryDir) })}
             onDir={(d) => setSort({ ...sort, secondaryDir: d })} />
         </div>
       </div>
     </>
   );
 }
+
+// Descending is the right default for "added" (newest first) and for every
+// other key here, but group order is a POSITION: descending plays the set
+// backwards, which is never what picking "group order" meant.
+const dirFor = (key, current) => (key === "group" ? "asc" : current);
 
 function SortKey({ value, dir, onKey, onDir, disabled = false }) {
   return (

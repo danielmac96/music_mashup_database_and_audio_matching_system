@@ -45,6 +45,9 @@ class ResolveRequest(BaseModel):
 
 class ImportRequest(BaseModel):
     rows: list[dict[str, Any]]
+    # Optional: also file this import under a named library group (a crate), so
+    # a SoundCloud set imported here stays a set once it is in the library.
+    group_name: Optional[str] = None
 
 
 class ProfileRequest(BaseModel):
@@ -197,7 +200,7 @@ def import_rows(req: ImportRequest) -> dict:
         raise HTTPException(status_code=400, detail="rows list is empty")
     # hydrated=True stops _resolve_metadata refetching metadata we already have.
     rows = [dict(r, hydrated=True) for r in req.rows]
-    return ingest_rows(rows)
+    return ingest_rows(rows, group_name=req.group_name)
 
 
 @router.get("/status")

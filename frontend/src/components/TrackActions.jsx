@@ -39,7 +39,7 @@ export function gatingFor(track, job, pipeJob) {
 }
 
 export function TrackActions({ track, job, pipeJob, onStarted, onDone, onClose,
-                              onEdit }) {
+                              onEdit, groups, activeGroup }) {
   const ref = useRef(null);
   const [error, setError] = useState(null);
   const g = gatingFor(track, job, pipeJob);
@@ -109,11 +109,80 @@ export function TrackActions({ track, job, pipeJob, onStarted, onDone, onClose,
         Correct BPM / key / URL…
       </button>
 
+      {groups && (
+        <>
+          <div className="tt-menu-sep" />
+          <GroupPicker track={track} groups={groups} activeGroup={activeGroup}
+            onError={setError} />
+        </>
+      )}
+
       <div className="tt-menu-sep" />
       <ConfirmDelete onConfirm={remove} />
 
       {error && <div className="tt-menu-err">{error}</div>}
     </div>
+  );
+}
+
+// Which groups this track is on, and a way to change that.
+//
+// Adding lives on the row rather than on a bulk toolbar because the library has
+// no multi-select: the gesture that exists is "this one". Discover's tick-box
+// path is unchanged and still the way to shortlist things you do not own yet.
+//
+// Removing is only offered for the group you are CURRENTLY filtered to. Taking a
+// track off a shelf you cannot see is how you lose it silently — and the list
+// below already says which shelves it is on.
+function GroupPicker({ track, groups, activeGroup, onError }) {
+  const [busy, setBusy] = useState(false);
+  const mine = groups.groupsOf(track.id);
+  const on = new Set(mine.map(String));
+  const active = groups.byId(activeGroup);
+
+  const run = async (fn, msg) => {
+    setBusy(true);
+    try {
+      await fn();
+      toast(msg);
+    } catch (e) {
+      onError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const create = async () => {
+    const name = window.prompt("Name the group", "New group");
+    if (!name?.trim()) return;
+    await run(async () => {
+      const made = await groups.create(name.trim());
+      await groups.add(made.id, [track.id]);
+    }, `Added to "${name.trim()}"`);
+  };
+
+  return (
+    <>
+      <div className="tt-menu-head mono">GROUPS</div>
+      {groups.groups.map((g) => (
+        <button key={g.id} className={`tt-menu-item${on.has(String(g.id)) ? " on" : ""}`}
+          disabled={busy || on.has(String(g.id))}
+          onClick={() => run(() => groups.add(g.id, [track.id]),
+                             `Added to "${g.name}"`)}>
+          {on.has(String(g.id)) ? "✓ " : "＋ "}{g.name}
+        </button>
+      ))}
+      <button className="tt-menu-item" disabled={busy} onClick={create}>
+        ＋ New group…
+      </button>
+      {active && on.has(String(active.id)) && (
+        <button className="tt-menu-item danger" disabled={busy}
+          onClick={() => run(() => groups.remove(active.id, [track.id]),
+                             `Removed from "${active.name}"`)}>
+          Remove from "{active.name}"
+        </button>
+      )}
+    </>
   );
 }
 
