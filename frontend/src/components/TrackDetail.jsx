@@ -23,8 +23,8 @@ const STEMS = [["full", "Full"], ["vocals", "Vocals"], ["instrumental", "Bed"]];
 // song against a 30-track library is on the order of a hundred rows.
 const PAIR_LIMIT = 500;
 
-export function TrackDetail({ track, tracks, ratings, groups, role, onRole,
-                              onBack, onStudio, onOpenTrack, onStatus }) {
+export function TrackDetail({ track, tracks, ratings, role, onRole, onBack,
+                              onStudio, onOpenTrack, onStatus }) {
   const [sections, setSections] = useState([]);
   const [candidates, setCandidates] = useState([]);
   const [stem, setStem] = useState("full");
@@ -165,9 +165,6 @@ export function TrackDetail({ track, tracks, ratings, groups, role, onRole,
   const stemCount = ["vocals", "instrumental", "drums", "bass", "other"]
     .filter((k) => track.stems?.[k]).length;
   const star = ratings.bySong[track.id] ?? null;
-  const myGroups = (groups?.groupsOf(track.id) || [])
-    .map((id) => groups.byId(id)).filter(Boolean);
-
   const sectionPlaying = playingKey?.startsWith("sec:")
     ? Number(playingKey.slice(4)) : null;
 
@@ -192,18 +189,6 @@ export function TrackDetail({ track, tracks, ratings, groups, role, onRole,
                   track.plays ? `${fmtPlays(track.plays)} plays` : null]
                   .filter(Boolean).join(" · ")}
               </div>
-              {/* Which shelves this track is on. Read-only, like Discover's
-                  crate chip: the place that edits a group is the row menu in
-                  the library, next to the track you are deciding about. */}
-              {myGroups.length > 0 && (
-                <div className="hero-groups">
-                  {myGroups.map((g) => (
-                    <span key={g.id} className="crate-chip" title="A library group">
-                      ▨ {g.name}
-                    </span>
-                  ))}
-                </div>
-              )}
               <div className="tiles">
                 <Tile label="BPM" value={f.bpm != null ? f.bpm.toFixed(1) : "—"} />
                 <Tile label="KEY">

@@ -13,7 +13,6 @@ import { BulkReprocess } from "./components/BulkReprocess";
 import { SetupWizard } from "./components/SetupWizard";
 import { Sidebar } from "./shell/Sidebar";
 import { useLibrary } from "./hooks/useLibrary";
-import { useLibraryGroups } from "./hooks/useLibraryGroups";
 import { useRatings } from "./hooks/useRatings";
 import { usePairDock } from "./hooks/usePairDock";
 import { scoredOptionOf } from "./components/MashupSuggestions";
@@ -92,11 +91,6 @@ export default function App() {
   // and the track screen's partners rail all read the same map, and three
   // copies of it would disagree the moment one of them posted a rating.
   const ratings = useRatings();
-  // Groups (crates, seen from the library side) are fetched once here for the
-  // same reason: the rail counts them, the filter bar names them, the table is
-  // narrowed by one and the row menu writes to them. A second copy would still
-  // be showing the old shelf after the first one added a track to it.
-  const groups = useLibraryGroups();
 
   const setPref = (key, value) => {
     const next = { ...prefs, [key]: value };
@@ -225,7 +219,6 @@ export default function App() {
               <LibraryScreen
                 library={library}
                 ratings={ratings}
-                groups={groups}
                 selectedId={selectedTrackId}
                 onSelect={selectTrack}
                 onOpen={(id) => { setSelectedTrackId(id); setRoute("track"); }}
@@ -247,7 +240,6 @@ export default function App() {
             track={selectedTrack}
             tracks={library.tracks}
             ratings={ratings}
-            groups={groups}
             role={dockRole}
             onRole={setDockRole}
             onBack={() => setRoute("library")}
@@ -259,7 +251,6 @@ export default function App() {
         {route === "discovery" && (
           <Discovery
             seed={mashupSeed}
-            onGroupsChanged={groups.refresh}
             onClearSeed={() => setMashupSeed(null)}
             onAudition={(patch) => sendToStudio(patch)}
             onStatus={setHeaderStatus}

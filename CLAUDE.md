@@ -1,8 +1,6 @@
 # CLAUDE.md — AI Assistant Guide
 
-current goal: **crates are library groups now** (2026-09-12, below) — a saved
-SoundCloud playlist is a filterable smaller library. Before that: **the frontend
-revamp is done** (branch `frontend-revamp`, Phases
+current goal: **the frontend revamp is done** (branch `frontend-revamp`, Phases
 0–7). The four tabs are a sidebar, the pair dock is permanent beside the
 library, and there is a track-detail screen. See
 `~/.claude/plans/using-the-design-handoff-mashup-frontend-sleepy-book.md` and the
@@ -10,89 +8,6 @@ library, and there is a track-detail screen. See
 (`~/.claude/plans/using-the-current-repo-abstract-curry.md`), a connected
 profile and a library-seeded Suggestions pane (2026-08-23), and the Studio's
 timing pills (2026-08-24).
-
-### A crate is a library group (2026-09-12)
-
-Crates could only ever be *filled*. You shortlisted on Discover, you ingested,
-and the crate went on listing the same tracks while the library forgot they had
-ever been collected together. `CrateShelf` made that literal: it drew the crates
-in the Library rail and **its rows had no `onClick` at all**. A saved playlist
-was visible and unusable.
-
-The same table now answers the library's question too. Discover asks *"which
-crates hold this permalink"* (`crate_membership`) — the track need not be in the
-library at all. The Library asks *"which of my songs are on this shelf"*
-(`library_groups`), and that is a **group**: click it in the rail and the
-library becomes a smaller library.
-
-#### The load-bearing decisions
-
-- **A group is a set of song ids, not a query.** `GET /api/crates/groups`
-  returns every crate with its library `song_ids` in one request, because the
-  rail draws all their counts on first paint. Filtering is then arithmetic over
-  rows already in memory — the rule `useLibraryFilters` exists for, and the test
-  that greps it for `fetch(`/`api.` still passes unchanged. **Do not make the
-  group chip fetch.**
-- **`/groups` is declared before `/{crate_id}`**, which is typed `int`. Same
-  hazard `/membership` already documents: it would 422 rather than resolve.
-- **The rail's count is `song_ids.length`, never `item_count`.** A crate holding
-  four items of which three are imported is a filter that returns three rows.
-  The number next to a filter has to be the number of rows it shows, or clicking
-  it looks broken. `item_count` survives as the tooltip ("1 still to import").
-- **The ids compare as strings.** They arrive as numbers from the API and as
-  strings from a chip, and `===` between them is silently false — the filter
-  would match nothing and look like an empty group.
-- **A saved playlist is the WHOLE playlist.** `ingest_rows` collects
-  `ordered_song_ids` for every row, the already-owned ones included, so
-  re-importing a set you half own groups all of it rather than the two tracks
-  that happened to be new. `get_or_create_crate` is case-insensitive for the
-  same reason: the second import lands on the same shelf instead of 409ing.
-- **Grouping never fails the import.** `_save_as_group` swallows its own
-  exception and returns `None`. The audio is downloaded and queued by then;
-  reporting the import as failed because a label collided would be a lie about
-  what happened.
-- **`ingest_rows` relinks EVERY crate**, not just one. A track pasted into the
-  Library bar can be the record a crate has been holding since you shortlisted
-  it, and that crate only becomes a group once its item knows its song. Which is
-  why `POST /{id}/ingest` now *measures* `linked` (before/after) instead of
-  taking the relink's rowcount — the shared path may have done the work already,
-  and the old number silently went to zero.
-- **`delete_song` clears `crate_items.song_id`**, the way it already did for
-  `mix_tracks`. The shortlist entry survives a deleted download — that is what a
-  crate is for — but a group must never claim a track the library no longer has.
-- **A library song with no permalink is keyed `local:song/<id>`.** `''` would
-  collide across every such song under `UNIQUE(crate_id, source_url)` and
-  silently make them one item. The sentinel is deliberately not a URL, and the
-  `urls` export drops it rather than handing the importer something unresolvable.
-- **Removing a track from a group is only offered for the group you are looking
-  at.** Taking it off a shelf you cannot see is how you lose it silently; the
-  menu lists the shelves it is on either way.
-- **`fetch_playlist_flat_meta` is a new function, not a changed return shape.**
-  The playlist's title is not a property of a track, and hanging it on the rows
-  would put a key in them that `_normalise` does not emit — the equivalence
-  `tests/test_scraped_rows.py` pins. It costs nothing: yt-dlp returned it in the
-  same JSON.
-- **Group order defaults to ascending.** It is a position, and descending plays
-  the set backwards. With no group chosen it sorts nothing rather than inventing
-  an order across shelves, and the bar says "(pick a group)".
-
-Not done, deliberately: no nested groups, no smart/auto groups, and the Library
-still has no multi-select — adding to a group is per-row because that is the
-gesture the table has. Discover's bulk path (tick rows → Crate ▾) is unchanged
-and still the way to collect what you do not own yet.
-
-Pinned by `tests/test_library_groups.py` (18) and
-`tests/test_library_groups_frontend.py` (12).
-
-**Walked by eye** at 1440x900 (Playwright, six-track library): the rail shelf,
-the Group chip, group-order sorting, the row menu's add (rail count 2 → 3 live),
-the track-detail chips, the importer's save-as-group box and Discover's dock
-toggle. The importer and Discover panes were driven with stubbed responses —
-there is no network to SoundCloud from here.
-
-Suite: **937 passing, 10 skipped, 0 failing** in a container without the audio
-stack (`librosa`/`torch` absent — that is what the 10 skips are). The same
-baseline before this change was 907 passing.
 
 ### The frontend revamp (2026-09-07)
 
