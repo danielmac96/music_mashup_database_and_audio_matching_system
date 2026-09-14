@@ -29,5 +29,9 @@ frontend/dist/
 .idea/
 .DS_Store
 
+# Secrets — `COPY . .` would bake these into an image layer. Compose passes
+# the values in as environment variables instead.
+.env
+
 # Docs (not needed at runtime)
 Claude_next_steps.md

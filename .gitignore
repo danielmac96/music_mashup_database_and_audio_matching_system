@@ -49,3 +49,6 @@ uvr_models/
 # Tool scratch output
 graphify-out/
 .playwright-mcp/
+
+# Secrets for docker compose (FIRECRAWL_API_KEY)
+.env

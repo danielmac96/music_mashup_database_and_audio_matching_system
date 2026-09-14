@@ -3,7 +3,9 @@
 GET  /api/settings                — resolved values, their provenance, and the
                                     `configured` flag that gates the Setup Wizard
 POST /api/settings                — persist audio_root / db_path / pipeline_workers
-                                    to settings.json (config.save_settings)
+                                    to settings.json (config.save_settings). Also
+                                    firecrawl_api_key, which is read live and is
+                                    reported back as presence only
 POST /api/settings/validate-path  — dry-run a proposed library folder before saving
 
 Note: config.py binds its constants at import time, so a saved change takes
@@ -170,6 +172,9 @@ class SaveSettingsRequest(BaseModel):
     # and restarting — for the one set of knobs whose whole point is that you
     # measure, adjust and re-score.
     section_weights: Optional[dict] = None
+    # Live-read (config.current_firecrawl_api_key). Written by the Mixes tab when
+    # a 1001tracklists import 501s; GET reports presence only, never the value.
+    firecrawl_api_key: Optional[str] = None
 
 
 def _checked_weights(raw: dict, keys, name: str) -> dict:
@@ -259,6 +264,19 @@ def save_settings(req: SaveSettingsRequest) -> dict:
     if req.section_weights is not None:
         new["section_weights"] = _checked_weights(
             req.section_weights, config._SECTION_WEIGHT_KEYS, "section_weights")
+
+    if req.firecrawl_api_key is not None:
+        key = req.firecrawl_api_key.strip()
+        # Never echo the key in an error — it would land in the browser.
+        if not key or any(c.isspace() for c in key):
+            raise HTTPException(status_code=400,
+                                detail="firecrawl_api_key must be one token with no spaces")
+        if config.current_firecrawl_key_source() == "env":
+            raise HTTPException(
+                status_code=400,
+                detail="FIRECRAWL_API_KEY is set in the environment (.env), which "
+                       "overrides a saved key — change it there.")
+        new["firecrawl_api_key"] = key
 
     path = config.save_settings(new)
 

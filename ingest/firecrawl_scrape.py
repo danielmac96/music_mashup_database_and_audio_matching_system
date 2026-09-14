@@ -1,7 +1,7 @@
 """Firecrawl-backed scrape of 1001tracklists.
 
 A plain urllib GET of 1001tracklists returns a Cloudflare Turnstile interstitial
-(see api/routes/mixes.py _TURNSTILE_MSG). Firecrawl's hosted stealth proxy renders
+(see api/routes/mixes.py _FIRECRAWL_KEY_MSG). Firecrawl's hosted stealth proxy renders
 the page and returns its content. We call the HTTP /v2/scrape endpoint directly
 with stdlib urllib (no firecrawl-py dependency).
 
@@ -22,7 +22,8 @@ import re
 import urllib.error
 import urllib.request
 
-from config import FIRECRAWL_API_KEY, FIRECRAWL_SCRAPE_URL
+import config
+from config import FIRECRAWL_SCRAPE_URL
 
 
 class FirecrawlError(RuntimeError):
@@ -31,6 +32,11 @@ class FirecrawlError(RuntimeError):
 
 class FirecrawlChallenge(FirecrawlError):
     """The stealth proxy returned Cloudflare's interstitial instead of the page."""
+
+
+class FirecrawlAuthError(FirecrawlError):
+    """Firecrawl refused the API key (HTTP 401/403). Separate from other failures
+    because a different key fixes it, so the Mixes tab asks for one again."""
 
 
 # When Turnstile does not clear inside the render budget, Firecrawl still reports
@@ -95,7 +101,8 @@ def _real_post(url: str, body: dict, headers: dict) -> dict:
             msg = detail.get("error") or detail.get("code") or ""
         except Exception:
             msg = ""
-        raise FirecrawlError(f"Firecrawl HTTP {exc.code}{f': {msg}' if msg else ''}") from exc
+        kind = FirecrawlAuthError if exc.code in (401, 403) else FirecrawlError
+        raise kind(f"Firecrawl HTTP {exc.code}{f': {msg}' if msg else ''}") from exc
     except (urllib.error.URLError, ValueError, TimeoutError) as exc:
         raise FirecrawlError(f"Firecrawl request failed: {exc}") from exc
 
@@ -107,8 +114,12 @@ def _post_scrape(url: str, formats: list, api_key: str, _post) -> dict:
     is retried — a page that rendered but parsed to nothing is a markup problem
     and costs credits to re-scrape for no gain.
     """
+    # Resolved per call, not as a default argument: a key saved from the Mixes
+    # tab must reach the very next request without a server restart.
+    api_key = api_key or config.current_firecrawl_api_key()
     if not api_key:
-        raise FirecrawlError("FIRECRAWL_API_KEY is not set — configure it to scrape URLs.")
+        raise FirecrawlError("No Firecrawl API key — add one in the Mixes tab or "
+                             "set FIRECRAWL_API_KEY.")
     post = _post or _real_post
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     failure = FirecrawlError("Firecrawl returned no data (challenge or empty page).")
@@ -194,7 +205,7 @@ def parse_markdown_tracklist(md: str) -> list[dict]:
     return rows
 
 
-def scrape_tracklist(url: str, api_key: str = FIRECRAWL_API_KEY, *, _post=None) -> list[dict]:
+def scrape_tracklist(url: str, api_key: str | None = None, *, _post=None) -> list[dict]:
     data = _post_scrape(url, ["markdown"], api_key, _post)
     md = data.get("markdown") or ""
     rows = [r for r in parse_markdown_tracklist(md) if r["artist"] or r["title"]]
@@ -203,7 +214,7 @@ def scrape_tracklist(url: str, api_key: str = FIRECRAWL_API_KEY, *, _post=None) 
     return rows
 
 
-def scrape_track_links(track_page_url: str, api_key: str = FIRECRAWL_API_KEY, *, _post=None) -> dict:
+def scrape_track_links(track_page_url: str, api_key: str | None = None, *, _post=None) -> dict:
     data = _scrape_json(track_page_url, _LINKS_SCHEMA, _LINKS_PROMPT, api_key, _post)
     return {
         "soundcloud_url": (data.get("soundcloud_url") or "").strip(),

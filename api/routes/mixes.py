@@ -31,9 +31,10 @@ from pydantic import BaseModel
 
 from api import jobs, queue_runner
 from api.workers import mix_resolve_worker
-from config import DATA_DIR, FIRECRAWL_API_KEY
+from config import DATA_DIR, current_firecrawl_api_key
 from database.models import get_conn, get_song_by_url, is_trusted_link, upsert_song
-from ingest.firecrawl_scrape import FirecrawlError, scrape_tracklist, scrape_track_links
+from ingest.firecrawl_scrape import (FirecrawlAuthError, FirecrawlError, scrape_tracklist,
+                                    scrape_track_links)
 from ingest.soundcloud import search_candidates as yt_search_candidates
 from ingest.soundcloud_api import SoundCloudAPIError
 from ingest.soundcloud_api import search_candidates as sc_search_candidates
@@ -56,9 +57,12 @@ _parse_tracklist = parse_tracklist
 #
 # 1001tracklists sits behind a Cloudflare Turnstile CAPTCHA: a plain server-side
 # GET returns a "please wait, you will be forwarded" interstitial, never the
-# tracklist. We still *try* the fetch (many other tracklist/festival-set pages
-# are plain HTML and parse fine), but when we recognise the Turnstile wall we say
-# so precisely and point at Firecrawl instead of failing mysteriously.
+# tracklist, so import_mix never fetches it directly: it goes through Firecrawl,
+# or answers 501 asking for a key. Other set pages are fetched here (many are
+# plain HTML and parse fine); a Cloudflare wall on one of those is a 502, because
+# the Firecrawl parser only understands 1001tracklists and a key would not help.
+# 501 must keep meaning "a Firecrawl key would fix this" — the Mixes tab raises
+# its key prompt off that status.
 
 _BROWSER_HEADERS = {
     "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -69,10 +73,13 @@ _BROWSER_HEADERS = {
 _BLOCK_MARKERS = ("challenges.cloudflare.com", "you will be forwarded",
                   "just a moment", "cf-challenge", "please wait, you will",
                   "enable javascript and cookies to continue")
-_TURNSTILE_MSG = (
-    "This tracklist page is behind a Cloudflare Turnstile CAPTCHA "
-    "(1001tracklists uses one), so it can't be fetched directly. Set "
-    "FIRECRAWL_API_KEY to scrape it through Firecrawl's stealth proxy.")
+_FIRECRAWL_KEY_MSG = (
+    "1001tracklists pages sit behind a Cloudflare Turnstile CAPTCHA, so they are "
+    "scraped through Firecrawl, which needs an API key. Paste yours below, or set "
+    "FIRECRAWL_API_KEY in a .env next to docker-compose.yml.")
+_WALLED_MSG = (
+    "This page is behind a Cloudflare challenge, so it can't be fetched directly. "
+    "Try the 1001tracklists page for this set instead.")
 
 
 def _html_title(html: str) -> str:
@@ -98,8 +105,9 @@ def _cache_path(url: str) -> Path:
 
 def _fetch_tracklist_html(url: str) -> str:
     """GET a tracklist URL as a browser would, through a write-once disk cache.
-    Raises HTTPException(501) with an accurate diagnosis when the page is a
-    Cloudflare/Turnstile interstitial, or (502) when the fetch itself fails."""
+    Raises HTTPException(502) with an accurate diagnosis when the page is a
+    Cloudflare/Turnstile interstitial or when the fetch itself fails. Never 501:
+    that status means "a Firecrawl key would fix this", and here it would not."""
     cached = _cache_path(url)
     if cached.exists():
         html = cached.read_text(encoding="utf-8", errors="replace")
@@ -113,7 +121,7 @@ def _fetch_tracklist_html(url: str) -> str:
             html = resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
         if exc.code in (403, 503):
-            raise HTTPException(status_code=501, detail=_TURNSTILE_MSG) from exc
+            raise HTTPException(status_code=502, detail=_WALLED_MSG) from exc
         raise HTTPException(status_code=502,
                             detail=f"Could not fetch the page (HTTP {exc.code}). "
                                    "Check the URL and try again.") from exc
@@ -123,7 +131,7 @@ def _fetch_tracklist_html(url: str) -> str:
                                    "Check the URL and try again.") from exc
     low = html.lower()
     if any(m in low for m in _BLOCK_MARKERS):
-        raise HTTPException(status_code=501, detail=_TURNSTILE_MSG)
+        raise HTTPException(status_code=502, detail=_WALLED_MSG)
     try:
         _HTML_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         _cache_path(url).write_text(html, encoding="utf-8")
@@ -420,8 +428,9 @@ def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
 @router.post("/import")
 def import_mix(req: ImportRequest) -> dict:
     """Best-effort scrape of a tracklist URL. Works for plain-HTML tracklist/
-    festival-set pages; Turnstile-walled sites (1001tracklists) need
-    FIRECRAWL_API_KEY, and return an accurate 501 saying so without it."""
+    festival-set pages; 1001tracklists is Turnstile-walled and goes through
+    Firecrawl. Without a key that is a 501 — the one status the Mixes tab turns
+    into a key prompt."""
     url = (req.url or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="url is required")
@@ -433,9 +442,21 @@ def import_mix(req: ImportRequest) -> dict:
 
     # 1001tracklists is Turnstile-walled; Firecrawl's stealth proxy renders it and
     # returns structured tracks + each track's detail-page URL (for A6 link scrape).
-    if FIRECRAWL_API_KEY and "1001tracklists.com" in url.lower():
+    # The page is ALWAYS walled, so with no key a direct fetch cannot succeed —
+    # ask for the key before spending a request on it. The key is read live, so
+    # one saved from the Mixes tab applies to the retry without a restart.
+    if "1001tracklists.com" in url.lower():
+        if not current_firecrawl_api_key():
+            raise HTTPException(status_code=501, detail=_FIRECRAWL_KEY_MSG)
         try:
             scraped = scrape_tracklist(url)
+        except FirecrawlAuthError as exc:
+            # A mistyped key must bring the prompt back (501), not strand the
+            # user behind a 502 with the bad key still saved.
+            raise HTTPException(
+                status_code=501,
+                detail=f"Firecrawl rejected the API key ({exc}). Paste a valid one "
+                       "below, or fix FIRECRAWL_API_KEY in .env.") from exc
         except FirecrawlError as exc:
             raise HTTPException(status_code=502,
                                 detail=f"Firecrawl scrape failed ({exc}).") from exc

@@ -156,9 +156,24 @@ def test_scrape_tracklist_empty_raises():
                             _post=_fake_post(payload, expect_format="markdown"))
 
 
-def test_scrape_tracklist_no_key_raises():
+def test_scrape_tracklist_no_key_raises(monkeypatch):
+    monkeypatch.setattr(fc.config, "current_firecrawl_api_key", lambda: "")
     with pytest.raises(fc.FirecrawlError):
         fc.scrape_tracklist("https://x", api_key="")
+
+
+def test_key_defaults_to_the_live_setting_not_an_import_time_constant(monkeypatch):
+    # A default argument of FIRECRAWL_API_KEY froze the key when the module
+    # loaded, so a key saved from the Mixes tab never reached the request.
+    monkeypatch.setattr(fc.config, "current_firecrawl_api_key", lambda: "fc-saved-later")
+    post, _ = _recording_post([{"success": True, "data": {"markdown": _MD}}])
+    headers_seen = []
+
+    def _post(url, body, headers):
+        headers_seen.append(headers)
+        return post(url, body, headers)
+    fc.scrape_tracklist("https://x", _post=_post)
+    assert headers_seen[0]["Authorization"] == "Bearer fc-saved-later"
 
 
 def test_scrape_track_links():
@@ -167,3 +182,17 @@ def test_scrape_track_links():
     out = fc.scrape_track_links("https://www.1001tracklists.com/track/2/index.html",
                                 api_key="fc-k", _post=_fake_post(payload, expect_format="json"))
     assert out["youtube_url"] == "https://www.youtube.com/watch?v=Q"
+
+
+@pytest.mark.parametrize("code, auth", [(401, True), (403, True), (402, False), (500, False)])
+def test_only_a_refused_key_raises_the_auth_error(monkeypatch, code, auth):
+    import io
+    import urllib.error
+
+    def refuse(req, timeout=None):
+        raise urllib.error.HTTPError(req.full_url, code, "x", {},
+                                     io.BytesIO(b'{"error": "nope"}'))
+    monkeypatch.setattr(fc.urllib.request, "urlopen", refuse)
+    with pytest.raises(fc.FirecrawlError) as exc:
+        fc._real_post("https://api.firecrawl.dev/v2/scrape", {}, {})
+    assert isinstance(exc.value, fc.FirecrawlAuthError) is auth

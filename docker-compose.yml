@@ -13,4 +13,7 @@ services:
       - ./data:/data
     environment:
       MASHUP_PIPELINE_WORKERS: ${MASHUP_PIPELINE_WORKERS:-1}
+      # 1001tracklists imports (Mixes tab). Put it in a .env next to this file,
+      # or paste it into the Mixes tab when an import asks. Empty = unset.
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
     restart: unless-stopped

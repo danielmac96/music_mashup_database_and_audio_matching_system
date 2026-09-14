@@ -174,6 +174,8 @@ def settings_provenance() -> dict:
                                  "source": SOUNDCLOUD_CLIENT_ID_SOURCE},
         "soundcloud_client_secret": {"value": bool(SOUNDCLOUD_CLIENT_SECRET),
                                      "source": SOUNDCLOUD_CLIENT_SECRET_SOURCE},
+        "firecrawl_api_key": {"value": bool(current_firecrawl_api_key()),
+                              "source": current_firecrawl_key_source()},
         "stem_format": {"value": STEM_FORMAT, "source": "code"},
         "configured": CONFIGURED,
         "settings_path": str(settings_path()),
@@ -375,6 +377,26 @@ def soundcloud_token_path() -> Path:
 _fc_val, FIRECRAWL_KEY_SOURCE = _resolve("FIRECRAWL_API_KEY", "firecrawl_api_key", "")
 FIRECRAWL_API_KEY   = _fc_val
 FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
+
+
+def current_firecrawl_api_key() -> str:
+    """The key to use RIGHT NOW. The Mixes tab saves it to settings.json when an
+    import 501s and retries straight away, so callers must not read the
+    import-time constant above. A non-empty env var still wins (Docker .env
+    pinning); compose passes "" when .env has none, which counts as unset."""
+    env = (os.environ.get("FIRECRAWL_API_KEY") or "").strip()
+    if env:
+        return env
+    return str(_load_settings().get("firecrawl_api_key") or "").strip()
+
+
+def current_firecrawl_key_source() -> str:
+    """'env' | 'settings' | 'default', by the same lookup as the key itself."""
+    if (os.environ.get("FIRECRAWL_API_KEY") or "").strip():
+        return "env"
+    if str(_load_settings().get("firecrawl_api_key") or "").strip():
+        return "settings"
+    return "default"
 
 # ── Background processing ─────────────────────────────────────────────────────
 # Number of worker threads that drain the ingest→download→stems→analysis→structure

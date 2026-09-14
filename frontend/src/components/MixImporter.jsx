@@ -250,6 +250,10 @@ export function MixImporter() {
   const [busy, setBusy] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
+  // /import answers 501 for exactly one thing — a Firecrawl key would fix it —
+  // so that status is what raises the key prompt.
+  const [needsKey, setNeedsKey] = useState(false);
+  const [fcKey, setFcKey] = useState("");
   const [platform, setPlatform] = useState("both");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [viewMode, setViewMode] = useState("list"); // 'list' | 'match'
@@ -336,6 +340,7 @@ export function MixImporter() {
 
   const importUrl = async () => {
     setError(null);
+    setNeedsKey(false);
     setBusy(true);
     try {
       const mix = await api.importMix(url.trim());
@@ -345,9 +350,28 @@ export function MixImporter() {
       setActiveId(mix.id);
     } catch (e) {
       setError(e.message);
+      setNeedsKey(e.message.startsWith("501"));
     } finally {
       setBusy(false);
     }
+  };
+
+  // The key is read live server-side, so the retry needs no restart. It leaves
+  // component state as soon as it is saved, and is never echoed back.
+  const saveKeyAndRetry = async () => {
+    const key = fcKey.trim();
+    if (!key || !url.trim()) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await api.saveSettings({ firecrawl_api_key: key });
+    } catch (e) {
+      setError(e.message);
+      setBusy(false);
+      return;
+    }
+    setFcKey("");
+    await importUrl();
   };
 
   const autoResolve = async () => {
@@ -502,6 +526,25 @@ export function MixImporter() {
           </span>
         </div>
         {error && <div className="error-text" style={{ padding: "0 12px" }}>{error}</div>}
+        {needsKey && (
+          <div className="mix-rail-block">
+            <span className="micro-label">FIRECRAWL API KEY</span>
+            <input className="mix-url-input" type="password" autoComplete="off"
+              placeholder="fc-…" value={fcKey}
+              onChange={(e) => setFcKey(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && fcKey.trim()) saveKeyAndRetry(); }} />
+            <button className="mix-scrape" onClick={saveKeyAndRetry}
+              disabled={busy || !fcKey.trim() || !url.trim()}>
+              {busy ? "Scraping…" : "Save key & retry"}
+            </button>
+            <span className="hint">
+              Get one at{" "}
+              <a href="https://www.firecrawl.dev/app/api-keys" target="_blank"
+                rel="noreferrer">firecrawl.dev</a>. Saved on this machine; a set
+              costs about 9 credits to scrape.
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="mix-column">

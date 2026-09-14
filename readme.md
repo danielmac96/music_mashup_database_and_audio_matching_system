@@ -564,9 +564,12 @@ Beyond the hand-weighted heuristic, the engine can **learn** what makes a good
 pairing from real, documented mashups.
 
 **1. Import a mix (Mixes tab).** Paste the URL of a Two Friends “Big Bootie Mix”
-page from 1001tracklists and hit **Scrape URL**. The site Cloudflare-blocks bots,
-so those pages need `FIRECRAWL_API_KEY` set (plain-HTML set pages scrape without
-it). Numbered entries are parsed as instrumental **beds**; `w/` entries are
+page from 1001tracklists and hit **Scrape tracklist**. The site Cloudflare-blocks
+bots, so those pages are scraped through Firecrawl and need an API key (~9 credits
+a page). The first time, the Mixes tab asks for it: paste it and hit **Save key &
+retry**. It is saved to `settings.json` and applies without a restart. To pin it
+under Docker instead, put `FIRECRAWL_API_KEY=fc-…` in a `.env` next to
+`docker-compose.yml`. Plain-HTML set pages scrape without a key. Numbered entries are parsed as instrumental **beds**; `w/` entries are
 **vocal overlays** paired to the nearest preceding bed. Add or remove individual
 tracks inline, resolve any missing SoundCloud/YouTube links, then **Ingest** —
 resolved tracks flow through the same download → stems → analyze pipeline.
