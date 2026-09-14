@@ -7,7 +7,7 @@ instead of clicking four buttons per track in the Library tab.
 
 Reuses the shared stage functions in api/workers/stages.py (the same code the
 single-stage Library buttons call), so behaviour never diverges. Per-track
-failure containment mirrors pipeline.py: a stage failure stops THIS track at its
+failure containment: a stage failure stops THIS track at its
 error_* status and fails the job, but the queue keeps draining other tracks.
 
 Two entry points:
@@ -15,7 +15,7 @@ Two entry points:
     queues in api/queue_runner.py so a track hops from the download pool to the
     stems pool to the analysis pool (downloads never wait behind Demucs).
   * ``run(job_id, song_id)`` — all stages in sequence on the calling thread
-    (CLI-style; also keeps existing tests/monkeypatching valid).
+    (keeps tests and monkeypatching simple).
 """
 from __future__ import annotations
 

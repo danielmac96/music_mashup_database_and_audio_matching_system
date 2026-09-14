@@ -1,5 +1,5 @@
 """matcher/sections.py — choose the (vocal section × bed section) that actually
-gets layered (T3.3).
+gets layered.
 
 `score_all_pairs` compares whole-track averages, but the move is *this chorus
 over that drop*. A track's average blends an intro, three sections and an outro,
@@ -7,17 +7,15 @@ so it often describes a moment that never occurs in the song — and the pair th
 user auditions is a specific 30 seconds, not the average.
 
 This module picks that specific pair. It reuses matcher.plan's filtering and
-label priority verbatim (`_pick_sections`, `_VOCAL_LABEL_PRIORITY`,
-`_INST_LABEL_PRIORITY`) so the section a candidate row points at is one the Plan
+the label priority matcher.patterns derives (`_pick_sections`,
+`priority_for`) so the section a candidate row points at is one the Plan
 would also propose — two definitions of "the good part" is how the preview and
 the recipe end up disagreeing about what the user just heard.
 
-Scope note: the fit computed here does NOT feed score_total. It selects and
-describes the winning section pair; the ranking stays on the four whole-track
-sub-scores. Sections carry only energy, vocal_presence, repetition and
-confidence — there is no per-section key or timbre in the schema — so a
-section-level composite would be the same four numbers with two of them
-replaced, which is not obviously better than what T2.2 measured.
+The candidate row IS the section pair: `top_section_pairs` emits a capped
+number of section pairings per song pair, and
+`matcher.match._apply_section_fit` blends this fit (SECTION_WEIGHT, split by
+the six section weights) into score_total.
 """
 from __future__ import annotations
 
@@ -37,9 +35,9 @@ from matcher.section_score import section_components
 #   voice     — is anyone actually singing in the vocal section?
 # These are selection weights, not ranking weights: they decide which pair of
 # sections wins, never how the candidate places in the list.
-# Defaults, kept as module constants because several tests and the CLI import
+# Defaults, kept as module constants because several tests import
 # them by name. The live values come from config.current_section_weights(),
-# which also carries spec §7's phrase/rhythm/structure terms — those ship at
+# which also carries phrase/rhythm/structure terms — those ship at
 # zero until a library has been re-analysed for the P2.1 columns they read.
 W_LABEL = 0.40
 W_DURATION = 0.35

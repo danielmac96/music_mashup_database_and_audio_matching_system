@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api } from "../api";
 import { ScreenHeader } from "../shell/ScreenHeader";
 import { RailRow, RailSection } from "../shell/Sidebar";
 import { LibraryFilters } from "./LibraryFilters";

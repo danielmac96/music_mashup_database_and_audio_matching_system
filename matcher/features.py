@@ -511,7 +511,8 @@ def build_dataset(name: str = "bbm", neg_ratio: int = 5, seed: int = 42,
     user's library to *this* user's taste, and a contradictory pair of labels
     teaches nothing.
 
-    Writes an .npz (X, y, groups, feature_names) to DATASETS_DIR and inserts a
+    Writes a CSV (one row per pair, FEATURE_NAMES columns plus label and
+    group) to DATASETS_DIR and inserts a
     `datasets` row whose config_json carries the per-source counts. Returns the
     registered dataset dict. Raises ValueError with an actionable message when
     there are no usable positives yet."""
@@ -626,10 +627,6 @@ def build_dataset(name: str = "bbm", neg_ratio: int = 5, seed: int = 42,
             X.append(features_to_row(feats))
             y.append(label)
             groups.append(group)
-
-        X_arr = np.asarray(X, dtype=np.float64)
-        y_arr = np.asarray(y, dtype=np.int64)
-        groups_arr = np.asarray(groups)
 
         # ── Persist + register ────────────────────────────────────────────────
         DATASETS_DIR.mkdir(parents=True, exist_ok=True)

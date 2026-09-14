@@ -1,5 +1,5 @@
 """
-matcher/alignment.py — Where the two sections line up (spec §8).
+matcher/alignment.py — Where the two sections line up.
 
 Every candidate has to answer "and at what offset?". Until now those numbers
 were only computed at EXPORT time, inside render/session.py, which meant the
@@ -12,7 +12,7 @@ render/session.py::measure_lock stays where it is: cross-correlating the two
 RENDERED onset envelopes needs the render, and is a verification of this rather
 than a replacement for it.
 
-The default rule is the spec's: the vocal's first downbeat lands on the bed's
+The default rule: the vocal's first downbeat lands on the bed's
 target downbeat. `alignment_offset` is what you nudge to make that true.
 """
 from __future__ import annotations
@@ -45,7 +45,7 @@ def align(vocal: Dict, inst: Dict, stretch: float = 1.0,
           target_bpm: Optional[float] = None) -> Dict:
     """The alignment instructions for one section pair.
 
-    Returns the spec §8 fields:
+    Returns the alignment fields:
 
       alignment_downbeat  — the vocal bar line everything is hung off, absolute
                             seconds in the vocal track.
@@ -88,7 +88,7 @@ def _fmt_ts(secs: Optional[float]) -> str:
 def describe(vocal: Dict, inst: Dict, pair: Dict, alignment: Dict,
              vocal_bpm: Optional[float] = None,
              inst_bpm: Optional[float] = None) -> str:
-    """One human-readable line for the candidate row (spec §10).
+    """One human-readable line for the candidate row.
 
     Built here rather than in the UI because it needs the section labels and bar
     counts, and those are exactly what the row now stores — the point of P2.0.

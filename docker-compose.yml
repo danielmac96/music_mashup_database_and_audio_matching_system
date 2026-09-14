@@ -13,7 +13,12 @@ services:
       - ./data:/data
     environment:
       MASHUP_PIPELINE_WORKERS: ${MASHUP_PIPELINE_WORKERS:-1}
-      # 1001tracklists imports (Mixes tab). Put it in a .env next to this file,
-      # or paste it into the Mixes tab when an import asks. Empty = unset.
+      # Secrets come from a .env next to this file (template: .env.example),
+      # which is gitignored and dockerignored. Empty = unset, so a blank entry
+      # never overrides a key saved in the app's Settings.
+      # 1001tracklists imports (Mixes tab) — or paste it when an import asks.
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+      # Registered SoundCloud app for the dormant crate push / likes.
+      SOUNDCLOUD_CLIENT_ID: ${SOUNDCLOUD_CLIENT_ID:-}
+      SOUNDCLOUD_CLIENT_SECRET: ${SOUNDCLOUD_CLIENT_SECRET:-}
     restart: unless-stopped

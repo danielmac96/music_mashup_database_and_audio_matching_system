@@ -164,7 +164,7 @@ def test_scored_pairs_match_the_scalar_scorer(library):
 
 
 def test_returned_lists_keep_the_scalar_ranking(library):
-    """The returned lists drive the CLI report and the job's counts, so their
+    """The returned lists drive the job's counts, so their
     contents and their descending-score order both have to survive."""
     db_path, _ = library
     from matcher.match import score_all_pairs

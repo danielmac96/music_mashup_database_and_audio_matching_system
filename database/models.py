@@ -1,6 +1,8 @@
 """
 database/models.py — SQLite schema via raw sqlite3.
-Tables: songs, stems, features, sections, mashup_candidates.
+Tables: songs, stems, features, sections, mashup_candidates, pair_feedback,
+pair_hidden, track_excluded, mixes, mix_tracks, mashup_pairs, datasets, models,
+crates, crate_items, app_prefs.
 """
 from typing import Optional, List, Dict, Sequence, Iterable
 import re
@@ -525,7 +527,7 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("section_bars_bed", "REAL"),
     ("section_loop_repeats", "INTEGER"),
     ("section_note", "TEXT"),
-    # P2.3 — spec §7's phrase / rhythm / structure. Stored even while their
+    # P2.3 — phrase / rhythm / structure. Stored even while their
     # weights are zero, so the UI can show what they say and the numbers can be
     # judged against real pairs BEFORE they are allowed to move any ranking.
     ("score_phrase", "REAL"),
@@ -537,7 +539,7 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("score_label", "REAL"),
     ("score_duration", "REAL"),
     ("score_voice", "REAL"),
-    # P2.4 / spec §8 — what building this pair actually involves. Computed at
+    # P2.4 — what building this pair actually involves. Computed at
     # scoring time from the stored per-section downbeats, so the ranked list can
     # say it without the export step having to be reached first.
     ("alignment_downbeat", "REAL"),
@@ -1381,14 +1383,6 @@ def get_songs_by_status(*statuses: str, db_path: Path = DB_PATH) -> List[Dict]:
     return [dict(r) for r in rows]
 
 
-def count_songs_by_status(db_path: Path = DB_PATH) -> Dict[str, int]:
-    """Return a mapping of status → count for the songs table."""
-    conn = get_conn(db_path)
-    rows = conn.execute(
-        "SELECT status, COUNT(*) AS n FROM songs GROUP BY status"
-    ).fetchall()
-    conn.close()
-    return {r["status"]: r["n"] for r in rows}
 
 
 def get_features_for_song(song_id: int, stem_type: str = "full",

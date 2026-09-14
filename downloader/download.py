@@ -222,7 +222,7 @@ class ReverifyResult(NamedTuple):
 def reverify_track(song_id: int, title: str, source_url: str,
                    artist: str = "",
                    on_progress: ProgressCb = None) -> ReverifyResult:
-    """Re-check a previously-downloaded track (WORKFLOW_AUDIT ISSUE-1).
+    """Re-check a previously-downloaded track.
 
     If the file on disk is already full-length, just report its true duration so
     a stale DB `duration_secs` (e.g. a 30s value seeded from a SoundCloud Go+

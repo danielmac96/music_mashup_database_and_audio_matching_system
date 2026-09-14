@@ -1,4 +1,4 @@
-"""Mashup patterns as configuration (P2.2, spec §6).
+"""Mashup patterns as configuration (P2.2).
 
 The point of this file is that the patterns became the single source of truth
 for what pairs with what, WITHOUT changing how the existing library ranks. The
@@ -8,8 +8,6 @@ fail silently.
 import importlib
 import sys
 from pathlib import Path
-
-import pytest
 
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))

@@ -7,9 +7,6 @@ mashup.db-shm
 snapshots/
 datasets/
 models/
-fl_session/
-mashup_report.csv
-mashup_report.txt
 
 # Python
 __pycache__/
@@ -32,6 +29,11 @@ frontend/dist/
 # Secrets — `COPY . .` would bake these into an image layer. Compose passes
 # the values in as environment variables instead.
 .env
+.env.*
+*.env
+!.env.example
+*.pem
+*.key
 
-# Docs (not needed at runtime)
-Claude_next_steps.md
+# Local tooling
+.claude/

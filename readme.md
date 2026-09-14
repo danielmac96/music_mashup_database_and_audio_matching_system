@@ -1,621 +1,780 @@
 # Mashup Engine
 
-A modular pipeline for building Two Friends-style mashups from a master song database.
+A local web app for building Two Friends / Big Bootie-style mashups. Paste a
+SoundCloud (or YouTube) link, and every track is downloaded, stem-separated,
+analysed and segmented on its own. Then the app ranks which **vocal section** of
+one record sits best over which **bed section** of another, lets you judge the
+pairs by ear in seconds, and builds the winners in a multi-track Studio.
 
-```
-SoundCloud playlist
-      ↓
-  [1] ingest/        → metadata into SQLite
-  [2] downloader/    → yt-dlp download (best quality MP3, with YouTube fallback for SC Go+ previews)
-  [3] stems/         → Demucs vocal + instrumental separation
-  [4] analysis/      → BPM, key, MFCC, energy (librosa)
-                       + song structure: intro/verse/chorus/drop timestamps
-  [5] matcher/       → seed song → ranked mashup candidates (opt-in via --stages match)
-                       + section-level mashup plans (which chorus over which drop)
-```
+**This file is the single source of documentation for the repo** — how to run
+it, the end-to-end workflow, the methodology behind every stage, and the
+decisions that are load-bearing. `CLAUDE.md` only imports this file. Update the
+relevant section in place when behaviour changes; do not add plan, handoff or
+changelog files.
+
+| § | Contents |
+|---|---|
+| 1 | [Run it](#1-run-it) |
+| 2 | [Settings](#2-settings) |
+| 3 | [Workflow and architecture](#3-workflow-and-architecture) |
+| 4 | [Using the app](#4-using-the-app) |
+| 5 | [Methodology](#5-methodology) |
+| 6 | [Repo map and data model](#6-repo-map-and-data-model) |
+| 7 | [Load-bearing decisions](#7-load-bearing-decisions--read-before-changing-code) |
+| 8 | [Tests and CI](#8-tests-and-ci) |
+| 9 | [Open work](#9-open-work) |
 
 ---
 
-## ▶ Start the app (TL;DR)
-
-Three ways to launch, fastest first. Pick one — you do **not** need all of them.
-All three open the same app at a URL you paste a SoundCloud link into.
+## 1. Run it
 
 | I want to… | Do this | Open |
 |---|---|---|
-| **Just use it** | `docker compose up` | http://localhost:8000 |
-| **Run it locally** (no Docker) | build once, then serve — see below | http://localhost:8000 |
-| **Work on the UI** (hot reload) | run API + Vite in two terminals — see below | http://localhost:5173 |
+| **Just use it** | `docker compose up -d --build` | http://localhost:8000 |
+| **Run locally** (no Docker) | build the frontend once, then serve | http://localhost:8000 |
+| **Work on the UI** (hot reload) | API + Vite in two terminals | http://localhost:5173 |
 
-**Prerequisites** (local, non-Docker): **ffmpeg + ffprobe on PATH**, **Python 3.9+**, and
-**Node 18+** (only if you build/serve the frontend yourself).
+### Docker (recommended)
 
-**Local — single process (Windows / PowerShell):**
+```bash
+docker compose up -d --build   # build + run in the background
+docker compose logs -f          # follow pipeline logs
+docker compose down             # stop (./data is preserved)
+```
+
+The image builds the frontend, installs CPU-only PyTorch + Demucs + librosa and
+serves UI and API from one process. Everything the app writes — songs, stems,
+the SQLite DB, Demucs weights, settings — persists in `./data`. Docker sets the
+path env vars, so the first-run folder step is skipped.
+
+**The container bakes the frontend in.** A code change is not visible until you
+rebuild (`pull_policy: build` makes a plain `up` rebuild too). A stale container
+will happily reproduce a bug you have already fixed. `COPY . .` builds the
+working tree, so untracked files ship in the image even if never committed.
+
+### Local, single process
+
+Prerequisites: **ffmpeg + ffprobe on PATH**, **Python 3.11/3.12**, **Node 18+**.
 
 ```powershell
-# one-time setup
+# one-time setup (Windows: there is no bare python/pip on PATH — use the venv)
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install audio-separator==0.30.0 --no-deps   # optional "Fast" separator
 cd frontend; npm install; npm run build; cd ..
 
-# start (serves UI + API together)
+# serve UI + API on :8000
 .\.venv\Scripts\python.exe -m uvicorn api.server:app
 ```
 
-> **Windows note:** there is no bare `python`/`pip`/`uvicorn` on PATH here — always call
-> the venv interpreter as `.\.venv\Scripts\python.exe -m <tool>`. On macOS/Linux activate
-> first (`source .venv/bin/activate`) and the plain `python`/`uvicorn` commands work.
+On macOS/Linux activate the venv and use plain `pip` / `uvicorn`.
 
-**Dev — hot reload (two terminals):**
+The dependency stack is pinned to **numpy < 2** (Demucs / librosa 0.10 / torch
+2.5.1). `audio-separator` has no release that resolves against those pins, which
+is why it is installed with `--no-deps` on top.
+
+**After every `git pull`, rebuild the frontend** (`cd frontend && npm run build`).
+`frontend/dist/` is gitignored, so a pull updates the source and not the bundle.
+The server detects this and injects a "Stale UI" banner; `GET /api/health`
+reports it under `frontend.stale`. No restart needed — reload the page.
+
+### Dev mode (hot reload)
 
 ```powershell
 # Terminal 1 — API
 .\.venv\Scripts\python.exe -m uvicorn api.server:app --reload
-# Terminal 2 — UI  (proxies /api/* to :8000)
+# Terminal 2 — UI (proxies /api/* to :8000)
 cd frontend; npm run dev
 ```
 
-Sanity check the backend any time: open http://localhost:8000/api/health → `{"ok": true}`.
-The Library tab also shows a live dependency check (`/api/health/deps`) so you learn about a
-missing ffmpeg/yt-dlp/demucs **before** starting a big import.
+CORS allows only `http://localhost:5173` and `http://127.0.0.1:5173`.
 
-The sections below expand each path with what to expect on first run.
+### First run
 
----
-
-## Quick start (Docker — recommended)
-
-One command rebuilds the frontend bundle, installs a CPU-only PyTorch + Demucs +
-librosa, and serves the whole app (UI + API) from a single process. `up` rebuilds
-every time (`pull_policy: build`), so the UI you get is always the source you have:
-
-```bash
-docker compose up
-```
-
-Then open **http://localhost:8000**. Everything the app writes — downloaded
-songs, stems, the SQLite DB, and the ~400 MB Demucs weights — persists in the
-`./data` folder next to `docker-compose.yml`, so rebuilds keep your library.
-Because Docker sets the path env vars, the first-run folder step is skipped.
-
-```bash
-docker compose up -d          # run in the background
-docker compose logs -f        # follow pipeline logs
-docker compose restart        # apply a settings change
-docker compose down           # stop (your ./data is preserved)
-```
+Without Docker, the **Setup Wizard** checks dependencies (`/api/health/deps`:
+ffmpeg, ffprobe, yt-dlp, demucs, librosa) and asks for a library folder (or
+creates a fresh empty library). Save, restart, done. The Library screen warns if
+a required tool is missing, and offers a one-click yt-dlp upgrade when the
+installed build is over 90 days old — stale yt-dlp is the #1 cause of failed
+downloads.
 
 ---
 
-## Run locally (single process)
+## 2. Settings
 
-No Docker? Build the frontend once and serve it from the same uvicorn process:
-
-```bash
-# 1. ffmpeg + ffprobe on PATH (audio extraction + duration checks)
-#    macOS: brew install ffmpeg   ·   Debian/Ubuntu: sudo apt install ffmpeg
-#    Windows: winget install Gyan.FFmpeg  (or download from ffmpeg.org)
-
-# 2. Python deps (Demucs pulls a ~400MB model on first stem separation)
-#    Windows:      .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-#    macOS/Linux:  source .venv/bin/activate && pip install -r requirements.txt
-pip install -r requirements.txt
-
-# 3. Build the frontend into frontend/dist (served by FastAPI when present)
-#    First build downloads npm deps + bundles — expect a couple of minutes.
-cd frontend && npm install && npm run build && cd ..
-
-# 4. Serve UI + API together on http://localhost:8000
-#    Windows:      .\.venv\Scripts\python.exe -m uvicorn api.server:app
-#    macOS/Linux:  uvicorn api.server:app   (venv activated)
-uvicorn api.server:app
-```
-
-> **After every `git pull`, rebuild the frontend.** `frontend/dist/` is
-> gitignored, so a pull updates `frontend/src/` and leaves the built bundle
-> alone — the server keeps serving the interface from before the pull, and
-> restarting does not change that. New controls simply will not be there while
-> the API routes behind them answer perfectly, which is a confusing place to be.
-> The server now detects this and shows a "Stale UI" banner, but the fix is the
-> same either way:
->
-> ```bash
-> cd frontend && npm run build && cd ..
-> ```
->
-> No server restart needed — reload the page. (`GET /api/health` reports it too,
-> under `frontend.stale`.)
-
-> **Windows:** there is no bare `python`/`pip`/`uvicorn` on PATH — use the
-> `.\.venv\Scripts\python.exe -m <tool>` form shown in the comments above.
-
-Open **http://localhost:8000**. On first launch the **Setup Wizard** appears: it
-checks dependencies, then asks for a library folder for full-song downloads.
-Save, restart the process, and you're ready. (When `frontend/dist` is absent —
-e.g. during development — FastAPI serves API-only and the two-terminal dev flow
-below is unchanged.)
-
----
-
-## First run (what to expect)
-
-The web app is the primary way to use the engine: paste a SoundCloud/YouTube link
-and every track **auto-processes** through download → stems → analyze → structure
-on its own — no per-track clicking. The Library tab shows a warning banner if
-ffmpeg/yt-dlp/demucs/librosa are missing, so you find out before a big import.
-
-Open the app → **Library** tab → paste a playlist or track link into the bar at
-the top → **Preview** → **Save to library**. Tick **Save as a library group** in
-the preview (prefilled with the playlist's own name, and on by default for a
-playlist) to keep the set together: the group appears under **GROUPS** in the
-left rail and clicking it narrows the library to just those tracks. The tracks
-appear in the list directly below and walk the pipeline live (per-track progress + an overall batch
-banner) — there is no separate Import screen. Processing is bounded
-(`MASHUP_PIPELINE_WORKERS`, default 1) so a big playlist won't thrash the machine,
-and it **resumes** unfinished tracks if you restart the server mid-import. A
-failed track shows the reason and a one-click **Retry**; suspected 30s Go+
-previews get a **Fix preview** action.
-
----
-
-## Discover tab (find tracks, then find mashups)
-
-**Discover** holds two panes behind a segmented control.
-
-**Find tracks** searches SoundCloud directly — tracks, sets or artists — and you
-can paste any SoundCloud link to jump straight to it. Click an artist to browse
-their uploads, likes or sets; click *similar* on a track for SoundCloud's own
-related list. Every row shows whether it is **already in your library**, so a
-half-collected back catalogue is obvious at a glance, and Go+ tracks are flagged
-as **Go+ preview** *before* you import one and discover only ~30s is downloadable.
-
-Tick the rows you want, then either **Import & process** (straight into the
-library and the pipeline) or **Add to crate**.
-
-A **crate** is a shortlist that lives in this app's database. Its items do *not*
-have to be downloaded — that is the point: collect while browsing, decide later.
-Crates are drag-reorderable, dedupe on add, and export as a URL list or as JSON
-that imports back into another crate. **Import** on a crate downloads and
-processes everything in it that is not already in your library.
-
-Once its tracks *are* in the library, the same crate is a **library group**: it
-appears under GROUPS in the Library rail, and clicking it turns the library into
-a smaller library of just that set. Everything else on the filter bar still
-applies inside it, "group order" sorts by the crate's own running order, and a
-row's PIPE menu adds that track to a group (or makes a new one) without going
-near SoundCloud. Browsing a SoundCloud set in Discover offers the same thing on
-import: **Save as the group "…"** in the shortlist dock.
-
-> **Why crates instead of real SoundCloud playlists?** Writing to a SoundCloud
-> account needs OAuth against a *registered* app, and registering one — while
-> open and self-serve — requires a SoundCloud Artist Pro subscription. Reading
-> needs no credentials at all. If you do have a client id and secret, put them in Settings and the
-> greyed **Push to SoundCloud** button on a crate starts working — it creates a
-> private playlist and updates it in place on re-push.
-
-**Find mashups** is the ranked section-pair list (formerly the whole Discover
-tab) — unchanged, including keyboard triage and "Find beds" from Library.
-
----
-
-## Studio tab (multi-track mashup DAW)
-
-**Studio** is the only arranger — it absorbed the old two-deck Audition tab,
-which was a near-duplicate over the same engine. It builds a full Two
-Friends-style mashup out of *any number* of stems on one timeline:
-
-- **＋ Add track** puts any library stem (vocals / instrumental / full) on its own
-  lane. The same song can appear on several lanes. **Audition** on a Discover row
-  opens Studio on that pair instead: bed conformed to the vocal's tempo, pitched
-  by the shift the row computed, both lanes placed on the winning section pair.
-- Each lane's **VOX / INST / FULL** buttons switch its stem in place, keeping the
-  lane's position, tempo, pitch and level.
-- Every lane shows its waveform, its own beat grid, and the detected structure
-  ribbon (verse/chorus/drop), plus a live key chip that follows the pitch shift.
-- **SYNC** conforms a lane to the project BPM with a decoupled time-stretch
-  (half/double-time aware — a 75 BPM vocal syncs to a 150 BPM project at ×1, not
-  ×2). Change the project BPM and every synced lane follows.
-- Drag a clip to move it — with snap set to `bar`/`beat`, the clip's downbeats
-  click onto the project grid. `←`/`→` nudge the selected lane by a beat
-  (shift = 10 ms), `space` plays, `L` loops, shift-drag the ruler for a custom
-  loop, wheel pans and ctrl+wheel zooms. Loop length is 1/2/4/8 bars.
-- Per lane: gain, mute, solo, pitch ±12 st (live, no restart), a manual stretch
-  factor when SYNC is off, **⚡ key** to pitch into lane 1's key, **⇥ grid** to
-  snap the nearest downbeat onto the bar line, and **↺** to reset the lane.
-  Playback runs all lanes sample-locked to one clock through a SoundTouch
-  worklet, so tempo and pitch stay decoupled in real time.
-- The **A/B** crossfader in the toolbar rides the first two lanes; centred, it
-  does nothing.
-- The arrangement auto-saves locally and restores when you come back.
-- **Export WAV** renders the arrangement server-side (`POST /api/studio/mixdown`,
-  librosa phase-vocoder per clip — same math, offline quality) and hands back a
-  download.
-
----
-
-## Development mode (two terminals, hot reload)
-
-For frontend work, run Vite's dev server (hot reload) alongside the API. Vite
-proxies every `/api/*` call to the backend on port `8000`.
-
-```bash
-# Terminal 1 — API (http://localhost:8000)
-.\.venv\Scripts\Activate.ps1
-uvicorn api.server:app --reload
-
-# Terminal 2 — web UI (http://localhost:5173)
-cd frontend && npm run dev
-```
-
-Verify the backend is up: open http://localhost:8000/api/health — you should
-see `{"ok": true}`. Then use the UI at http://localhost:5173.
-
----
-
-## Settings & configuration
-
-Settings resolve in this order — **environment variable > `settings.json` >
-built-in default**:
+Resolution order: **environment variable > `settings.json` > default**.
 
 | Setting | Env var | settings.json key | Default |
 |---|---|---|---|
 | Audio library root | `MASHUP_AUDIO_ROOT` | `audio_root` | `<repo>/audio` |
-| SQLite DB path | `MASHUP_DB_PATH` | `db_path` | `<repo>/mashup.db` |
+| SQLite DB | `MASHUP_DB_PATH` | `db_path` | `<repo>/mashup.db` |
+| Engine data dir (datasets, models, snapshots) | `MASHUP_DATA_DIR` | `data_dir` | folder holding the DB |
+| Settings folder | `MASHUP_SETTINGS_DIR` | — | `%APPDATA%\mashup-engine` · `~/Library/Application Support/mashup-engine` · `~/.config/mashup-engine` |
 | Pipeline workers | `MASHUP_PIPELINE_WORKERS` | `pipeline_workers` | `1` |
-| Engine data dir | `MASHUP_DATA_DIR` | `data_dir` | folder holding the DB |
+| Download / stem / analysis / enrich workers | `MASHUP_DOWNLOAD_WORKERS` … | `download_workers` … | `4` / pipeline / `2` / `5` |
+| Stem separator | `MASHUP_STEM_SEPARATOR` | `stem_separator` | `demucs` (`mdx` = fast) |
+| Stem mode | `MASHUP_STEM_MODE` | `stem_mode` | `two` (`four` = drums/bass/other/vocals, Demucs only) |
+| Firecrawl key (Mixes tab) | `FIRECRAWL_API_KEY` | `firecrawl_api_key` | — |
+| SoundCloud app (dormant OAuth) | `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` | `soundcloud_client_id` / `…_secret` | — |
+| Scoring knobs | `MASHUP_EFFORT_WEIGHT`, `MASHUP_BPM_MAX_DIFF`, `MASHUP_KEY_MIN_SCORE`, `MASHUP_SECTION_WEIGHT`, `MASHUP_STEM_QUALITY_MIN`, … | `effort_weight`, `match_weights`, `section_weights`, … | `config.py` (see §5.7) |
 
-`settings.json` is written by the Setup Wizard (and the `POST /api/settings`
-endpoint) to a platform folder — `%APPDATA%\mashup-engine` on Windows,
-`~/Library/Application Support/mashup-engine` on macOS, `~/.config/mashup-engine`
-on Linux. Override its location with `MASHUP_SETTINGS_DIR`. Path constants bind
-at startup, so **saving settings requires a server restart** to take effect (the
-API returns `restart_required: true`). In Docker the env vars win, so the wizard
-skips the folder step.
+**Which DB is live is decided by `settings.json`, not by the repo path** — check
+`config.DB_PATH` before assuming. Path constants bind at import, so path changes
+need a restart (the API returns `restart_required: true`). The separator, stem
+mode, scoring knobs, patterns and Firecrawl key are re-read live.
+`config.save_settings` ignores empty values, so anything that must be
+*unsettable* (the connected SoundCloud profile, saved profiles) lives in the
+`app_prefs` table instead.
 
-**Troubleshooting**
+**Secrets never go in committed files.** Copy `.env.example` to `.env` and fill
+in `FIRECRAWL_API_KEY` / `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET`.
+`.env` (and every `.env.*` except the example) is gitignored and
+dockerignored; compose passes the values in as environment variables. Without
+Docker, export them in your shell or paste the key into the app, which saves it
+to `settings.json` in your user settings folder — outside the repo. OAuth tokens
+are stored in a separate file there, never in `settings.json`, because the
+browser reads `GET /api/settings`.
 
 | Symptom | Fix |
 |---|---|
-| Frontend loads but data calls fail | The backend isn't running on port `8000` — start it (Terminal 1 above). |
-| `uvicorn` not found | The virtual environment isn't activated, or `pip install -r requirements.txt` hasn't been run. |
-| Port already in use | Change the port (`--port 8001` for uvicorn) and update the proxy target in `frontend/vite.config.js`, or stop the process using the port. |
-| CORS errors in the browser console | The backend only allows origins `http://localhost:5173` / `http://127.0.0.1:5173` (see `api/server.py`). Use one of those URLs for the frontend. |
-| Database browser is empty or errors | It lives behind the ⚙ Settings drawer in the top bar. Its endpoints are at `/api/db/tables` (registered in `api/server.py`); confirm the backend restarted after pulling changes. |
+| UI loads, data calls fail | Backend is not running on :8000. |
+| Old UI after a change | Rebuild: `npm run build` locally, `docker compose up -d --build` in Docker. |
+| Port in use | `--port 8001`, and update the proxy in `frontend/vite.config.js`. |
+| CORS errors | Use `localhost:5173` or `127.0.0.1:5173` for the dev UI. |
+| Every download fails | Update yt-dlp (Library offers it), check ffmpeg on PATH. |
 
 ---
 
-## Advanced: scripted CLI pipeline (optional)
+## 3. Workflow and architecture
 
-> **Most users don't need this.** The web app above is the primary way to use the
-> engine — paste a link and every track auto-processes. This CLI exists for
-> automation, headless/server runs, and scripted re-processing. It shares the same
-> database and pipeline as the web app.
+### The workflow, start to finish
 
-Install once (already covered by `requirements.txt` if you set up the app above):
-
-```bash
-pip install yt-dlp demucs librosa soundfile
-# ffmpeg must also be on PATH (used by yt-dlp + librosa)
-# Windows: prefix python with the venv, e.g. .\.venv\Scripts\python.exe test_flow.py ...
+```
+ 1. COLLECT     Library paste bar ─┐   Discover search/browse ─┐   Mixes tracklist import ─┐
+                                   └──────────► POST /api/playlists/ingest ◄───────────────┘
+ 2. PROCESS     per track, on bounded queues:  download → stems → analyse → structure (+ hooks)
+ 3. SCORE       ⚙ / Discover "Score library" → every vocal × bed section pair → mashup_candidates
+ 4. JUDGE       pair dock / Find mashups: loop the moment, rate 1–5 or ✓ ~ ✗, hide, exclude
+ 5. BUILD       Studio: conformed lanes, timing pills, trim/loop/level → Export WAV or FL session
+ 6. LEARN       documented w/ pairs + your verdicts → dataset → model → "Score library" uses it
 ```
 
-Then point the engine at a SoundCloud playlist:
+1. **Collect.** Three entry points, one ingest path. A pasted playlist is
+   enumerated flat (fast, lists every row including blocked ones) and hydrated
+   progressively; Discover rows are already canonical; a mix's resolved tracks
+   and a crate's frozen payloads go through the same `ingest_rows`. Each URL is
+   normalised and deduplicated before a `songs` row is written at `queued`.
+2. **Process.** `queue_runner` routes each track to the queue for the stage its
+   status says it needs next. Downloads, a single Demucs run and a couple of
+   analyses run concurrently; restarts resume mid-pipeline tracks; an `error_*`
+   status waits for Retry.
+3. **Score.** A background job scores the whole library (heuristic, or the
+   active learned model) and rewrites `mashup_candidates`.
+4. **Judge.** Pairs are auditioned as loops of their winning sections on the
+   shared player; verdicts land in `pair_feedback`, which survives every re-score.
+5. **Build.** Studio opens a pair already conformed and placed; exports render
+   the same maths server-side.
+6. **Learn.** Imported mixes and verdicts become a training set; an activated
+   model replaces the heuristic total.
 
-```bash
-python test_flow.py --url https://soundcloud.com/user/sets/your-playlist
+### Architecture
+
+```
+React (Vite) ──fetch /api/*──► FastAPI routers ──► database/models.py (SQLite)
+     ▲                              │
+     │ polls GET /api/jobs          ├─► api/jobs.py (in-memory job registry)
+     │                              └─► api/queue_runner.py ──► per-stage thread pools
+     │                                        │
+     │                                        ▼
+     │                               api/workers/pipeline_worker + stages.py
+     │                                 downloader/ · stems/ · analysis/ · matcher/ · render/
+     └──── audio: GET /api/tracks/{id}/audio (HTTP 206 ranges), hook clips, mixdowns
 ```
 
-That single command runs **ingest → download → stems → analysis** for every track in the playlist and prints a final library report. It is:
-
-- **Idempotent** — re-run the same command and every already-finished track is skipped (`Stage 2 summary: 0 downloaded, 12 skipped (already present), 0 error`).
-- **Resilient** — a single failed track gets a stage-specific error status (`error_download` / `error_stems` / `error_analysis`) and the pipeline keeps going for the rest.
-- **Resumable** — Ctrl-C mid-run, then re-run the same command; completed tracks are skipped, the killed track restarts from the failed stage.
-
-### Common variations
-
-```bash
-# Inspect the current library state (no network calls)
-python test_flow.py --db-report
-
-# Re-run only specific stages (useful after a manual fix)
-python test_flow.py --stages stems analysis
-
-# Store audio on an external drive
-python test_flow.py --url URL --audio-root D:/music_lib
-
-# Move the SQLite DB elsewhere (independent of audio root)
-python test_flow.py --url URL --db-path D:/library.db
-
-# Wipe the DB and start fresh
-python test_flow.py --url URL --reset
-
-# Compute the matching/mashup-candidates table (opt-in)
-python test_flow.py --stages match
-```
-
-### Status taxonomy
-
-Every track's progress is tracked by `songs.status`:
-
-| Status            | Meaning                                                   |
-|-------------------|-----------------------------------------------------------|
-| `queued`          | Ingested, not yet downloaded                              |
-| `downloaded`      | Audio file present at `raw_path`                          |
-| `stemmed`         | Vocals + instrumental on disk and in `stems` table        |
-| `analysed`        | Features extracted for full + vocals + instrumental       |
-| `error_download`  | Download stage failed (see logs)                          |
-| `error_stems`     | Demucs failed                                             |
-| `error_analysis`  | Feature extraction failed                                 |
-
-Each stage filters by status, so re-running the pipeline only touches tracks that aren't past that stage yet.
+- **Everything slow is a job.** Routes return a `job_id`; the UI polls
+  `/api/jobs`. Jobs live in memory; durable progress is the track's `status`
+  column, which is why resume works without persisting jobs.
+- **Stages are shared.** `api/workers/stages.py` `do_download/do_stems/do_analyze/do_structure`
+  are called both by the auto-chain and by the per-track buttons, and each sets
+  the lifecycle status (`queued → downloaded → stemmed → analysed`) or an
+  `error_*` status with `songs.last_error`. A semaphore keeps Demucs to one run
+  at a time whoever asks. Structure is not status-bearing: matching works
+  without sections.
+- **Heavy libraries import lazily**, so the API starts (and degrades with clear
+  501/502 messages) without the audio stack.
+- **Frontend state lives once in `App.jsx`:** the library, ratings, groups and
+  the single player, passed down to the Library, Track detail, Discover, Mixes
+  and Studio screens.
 
 ---
 
-## Module overview
+## 4. Using the app
 
-| Module | File | Purpose |
+The shell is a left **rail** (Library · Mixes · Discover · Studio, plus library
+groups and ⚙ Settings) and one **player bar** at the bottom that every screen
+shares.
+
+### Library
+
+Paste a playlist or track link → **Preview** → **Save to library**. Tick **Save
+as a library group** to keep a set together; groups appear under GROUPS in the
+rail and narrow the table to that set. Every track walks the pipeline with
+per-track progress and a batch banner. Failures show a reason and **Retry**;
+suspected 30s Go+ previews get **Fix preview** (re-verify). A row's menu can
+re-run a single stage, edit BPM/key, change the source URL (resets and
+reprocesses), add to a group, or delete the track and its files.
+
+- The table filters and sorts **in memory** (`GET /api/tracks` is unpaginated).
+  Column headers sort in three states: unsorted → one direction → the other →
+  unsorted, because import order is a meaningful order.
+- Click a row to **scope the pair dock** to it; click the **title** to open the
+  track detail screen.
+- The permanent **pair dock** lists the best pairs for the selected track (as
+  vocal or as bed) or for the whole library. Keys: `↑↓` move · `space` loop ·
+  `1–5` rate · `V`/`B` solo · `⏎` open in Studio.
+
+### Track detail
+
+Stats, a **structure strip** (sections, vocal and bed envelopes, loop window,
+playhead — click or drag to seek), a section table with loop buttons,
+Full/Vocals/Bed switching, a ▶ for the whole track, and a **partners rail**.
+Clicking a partner opens *its* track with the role flipped. `esc` returns.
+
+### Discover
+
+- **Find tracks** — search SoundCloud (tracks, sets, artists) or paste a link;
+  browse an artist's uploads, likes and sets; `↔ similar` for related tracks.
+  Rows flag **in library**, **Go+ preview** and crate membership; `▶` previews
+  in the player bar through SoundCloud's embed widget. Tick rows, then
+  **Import & process** or **Add to crate**.
+- **Crates** are local shortlists. Items need not be downloaded; they reorder by
+  drag, dedupe on add, export as URLs / JSON / M3U, and **Import** fetches what
+  is not in the library yet. A crate is also a library group.
+- **Suggestions** — seed from your library, a crate or a pasted link, or connect
+  your public profile (identifies, does not log in). Returns tracks, artists and
+  sets, each with the seeds that agreed.
+- **Find mashups** — the ranked section-pair list: filters (genre, era, energy,
+  BPM band, vocal-forward, max effort), a per-song cap, **Hide** / **Top track**
+  suppression, a Per-vocal view, "uncertain first" ordering, `Plan ▾` recipes,
+  **Audition** (opens Studio) and batch FL export of the filtered list.
+  Keyboard triage: `j/k/f/d/s/h`.
+
+Filters and sorts act only on rows already loaded ("showing 12 of 47 loaded");
+nothing auto-fetches to make a sort look global.
+
+### Mixes
+
+Import a documented mix: paste a 1001tracklists URL (scraped through
+**Firecrawl** — the tab asks for a key the first time and saves it live) or the
+tracklist text. Numbered entries are **beds**; `w/` lines are **vocal overlays**
+paired to the preceding bed. The match board lets you re-assign roles and
+pairings (reset to original any time) and reorder the set. **Auto-link** finds
+SoundCloud/YouTube links (§5.9), **Scrape link** pulls the exact link from a
+track's 1001tracklists page, **Confirm** trusts a flagged auto-link, and
+**Ingest** sends resolved tracks into the pipeline.
+
+### Studio
+
+A multi-track DAW over any number of stems: SoundTouch worklet playback (tempo
+and pitch decoupled, sample-locked), per-lane waveform, beat grid and structure
+ribbon, SYNC to project BPM (half/double-time aware), bar/beat snap, clip trim,
+gain/mute/solo, pitch ±12 st, ⚡key, ⇥grid, alt+click to set bar 1, A/B
+crossfader, loops. Lane controls live in the adjustments rail; every slider has
+a tick at the matcher's suggested value.
+
+A pair sent from Discover or the dock arrives conformed and placed, with a
+**TIMING** pill row — one pill per suggested overlay (`[` `]` cycle, `1–6` jump),
+each with ✓/~/✗. "Next pair" walks the dock's list. The arrangement auto-saves
+locally. **Export WAV** renders server-side; **FL session** export writes a
+drop-in folder (§5.11). The player bar hides in Studio.
+
+### ⚙ Settings drawer
+
+Inst-over-inst toggle, **Bulk reprocess** (staleness per feature generation;
+re-analyse or re-separate only what needs it), **Tuning** (match width presets,
+match and section weights, effort weight, gates, separator, stem mode), **Train
+from imported mixes** (build dataset → train → activate), and a read-only
+**database browser**.
+
+---
+
+## 5. Methodology
+
+Conventions that hold across every stage: **unknown is not bad** (a missing
+measurement scores a neutral 0.5 or is stored `NULL`, never 0); **measure, then
+rank against this library** (absolute estimator scales are rarely meaningful);
+**one implementation per question** (the preview, the plan, the score and the
+export read the same functions).
+
+### 5.1 Ingest
+
+- `ingest/sources.py` classifies a link (SoundCloud/YouTube, track/playlist) and
+  `normalize_url` canonicalises it (https, lowercase host, no `www.`/`m.`,
+  tracking params stripped; a SoundCloud track keeps only `?secret_token=`).
+  Dedup is on the normalised URL, then SoundCloud `track_id`.
+- Playlists are enumerated with `yt-dlp --flat-playlist` (every row, even
+  geo-blocked) and hydrated on a thread pool (`api/preview_hydrator.py`); the UI
+  polls and merges rows. Hydrated metadata is cached by URL so ingest does not
+  re-fetch it.
+- Full extraction uses `--ignore-no-formats-error`: SoundCloud serves many
+  regular tracks as DRM HLS, and without the flag yt-dlp prints no metadata at
+  all.
+- Every source emits one **canonical row** (title, artist, ids, duration, plays,
+  likes, reposts, comments, genre, tags, release year, thumbnail, upload date).
+  `ingest.soundcloud._normalise` and `soundcloud_browse.track_row` must emit
+  the same key set.
+
+### 5.2 Download
+
+`downloader/download.py`, output `audio/full_song/{title}_{artist}.mp3`.
+
+1. **Anonymous SoundCloud** download (never logged in — cookies would tie
+   downloads to a real account).
+2. If SoundCloud refuses (Go+/private/DRM) or serves a **≤35s preview**, a
+   **YouTube search** on title + artist walks the top results through a retry
+   ladder.
+3. The row's `source_url` is updated to the URL the audio really came from.
+
+Failures are classified (`drm / premium / geo / private / removed / network /
+outdated / unknown`) into a user-facing `last_error`. **Re-verify** re-checks a
+downloaded file with ffprobe and replaces a stale preview, then reprocesses.
+
+### 5.3 Stem separation
+
+- **Demucs `htdemucs`** (quality) or **UVR MDX-Net ONNX** via audio-separator
+  (~2–4× faster on CPU, two stems only). **Four-stem** Demucs writes
+  drums/bass/other/vocals **plus a summed instrumental**, so every consumer
+  still has a two-stem view. Each `stems` row carries a provenance tag
+  (`demucs:htdemucs:four`, `mdx:<model>`), and switching mode re-separates.
+- **Stem quality** (`analysis/quality.py`), measured after structure is known:
+  *bleed* (correlation between a stem and its complement), *HF loss* (top end
+  lost relative to the full mix — the classic MDX smear), *noise floor* (RMS
+  where the vocal stem should be silent, i.e. sections with no voice). Rolled
+  into one 0–1 `quality`; unmeasurable parts are dropped, all-unmeasurable is
+  0.5. Top stems below `STEM_QUALITY_MIN = 0.35` are not offered.
+
+### 5.4 Track analysis
+
+`analysis/analyze.py`, run per stem (full, vocals, instrumental, and bed parts
+in four-stem mode). Each step fails independently.
+
+- **Tempo and grid.** librosa beat tracking. `bpm_confidence` = grid
+  **steadiness × onset salience**, 0–1. **Beat phase**: sum onset strength at
+  each of the 4 candidate bar positions and take the argmax — the kick that
+  starts a bar is louder — so bar lines are not 1–3 beats off (`beat_phase`,
+  overridable by alt+click).
+- **Key.** Mean chroma correlated against Krumhansl profiles; confidence from
+  the correlation margin × chroma peakiness. Camelot code derived from it.
+- **Dynamics / timbre / shape.** RMS loudness, energy, 13-coefficient mean MFCC,
+  spectral centroid/rolloff, ZCR, an RMS envelope for the waveform, and an
+  **8-band energy occupancy** vector (fractions summing to 1).
+- **Residual vocal ratio** on a bed — how much topline an instrumental still
+  carries.
+- For matching, **tempo and key are taken from the full mix** and swapped onto
+  the stem rows (`_with_full_bpm`): separation adds octave/onset errors to stem
+  beat tracking, and a Krumhansl estimate over an isolated acapella is near
+  noise. Timbre, loudness and bands stay stem-derived, because that is what is
+  heard layered. The waveform route uses a vocal stem's own beats only above
+  `VOCAL_BEAT_CONFIDENCE_MIN`.
+
+### 5.5 Structure and hooks
+
+`analysis/structure.py`:
+
+1. Beat-synchronous chroma + MFCC on the full mix → self-similarity matrix →
+   checkerboard-kernel novelty curve → peaks are boundaries.
+2. **Phrase snapping**: boundaries move onto the **8-bar grid** counted from the
+   beat phase, only when within tolerance and every section stays above the
+   minimum length; the walk looks one boundary ahead so pulling one forward
+   cannot force the next to merge away. Unsnapped boundaries keep their
+   position with a confidence discount (fewer sections than detections is the
+   minimum-length floor at work, and expected).
+3. Per section: relative energy, **vocal presence** (vocal-stem RMS inside it),
+   **repetition** (near-identical mean chroma elsewhere).
+4. **Labels** by explainable heuristics — the repeated, loud, vocal-heavy
+   cluster is the chorus: `intro / verse / chorus / drop / breakdown / bridge / outro`.
+5. Per-section measurements: own **BPM** with `bpm_source` (`section_estimate`,
+   or `track_fallback` when the grid is too short/unsteady; half/double folds
+   snap back to the track tempo), grid confidence, absolute energy, energy
+   slope + trend (least-squares fit, not end-minus-start), beat times,
+   downbeats, bar count, phrase length (nearest power of two), and
+   `section_class` (`vocal / instrumental / mixed`, or `unknown` when the stem
+   is missing).
+6. **Per-stem chroma**: `chroma_vocal` from the vocal stem, `chroma_bed` from
+   the instrumental, `bass_chroma` from the bass stem (four-stem) or a
+   band-passed fallback. Full-mix chroma is kept for older rows.
+
+**Hooks** (`analysis/hooks.py`): per role, the **16 bars** worth previewing — the
+most confident chorus with real singing for a vocal, the drop (else chorus) for
+a bed — trimmed at the track's tempo and snapped to a downbeat; falls back to
+the loudest window. `hook_worker` pre-cuts clips with a soundfile seek-and-copy
+(no DSP) so a keypress sounds in well under a second; section windows cache by
+millisecond span. Compressed sources are written as `PCM_16` WAV.
+
+### 5.6 Near-duplicate uploads
+
+`matcher/dedup.py` clusters Original/Extended/Radio Edit/remix/re-upload
+variants so they do not pair with each other and colonise the top of the list:
+normalise the title to the work (strip version, format, promo, featuring and
+remix credits) → same title **and** artist = variant; same title, different
+artist = variant **only if** MFCC timbre agrees (catches re-uploads, keeps
+covers apart). Union-find; the cluster id is the smallest song id.
+
+### 5.7 Pair scoring
+
+`matcher/match.py::score_all_pairs`, a background job that truncates and
+rewrites `mashup_candidates`. Combo types: `vocal_over_instrumental` (the main
+one) and `instrumental_over_instrumental` (hidden by default).
+
+**Gate.** BPM within `BPM_MAX_DIFF = 16` after reading the other side at half,
+normal or double time (`BPM_MAX_DIFF_MODEL = 20` for the model path); key gate
+`KEY_MIN_SCORE = 0` (off — Camelot distance measures fifths, not transposition
+cost, and `pitch_cost` already prices a transpose; use the Tight preset to
+exclude transposes). Excluded tracks, same-song and same-variant-cluster pairs
+never score.
+
+**Song-level sub-scores** (weights normalised live; defaults in `config.MATCH_WEIGHTS`):
+
+| Term | Default | Method |
 |---|---|---|
-| Config | `config.py` | All paths, model names, weights, plus the settings layer (env > `settings.json` > default). See **Settings & configuration**. |
-| Database | `database/models.py` | SQLite schema + CRUD helpers |
-| Ingest | `ingest/soundcloud.py` | Fetch playlist metadata via `yt-dlp` |
-| Browse | `ingest/soundcloud_browse.py` | SoundCloud search / resolve / playlists / users / related, paged and throttled (Discover tab) |
-| SC write | `ingest/soundcloud_oauth.py` | OAuth 2.1 playlist push — **dormant** without app credentials |
-| Download | `downloader/download.py` | yt-dlp wrapper, with YouTube fallback for SoundCloud Go+ previews |
-| Stems | `stems/separate.py` | Demucs separation |
-| Analysis | `analysis/analyze.py` | Audio feature extraction |
-| Matcher | `matcher/match.py` | Scoring + ranking (opt-in stage) |
-| Pipeline | `pipeline.py` | Stage orchestration |
-| CLI | `test_flow.py` | Entry point |
+| `bpm_score` | 0.22 | step function over the half/double-aware BPM distance |
+| `key_score` | 0.26 | Camelot compatibility; **replaced by the measured harmonic fit** once the section pair is known |
+| `energy_score` | 0.17 | closeness of loudness **z-scores within each stem kind** (vocal stems are systematically quieter) |
+| `timbre_score` | 0.20 | drop MFCC c0 (a loudness term ~12× the rest), z-score c1–12 against the library, cosine mapped from [-1,1] to [0,1] |
+| `collision_score` | 0.15 | `1 − Σ min(a_band, b_band)` over the 8-band occupancy: do the two sides leave each other room |
 
----
+On `vocal_over_instrumental` timbre's weight moves onto collision
+(`config._for_combo`) — sameness is the question for two beds, not for a vocal
+over a bed. The semitone shift is `7 × Camelot hour difference` folded to
+[-6, +6], ignoring the letter (relative major/minor need no transpose).
 
-## CLI reference
+**Effort** (`matcher/effort.py`), each component 0 (free) to 1 (maximal work):
 
-```
-python test_flow.py [options]
-
-  --url URL              SoundCloud/YouTube playlist URL (required for ingest)
-  --stages [...]         Run only specific stages:
-                         ingest download stems analysis match
-                         (Default: ingest download stems analysis)
-  --seed N               Song ID to use as mashup seed (default: 1)
-  --seed-stem TYPE       vocals | instrumental | full  (default: vocals)
-  --cand-stem TYPE       vocals | instrumental | full  (default: instrumental)
-  --reset                Wipe the database before running
-  --db-report            Print database state and exit
-  --audio-root DIR       Override audio library root (sets MASHUP_AUDIO_ROOT env)
-  --db-path PATH         Override SQLite DB location (sets MASHUP_DB_PATH env)
-  --export-mashups [F]   Export ranked mashup report as F.csv + F.txt
-  --prep-session [DIR]   Create FL Studio session folders in DIR
-  --top-n N              Top pairs for export/prep (default: 20)
-```
-
----
-
-## Scoring model
-
-Matches are scored on five dimensions (weights in `config.py`, tunable live in
-⚙ Settings), then discounted by what the pair **costs to build**:
-
-| Dimension | Weight | Method |
+| Component | Weight | Charges for |
 |---|---|---|
-| BPM compatibility | 22% | Halftime/doubletime aware |
-| Key compatibility | 26% | Camelot wheel adjacency, replaced by the *measured* harmonic fit once the winning section pair is known |
-| Energy match | 17% | Loudness z-score within each stem kind |
-| Timbre similarity | 20% | MFCC cosine, library-normalised |
-| Spectral collision | 15% | Do the two sides stay out of each other's way across 8 bands |
+| `stretch_cost` | 0.30 | time-stretch (free below ~2%, maximal by ~12%) |
+| `pitch_cost` | 0.30 | transpose size (unknown = maximal) |
+| `tempo_fold_cost` | 0.15 | needing half/double time |
+| `grid_cost` | 0.15 | low beat-grid confidence, **ranked against the library** (`LibraryStats.conf_pct`) |
+| `key_certainty_cost` | 0.10 | low key confidence, ranked against the library |
 
-**Per combo type.** On `vocal_over_instrumental`, timbre's weight moves onto
-collision. Timbre similarity asks "do these sound like the same record" — the
-right question for blending two beds, close to the wrong one for putting a vocal
-over one, where what matters is whether the bed leaves room. The sub-score is
-still measured and shown; it just no longer pulls the ranking toward sameness.
+`score_total` is the weighted fit discounted by `EFFORT_WEIGHT = 0.25` × effort,
+so a free-to-build pair can outrank a slightly better one needing a destructive
+stretch. Labels: Free / Light / Heavy. Scoring runs **vectorised** in blocks over
+pre-computed per-stem columns, and keeps the best `MAX_CANDIDATE_ROWS = 200 000`
+in a bounded heap.
 
-**Effort.** `score_total` is the weighted fit discounted by `EFFORT_WEIGHT` ×
-effort, where effort combines the time-stretch, the transpose, half/double-time
-re-cutting, beat-grid trustworthiness and key certainty. A free-to-build 78% can
-outrank an 84% needing a 12% stretch and +5 semitones. The two confidence terms
-are ranked against your own library's distribution rather than used raw, because
-neither estimator's absolute scale means anything on its own.
+**Section pairs** (`matcher/sections.py`). For each surviving song pair,
+`top_section_pairs` scores usable vocal sections (no intros/outros; vocal side
+needs real voice) × bed sections and emits at most **one row per vocal
+section**, capped, so "chorus over drop" and "verse over breakdown" compete as
+separate candidates. The section fit has six terms, weights normalised:
 
-### The candidate gate
+| Term | Shipped default | Live (measured) | Method |
+|---|---|---|---|
+| `label` | 0.40 | 0.32 | label priority from the patterns, per side |
+| `duration` | 0.35 | 0.30 | **phrase fit in bars** allowing the bed to loop (32-over-16 is a clean 2×), seconds when tempo unknown |
+| `voice` | 0.25 | 0.23 | vocal presence on the top, absence on the bed |
+| `phrase` | 0 | 0.15 | equal phrase lengths best, clean multiples high, partial phrases low |
+| `rhythm` | 0 | 0 | cosine of per-bar onset profiles from stored beat grids |
+| `structure` | 0 | 0 | does the pairing match a configured mashup pattern (`matcher/patterns.py`, editable in settings.json) |
 
-Only tempo gates. `KEY_MIN_SCORE` defaults to **0** because transposing a bed a
-semitone or two is an ordinary move and `pitch_cost` already prices it — gating
-on key as well deleted the pair *and* would have demoted it.
+The section fit is blended into the total with `SECTION_WEIGHT = 0.25`. The live
+weights were **measured** on a backfilled library (30 tracks, 308 sections, 1197
+pairs): `phrase` carries independent signal (stdev 0.31, ρ +0.37 vs duration);
+`rhythm` saturates on 4/4 dance music (range 0.972–1.000, stdev 0.0033, 0% at
+fallback) so weighting it rescales rather than reorders; `structure` is ρ +0.88
+with `label` — the same signal twice. `config.SECTION_WEIGHTS` stays at the
+shipped values; the right weights belong to a library, stored in settings.json.
 
-It also gated on the wrong quantity. Camelot distance measures fifths, so it does
-not order pairs by how much transposition they need: `8A → 9A` is one step around
-the wheel and needs **five** semitones, while `8A → 3B` is far around the wheel
-and needs **one**. The old 0.55 gate admitted the first and threw away the second.
+**Measured harmony** (`matcher/harmony.py`). Cross-correlate the vocal section's
+`chroma_vocal` with the bed section's `chroma_bed` over all 12 rotations: the
+argmax is the transposition (folded to [-6, +6]), the peak is the fit, and
+peak/runner-up is the confidence. This replaces `key_score` when both sides have
+chroma. **Bass clash** checks the bed's bass root against the vocal tonic after
+the shift and returns advice ("high-pass the bed" / mute `bed_bass.wav`), not a
+veto.
 
-Use the **Tight** preset (or set `key_min_score`) when you only want pairs that
-need no transpose at all.
+**Alignment** (`matcher/alignment.py`), from stored grids only: the vocal
+section's first downbeat is the anchor; `alignment_offset` is how far to move
+the bed (after stretching) so its downbeat lands under it — `None` when either
+side has no grid. Also stored: target BPM (the vocal's), tempo and pitch
+adjustments, and a one-line `reason`.
+
+**Plan** (`matcher/plan.py`): target BPM, stretch factor, semitone shift, key
+relation, ranked section pairings and `section_options` (the same
+`top_section_pairs` Studio's timing pills use), plus a numbered DAW recipe.
+
+**Listing** (`get_candidates_enriched`): SQL filters (genre, era, energy, BPM
+band, vocal-forward, max effort), hidden pairs and excluded tracks removed, a
+greedy **per-song cap** counting both sides plus a cap on section pairings of the
+same two songs, a 0–1 popularity percentile (plays + 2×likes), optional
+**surprise reordering** (cross-genre/era contrast, applied only among pairs that
+already fit) and an **uncertain-first** order (closest to a coin flip, where a
+verdict teaches most). Min-match filters the displayed percentile, not the raw
+composite (which clusters near 0.78).
+
+### 5.8 Learned scorer
+
+- **Features** (`matcher/features.py::pair_features`, `FEATURE_NAMES`): the
+  sub-scores, effort components, section terms for the pair actually chosen,
+  collision split into bass/mid/high regions, surprise terms (genre token
+  distance, era distance) and raw track descriptors. Missing inputs become
+  neutral numbers, never NaN. The contract is asserted at import; train and
+  serve call the same function.
+- **Dataset** (`build_dataset`, CSV in `DATASETS_DIR`): positives = documented
+  `w/` pairs from imported mixes whose links pass the trust gate (grouped by
+  mix) + your love/ok verdicts (group "user"); negatives = your "no" verdicts
+  (hard) + sampled undocumented vocal×bed pairs at `neg_ratio` per positive,
+  from inside the BPM window when possible. Your verdict beats a documented
+  label.
+- **Training** (`matcher/model_scorer.py`): logistic regression (scaled,
+  class-balanced) or gradient boosting; **GroupKFold by mix** so siblings from
+  one set never straddle a fold (stratified fallback, reported, when groups are
+  too few); calibrated so "82%" means the same across models; saved with joblib
+  and registered inactive.
+- **Serving**: with a model active, the "auto" scorer gates on the BPM window
+  only, keeps heuristic sub-scores for display, and sets `score_total` to the
+  model probability in batches. A model trained on different feature names is
+  refused (falls back to heuristic). Rows carry top feature contributions as the
+  "why". Exporting a pair to FL records an implicit `ok` unless you already
+  judged it.
+
+### 5.9 Mix import and link resolution
+
+- **Parsing** (`ingest/tracklist_parse.py`): one line → one track with
+  `raw_label`, cue time, artists split, remixer, mashup parts, ID detection and
+  `parse_confidence` (1.0 clean · 0.5 title-only · 0.2 ID). `w/` lines are
+  overlays on the preceding bed and seed `mashup_pairs`. 1001tracklists pages
+  are scraped by Firecrawl as markdown and parsed deterministically (LLM
+  extraction truncated long sets); a track's exact external link is scraped
+  from its sub-page on demand only. Re-importing a URL replaces the mix while
+  carrying over links, roles and manual matches.
+- **Auto-link** (`api/workers/mix_resolve_worker.py`): SoundCloud v2 search
+  (frozen resolver), YouTube via yt-dlp, or SoundCloud-then-YouTube. Hits are
+  scored by `ingest/match_score.py`:
+
+  ```
+  score = (0.65·title + 0.35·artist) × duration × padding × version × plays
+  ```
+
+  title = token coverage of the wanted title; artist = fraction of the artist's
+  words in the hit's title **or** uploader (reported separately — title-only
+  agreement is the classic mislink). Each multiplier is exactly 1.0 when its
+  signal is absent or agrees: *duration* marks down preview-length hits,
+  *padding* charges for unexplained extra words (separates "On The World" from a
+  mashup containing it), *version* penalises an unrequested rework (an
+  "Extended Mix" is the same record), *plays* is a small tiebreak, neutral when
+  unreported. `W_TITLE` must stay below the auto-link floor.
+- **Trust gate** (`is_trusted_link`): manual, scraped and ingested links are
+  trusted; an auto link only with score ≥ `0.72`, duration ≥ `60s` and artist
+  score ≥ `0.5`. Untrusted links still ingest but never become training
+  positives.
+
+### 5.10 Discover recommendations
+
+`ingest/soundcloud_recommend.py`, run as a job: up to `MAX_SEEDS = 25` seeds with
+a SoundCloud `track_id`, `PER_SEED = 20` related tracks each. Lists are fused by
+**Reciprocal Rank Fusion**, `score = Σ_seeds 1 / (RRF_K + rank)` with `RRF_K = 10`
+— no tuning, and "many seeds agreed" and "ranked high" share one scale; the
+contributing seeds become the `because` line. Ties break on votes then plays.
+Owned tracks are removed (via an injected `owned` callable); artists are scored
+over the **whole** pool (owning their records is evidence) with seed artists
+dropped; sets come from top artists' playlists, then genre search. A bad seed
+fails alone; an open circuit breaker stops the run. The browse layer spaces
+requests (`MIN_INTERVAL_SECS = 0.35` + jitter), honours 429 `Retry-After`,
+caches responses, and opens a breaker after repeated failures.
+
+### 5.11 Rendering and export
+
+- **`render/dsp.py`** is shared by every offline render: load a segment, clamp
+  rate/semitones/gain, time-stretch then pitch-shift with librosa's phase
+  vocoder (skipped when identity), peak-normalise only if clipped. `rate` is
+  playback speed, so display duration = raw duration / rate — the same maths as
+  the browser's SoundTouch engine.
+- **Mixdown** (`render/mixdown.py`): N clips (song, stem, offset, rate,
+  semitones, gain, optional trim) summed on one timeline → WAV.
+- **Candidate preview**: two clips from a candidate row's section spans, tempo,
+  transpose and offset.
+- **FL session** (`render/session.py`), one folder per pair, e.g.
+  `01_128_8A_vocal_over_bed/`: each stem trimmed from its section's first
+  downbeat, conformed, and padded so **bar 1 is at 0:00**; the bed's
+  drums/bass/other in four-stem mode; a click track (downbeats pitched higher);
+  ID3 BPM/key tags; `README.txt` with the recipe and a **grid check** — the
+  cross-correlated offset between the two rendered onset envelopes, in ms;
+  `session.json` that round-trips into Studio. Batches zip, and skip a pair
+  that cannot render rather than failing the rest.
 
 ---
 
-## Database schema
+## 6. Repo map and data model
 
-```
-songs(id, title, artist, source_url, duration_secs, genre, tags, release_year,
-      likes, reposts, comments, plays, raw_path, status, ...)
-stems(id, song_id, stem_type, file_path)
-features(id, song_id, stem_type, bpm, key, mode, camelot,
-         loudness_rms, energy, mfcc_json,
-         spectral_centroid, spectral_rolloff, zero_crossing_rate)
-sections(id, song_id, section_index, start_sec, end_sec, label,
-         energy, vocal_presence, repetition, confidence)
-mashup_candidates(combo_type, vocal_*, inst_*, score_total, score_bpm,
-                  score_key, score_energy, score_timbre)
-```
-
-Existing databases migrate automatically on next run: new columns are added,
-and `release_year` is backfilled from `upload_date`.
-
----
-
-## Song structure detection (chorus/verse timestamps)
-
-The analysis stage now segments every track and stores labelled sections in
-the `sections` table:
-
-1. Beat-synchronous chroma + MFCC features over the full mix
-2. Self-similarity novelty curve → section boundaries (snapped to beats)
-3. Per-section relative **energy** (full-mix RMS) and **vocal presence**
-   (RMS of the Demucs vocal stem inside the section)
-4. Repetition counting via chroma similarity (the repeated, loud, vocal-heavy
-   cluster is the chorus)
-5. Labels: `intro / verse / chorus / drop / breakdown / bridge / outro`
-6. **Per-stem chroma**: each section stores what the track *sings*
-   (`chroma_vocal`, from the vocal stem) and what it *plays* (`chroma_bed`, from
-   the instrumental), plus a bass chroma from the dedicated bass stem in
-   four-stem mode. A mashup lays one track's vocal over another's bed, so the
-   harmonic question has to be asked of those two stems — read off the full mix,
-   the vocal side's chroma is dominated by an arrangement that gets discarded,
-   and the transposition it reports describes a record nobody hears. Sections
-   analysed before this fall back to the full-mix chroma.
-
-Tracks analysed before this feature have no sections — re-run analysis
-(`python test_flow.py --stages analysis` after resetting their status, or the
-**Analyze** button in the web app) to populate them. Note `BEAT_TRIM_SECS` now
-defaults to `None` (full-track analysis) for reliable BPM/key — the old default
-only analysed the first 30 seconds.
-
-> **⚠ Existing libraries want a re-analysis.** Two stored values changed meaning:
-> `features.bpm_confidence` is now a real 0–1 beat-grid confidence (it used to be
-> beats-per-frame, i.e. `bpm / 2580`, which never exceeded 0.07), and sections now
-> carry per-stem chroma. Both degrade safely — old rows are treated as "unknown"
-> rather than "bad" — but until you re-analyse, the effort penalty and the
-> measured harmony are working from the old numbers. Use **⚙ Settings → Bulk
-> reprocess**, or `python test_flow.py --stages analysis`.
-
----
-
-## Mashup suggestion engine (web app)
-
-The **Mashups** tab in the web app drives the suggestion workflow:
-
-- **Score library** — scores every qualifying vocal+instrumental and
-  instrumental+instrumental pair (BPM/key pre-filter, then the weighted
-  composite score) into `mashup_candidates`. The **Match width** control
-  (Tight / Balanced / Wide) tunes the pre-filter thresholds before scoring, and
-  **Sort** flips the ranked list between best-score and library popularity. A
-  full re-score is deterministic — the candidates table is cleared first, so no
-  stale pairs survive a tighter filter. Tracks with an out-of-range tempo get a
-  ⚠ in the Library so you can fix a half/double-time error (via **Edit**) before
-  it skews every match.
-- The ranked table shows the score breakdown plus genre, release year, and a
-  0–1 popularity percentile (plays + 2×likes rank within your library) for
-  both sides of each pair.
-- **Plan** expands an actionable, section-level recipe: project tempo, the
-  instrumental stretch factor (halftime/doubletime aware), the semitone shift
-  to align keys, and which vocal chorus/verse to lay over which instrumental
-  drop/chorus — with timestamps and duration fit after stretching.
-- **Audition** opens the pair in Studio, already playable: the bed conformed to
-  the vocal's tempo, pitched by the suggested shift, and both lanes placed so the
-  winning vocal/bed section pair starts together. Then you tweak by ear.
-  Out-of-range tempos are flagged so you nudge rather than trust them.
-- **Hide** drops a pairing for good and **Top track** drops a song from Discover
-  entirely; both survive a re-score, and the **Hidden** chip restores them.
-  **Per song** caps how many rows one song may occupy, and **View → Per vocal**
-  swaps the flat ranking for the best bed under each of your acapellas.
-  **Export mashup WAV** renders exactly what you hear, including the live
-  mix-bus levels (vocal/bed faders, mutes, crossfade).
-- **Min match** filters on the **percentile** shown on the row, not the raw
-  composite. (These had drifted apart: the raw composite spans about
-  [0.45, 0.95] and clusters near 0.78, so the old raw filter did nothing between
-  50 and 75 and then emptied the page.)
-
-API endpoints: `POST /api/mashups/score`, `GET /api/mashups`,
-`GET /api/mashups/plan?vocal_id=&inst_id=`, `GET /api/tracks/{id}/sections`.
-
-### Export → FL session folder
-
-**Export top N** writes one drop-in folder per pair, named
-`01_128_8A_vocal_over_bed` so the file browser sorts into things you could mix
-together. Each folder contains:
-
-| File | What it is |
+| Path | Role |
 |---|---|
-| `vocals.wav` | conformed to the target tempo + key, trimmed to its section, padded so **bar 1 is at 0:00** |
-| `instrumental.wav` | same treatment |
-| `bed_drums.wav`, `bed_bass.wav`, `bed_other.wav` | the bed in parts, conformed identically — only in four-stem mode |
-| `click.wav` | bar/beat click at the target tempo |
-| `README.txt` | the recipe, what was already applied, and the **grid check** |
-| `session.json` | the arrangement, round-trips back into Studio |
+| `config.py` | Paths, weights, gates, settings layer, live readers (`current_*`) |
+| `database/models.py` | SQLite schema, migrations, every query; `resolve_audio_path` is the one audio resolver |
+| `api/server.py` | FastAPI app, routers, health/deps, yt-dlp update, SPA serving with stale-build detection |
+| `api/routes/` | `tracks`, `playlists`, `jobs`, `mashups`, `mixes`, `discovery`, `crates`, `studio`, `settings`, `datasets`, `models`, `database` |
+| `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py` | per-stage worker pools + resume, job registry, playlist preview hydration |
+| `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage download/stems/analysis/structure; `bulk`, `match`, `hook`, `candidate_preview`, `mixdown`, `session`, `mix_resolve`, `reverify`, `discovery` (`suggest`), `ml` |
+| `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py` |
+| `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
+| `stems/separate.py` | Demucs / MDX-Net, two or four stems |
+| `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py` |
+| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py` |
+| `render/` | `dsp.py`, `mixdown.py`, `session.py` |
+| `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, filters, library, ratings, groups, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`; `public/soundtouch-processor.js` |
+| `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS |
 
-The bed's parts are what make the engine's own advice actionable: when the
-harmonic check reports a bass clash it tells you to high-pass the bed — with the
-parts you just mute `bed_bass.wav` instead.
-
-The **grid check** cross-correlates the two rendered onset envelopes and reports
-the residual offset in milliseconds. Everything upstream of the export is an
-estimate (beat grid, phase, phrase snap, section boundary), and they compose into
-something that can still be out. This is the one check that looks at what was
-actually written — so you find out in the README rather than in FL.
-
-Set the project tempo, drag both WAVs in at 0:00, done. Do not re-stretch or
-re-pitch them; that work is baked in.
-
----
-
-## Documented mixes → training data → learned matcher
-
-Beyond the hand-weighted heuristic, the engine can **learn** what makes a good
-pairing from real, documented mashups.
-
-**1. Import a mix (Mixes tab).** Paste the URL of a Two Friends “Big Bootie Mix”
-page from 1001tracklists and hit **Scrape tracklist**. The site Cloudflare-blocks
-bots, so those pages are scraped through Firecrawl and need an API key (~9 credits
-a page). The first time, the Mixes tab asks for it: paste it and hit **Save key &
-retry**. It is saved to `settings.json` and applies without a restart. To pin it
-under Docker instead, put `FIRECRAWL_API_KEY=fc-…` in a `.env` next to
-`docker-compose.yml`. Plain-HTML set pages scrape without a key. Numbered entries are parsed as instrumental **beds**; `w/` entries are
-**vocal overlays** paired to the nearest preceding bed. Add or remove individual
-tracks inline, resolve any missing SoundCloud/YouTube links, then **Ingest** —
-resolved tracks flow through the same download → stems → analyze pipeline.
-
-**2. Build a dataset (⚙ Settings → Database → Training data).** Positives are the
-documented `mashup_pairs` (vocal-stem features over instrumental-stem features);
-negatives are sampled non-pairs (half random, half “hard” — inside the BPM/key
-gate but never used by a DJ), grouped by mix for leakage-safe CV.
-
-```bash
-python -m dataset.build --name bbm --neg-ratio 5 --seed 42
-```
-
-**3. Train + activate a model.** A `HistGradientBoostingClassifier` (with a
-logistic-regression baseline) is cross-validated with GroupKFold by mix, then fit
-on all rows and saved to `MODELS_DIR`.
-
-```bash
-python -m ml.train --dataset-id 1
-```
-
-Once a model is **active**, the Discover tab’s “Score library” uses it
-automatically (the badge reads “Scorer: Model vN”), pre-filtering on the BPM
-window only while still showing the heuristic sub-scores. Deactivate or delete
-the model and scoring silently falls back to the heuristic. Force either scorer
-with `POST /api/mashups/score?scorer=heuristic|model`.
-
-Shared feature function `matcher/features.py:pair_features` is used by **both**
-training and inference, so train/serve feature distributions can’t drift.
+**Tables.** `songs` (metadata, status, `last_error`, `variant_cluster`,
+`track_id`) · `stems` (path, separator tag, quality metrics) · `features` (per
+stem: tempo/grid/phase, key/confidence/Camelot, loudness, MFCC, spectral, bands,
+envelope, beats, hook window) · `sections` (see §5.5) · `mashup_candidates` (one
+row per section pair: sub-scores, effort, section terms, harmony, alignment,
+scorer + model version) · `pair_feedback` (verdict, stars, section indexes,
+feature snapshot) · `pair_hidden` · `track_excluded` · `mixes` · `mix_tracks`
+(parse fields, link, resolve status/score/artist score/duration, cached
+candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
+`crate_items` (frozen canonical payload, optional `song_id`) · `app_prefs`
+(JSON key/value). Existing databases migrate on start.
 
 ---
 
-## Tests
+## 7. Load-bearing decisions — read before changing code
 
-```bash
-pip install -r requirements-dev.txt
-pytest tests/test_mvp_smoke.py -v
-```
+### Data and scoring
 
-The smoke test mocks yt-dlp / Demucs / librosa, so it runs in seconds with no network and no GPU. It covers the end-to-end happy path, idempotency on re-run, and per-track failure containment.
+- **A pair is keyed by its four ids, never by `candidate.id`.** `score_all_pairs`
+  truncates `mashup_candidates` on every run. `pairModel.js` `keyOf`/`feedbackKey`
+  and `ux_pair_feedback_section` use the same key.
+- **`pair_feedback` is irreplaceable user input.** Its unique key includes the
+  section indexes. Any migration must copy, count, and refuse to drop the
+  original on a short copy.
+- **Stars sit alongside the verdict.** 5,4→love · 3→ok · 2,1→no on write;
+  love→5 · ok→3 · no→1 on read; ✓/~/✗ `COALESCE`s rather than blanking a star.
+  **Do not repoint training at `rating`.** Verdict names map to an older
+  vocabulary (good→ok, saved→love, bad→no, ignored→hidden/excluded); renaming
+  them invalidates every stored judgement.
+- **NULL is unmeasured, never zero** — see the §5 conventions. `alignment_offset`
+  is `None` without a grid; `section_class = unknown` means no stem.
+- **`SECTION_PAIR_COLUMNS` is the tuple that binds.** Forget a new term there
+  and it is silently discarded on every write. `score_section_pair`
+  deliberately does not call `section_terms` (hot loop); a test pins the two
+  copies of the arithmetic together.
+- **The structure gate.** `pipeline_worker._structure_pass` asks whether sections
+  are *current* via `bulk_worker.sections_are_current` (`_SECTION_CURRENT_COLUMNS`),
+  shared with the staleness badge. Add the next section column to that tuple or
+  bulk re-analysis silently skips structure. `bpm_source IS NOT NULL` is
+  satisfied by `track_fallback`.
+- **Migrations run after `SCHEMA`.** An index on a *migrated* column belongs in
+  the migration (`idx_songs_track_id`); on an original column, in `SCHEMA`
+  (`idx_crate_items_*`).
+- **`build` is not aliased to `breakdown`** in `matcher/patterns.py`: a build
+  rises, a breakdown falls, and the alias would promote every breakdown.
+- `matcher/plan.py` imports `top_section_pairs` **inside** `build_mashup_plan`
+  (module-level is circular). `section_options` is additive; `render/session.py`
+  still reads `plan["pairings"][0]`.
+- A track's star is the best any pairing it appears in has earned; there is no
+  per-song rating store.
+- Turning on a section weight removed a short-circuit in `matcher/sections.py`
+  (re-score 4.9s → 10.8s at 30 tracks). Watch it at scale. Four-stem separation
+  moved the ranking more than any weight change did.
+
+### SoundCloud
+
+- **`ingest/soundcloud_api.py` keeps a zero-line diff.** It feeds the mixes
+  auto-resolver, which is frozen. `soundcloud_browse.py` imports from it, never
+  the reverse (test-enforced).
+- **Both layers share one scraped `client_id`** — hence the throttle, backoff,
+  breaker, search on Enter and paging by button. If the breaker trips on
+  suggestions, lower `MAX_SEEDS`, never the interval.
+- **The frontend never calls api-v2.** No file under `frontend/src` may mention
+  `api-v2`, `client_id` or `transcodings` (test-enforced). Previews use the embed
+  widget: `allow="autoplay; encrypted-media"`; a **fresh iframe per play**
+  (`Widget(frame)` returns the same wrapper for a reused element and keeps stale
+  handlers); commands await `ready`; position polled at 250ms; the watchdog waits
+  for the **position to move** (SoundCloud silently 404s part of the major-label
+  catalogue); a `FINISH` far from the end is a failure. Rows carry `embeddable`.
+- **Canonical row key sets must match** (`_normalise` ≡ `track_row`).
+- **Crate membership is its own endpoint** (`POST /api/crates/membership`,
+  refetched on `crateRefresh`), never baked into rows. `/membership` and
+  `/groups` are declared before `/{crate_id}`.
+- **OAuth writes are complete and dormant.** Registration is open and self-serve
+  but needs an Artist Pro subscription. Writes answer 501 naming the settings
+  keys; the read layer never sends Authorization. Unverified before switching
+  on: whether `http://localhost` is an accepted redirect URI, and whether v2
+  track ids are the id space `api.soundcloud.com` accepts in a playlist write.
+- `ingest/` does not import `database`.
+
+### Frontend
+
+- **One player at App scope** (`hooks/usePlayer.js`): `track` on one
+  `new Audio()` in a ref (never JSX), `pair` on `useHookAudition`/`MashupEngine`,
+  `sc` on the widget. `play()` silences the others.
+- **A section is a loop window on a whole-file source**; every number on the bar
+  is absolute song seconds (`source.start` must not reappear — test-enforced). A
+  rAF ticker wraps the loop (never `el.loop`); seeking out of the loop releases
+  it; the stem is not part of the source key, the loop window is.
+  `sectionPlaying` and `armedKey` are **derived**, never stored.
+- **The structure strip has one axis: time** (never `bar_count` — test-enforced);
+  axis length = last section's `end_sec`, falling back to `duration_secs`.
+- **Studio's `HEADER_W = 150` must equal `.studio-grid`'s first column** or clips
+  draw at the wrong time with nothing looking broken (test-enforced). Engine
+  coordinates are display seconds; trim is a window, not a new origin; painting
+  is windowed.
+- **Timing pills** re-fetch options by pair ids, apply `alignment_offset`, loop
+  the *intersection* of the two trims, and resolve lanes by `songId`.
+- **Filtering never fetches**; selection derives from visible rows.
+- **Library, judgements and groups are fetched once, in `App.jsx`.**
+- **A hidden pane must not own the keyboard.**
+- `MashupEngine.seek` passes an explicit position to `_rearm`; `useHookAudition`
+  resets `lastPos` on seek.
+- Every `className` the player bar writes must exist in `styles.css`.
+
+### Operations
+
+- **Run the whole suite in one invocation** from the repo root — ~20 files reload
+  `config` → `database.models` → routes and the order is load-bearing.
+- **Always pass `encoding="utf-8"`** to `read_text`/`write_text` (Windows codepage).
+- Degrade, don't 500. Audio routes serve HTTP 206 ranges.
 
 ---
 
-## Extending the pipeline
+## 8. Tests and CI
 
-- **Add a new source** (Spotify, local files): implement `fetch_playlist()` in a new `ingest/` module
-- **Change the separator**: swap `stems/separate.py` to use Spleeter or other tools
-- **Add features**: extend `analysis/analyze.py` and add columns to `features`
-- **Change scoring**: edit `MATCH_WEIGHTS` in `config.py` or override in `matcher/match.py`
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest tests -q
+cd frontend; npm run build
+```
+
+External tools and the network are mocked where needed. Frontend contracts
+(player bar, structure strip, studio geometry, filters, SC preview, shell, pair
+dock, track detail) are pinned by Python tests that read the JSX and CSS — there
+is no JS test runner. CI (`.github/workflows/ci.yml`) runs the whole suite on
+Ubuntu and Windows (Python 3.12, CPU torch, numpy 1.x asserted) and builds the
+frontend.
+
+Walked in a browser against the container: Library, track detail, the pair
+dock, Discover. **Mixes and Studio have not been walked by eye since the
+sidebar revamp.**
+
+---
+
+## 9. Open work
+
+1. **Judge candidates.** `pair_feedback` needs a few dozen verdicts before the
+   learned scorer or supervised weight tuning mean anything; then re-measure the
+   section weights with Spearman against stored verdicts.
+2. **Import the documented Big Bootie mixes** (~17) to build training positives.
+3. **Studio:** per-clip fades → multiple clips per lane → per-lane low/high-cut
+   (bass swap) → auto-arrange → stereo mixdown + limiter/meters → undo/redo.
+4. **Engine:** match 8/16/32-bar **phrases** instead of whole sections (the
+   biggest engine win left — plan it first), per-bar chroma for progressions,
+   vocal melody features (f0 range, note histogram), onset-accurate
+   micro-alignment.
+5. **Foundations as they hurt:** server-side Studio projects, multi-resolution
+   waveform peaks, job persistence across restarts.
+
+Not worth doing: raising `rhythm` or `structure` weights; a "score" sort on the
+library (it would order only the fetched slice of a truncated list); a `~BPM`
+column in Discover (nothing external is analysed).

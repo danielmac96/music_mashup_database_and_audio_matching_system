@@ -20,7 +20,7 @@ sys.path.insert(0, str(ROOT))
 
 from matcher import patterns as pat  # noqa: E402
 from matcher.section_score import (  # noqa: E402
-    phrase_score, rhythm_score, section_components, section_structure_score,
+    phrase_score, rhythm_score, section_structure_score,
 )
 
 
@@ -66,7 +66,7 @@ def test_a_deeper_loop_scores_below_a_shallow_one():
 
 
 def test_a_partial_phrase_is_penalised():
-    """This is the case that costs real editing — spec §7 asks for it by name."""
+    """This is the case that costs real editing — the pattern set asks for it by name."""
     partial = phrase_score(sec(bars=16.0), sec(bars=11.0))
     assert partial < phrase_score(sec(bars=32.0), sec(bars=16.0))
     assert partial < 0.6

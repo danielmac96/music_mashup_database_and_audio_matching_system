@@ -1,6 +1,6 @@
 """Background worker: re-verify one track's cached audio (Library "Re-verify").
 
-Fixes stale ~30s SoundCloud Go+ previews (WORKFLOW_AUDIT ISSUE-1): if the file
+Fixes stale ~30s SoundCloud Go+ previews: if the file
 on disk is still a preview, re-download the full track via the YouTube fallback,
 then reset the song to 'downloaded' and re-enqueue the pipeline so the new audio
 is re-stemmed and re-analysed."""

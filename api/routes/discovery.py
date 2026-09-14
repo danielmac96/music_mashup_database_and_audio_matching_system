@@ -150,11 +150,6 @@ def resolve(req: ResolveRequest) -> dict:
             "next_cursor": None}
 
 
-@router.get("/users/{user_id}")
-def get_user(user_id: str) -> dict:
-    return {"item": _guard(browse.user, user_id)}
-
-
 @router.get("/users/{user_id}/tracks")
 def user_tracks(user_id: str, cursor: Optional[str] = None,
                 limit: int = Query(50, ge=1, le=50)) -> dict:

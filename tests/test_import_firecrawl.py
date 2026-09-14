@@ -1,5 +1,4 @@
 import importlib
-import json
 
 import pytest
 from fastapi import HTTPException

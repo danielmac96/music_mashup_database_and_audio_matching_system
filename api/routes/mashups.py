@@ -303,7 +303,7 @@ def list_feedback(verdict: str = "") -> dict:
 
 @router.post("/{candidate_id}/preview")
 def queue_candidate_preview(candidate_id: int, background: BackgroundTasks) -> dict:
-    """Render this candidate's two sections into one previewable mix (spec §11).
+    """Render this candidate's two sections into one previewable mix.
 
     Everything the render needs is on the row after P2.0/P2.4 — both section
     spans, the tempo move, the transpose and the offset — so this is a lookup

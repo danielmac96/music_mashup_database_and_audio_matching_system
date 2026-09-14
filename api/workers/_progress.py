@@ -11,9 +11,6 @@ import subprocess
 from typing import Callable, Optional
 
 
-ProgressCallback = Optional[Callable[[Optional[int], str], None]]
-
-
 _YTDLP_PCT = re.compile(r"\[download\]\s+(\d+(?:\.\d+)?)%")
 _DEMUCS_PCT = re.compile(r"(\d+)%\|")
 

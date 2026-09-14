@@ -9,8 +9,13 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from ingest.soundcloud import _best_search_match  # noqa: E402
+from ingest.soundcloud import _rank_search_entries  # noqa: E402
 from api.workers.mix_resolve_worker import _is_id_entry  # noqa: E402
+
+
+def _best_search_match(artist, title, entries):
+    ranked = _rank_search_entries(artist, title, entries)
+    return ranked[0] if ranked else None
 
 
 def test_best_match_prefers_full_track_over_preview():

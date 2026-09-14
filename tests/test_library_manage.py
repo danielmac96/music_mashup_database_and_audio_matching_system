@@ -125,7 +125,7 @@ def test_change_url_route_reprocesses_and_409_on_clash(tmp_path, monkeypatch):
     tracks = _tracks_module(tmp_path, monkeypatch)
     from database import models as m
     a = m.upsert_song(title="A", source_url="https://soundcloud.com/a/x")
-    b = m.upsert_song(title="B", source_url="https://soundcloud.com/b/y")
+    m.upsert_song(title="B", source_url="https://soundcloud.com/b/y")
     out = tracks.change_url(a, tracks.UrlUpdate(source_url="https://soundcloud.com/a/z"))
     assert out["updated"] and out["job_id"] == f"job-{a}"
     assert m.get_song(a)["source_url"] == "https://soundcloud.com/a/z"

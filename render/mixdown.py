@@ -54,9 +54,8 @@ def build_mixdown(token: str, clips: list[dict],
         start_sec: float | None, end_sec: float | None   (trim, optional)
 
     `start_sec`/`end_sec` take a SECTION out of the stem rather than playing it
-    whole — what a candidate preview needs, and what Claude_next_steps.md calls
-    the single biggest gap in Studio. Omitted, the clip behaves exactly as
-    before, so no existing caller changes.
+    whole — what a candidate preview needs. Omitted, the clip behaves exactly
+    as before, so no existing caller changes.
     Returns the output path, or None on a caller-fixable problem (details are
     reported through on_progress so the job message explains itself)."""
     def _tick(pct, msg):

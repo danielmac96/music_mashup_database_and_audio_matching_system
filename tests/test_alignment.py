@@ -1,4 +1,4 @@
-"""Alignment on the candidate row (P2.4, spec §8).
+"""Alignment on the candidate row (P2.4).
 
 Until now these numbers only existed at export time, inside render/session.py,
 so the ranked list could say a pair was good but not what building it involved.

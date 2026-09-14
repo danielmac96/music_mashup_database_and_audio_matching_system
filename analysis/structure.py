@@ -344,7 +344,7 @@ def _section_class(vocal_presence: Optional[float]) -> str:
     """vocal | instrumental | mixed | unknown.
 
     unknown means the vocal stem was missing, NOT that the section is quiet —
-    the spec's §5 says not to match unknown sections unless explicitly enabled,
+    unknown sections are not matched unless explicitly enabled,
     and conflating "no stem" with "no vocal" would silently drop half a library
     that has not been separated yet.
     """

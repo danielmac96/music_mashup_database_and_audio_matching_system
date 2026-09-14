@@ -2,11 +2,11 @@
 config.py — Central configuration for the mashup engine.
 
 Path/setting resolution order (highest priority first):
-    1. Environment variable   — set by Docker / CLI wrappers
+    1. Environment variable   — set by Docker / the shell
     2. settings.json          — written by the first-run Setup Wizard
     3. Built-in default       — <repo>/audio, <repo>/mashup.db, 1 worker
 
-Env overrides (unchanged names, so existing CLI wrappers keep working):
+Env overrides:
     MASHUP_AUDIO_ROOT        — relocate the audio library root
     MASHUP_DB_PATH           — relocate the SQLite database file
     MASHUP_PIPELINE_WORKERS  — pipeline worker thread count
@@ -204,16 +204,14 @@ YTDLP_POSTARGS = [
 # "htdemucs" = Hybrid Transformer Demucs (best quality, slower)
 # "mdx_extra" = MDX-Net extra (faster, slightly lower quality)
 DEMUCS_MODEL = "htdemucs"
-STEMS_TO_KEEP = ["vocals", "no_vocals"]   # no_vocals = instrumental
 
 # Which separator new stem jobs use: "demucs" (quality, slower) or "mdx"
 # (audio-separator / UVR MDX-Net ONNX — ~2-4x faster on CPU, slightly lower
 # quality). Every stems row is tagged with the separator that produced it.
 MDX_MODEL = "UVR-MDX-NET-Inst_HQ_3.onnx"
 _SEPARATORS = ("demucs", "mdx")
-_sep_val, STEM_SEPARATOR_SOURCE = _resolve(
+_, STEM_SEPARATOR_SOURCE = _resolve(
     "MASHUP_STEM_SEPARATOR", "stem_separator", "demucs")
-STEM_SEPARATOR = str(_sep_val).lower() if str(_sep_val).lower() in _SEPARATORS else "demucs"
 
 
 # How many stems to split into (Phase D).
@@ -295,7 +293,6 @@ MATCH_WEIGHTS = {
 # being trusted. NULL quality (analysed before Phase D) counts as 1.0, so an
 # existing library is unaffected until it is re-analysed.
 STEM_QUALITY_MIN = 0.35
-TOP_K_RESULTS = 10
 
 # Candidate gate — pairs that don't pass are never scored.
 #
@@ -427,10 +424,6 @@ STEM_WORKERS     = _resolve_int("MASHUP_STEM_WORKERS", "stem_workers", PIPELINE_
 ANALYSIS_WORKERS = _resolve_int("MASHUP_ANALYSIS_WORKERS", "analysis_workers", 2)
 ENRICH_WORKERS   = _resolve_int("MASHUP_ENRICH_WORKERS", "enrich_workers", 5)
 
-# ── Logging ───────────────────────────────────────────────────────────────────
-LOG_LEVEL = "INFO"
-
-
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
 def sanitize_filename_chars(name: str) -> str:
@@ -469,7 +462,7 @@ EFFORT_WEIGHT = 0.25
 # the section was chosen afterwards, wrong once the section is the unit.
 SECTION_WEIGHT = 0.25
 
-# Weights inside score_section itself (spec §7's phrase / rhythm / structure,
+# Weights inside score_section itself (phrase / rhythm / structure,
 # plus the label/duration/voice terms that were already there).
 #
 # The three new ones ship at ZERO on purpose. They read per-section columns that
@@ -615,7 +608,7 @@ def current_match_weights(combo_type: Optional[str] = None) -> dict:
     every pair score 0.
 
     `combo_type` selects the per-combo adjustment below. Omit it for the generic
-    weights (the CLI, a one-off composite_score call).
+    weights (a one-off composite_score call).
     """
     saved = _load_settings().get("match_weights")
     if not isinstance(saved, dict):

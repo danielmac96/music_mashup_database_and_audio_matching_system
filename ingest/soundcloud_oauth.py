@@ -318,17 +318,9 @@ def set_playlist_tracks(playlist_id: str, track_ids, **kw) -> dict:
     }}, **kw)
 
 
-def delete_playlist(playlist_id: str, **kw) -> dict:
-    return authed("DELETE", f"/playlists/{playlist_id}", **kw)
-
-
 def like_track(track_id: str, **kw) -> dict:
     return authed("POST", f"/likes/tracks/{track_id}", **kw)
 
 
 def unlike_track(track_id: str, **kw) -> dict:
     return authed("DELETE", f"/likes/tracks/{track_id}", **kw)
-
-
-def repost_track(track_id: str, **kw) -> dict:
-    return authed("POST", f"/reposts/tracks/{track_id}", **kw)

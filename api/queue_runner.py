@@ -14,7 +14,7 @@ the single kind="pipeline" job per track (with a live ``stage`` field) intact.
 
 Jobs live in the in-memory api.jobs registry. On restart the queues are empty,
 so ``resume_pending()`` re-enqueues any track that was mid-pipeline (see its
-docstring) — the same status-derived resumability the CLI has.
+docstring).
 """
 from __future__ import annotations
 
@@ -117,8 +117,8 @@ def resume_pending() -> int:
     """Re-enqueue tracks that were mid-pipeline when the server last stopped.
 
     'Mid-pipeline' = a status strictly before 'analysed' and not a terminal
-    error_* (those wait for an explicit user retry). Matches the CLI's resume
-    behaviour: queued/downloaded/stemmed tracks pick up from where they left
+    error_* (those wait for an explicit user retry).
+    queued/downloaded/stemmed tracks pick up from where they left
     off. Returns the number of tracks re-enqueued."""
     from database.models import get_songs_by_status
 

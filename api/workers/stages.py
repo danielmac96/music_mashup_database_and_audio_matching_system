@@ -39,7 +39,7 @@ _ANALYSIS_STEM_ORDER = ("full", "vocals", "instrumental")
 # Global concurrency gates, sized to the pipeline worker pools. The pipeline
 # queues already bound their own threads, but the Library per-stage buttons run
 # on uncapped FastAPI BackgroundTasks — acquiring here bounds EVERY caller
-# (queues + buttons + CLI) uniformly, so clicking Separate on five tracks still
+# (queues + buttons) uniformly, so clicking Separate on five tracks still
 # runs one Demucs at a time.
 _STAGE_GATES = {
     "download": threading.Semaphore(DOWNLOAD_WORKERS),

@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { isAnalysed, isReadyToMash, isRecentlyAdded, needsAttention, parseCamelot } from "../theme";
+import { isReadyToMash, isRecentlyAdded, needsAttention, parseCamelot } from "../theme";
 
 // Filtering and sorting the library, as pure functions over rows already in
 // memory.

@@ -1,7 +1,7 @@
 """render/session.py — export a mashup as an FL Studio session folder (B.1/B.2).
 
 The Studio's only output was a summed WAV, which is a bounce: you cannot mix a
-bounce. `prep_fl_session` in matcher/match.py did more, but it shipped untouched
+bounce. The old CLI export did more, but it shipped untouched
 source stems, so the actual FL workflow was still "read the recipe → import raw
 stems → set tempo → stretch by hand → pitch by hand → find the chorus → nudge it
 onto the grid". Every one of those numbers is already computed here.
@@ -45,7 +45,6 @@ BEATS_PER_BAR = 4
 # than an afternoon.
 MAX_SESSIONS = 16
 
-CLICK_BARS_LEAD_IN = 0          # click starts with the audio, no count-in
 CLICK_FREQ_DOWNBEAT = 1600.0    # Hz
 CLICK_FREQ_BEAT = 800.0
 CLICK_LEN_SECS = 0.02
@@ -433,7 +432,7 @@ def _readme(plan: dict, v_info: dict, i_info: dict,
     component_stems = component_stems or []
     lines = [
         f"{v.get('title')} ({v.get('artist')})  —  vocal",
-        f"over",
+        "over",
         f"{i.get('title')} ({i.get('artist')})  —  instrumental",
         "",
         "=" * 68,
@@ -469,7 +468,7 @@ def _readme(plan: dict, v_info: dict, i_info: dict,
         "=" * 68,
         "WHAT WAS APPLIED",
         "=" * 68,
-        f"  vocal        : native tempo, no transpose",
+        "  vocal        : native tempo, no transpose",
         f"                 section {_fmt(v_info.get('section_start'))}"
         f"–{_fmt(v_info.get('section_end'))}"
         f"{'  (snapped to a downbeat)' if v_info.get('snapped_to_downbeat') else ''}",

@@ -25,12 +25,6 @@ export function downbeatsOf(beatTimes, phase = 0) {
   return (beatTimes || []).filter((_, i) => isDownbeat(i, phase));
 }
 
-/** beat_phase off a features payload, clamped to a real bar position. */
-export function beatPhaseOf(feature) {
-  const p = Number(feature?.beat_phase);
-  return Number.isInteger(p) && p >= 0 && p < BEATS_PER_BAR ? p : 0;
-}
-
 /**
  * The phase that makes beat `i` a downbeat — for the alt+click override, where
  * the user points at the beat they hear as bar 1.

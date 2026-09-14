@@ -1,6 +1,6 @@
 """
-matcher/section_score.py — The three score components the spec names and the
-scorer did not have: phrase, rhythm and structure (spec §7).
+matcher/section_score.py — The three section-pair score components:
+phrase, rhythm and structure.
 
 These live here rather than in matcher.match.sub_scores because they are
 properties of a SECTION PAIR, not of two tracks. sub_scores takes stem-level
@@ -23,11 +23,7 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional
 
-from matcher.patterns import canonical, current_patterns, matching
-
-# Phrase lengths a producer actually counts in. A pair whose bar counts land on
-# the same power of two is one edit; anything else is arithmetic.
-_PHRASE_BARS = (1, 2, 4, 8, 16, 32, 64)
+from matcher.patterns import canonical, current_patterns
 
 # How close two bar counts must be to read as "the same phrase length". Sections
 # are snapped to an 8-bar grid upstream, so this is slack for the fractional
@@ -48,7 +44,7 @@ def phrase_score(vocal: Dict, inst: Dict, stretch: float = 1.0) -> float:
     """How cleanly the two sections' phrase lengths line up, 0-1.
 
     Promoted from an ingredient of score_section to a component in its own
-    right (spec §7). Highest for equal phrase lengths, high for a clean
+    right. Highest for equal phrase lengths, high for a clean
     multiple — looping a 16-bar bed under a 32-bar vocal is one drag in a DAW —
     and low for a partial phrase, which is the case that costs real editing.
 
@@ -167,7 +163,7 @@ def _energy_ok(relationship: str, vocal: Dict, inst: Dict) -> bool:
 
 def section_structure_score(vocal: Dict, inst: Dict,
                             patterns: Optional[List[Dict]] = None) -> float:
-    """Does this pairing match a configured mashup pattern, 0-1 (spec §7).
+    """Does this pairing match a configured mashup pattern, 0-1.
 
     A pairing named by a pattern scores that pattern's weight; one the patterns
     do not describe is valid but unremarkable and scores a neutral 0.5, NOT

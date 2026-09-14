@@ -2,7 +2,6 @@
 ingest/soundcloud.py — Pull track metadata from a SoundCloud playlist via yt-dlp.
 """
 import json
-import re
 import subprocess
 import sys
 import logging
@@ -14,38 +13,10 @@ from ingest.match_score import score_candidate
 log = logging.getLogger(__name__)
 
 
-class IngestError(RuntimeError):
-    """Raised when yt-dlp cannot return any usable metadata.
-
-    The message is intended to be shown to the end user, so it includes a
-    short hint about the likely cause (missing yt-dlp, timeout, network/auth
-    failure) plus the first lines of yt-dlp's stderr when available.
-    """
-
-
 def _ytdlp_cmd(*args: str) -> list:
     """Invoke yt-dlp via the active Python interpreter so it works even when
     the console script isn't on PATH."""
     return [sys.executable, "-m", "yt_dlp", *args]
-
-
-def fetch_playlist(url: str) -> list:
-    """
-    Fetch track metadata from a SoundCloud playlist URL via full per-track extraction.
-    Each item includes title, artist, source_url, duration_secs, genre,
-    artist_id, track_id, duration_str, upload_date, likes, reposts,
-    comments, plays, thumbnail (when yt-dlp provides them).
-
-    Note: DRM-protected / format-less tracks (SoundCloud serves many regular
-    tracks this way now) still return full metadata thanks to
-    `--ignore-no-formats-error`. Only truly unextractable tracks (removed,
-    auth-walled) are dropped; use `fetch_playlist_flat` for a guaranteed count.
-    """
-    log.info(f"Fetching playlist metadata: {url}")
-    tracks = _fetch_via_ytdlp(url)
-    if not tracks:
-        log.error("No tracks found. Check the playlist URL.")
-    return tracks
 
 
 def fetch_playlist_flat(url: str) -> list:
@@ -142,15 +113,6 @@ def fetch_single(url: str) -> Optional[dict]:
 # SoundCloud v2 API path (ingest.soundcloud_api) score identically.
 
 
-def _search_score(artist: str, title: str, entry: dict) -> float:
-    """0–1 relevance of a search result to the wanted 'Artist - Title'.
-
-    Thin wrapper over ingest.match_score.score_candidate, kept as the shared
-    entry point both search paths already call. Use score_candidate directly
-    when you need the artist/title components rather than just the total."""
-    return score_candidate(artist, title, entry).score
-
-
 def _rank_search_entries(artist: str, title: str,
                          entries: list[dict]) -> list[dict]:
     """Rank flat search entries best-first as
@@ -177,13 +139,6 @@ def _rank_search_entries(artist: str, title: str,
         }))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [entry for _score, entry in scored]
-
-
-def _best_search_match(artist: str, title: str,
-                       entries: list[dict]) -> Optional[dict]:
-    """Best of the ranked search entries, or None. See _rank_search_entries."""
-    ranked = _rank_search_entries(artist, title, entries)
-    return ranked[0] if ranked else None
 
 
 def search_candidates(artist: str, title: str, platform: str = "soundcloud",

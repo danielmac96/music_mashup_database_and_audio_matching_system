@@ -5,7 +5,6 @@ Pure python + sqlite (numpy/scipy only for the novelty-boundary test) —
 no librosa, demucs, or network needed.
 """
 import json
-import os
 import sys
 from pathlib import Path
 

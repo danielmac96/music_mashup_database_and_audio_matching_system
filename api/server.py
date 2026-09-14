@@ -124,9 +124,6 @@ def health_deps() -> dict:
          "detail": "stem separation (required to split vocals/instrumental)", "required": True},
         {"name": "librosa", "ok": _importable("librosa"),
          "detail": "audio feature analysis (required for BPM/key/structure)", "required": True},
-        {"name": "playwright", "ok": _importable("playwright"),
-         "detail": "optional — 1001tracklists scraping (paste-HTML works without it)",
-         "required": False},
     ]
     missing = [d["name"] for d in deps if d["required"] and not d["ok"]]
     stale = [d["name"] for d in deps if d.get("stale")]

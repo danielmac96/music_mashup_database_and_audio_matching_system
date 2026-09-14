@@ -2,9 +2,9 @@
 
 Listing and activation work directly against the `models` registry table
 (database/models.py schema): activation is a pure flag flip, and the 'auto'
-scorer in matcher/match.py checks it at scoring time. Training depends on the
-learned-scorer stack (matcher/model_scorer.py), which this build doesn't ship —
-it returns 501 with a plain explanation, and scoring falls back to the
+scorer in matcher/match.py checks it at scoring time. Training
+(matcher/model_scorer.py) runs as a background job; if that stack fails to
+import it answers 501 with the reason, and scoring falls back to the
 heuristic automatically (see /api/mashups/scorer-status).
 """
 from __future__ import annotations

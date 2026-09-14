@@ -46,14 +46,9 @@ ALIASES = {
 # about a section the analyser cannot currently emit. Patterns naming "build"
 # therefore stay inert on labels alone — energy_trend (P2.1) is what actually
 # identifies one, and section_structure_score is where that gets asked.
-UNMAPPED_LABELS = ("build",)
 
 # Every label the matcher will consider, after aliasing.
 KNOWN_LABELS = ("intro", "verse", "chorus", "drop", "breakdown", "bridge", "outro")
-
-# Sections that are never worth layering: an intro is an intro because nothing
-# is happening yet, and an outro because it has stopped happening.
-EXCLUDED_LABELS = ("intro", "outro")
 
 # Bar relationships a pattern can ask for. 1:1 means "same phrase length";
 # "multiple" accepts a clean 2:1 / 1:2 / 4:1 as well, which is what looping a
@@ -64,7 +59,7 @@ BAR_RELATIONSHIPS = ("equal", "multiple", "any")
 ENERGY_RELATIONSHIPS = ("rising", "matched", "falling", "any")
 
 
-# The defaults, transcribed from spec §6. `weight` is how strongly a pattern
+# The defaults. `weight` is how strongly a pattern
 # pulls a pair towards the top when it matches — a chorus over a drop is the
 # canonical mashup, a verse over a verse is merely valid.
 DEFAULT_PATTERNS: List[Dict] = [

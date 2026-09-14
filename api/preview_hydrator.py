@@ -19,7 +19,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from threading import Lock
-from typing import Any, Optional
+from typing import Optional
 
 from config import ENRICH_WORKERS
 

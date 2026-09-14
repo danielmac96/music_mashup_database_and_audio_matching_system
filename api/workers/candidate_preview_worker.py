@@ -1,4 +1,4 @@
-"""Background worker: render one mashup candidate to a previewable WAV (spec §11).
+"""Background worker: render one mashup candidate to a previewable WAV.
 
 A thin, fixed wrapper over the Studio mixdown path. Everything it needs is
 already on the candidate row after P2.0 and P2.4 — the two section spans, the

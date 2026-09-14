@@ -359,8 +359,8 @@ def test_unavailable_is_a_soundcloud_error_subclass():
 # ── the frozen path ──────────────────────────────────────────────────────────
 
 def test_frozen_module_does_not_depend_on_browse():
-    """soundcloud_api feeds the mixes auto-resolver, which EXECUTION_PLAN §0.1
-    freezes. The dependency runs browse -> api and must never reverse, or the
+    """soundcloud_api feeds the mixes auto-resolver, which is
+    frozen. The dependency runs browse -> api and must never reverse, or the
     throttle and breaker here would start governing that path's timing."""
     src = (ROOT / "ingest" / "soundcloud_api.py").read_text(encoding="utf-8")
     assert "soundcloud_browse" not in src

@@ -23,11 +23,6 @@ audio/
 # Docker volume mount (downloaded songs, stems, DB, Demucs weights)
 data/
 
-# FL Studio exports (generated at runtime)
-mashup_report.csv
-mashup_report.txt
-fl_session/
-
 # Frontend (Vite + React)
 frontend/node_modules/
 frontend/dist/
@@ -50,5 +45,20 @@ uvr_models/
 graphify-out/
 .playwright-mcp/
 
-# Secrets for docker compose (FIRECRAWL_API_KEY)
+# Secrets: API keys and credentials live in .env (read by docker compose) or in
+# the settings.json outside the repo — never in committed files. .env.example is
+# the committed template with every key name and no values.
 .env
+.env.*
+*.env
+!.env.example
+*.pem
+*.key
+
+# Runtime artifact folders when data_dir is the repo root
+/models/
+/datasets/
+/snapshots/
+
+# Personal Claude Code permissions
+.claude/settings.local.json

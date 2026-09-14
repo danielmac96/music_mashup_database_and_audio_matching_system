@@ -3,7 +3,7 @@
 This is the read surface behind the Discovery tab. It is deliberately a separate
 module from ``ingest.soundcloud_api`` rather than an extension of it:
 ``search_candidates`` there is consumed by the mixes auto-resolver, which
-EXECUTION_PLAN.md §0.1 freezes to additive changes only. Browsing needs
+is frozen to additive changes only. Browsing needs
 pagination, response caching, throttling and a circuit breaker — all of which
 would change the timing and failure modes of that frozen path. So we import the
 client_id machinery from it and add nothing to it.

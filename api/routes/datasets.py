@@ -1,10 +1,10 @@
 """Training-dataset endpoints (learned pairwise scorer, Phase 4).
 
 Listing reads the `datasets` registry table (database/models.py schema) so any
-previously built sets stay visible. The dataset *builder* depends on the
-learned-scorer feature stack (matcher/features.py), which this build doesn't
-ship — POST /build says so with a 501 instead of erroring obscurely; mashup
-scoring falls back to the heuristic scorer, which needs no dataset.
+previously built sets stay visible. The builder (matcher/features.py
+build_dataset) runs as a background job; if that stack fails to import,
+POST /build answers 501 with the reason, and mashup scoring keeps using the
+heuristic scorer, which needs no dataset.
 """
 from __future__ import annotations
 

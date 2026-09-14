@@ -1,4 +1,4 @@
-"""Rendering one candidate to a previewable mix (P2.5, spec §11).
+"""Rendering one candidate to a previewable mix (P2.5).
 
 The render itself is build_mixdown, which is already covered. What matters here
 is that the right clips are derived from the row, that the trim actually happens
