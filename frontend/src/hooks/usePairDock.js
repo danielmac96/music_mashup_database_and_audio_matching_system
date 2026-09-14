@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { keyOf } from "../components/pairs/pairModel";
-import { useHookAudition } from "./useHookAudition";
 
 // The pair dock: what it shows, where the cursor is, and what the keyboard does.
 //
@@ -27,19 +26,25 @@ const LIMIT = 40;
 // at more than one moment without a single strong vocal taking the page.
 const MAX_PER_SONG = 3;
 
+// `player` is the app-wide one from usePlayer. The dock used to build its own
+// MashupEngine, which is how the app ended up with several players and one bar
+// that belonged to none of them. It borrows the shared one now, so the bar at
+// the bottom is showing the same pair the dock's cursor is on.
 export function usePairDock({ selectedTrackId, role = "vocal", ratings,
-                              onOpenStudio }) {
+                              onOpenStudio, player }) {
   const [order, setOrder] = useState("score");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [cursor, setCursor] = useState(0);
+
   // Which pair the transport is actually on, keyed by the pair's four ids
   // rather than candidate.id — mashup_candidates is truncated on every
-  // re-score, so an id does not survive one.
-  const [armedKey, setArmedKey] = useState(null);
-
-  const audio = useHookAudition();
+  // re-score, so an id does not survive one. It is DERIVED from the player
+  // rather than tracked here: a local copy would go stale the moment anything
+  // else (the bar's ✕, a library row, the Studio) took the audio away.
+  const armedKey = player.kind === "pair" ? player.source.key : null;
+  const audio = player.pair;
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
 
@@ -90,15 +95,14 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
 
   const play = useCallback((candidate) => {
     if (!candidate) return;
-    const k = keyOf(candidate);
-    if (armedKey === k && audio.playing) {
-      audio.stop();
-      setArmedKey(null);
-      return;
-    }
-    setArmedKey(k);
-    audio.audition(candidate);
-  }, [armedKey, audio]);
+    player.toggle({
+      kind: "pair",
+      key: keyOf(candidate),
+      candidate,
+      title: candidate.vocal_title,
+      subtitle: `over ${candidate.inst_title}`,
+    });
+  }, [player]);
 
   const move = useCallback((delta) => {
     setCursor((c) => {
@@ -109,10 +113,9 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
 
   const openStudio = useCallback((candidate) => {
     if (!candidate) return;
-    audio.stop();
-    setArmedKey(null);
+    player.stop();
     onOpenStudio(candidate);
-  }, [audio, onOpenStudio]);
+  }, [player, onOpenStudio]);
 
   // The keyboard model, from the dock's own footer: ↑↓ move, space loop,
   // 1-5 rate, V/B solo, ⏎ studio. `enabled` is what stops it firing while

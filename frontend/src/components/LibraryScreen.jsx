@@ -29,8 +29,8 @@ function loadSavedViews() {
   }
 }
 
-export function LibraryScreen({ library, ratings, groups, selectedId, onSelect,
-                                onOpen, onRailSlot, onStatus }) {
+export function LibraryScreen({ library, ratings, groups, player, selectedId,
+                                onSelect, onOpen, onRailSlot, onStatus }) {
   const { tracks, pipeJobs, loading, error, refresh } = library;
 
   const starOf = useCallback((songId) => ratings.bySong[songId] ?? null,
@@ -45,10 +45,8 @@ export function LibraryScreen({ library, ratings, groups, selectedId, onSelect,
   const [menuId, setMenuId] = useState(null);
   const [editId, setEditId] = useState(null);
   const [jobs, setJobs] = useState({});          // songId -> { kind, jobId }
-  const [player, setPlayer] = useState(null);    // { trackId }
   const [importOpen, setImportOpen] = useState(false);
   const searchRef = useRef(null);
-  const audioRef = useRef(null);
 
   // The search box is debounced into the filter set rather than driving it
   // directly, so typing does not re-sort the whole table on every keystroke.
@@ -138,22 +136,26 @@ export function LibraryScreen({ library, ratings, groups, selectedId, onSelect,
     return p && p.status === "running" ? p.stage : null;
   }, [jobs, pipeBySong]);
 
+  // Playback is the app-wide player's, not this screen's. It used to be a
+  // hidden <audio> rendered right here, which meant the bar at the bottom knew
+  // nothing about it — no pause, no scrub, no time — and navigating away
+  // unmounted the element and killed the song without saying so.
   const play = (t) => {
-    if (player?.trackId === t.id) { setPlayer(null); return; }
     if (!t.stems?.full) {
       toast("Couldn't play — is the track downloaded?");
       return;
     }
-    setPlayer({ trackId: t.id });
+    player.toggle({
+      kind: "track",
+      songId: t.id,
+      stem: "full",
+      title: t.title,
+      subtitle: t.artist || "",
+      duration: t.duration_secs,
+      // So the bar can offer Full/Vox/Bed, and grey out what was never separated.
+      stems: t.stems,
+    });
   };
-
-  useEffect(() => {
-    const el = audioRef.current;
-    if (!el) return;
-    if (!player) { el.pause(); return; }
-    el.src = api.audioUrl(player.trackId, "full");
-    el.play().catch(() => setPlayer(null));
-  }, [player]);
 
   const saveView = () => {
     const name = (groupName || filters.genres[0] || filters.key || filters.view || "View")
@@ -172,6 +174,11 @@ export function LibraryScreen({ library, ratings, groups, selectedId, onSelect,
   };
 
   const editing = editId != null ? tracks.find((t) => t.id === editId) : null;
+
+  // The row's ▶ shows ❚❚ only while the player is actually on that track's full
+  // mix — a section of it playing on the detail screen is a different source.
+  const playingId = player.kind === "track" && player.playing
+    ? player.source.songId : null;
 
   return (
     <>
@@ -218,7 +225,8 @@ export function LibraryScreen({ library, ratings, groups, selectedId, onSelect,
       <TrackTable
         tracks={rows}
         selectedId={selectedId}
-        playingId={player?.trackId ?? null}
+        sort={sort} onSort={setSort}
+        playingId={playingId}
         runningKind={runningKind}
         onSelect={onSelect}
         onOpen={onOpen}
@@ -239,8 +247,6 @@ export function LibraryScreen({ library, ratings, groups, selectedId, onSelect,
             onEdit={setEditId}
             onClose={() => setMenuId(null)} />
         )} />
-
-      <audio ref={audioRef} onEnded={() => setPlayer(null)} style={{ display: "none" }} />
     </>
   );
 }

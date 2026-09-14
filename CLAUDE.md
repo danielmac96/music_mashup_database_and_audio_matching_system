@@ -1,13 +1,277 @@
 # CLAUDE.md — AI Assistant Guide
 
-current goal: **the frontend revamp is done** (branch `frontend-revamp`, Phases
-0–7). The four tabs are a sidebar, the pair dock is permanent beside the
-library, and there is a track-detail screen. See
+current goal: **a section is a loop window, and every axis is seconds**
+(2026-09-11, below) on top of the one-player-bar work (2026-09-10) and a
+finished frontend revamp (branch `frontend-revamp`, Phases 0–7). The four tabs
+are a sidebar, the pair dock is permanent beside the library, and there is a
+track-detail screen. See
 `~/.claude/plans/using-the-design-handoff-mashup-frontend-sleepy-book.md` and the
 2026-09-07 section below. Before that: Phases 1 and 2 of the Discovery plan
 (`~/.claude/plans/using-the-current-repo-abstract-curry.md`), a connected
 profile and a library-seeded Suggestions pane (2026-08-23), and the Studio's
 timing pills (2026-08-24).
+
+### A section is a loop window, and every axis is seconds (2026-09-11)
+
+Six pieces of UI/UX feedback on the bar that shipped yesterday. Three of them
+were one root cause: **a section was served as a pre-cut WAV containing only that
+section, so the audio could not be scrubbed anywhere else in the record.**
+
+#### `kind: "clip"` is gone; `track` gained a loop window
+
+`PlayerBar` computed a span-relative second for the strip and `usePlayer.seek`
+subtracted `source.start` from it again, so clicking anywhere on a looping
+section landed at the section start — *"clicking the bar just resets the loop"*.
+The unit bug was one line, but fixing only that leaves a twelve-second file you
+still cannot leave. So a section is now `loop: {start, end}` on a whole-file
+`track` source.
+
+- **Every number on the bar is absolute song seconds.** One unit on both sides of
+  `seek`. `test_player_bar_frontend.py` greps both files for `source.start` —
+  re-introducing that term anywhere brings the bug back.
+- **The strip spans the WHOLE record while a section loops**, with the loop shaded
+  (`.tr-loop`). A strip showing only the span has nowhere to scrub *to*, which was
+  the complaint.
+- **`el.loop` is never used for a window** — it loops the whole FILE. A rAF ticker
+  wraps the loop within a frame and pushes a position at ~16/s, which also
+  replaced the detail screen's 4Hz stutter with a smooth playhead. The pre-cut
+  clip looped natively and so was gapless; **one frame of slop is what scrubbing
+  the whole record costs**, and that trade was made deliberately.
+- **Seeking out of an armed loop RELEASES it.** Snapping back at the loop end
+  means dropping the playhead at 2:40 with the 1:04 chorus armed jumps you back
+  instantly, which reads as the drag having failed.
+- **The STEM left the source key.** It is a live control on the bar now
+  (`switchStem`), not part of what you picked, so switching layer must not change
+  identity — otherwise every row highlight in the app drops mid-song. The loop
+  window IS in the key, because "this record" and "the chorus of this record" are
+  two different things to be playing. Measured: 0:12 → 0:13 across a switch,
+  still playing, highlight intact.
+- The hero Full/Vocals/Bed segment and the bar's group are two controls for one
+  fact, so the hero switches the live audio and an effect mirrors the bar's switch
+  back into local state.
+- **`sectionPlaying` is DERIVED from the live loop**, not from the `detailKey` the
+  row was started with. Release the loop by scrubbing out and a stored key would
+  leave a section row claiming to be playing while the playhead is a minute away.
+  Same reason `usePairDock` derives `armedKey`.
+- The windowed `/hook/audio` endpoint is **still in use** by the pair backend via
+  `hookUrlsFor` + `decodeStem`, so `render_hook`, `warm_hooks` and the mp3-sourced
+  fixture in `test_hook_clips.py` are untouched. No API or schema change: the
+  stem audio route already serves real 206 range responses, which is what makes
+  whole-file looping viable at all.
+
+#### The structure strip was drawn on two axes at once
+
+Section blocks and dividers were flex children sized by `flex: bar_count` while
+the waveform, the loop window and the playhead were positioned as a percentage of
+TIME. Two axes in one box cannot line up, and the error accumulates left to
+right — *"most songs this becomes misaligned throughout the song"*.
+
+Measured on song 3 before the fix: boundary drift grew **monotonically from
+0.04 to 3.24 percentage points** of strip width — 23px on a 700px strip, i.e. the
+last section's colour bar started 23px right of its own audio. After: **0.00px at
+the start, the middle and the end**, read back from `getBoundingClientRect()`.
+
+- The strip's own header used to argue FOR bars ("what can I loop over what" is a
+  question about bars). That was a real position and the feedback overrides it;
+  the counts moved to each block's tooltip and the header total, and `bar_count`
+  may never decide geometry again (a test checks it appears on no line that sizes
+  or places anything).
+- **The flex gap was a second, invisible contributor.** `flex: n` expands to
+  `flex: n 1 0%`, so the 1px gaps and 1px divider borders came out of the
+  distributable space *before* the proportional split while the
+  percentage-positioned playhead paid nothing.
+- **The axis length is the last section's `end_sec`, not `songs.duration_secs`.**
+  Section times come from librosa's decode of the full mix and the stem envelopes
+  from stems of that same decode — which is also the timebase `<audio>` reports as
+  `currentTime`. `duration_secs` is yt-dlp container metadata, the one number on a
+  different clock. It stays as the fallback for a track with no sections.
+- `.struct-wave` is a seek surface now (click and drag), the playhead has a 12px
+  invisible grab column, and the dividers are `pointer-events: none` or they
+  swallow the pointer.
+- The selected stem's envelope is emphasised and the other **stays visible** — the
+  whole value of the overlay is seeing where the vocal sits against the bed.
+
+#### Discover: the widget was rebinding onto a reused iframe
+
+*"when clicking to other songs ... do not track the time of the song, skipping
+around works on click but the bottom bar does not track this and the pause button
+does not function."* All one cause.
+
+**SC's `Widget(frame)` hands back the SAME wrapper for an element it has already
+seen.** Re-pointing `frame.src` therefore left the previous track's handlers
+registered — bound against the previous token — and the stale-token guard inside
+them then discarded every `PLAY_PROGRESS` and `PAUSE`. The first row worked
+perfectly and every row after it showed a frozen clock and a dead pause button
+while the audio really was playing.
+
+- **A fresh iframe per track, unconditionally.** Skipping the remount when the url
+  is unchanged looks free and is the same bug again: `ready` would hold a bind
+  made under an older token that `++token` has already invalidated. `toggle`
+  routes a repeat click on the live row to `resume()` and never reaches `play()`,
+  so the optimisation bought nothing. **One `play()` = one widget = one token.**
+- **Transport commands await `ready`.** The iframe carries `auto_play=true` and the
+  bar appears on click, so there is a window in which audio is sounding while
+  `widget` is still null — every control was a silent no-op through all of it.
+- **Position is polled (250ms), not only pushed.** `PLAY_PROGRESS` stops entirely
+  when paused or after a paused seek, which is the "skipping around works but the
+  bar does not track it" half. `isPaused` is polled too: the widget, not an
+  inferred flag, is the authority on being paused. The watchdog's contract is
+  unchanged — still the position MOVING, never a PLAY event — with the event and
+  the poll now feeding one shared test.
+- **A `FINISH` nowhere near the end is a failure, not an end.** Treating it as
+  "the track ended" silently closed the bar a few seconds in and took the
+  "open it there instead" link away with it. Seen once in testing; the guard is
+  cheap either way.
+- Row identity goes through the exported `sourceKey`, not
+  `player.source.trackId === row.track_id`, which is `undefined === undefined` for
+  a row SoundCloud returned without an id — so every id-less row claimed to be
+  playing whenever any id-less row was, and `toggle` keyed those same rows by
+  permalink. `scSource` / `scRowState` live in `ScRows` because both panes held a
+  byte-identical copy.
+- Rows carry **two** states: `playing` (sounding) and `current` (loaded, paused).
+  A paused row used to render a plain ▶ with no hint it was the bar's source.
+  `.tt-row.playing` got the same tint so both tables speak one language.
+
+**Confirmed live** that SoundCloud's media endpoint 404s on part of the
+major-label catalogue and emits no ERROR (both `/stream/hls` and
+`/stream/progressive`, from its own iframe and its own client_id — nothing here
+touches api-v2). The watchdog fires at 8s, keeps the bar up and names it.
+
+#### Also: the pair backend could not be scrubbed at all
+
+`MashupEngine.seek` called `_rearm()`, which re-derives the position from the live
+clock and threw away the value `seek` had just written — so scrubbing a pair
+**while it played** was a no-op with a 30ms glitch for a symptom. `_rearm` takes
+an explicit position now. And `useHookAudition`'s tick reads any backward jump as
+a loop wrap, so a leftward drag inflated `◍ looping · N`; `lastPos` is reset when
+a seek arms. Measured: 0:05 → 0:21 → 0:03 with the pass counter holding at 2.
+
+Not reported — found because the bar's strip is shared — and worth knowing the
+pair path had never been scrubbable since it was written.
+
+**Walked by eye** (Playwright, 1440x900, against the Docker container): Library,
+track detail, the pair dock and Discover with live SoundCloud searches. Mixes and
+the Studio still have not been. `docker compose up -d --build` is what makes a
+change visible.
+
+Suite: **1015 passing, 0 skipped, 0 failing.** New contract test:
+`tests/test_structure_strip_frontend.py`.
+
+### One player bar, and a Discover table you can sort (2026-09-10)
+
+Two pieces of UI/UX feedback, one underlying gap: **the app had four players and
+one bar, and the bar belonged to none of them.**
+
+#### The bar is the app's now, not the Library route's
+
+`TransportBar` was mounted inside `route === "library"` and returned `null`
+unless a PAIR was armed. So playing a song from a library row — the most
+ordinary thing here — had no play/pause, no scrub, no time; and navigating away
+unmounted the `<audio>` and killed it silently. `TrackDetail` had a SECOND
+hidden `<audio>`, and `MashupSuggestions` built a THIRD `AudioContext`. Nothing
+arbitrated: two could sound at once.
+
+`hooks/usePlayer.js` is the single owner, at App scope beside `library` and
+`ratings`. Four backends behind one interface — `track` and `clip` on one
+`<audio>`, `pair` on the existing `useHookAudition`, `sc` on SoundCloud's widget
+— and `play()` silences the other three first.
+
+- **The element is `new Audio()` in a ref, never JSX.** That is the fix, not a
+  detail: an element rendered by a screen dies with that screen, and an element
+  rendered by the bar dies when the bar returns null.
+- **`TransportBar.jsx` → `PlayerBar.jsx`, keeping `.transport` / `.tr-*`.**
+  The revamp deleted a `PlayerBar` for emitting `.player-*` against a `.pb-*`
+  stylesheet; this one deliberately emits the classes that exist, and
+  `test_player_bar_frontend.py` checks every `className` it writes against the
+  CSS. The dead `.transport .play-btn` block went with it — nothing rendered it,
+  and it would have ambushed any `.play-btn` this bar added with MixStudio green.
+- **`.tr-strip` is a control now.** It had no handler at all, which is literally
+  "I cannot scrub through the song or pause or play". `MashupEngine.seek()` has
+  existed since it was written and nothing had ever called it.
+- **Studio is the exception: the bar hides there and arriving stops playback.**
+  Its timeline IS its transport and it drives an engine of its own.
+- `usePairDock` and `MashupSuggestions` borrow the shared player; `armedKey` is
+  DERIVED from it rather than tracked, because a local copy goes stale the
+  moment the bar's ✕ takes the audio away.
+
+#### Section previews were 404ing on every track, by default
+
+`render_hook` wrote the clip with `subtype=f.subtype` — the SOURCE's encoding —
+into a WAV container. For `full` that source is the downloaded **mp3**, and
+libsndfile refuses to write `MPEG_LAYER_III` into WAV ("Supported file format
+but unsupported encoding"). 404 → the browser says *"Failed to load because no
+supported source was found."* `TrackDetail` defaults to Full, so that was
+**every section button on the screen**; Vocals and Bed worked because Demucs
+writes FLAC. `audio/hooks/` contained zero `full_*.wav` and had for as long as
+the feature existed.
+
+Compressed subtypes are now written as `PCM_16` (`_WAV_SUBTYPES`). Every fixture
+in `test_hook_clips.py` wrote `.wav`, which is exactly why this survived — there
+is an mp3-sourced one now, and it fails against the old line.
+
+Also: `_stem_file` read the `stems` table and nothing else, while the audio
+route fell back to `songs.raw_path` for `full`. One resolver now —
+`database.models.resolve_audio_path`, called by both — so a library imported
+before the pipeline started writing a `full` stems row cannot play from the
+library and 404 on the track screen.
+
+The track screen also gained a **▶ for the whole track** next to Full/Vocals/Bed.
+It could audition twelve-second sections of a record but never the record.
+
+#### Discover previews in-app, through SoundCloud's own widget
+
+`▶` was an `<a target="_blank">`. It plays in the bar now — and **the widget was
+chosen over resolving a stream ourselves, deliberately.** Measured on a live
+search: only **3 of 10** results expose a `progressive` mp3; the rest are HLS and
+most also carry DRM-encrypted variants. Resolving those needs `hls.js` AND one
+extra api-v2 request per play against the scraped `client_id` the **frozen**
+mixes resolver shares. The widget costs zero api-v2 requests.
+`test_sc_preview_frontend.py` asserts that **no file under `frontend/src`
+mentions `api-v2`, `client_id` or `transcodings`.** Do not open that door.
+
+- **The iframe needs `allow="autoplay; encrypted-media"`.** Most tracks are
+  cbc/ctr-encrypted HLS; without it Chrome logs a permissions-policy violation
+  and the widget falls back or plays nothing, reporting neither.
+- **The watchdog waits for the POSITION TO MOVE, not for a PLAY event.**
+  SoundCloud's widget will load a track, report its duration, emit PLAY and then
+  never make a sound — its own media endpoint 404s on part of the major-label
+  catalogue and emits no ERROR. Two of the first six results for "drake" fail
+  this way. PLAY is its intention; a rising `currentPosition` is the only
+  evidence of audio. After 8s of silence the bar says so and leaves the
+  ◎ SoundCloud link as the way through.
+- **`track_row` carries `embeddable`** (from `embeddable_by`), so a row
+  SoundCloud will not embed keeps the old link with a reason, rather than a
+  button that fails on click. Real searches hit this on roughly one row in ten.
+- The widget's duration is only trusted when we have none of our own: it reports
+  the PREVIOUS track's length when the new one fails to load.
+
+#### Column headers sort, on both tables
+
+The sort engines already existed — `useResultFilters.SORTS` and
+`useLibraryFilters.SORT_KEYS` — reachable only from a dropdown while the headings
+sat there as inert `<div>`s. `components/SortHead.jsx` is shared by both.
+
+- **Three states, and the third is the point:** unsorted → (numeric: desc, then
+  asc | text: asc, then desc) → unsorted. Discover's natural order is
+  SoundCloud's own relevance and the library's is import order; a two-state
+  toggle makes either unreachable.
+- **TITLE / UPLOADER is one column showing two fields, so it has two click
+  targets.** Same for the library's TITLE / ARTIST. PIPE stays inert — it is
+  four assembled booleans, not a value.
+- **`yearOf` moved to `theme.js`.** The YEAR column shows `release_year` falling
+  back to the upload year, while the only pre-existing date key was `upload`
+  (the raw upload date). Sorting on that would order rows by a number the column
+  is not displaying. One accessor, imported by the cell and the sort key.
+- Both filter-bar dropdowns stay: they share the same state and still reach keys
+  with no column (`reposts`, `added`, `sections`).
+
+**Walked by eye** (Playwright, 1440x900, against the Docker container): Library,
+track detail, the pair dock and Discover/Find tracks. Mixes and the Studio still
+have not been. Note the app the user runs is **the container**, which bakes the
+frontend in — `docker compose up -d --build` is what makes a change visible, and
+a stale container will happily reproduce a bug you have already fixed.
+
+Suite: **995 passing, 0 skipped, 0 failing.**
 
 ### The frontend revamp (2026-09-07)
 

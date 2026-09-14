@@ -34,7 +34,7 @@ function loadMode() {
   }
 }
 
-export function Discovery({ seed, onClearSeed, onAudition, onStatus,
+export function Discovery({ player, seed, onClearSeed, onAudition, onStatus,
                             showInstOverInst, onOpenLibrary, onRailSlot,
                             onGroupsChanged }) {
   const [mode, setMode] = useState(loadMode);
@@ -129,6 +129,7 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
       <div className="disc-body">
         {mode === "tracks" && (
           <SoundCloudBrowser onStatus={onStatus} onOpenLibrary={onOpenLibrary}
+            player={player}
             nav={nav} onNavDone={() => setNav(null)}
             onGroupsChanged={onGroupsChanged} />
         )}
@@ -137,6 +138,7 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
         <div className="disc-pane"
           style={mode === "suggest" ? undefined : { display: "none" }}>
           <Suggestions
+            player={player}
             onStatus={suggestStatus}
             onOpenLibrary={onOpenLibrary}
             onNavigate={(target) => {
@@ -152,6 +154,7 @@ export function Discovery({ seed, onClearSeed, onAudition, onStatus,
         <div className="disc-pane"
           style={mode === "mashups" ? undefined : { display: "none" }}>
           <MashupSuggestions
+            player={player}
             seed={seed}
             onClearSeed={onClearSeed}
             onAudition={onAudition}

@@ -182,6 +182,31 @@ export function useHookAudition() {
     else audition(candidate);
   }, [audition, playingId, stop]);
 
+  // Transport the player bar drives. The engine has had seek() since it was
+  // written and nothing ever called it: the strip under the dock was a readout,
+  // not a control, which is half of "I cannot scrub through what is playing".
+  // Pause keeps the armed voices, so resuming picks the loop up where it was
+  // rather than re-decoding and restarting the bar.
+  const seek = useCallback((pos) => {
+    const at = Math.max(0, pos);
+    // The tick reads any backward jump as a loop wrap, so a leftward drag would
+    // otherwise count passes the listener never heard.
+    lastPos.current = at;
+    engineRef.current?.seek(at);
+  }, []);
+
+  const pause = useCallback(() => {
+    engineRef.current?.pause();
+    setPlaying(false);
+  }, []);
+
+  const resume = useCallback(async () => {
+    const e = engineRef.current;
+    if (!e) return;
+    await e.play(null);
+    setPlaying(true);
+  }, []);
+
   // Tear down on unmount AND on tab switch — an engine left running keeps an
   // AudioContext and a worklet alive behind whatever the user opened next.
   useEffect(() => () => {
@@ -191,5 +216,6 @@ export function useHookAudition() {
   }, []);
 
   return { audition, toggle, stop, prefetch, playingId, error,
+           seek, pause, resume,
            position, playing, loopCount, loopLength, stemMode, setStemMode };
 }

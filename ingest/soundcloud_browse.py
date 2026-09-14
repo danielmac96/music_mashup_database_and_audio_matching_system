@@ -380,6 +380,12 @@ def track_row(hit: dict) -> dict:
         # ── discovery extras (ignored by the ingest path) ──
         "is_snip": _is_snip(hit),
         "streamable": bool(hit.get("streamable", True)),
+        # Whether SoundCloud's own embed widget will play this. Discover's play
+        # button is that widget, so a row that says no gets the old "open on
+        # SoundCloud" link UP FRONT rather than a button that fails on click.
+        # Absent means yes: the field is missing on trimmed payloads, and
+        # refusing to embed everything we cannot see would be the wrong default.
+        "embeddable": (hit.get("embeddable_by") or "all") == "all",
         "permalink_url": permalink,
         "waveform_url": hit.get("waveform_url") or "",
         "user": {

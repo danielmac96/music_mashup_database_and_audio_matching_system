@@ -1,12 +1,12 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { useHookAudition } from "../hooks/useHookAudition";
 import { JobBadge } from "./JobBadge";
 import { TrackArt } from "./TrackArt";
 import { usePlan } from "../hooks/usePlan";
 import {
   bpmTag, fmtTime, keyRel, tierFor,
 } from "../theme";
+import { keyOf } from "./pairs/pairModel";
 import { toast } from "../toast";
 
 const MIN_MATCHES = [50, 65, 75, 85];
@@ -176,8 +176,9 @@ function PlanDetails({ vocalId, instId, candidate }) {
 // a control at the top of the screen while doubling the scoring work. Nothing
 // about the scoring path changes — the pairs are still scored and stored, they
 // just are not offered here unless asked for.
-export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
-                                    showInstOverInst = false, active = true }) {
+export function MashupSuggestions({ player, seed, onClearSeed, onAudition,
+                                    onStatus, showInstOverInst = false,
+                                    active = true }) {
   const [candidates, setCandidates] = useState([]);
   const [comboType, setComboType] = useState("vocal_over_instrumental");
   const [minMatch, setMinMatch] = useState(50);
@@ -222,7 +223,13 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   // FOLLOW the cursor: arrowing while auditioning re-arms on the new row
   // instead of making you press play again on every candidate.
   const [auditioning, setAuditioning] = useState(false);
-  const { audition, stop, prefetch, playingId, error: audioError } = useHookAudition();
+  // The app-wide player, not an engine of this pane's own. This used to be a
+  // second useHookAudition() — a second MashupEngine and a second AudioContext,
+  // able to play over the top of the dock's — and because it threw away the
+  // transport half of the hook, auditioning here had no bar at all.
+  const { audition, stop, prefetch } = player.pair;
+  const playingId = player.kind === "pair" ? player.source.candidate?.id : null;
+  const audioError = player.error;
 
   const refreshScorer = () => api.getScorerStatus().then(setScorer).catch(() => setScorer(null));
   useEffect(() => { refreshScorer(); }, []);
@@ -345,8 +352,9 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
   }, [candidates, sortMode]);
 
   // ── T1.7 keyboard triage ─────────────────────────────────────────────────
-  const keyOf = (c) => `${c.vocal_song_id}:${c.inst_song_id}`
-    + `:${c.vocal_section_idx ?? -1}:${c.inst_section_idx ?? -1}`;
+  // keyOf is pairModel's, not a private copy: the player, the dock and this
+  // pane now hand each other the same pair, and two definitions of "which pair
+  // is this" is how they would start disagreeing about which one is playing.
   const current = sortedCandidates[cursor] || null;
 
   // Keep the highlight on a real row when the list changes underneath it
@@ -363,8 +371,17 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
 
   // Audio follows the cursor while auditioning; silence when toggled off.
   useEffect(() => {
-    if (auditioning && current) audition(current);
-    else stop();
+    if (auditioning && current) {
+      player.play({
+        kind: "pair",
+        key: keyOf(current),
+        candidate: current,
+        title: current.vocal_title,
+        subtitle: `over ${current.inst_title}`,
+      });
+    } else if (player.kind === "pair") {
+      player.stop();
+    }
     // Intentionally keyed on the row IDENTITY, not the object — re-renders
     // from unrelated state must not restart playback mid-listen.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -582,8 +599,11 @@ export function MashupSuggestions({ seed, onClearSeed, onAudition, onStatus,
     return () => window.removeEventListener("keydown", onKey);
   }, [active, cursor, sortedCandidates, judgeAndAdvance, hide]);
 
-  // Switching away from the tab must not leave an AudioContext playing.
-  useEffect(() => stop, [stop]);
+  // Switching away from the tab must not leave the engine running. The player
+  // is shared now, so only stop it if this pane is what armed it.
+  useEffect(() => () => { if (player.kind === "pair") player.stop(); },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []);
 
   // Turning the setting off while looking at instrumental-over-instrumental
   // would otherwise strand the user on a view with no control to leave it.

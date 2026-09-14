@@ -364,3 +364,37 @@ def test_frozen_module_does_not_depend_on_browse():
     throttle and breaker here would start governing that path's timing."""
     src = (ROOT / "ingest" / "soundcloud_api.py").read_text(encoding="utf-8")
     assert "soundcloud_browse" not in src
+
+
+def test_embeddable_is_carried_and_defaults_to_yes():
+    """Discover's play button is SoundCloud's own embed widget, so a row that
+    cannot be embedded has to say so BEFORE the click — otherwise it is a button
+    that silently fails on the share of uploads set to `embeddable_by: me`.
+
+    Absent means yes: the field is missing from trimmed payloads, and refusing
+    to preview everything we cannot see would be the wrong default."""
+    hit = json.loads(fixture("resolve_track"))
+
+    hit["embeddable_by"] = "all"
+    assert br.track_row(hit)["embeddable"] is True
+
+    hit["embeddable_by"] = "me"
+    assert br.track_row(hit)["embeddable"] is False
+
+    hit["embeddable_by"] = "none"
+    assert br.track_row(hit)["embeddable"] is False
+
+    hit.pop("embeddable_by")
+    assert br.track_row(hit)["embeddable"] is True
+
+    hit["embeddable_by"] = None
+    assert br.track_row(hit)["embeddable"] is True
+
+
+def test_no_stream_url_is_ever_resolved():
+    """The widget path must not grow into the one this repo refused: resolving
+    `media.transcodings` would cost an extra api-v2 request per play against the
+    client_id the frozen mixes resolver shares."""
+    src = (ROOT / "ingest" / "soundcloud_browse.py").read_text(encoding="utf-8")
+    for banned in ("transcodings", "track_authorization", "progressive"):
+        assert banned not in src, banned

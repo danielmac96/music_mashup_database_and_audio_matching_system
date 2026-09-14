@@ -57,6 +57,7 @@ export const SORT_KEYS = [
   ["added", "added"],
   ["title", "title"],
   ["artist", "artist"],
+  ["genre", "genre"],
   ["bpm", "BPM"],
   ["key", "key"],
   ["year", "year"],
@@ -88,6 +89,7 @@ const NUMERIC = {
 const TEXT = {
   title: (t) => t.title || "",
   artist: (t) => t.artist || "",
+  genre: (t) => t.genre || "",
   key: (t) => feat(t).camelot || "",
 };
 

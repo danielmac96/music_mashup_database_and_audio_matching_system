@@ -10,7 +10,8 @@ from pydantic import BaseModel
 
 from database.models import (
     delete_song, get_all_features, get_all_songs, get_conn, get_features_for_song,
-    get_sections, update_features_manual, update_hook, update_song_url,
+    get_sections, resolve_audio_path, update_features_manual, update_hook,
+    update_song_url,
 )
 from ingest.sources import classify_url, normalize_url
 
@@ -548,7 +549,7 @@ def stream_audio(song_id: int, stem_type: str):
     if stem_type not in _STEM_TYPES:
         raise HTTPException(status_code=400, detail=f"stem_type must be one of {sorted(_STEM_TYPES)}")
 
-    path = _resolve_audio_path(song_id, stem_type)
+    path = resolve_audio_path(song_id, stem_type)
     if path is None:
         raise HTTPException(status_code=404, detail=f"no {stem_type} audio for song {song_id}")
 
@@ -558,34 +559,6 @@ def stream_audio(song_id: int, stem_type: str):
         headers={"Accept-Ranges": "bytes"},
         filename=path.name,
     )
-
-
-def _resolve_audio_path(song_id: int, stem_type: str) -> Optional[Path]:
-    conn = get_conn()
-    stem_row = conn.execute(
-        "SELECT file_path FROM stems WHERE song_id=? AND stem_type=?",
-        (song_id, stem_type),
-    ).fetchone()
-
-    if stem_row and stem_row["file_path"]:
-        p = Path(stem_row["file_path"])
-        if p.exists():
-            conn.close()
-            return p
-
-    if stem_type == "full":
-        song_row = conn.execute(
-            "SELECT raw_path FROM songs WHERE id=?", (song_id,)
-        ).fetchone()
-        conn.close()
-        if song_row and song_row["raw_path"]:
-            p = Path(song_row["raw_path"])
-            if p.exists():
-                return p
-        return None
-
-    conn.close()
-    return None
 
 
 # ── Bulk reprocessing ─────────────────────────────────────────────────────────

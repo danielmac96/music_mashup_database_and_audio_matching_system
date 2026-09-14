@@ -261,3 +261,10 @@ export function fmtYear(year) {
   return year ? String(year) : "—";
 }
 export const yearColor = (year) => (year ? "var(--text-2)" : "var(--faint-2)");
+
+// The year a Discover row actually shows: its own release_year when SoundCloud
+// carries one, the upload year otherwise. It lives here, beside fmtYear, so the
+// YEAR column and the YEAR sort key read the SAME number — a header that orders
+// rows by a value the cell is not displaying is worse than no header at all.
+export const yearOf = (row) => row.release_year
+  || Number(String(row.upload_date || "").slice(0, 4)) || 0;

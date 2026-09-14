@@ -1019,6 +1019,43 @@ def upsert_stem(song_id: int, stem_type: str, file_path: str,
     conn.close()
 
 
+def resolve_audio_path(song_id: int, stem_type: str,
+                       db_path: Path = DB_PATH) -> Optional[Path]:
+    """Where this song's `stem_type` audio actually lives on disk, or None.
+
+    One definition, because two of them disagreed. The audio route looked here
+    AND fell back to `songs.raw_path` for 'full'; the hook renderer only ever
+    read the `stems` table, so a library imported before the pipeline started
+    writing a 'full' stems row played fine from the library and 404'd on the
+    track screen. A missing row and a missing FILE are the same answer — the
+    path is only returned if something is there to read.
+    """
+    conn = get_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT file_path FROM stems WHERE song_id=? AND stem_type=?",
+            (song_id, stem_type),
+        ).fetchone()
+        if row and row["file_path"]:
+            p = Path(row["file_path"])
+            if p.exists():
+                return p
+
+        # 'full' is the downloaded mix rather than a separated stem, so it has a
+        # home outside the stems table. The other types do not.
+        if stem_type == "full":
+            song = conn.execute(
+                "SELECT raw_path FROM songs WHERE id=?", (song_id,)
+            ).fetchone()
+            if song and song["raw_path"]:
+                p = Path(song["raw_path"])
+                if p.exists():
+                    return p
+        return None
+    finally:
+        conn.close()
+
+
 def update_stem_quality(song_id: int, stem_type: str, metrics: Dict,
                         db_path: Path = DB_PATH) -> None:
     """Store separation-quality metrics on an existing stems row (Phase D).

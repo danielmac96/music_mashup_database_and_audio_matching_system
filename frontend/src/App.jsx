@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { MixImporter } from "./components/MixImporter";
 import { LibraryScreen } from "./components/LibraryScreen";
 import { PairDock } from "./components/PairDock";
-import { TransportBar } from "./components/TransportBar";
+import { PlayerBar } from "./components/PlayerBar";
 import { TrackDetail } from "./components/TrackDetail";
 import { Discovery } from "./components/Discovery";
 import { MixStudio } from "./components/MixStudio";
@@ -16,6 +16,7 @@ import { useLibrary } from "./hooks/useLibrary";
 import { useLibraryGroups } from "./hooks/useLibraryGroups";
 import { useRatings } from "./hooks/useRatings";
 import { usePairDock } from "./hooks/usePairDock";
+import { usePlayer } from "./hooks/usePlayer";
 import { scoredOptionOf } from "./components/MashupSuggestions";
 import { api } from "./api";
 import { onToast } from "./toast";
@@ -82,6 +83,12 @@ export default function App() {
   // What the rail's per-route slot is showing. Each screen registers its own
   // block here rather than the rail knowing every screen's internals.
   const [railSlot, setRailSlot] = useState(null);
+
+  // ONE player for the whole app, and it lives here for the same reason the
+  // library and the judgements do: every screen starts audio, and four
+  // independent players meant nothing could stop the other three, and the bar
+  // at the bottom could only ever describe one of them.
+  const player = usePlayer();
 
   // The library is fetched once, here, because the rail counts it, the table
   // lists it and (from the next phase) the dock scopes to a row of it. Four
@@ -153,7 +160,7 @@ export default function App() {
   });
 
   const dock = usePairDock({
-    selectedTrackId, role: dockRole, ratings, onOpenStudio: pairToStudio,
+    selectedTrackId, role: dockRole, ratings, onOpenStudio: pairToStudio, player,
   });
 
   // "Next pair" in Studio walks the DOCK's list, so the order you are working
@@ -172,6 +179,30 @@ export default function App() {
   // looking at. Discover has its own model over the same rows, and two window
   // listeners racing for the space bar is exactly the bug this avoids.
   useEffect(() => dock.bindKeys(route === "library"), [dock.bindKeys, route]);
+
+  // Studio's timeline IS its player, and it drives an engine of its own. Two
+  // transports on screen would fight over the space bar and over the speakers,
+  // so arriving there stops whatever the bar was playing.
+  useEffect(() => {
+    if (route === "studio") player.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route]);
+
+  // Space is the app-wide play/pause everywhere the dock is not already using
+  // it for its own "loop this pair".
+  useEffect(() => {
+    if (route === "library" || route === "studio") return undefined;
+    const onKey = (e) => {
+      const el = e.target;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
+        || el.isContentEditable)) return;
+      if (e.code !== "Space" || !player.source) return;
+      e.preventDefault();
+      if (player.playing) player.pause(); else player.resume();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [route, player]);
 
   const counts = useMemo(() => ({
     library: library.tracks.length,
@@ -226,6 +257,7 @@ export default function App() {
                 library={library}
                 ratings={ratings}
                 groups={groups}
+                player={player}
                 selectedId={selectedTrackId}
                 onSelect={selectTrack}
                 onOpen={(id) => { setSelectedTrackId(id); setRoute("track"); }}
@@ -236,10 +268,6 @@ export default function App() {
             <PairDock dock={dock} ratings={ratings}
               scopeTitle={selectedTrack?.title || null}
               role={dockRole} onRole={setDockRole} />
-            <TransportBar candidate={dock.current} audio={dock.audio}
-              rating={ratings.ratingOf(dock.current)}
-              onRate={(n) => ratings.rate(dock.current, n)}
-              onStudio={() => dock.openStudio(dock.current)} />
           </div>
         )}
         {route === "track" && (
@@ -247,6 +275,8 @@ export default function App() {
             track={selectedTrack}
             tracks={library.tracks}
             ratings={ratings}
+            groups={groups}
+            player={player}
             role={dockRole}
             onRole={setDockRole}
             onBack={() => setRoute("library")}
@@ -257,6 +287,7 @@ export default function App() {
         )}
         {route === "discovery" && (
           <Discovery
+            player={player}
             seed={mashupSeed}
             onGroupsChanged={groups.refresh}
             onClearSeed={() => setMashupSeed(null)}
@@ -274,6 +305,15 @@ export default function App() {
             onStatus={setHeaderStatus}
             onNextPair={dock.rows.length > 1 ? nextPair : null}
           />
+        )}
+
+        {/* Outside the route switch on purpose. setRoute clears the header
+            status and the rail slot; the player is the one thing that must
+            survive navigation, because "it stopped when I changed tab" is the
+            bug. Studio is the exception — it has a transport of its own. */}
+        {route !== "studio" && (
+          <PlayerBar player={player} ratings={ratings}
+            onStudio={(c) => dock.openStudio(c)} />
         )}
       </div>
 

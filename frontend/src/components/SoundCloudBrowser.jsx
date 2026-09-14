@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
-import { ScHeader, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
+import { ScHeader, PlaylistRow, TrackRow, UserRow, rowKey, scSource,
+         scRowState } from "./ScRows";
 import { ShortlistDock } from "./ShortlistDock";
 import { useRowSelection } from "../hooks/useRowSelection";
 import { useCrateMembership } from "../hooks/useCrateMembership";
@@ -24,8 +25,8 @@ const USER_FEEDS = [
   ["playlists", "Sets"],
 ];
 
-export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone,
-                                    onGroupsChanged }) {
+export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
+                                    onNavDone, onGroupsChanged }) {
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("tracks");
   // Where we are. A breadcrumb rather than a single view, because the useful
@@ -64,6 +65,15 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone,
   // Filter/sort over what is loaded. `visible` is what renders.
   const { filters, setFilters, reset: resetFilters, visible } =
     useResultFilters(items, crateOf);
+
+  // ▶ on a row plays through the app-wide player, which drives SoundCloud's own
+  // embed widget. Nothing is fetched from api-v2 to do it, so the scraped
+  // client_id the frozen mixes resolver shares is untouched. The source and the
+  // "is this row the one" test are shared with the other pane (ScRows) — they
+  // were duplicated byte for byte here, and the copy compared track_id, which
+  // matches undefined to undefined on rows SoundCloud returned without an id.
+  const playRow = (row) => player?.toggle(scSource(row));
+
 
   // Only tracks are selectable; a set or an artist row is a place to go, not a
   // thing to import. Shared with Suggestions, which shortlists the same rows.
@@ -284,7 +294,7 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone,
 
         {error && <div className="error-text" style={{ padding: "8px 16px" }}>{error}</div>}
 
-        <ScHeader />
+        <ScHeader filters={filters} onChange={setFilters} />
 
         <div className="sc-rows">
           {visible.map((row, i) => row.kind === "playlist" ? (
@@ -300,6 +310,7 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone,
               onArtist={() => openUser(row.user?.id, row.user?.username)}
               onRelated={() => openRelated(row.track_id, row.title)}
               onOpenLibrary={onOpenLibrary}
+              onPlay={playRow} {...scRowState(player, row)}
               crates={crateOf(row)} />
           ))}
 
@@ -335,9 +346,10 @@ export function SoundCloudBrowser({ onStatus, onOpenLibrary, nav, onNavDone,
         <div className="disc-keys">
           <span className="mono"><b>enter</b> search</span>
           <span className="mono"><b>click</b> shortlist</span>
-          <span className="mono"><b>▶</b> open on SoundCloud</span>
+          <span className="mono"><b>▶</b> preview</span>
+          <span className="mono"><b>heads</b> sort</span>
           <span className="mono disc-keys-note">
-            nothing downloads until you import
+            previews stream from SoundCloud · nothing downloads until you import
           </span>
         </div>
       </main>

@@ -211,3 +211,84 @@ def test_warm_hooks_force_recuts_a_moved_window(tmp_path, monkeypatch):
     for stem in ("vocals", "instrumental"):
         assert sf.info(hook_worker.hook_clip_path(sid, stem)).duration \
             == pytest.approx(30.0, abs=0.05)
+
+
+# ── the 'full' stem: an mp3 source, and no stems row ─────────────────────────
+# Every fixture above writes a .wav stem, which is why the bug below survived
+# for as long as it did. Demucs writes FLAC and the downloader writes MP3, and
+# only one of those round-trips through a WAV container.
+
+
+def test_a_compressed_source_is_written_as_pcm_not_copied(tmp_path, monkeypatch):
+    """The clip inherited the SOURCE's subtype.
+
+    For 'full' that source is the downloaded mp3, whose subtype is
+    MPEG_LAYER_III — and libsndfile refuses to write that into a WAV container
+    ("Supported file format but unsupported encoding"). So every section preview
+    on the Full stem 404'd, which the browser reports as "Failed to load because
+    no supported source was found". The track screen defaults to Full, so that
+    was every section button on it.
+    """
+    config, models, hook_worker = _setup(tmp_path, monkeypatch)
+    if "MP3" not in sf.available_formats():
+        pytest.skip("this libsndfile cannot write mp3 to build the fixture")
+
+    sid = models.upsert_song("T", "A", "https://sc/mp3", 60, "Pop",
+                             status="analysed")
+    src = tmp_path / "audio" / "full.mp3"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    t = np.linspace(0, 60.0, int(SR * 60.0), endpoint=False)
+    sf.write(str(src), (0.2 * np.sin(2 * np.pi * 220 * t)).astype("float32"), SR)
+    assert sf.info(str(src)).subtype == "MPEG_LAYER_III"
+    models.upsert_stem(sid, "full", str(src))
+
+    out = hook_worker.render_hook(sid, "full", start=10.0, end=18.0)
+
+    info = sf.info(out)
+    assert info.format == "WAV"
+    assert info.subtype.startswith("PCM_"), info.subtype
+    assert info.duration == pytest.approx(8.0, abs=0.05)
+
+
+def test_an_uncompressed_source_keeps_its_own_subtype(tmp_path, monkeypatch):
+    """Only compressed sources are re-encoded. A 24-bit stem must not be
+    silently downgraded on its way into a preview."""
+    config, models, hook_worker = _setup(tmp_path, monkeypatch)
+    sid = models.upsert_song("T", "A", "https://sc/24", 60, "Pop",
+                             status="analysed")
+    src = tmp_path / "stems" / "v24.wav"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    t = np.linspace(0, 60.0, int(SR * 60.0), endpoint=False)
+    sf.write(str(src), (0.2 * np.sin(2 * np.pi * 220 * t)).astype("float32"),
+             SR, subtype="PCM_24")
+    models.upsert_stem(sid, "vocals", str(src))
+
+    out = hook_worker.render_hook(sid, "vocals", start=1.0, end=5.0)
+    assert sf.info(out).subtype == "PCM_24"
+
+
+def test_full_falls_back_to_raw_path_with_no_stems_row(tmp_path, monkeypatch):
+    """The audio route resolved 'full' via songs.raw_path when no stems row
+    existed; the hook renderer read the stems table and nothing else. A library
+    imported before the pipeline started writing that row therefore played from
+    the library and 404'd on the track screen. One resolver now, so they cannot
+    disagree."""
+    config, models, hook_worker = _setup(tmp_path, monkeypatch)
+    raw = _write_stem(tmp_path / "audio" / "raw.wav")
+    sid = models.upsert_song("T", "A", "https://sc/raw", 60, "Pop",
+                             status="analysed")
+    models.update_song_status(sid, "analysed", raw_path=str(raw))
+    # Deliberately NO upsert_stem(sid, "full", ...).
+
+    out = hook_worker.render_hook(sid, "full", start=2.0, end=9.0)
+    assert sf.info(out).duration == pytest.approx(7.0, abs=0.05)
+
+
+def test_a_missing_stem_is_still_a_clean_error(tmp_path, monkeypatch):
+    """The fallback must not turn "no vocals separated yet" into a crash or a
+    silent empty clip."""
+    config, models, hook_worker = _setup(tmp_path, monkeypatch)
+    sid = models.upsert_song("T", "A", "https://sc/none", 60, "Pop",
+                             status="analysed")
+    with pytest.raises(hook_worker.HookRenderError):
+        hook_worker.render_hook(sid, "vocals", start=1.0, end=5.0)

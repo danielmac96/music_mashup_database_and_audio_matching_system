@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import HOOKS_DIR
-from database.models import get_conn, get_features_for_song
+from database.models import get_features_for_song, resolve_audio_path
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +28,15 @@ HOOK_STEMS = ("vocals", "instrumental", "full")
 # Read in blocks rather than one slab: a hook is small, but a pathological
 # hook_end on a long file should not pull the whole track into memory.
 _BLOCK_FRAMES = 1 << 16
+
+# Subtypes a WAV container can actually hold. The clip inherited the SOURCE's
+# subtype, which is fine for the Demucs stems (FLAC, PCM_16) and impossible for
+# 'full' — that is the downloaded mp3, and libsndfile refuses to write
+# MPEG_LAYER_III into WAV ("Supported file format but unsupported encoding").
+# Every 'full' section preview 404'd on that, which the browser reports as
+# "Failed to load because no supported source was found". The blocks are read as
+# float32 anyway, so anything compressed is simply written as PCM_16.
+_WAV_SUBTYPES = ("PCM_16", "PCM_24", "PCM_32", "PCM_U8", "FLOAT", "DOUBLE")
 
 
 class HookRenderError(RuntimeError):
@@ -51,13 +60,10 @@ def hook_clip_path(song_id: int, stem: str,
 
 
 def _stem_file(song_id: int, stem: str) -> Optional[str]:
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT file_path FROM stems WHERE song_id=? AND stem_type=?",
-        (song_id, stem),
-    ).fetchone()
-    conn.close()
-    return row["file_path"] if row else None
+    """Shared with the audio route (database.models.resolve_audio_path) so the
+    two cannot disagree about where a track's 'full' mix lives."""
+    p = resolve_audio_path(song_id, stem)
+    return str(p) if p else None
 
 
 def render_hook(song_id: int, stem: str = "vocals", force: bool = False,
@@ -105,7 +111,7 @@ def render_hook(song_id: int, stem: str = "vocals", force: bool = False,
                 f"hook window is empty for song {song_id} stem '{stem}'")
 
     src = _stem_file(song_id, stem)
-    if not src or not Path(src).exists():
+    if not src:
         raise HookRenderError(f"stem '{stem}' audio is missing for song {song_id}")
 
     HOOKS_DIR.mkdir(parents=True, exist_ok=True)
@@ -122,8 +128,9 @@ def render_hook(song_id: int, stem: str = "vocals", force: bool = False,
             f.seek(begin)
             # format is explicit because the temp name ends in .part, and
             # soundfile otherwise infers the container from the extension.
+            subtype = f.subtype if f.subtype in _WAV_SUBTYPES else "PCM_16"
             with sf.SoundFile(str(tmp), mode="w", samplerate=sr,
-                              channels=f.channels, subtype=f.subtype,
+                              channels=f.channels, subtype=subtype,
                               format="WAV") as o:
                 left = want
                 while left > 0:

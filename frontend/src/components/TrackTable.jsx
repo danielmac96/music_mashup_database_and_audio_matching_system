@@ -1,5 +1,6 @@
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
+import { SortHead } from "./SortHead";
 import {
   camelotColor, fmtDur, fmtPlays, fmtYear, pipelineDots, playsColor, yearColor,
 } from "../theme";
@@ -12,8 +13,22 @@ import {
 
 const COLS = "26px 30px minmax(170px,1fr) 56px 40px 52px 52px 44px 56px 70px 44px";
 
-const HEADS = ["", "", "TITLE / ARTIST", "GENRE", "YEAR", "PLAYS", "BPM",
-               "KEY", "PIPE", "RATING", "TIME"];
+// The sort keys are useLibraryFilters' own — the state already existed and was
+// reachable only through the dropdown in the filter bar, which still shares it.
+// PIPE has no key: it is four assembled booleans, not a value to order by.
+const HEADS = [
+  { label: "" },
+  { label: "" },
+  { label: "TITLE", key: "title", also: { label: "ARTIST", key: "artist" } },
+  { label: "GENRE", key: "genre" },
+  { label: "YEAR", key: "year", numeric: true },
+  { label: "PLAYS", key: "plays", numeric: true },
+  { label: "BPM", key: "bpm", numeric: true },
+  { label: "KEY", key: "key" },
+  { label: "PIPE" },
+  { label: "RATING", key: "rating", numeric: true },
+  { label: "TIME", key: "duration", numeric: true, right: true },
+];
 
 // Four stages, in the order they run: downloaded, analysed, sections, stems.
 // There are no per-stage columns on `songs` — the truth is assembled from the
@@ -26,13 +41,33 @@ const DOT_TITLE = {
 
 export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
                              runningKind = () => null, playingId = null,
+                             sort = null, onSort = null,
                              menuId = null, onMenu = () => {},
                              renderMenu = () => null }) {
+  // A header click sets the PRIMARY key. The filter bar's two-level sort keeps
+  // its secondary, which is what makes "artist, then year" reachable there and
+  // still one click away here.
+  const sortable = Boolean(onSort);
+  const key = sort?.primary ?? "";
+  const dir = sort?.primaryDir ?? "desc";
+  const setKey = (p) => onSort?.({ ...(sort || {}), primary: p.sort,
+                                   primaryDir: p.dir });
+
   return (
     <div className="track-table">
       <div className="tt-head" style={{ gridTemplateColumns: COLS }}>
         {HEADS.map((h, i) => (
-          <div key={i} className={i === HEADS.length - 1 ? "right" : ""}>{h}</div>
+          <div key={i} className={`tt-h${h.right ? " right" : ""}`}>
+            <SortHead label={h.label} sortKey={sortable ? h.key : null}
+              sort={key} dir={dir} onSort={setKey} numeric={h.numeric} />
+            {h.also && (
+              <>
+                <span className="sh-sep">/</span>
+                <SortHead label={h.also.label} sortKey={sortable ? h.also.key : null}
+                  sort={key} dir={dir} onSort={setKey} />
+              </>
+            )}
+          </div>
         ))}
       </div>
       <div className="tt-body">

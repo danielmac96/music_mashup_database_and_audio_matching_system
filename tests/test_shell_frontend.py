@@ -35,7 +35,9 @@ def test_the_dock_lives_beside_the_library_not_behind_a_tab():
     lib = lib[:lib.index('{route === "track" && (')]
     assert "<LibraryScreen" in lib
     assert "<PairDock" in lib
-    assert "<TransportBar" in lib
+    # The player bar is deliberately NOT in here — see
+    # test_the_player_bar_is_not_inside_a_route.
+    assert "<PlayerBar" not in lib
     # And there is no nav entry that would take you to it.
     nav = SIDEBAR[SIDEBAR.index("const NAV = ["):]
     assert "pair" not in nav[:nav.index("]")].lower()
@@ -45,11 +47,13 @@ def test_the_library_layout_is_main_plus_a_404px_dock():
     block = CSS[CSS.index(".lib-layout {"):]
     block = block[:block.index("}")]
     assert "404px" in block, "the dock is no longer the width the design fixes"
-    # The transport spans both columns, under the library AND the dock.
-    # Anchored: `.module.transport` is an unrelated audition-era rule that
-    # contains this string.
+    # The transport is no longer a row of this grid — it belongs to the app, so
+    # a grid-column rule here would only ever be a leftover.
+    # Anchored: `.module.transport` is an unrelated audition-era rule.
     tr = CSS[CSS.index("\n.transport {"):]
-    assert "grid-column: 1 / span 2" in tr[:tr.index("}")]
+    tr = tr[:tr.index("}")]
+    assert "grid-column" not in tr
+    assert "flex: none" in tr
 
 
 def test_every_route_renders_something():
@@ -106,9 +110,16 @@ def test_the_first_run_wizard_still_has_a_way_in():
 
 
 def test_no_dead_player_bar_rules_remain():
-    """PlayerBar emitted .player-* and the stylesheet only ever defined .pb-* —
-    so the whole inner player bar was unstyled. Both are gone now."""
-    assert not (SRC / "components" / "PlayerBar.jsx").exists()
+    """The DELETED PlayerBar emitted .player-* while the stylesheet only ever
+    defined .pb-*, so its whole interior was unstyled.
+
+    There is a PlayerBar again — the global transport — and this test is what
+    stops it repeating that mistake: it emits `.transport` / `.tr-*`, which are
+    the classes that actually exist, and neither dead family came back.
+    """
+    bar = _read("components/PlayerBar.jsx")
+    assert 'className="transport' in bar or "className={`transport" in bar
+    assert "player-" not in bar
     assert not re.search(r"^\.pb-", CSS, re.M)
     assert not re.search(r"^\.player-bar\b", CSS, re.M)
 

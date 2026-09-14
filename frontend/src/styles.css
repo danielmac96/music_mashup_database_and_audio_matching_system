@@ -948,18 +948,6 @@ input, select { font-family: inherit; }
   width: 16px; height: 16px; border-radius: 4px; background: var(--text); border: 2px solid var(--bg);
 }
 
-.transport .play-btn {
-  cursor: pointer; text-align: center; border-radius: 9px; padding: 12px; font-size: 14px; font-weight: 600; border: 1px solid;
-}
-.transport .play-btn.stopped { background: #1a6a3a; border-color: #22a35a; color: #cfeed8; }
-.transport .play-btn.playing { background: #0b3a22; border-color: #1a6a3a; color: #cfeed8; }
-.transport .play-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.transport .btn-row { display: flex; gap: 7px; }
-.transport .loop-btn, .transport .reset-btn {
-  cursor: pointer; flex: 1; text-align: center; border-radius: 8px; padding: 9px; font-size: 11px;
-  background: var(--inset-2); border: 1px solid var(--border-ctrl); color: var(--text-2);
-}
-.transport .loop-btn.on { background: rgba(91, 140, 255, 0.15); border-color: var(--accent); color: var(--accent-light); }
 .snap-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
 .snap-seg { flex: 1; display: flex; background: var(--inset-2); border: 1px solid var(--border-ctrl); border-radius: 7px; padding: 2px; }
 .snap-seg button {
@@ -1945,7 +1933,14 @@ input, select { font-family: inherit; }
 .tt-row:hover { background: var(--panel); }
 .tt-row.selected { background: var(--accent-tint); }
 .tt-row.selected:hover { background: rgba(91, 140, 255, 0.18); }
+.tt-row.playing {
+  background: rgba(91, 140, 255, 0.10);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
 .tt-row.playing .tt-title { color: var(--accent-light); }
+.tt-row.playing .tt-play {
+  background: var(--accent); border-color: var(--accent); color: #07090d;
+}
 
 .tt-play {
   width: 20px; height: 20px; cursor: pointer; padding: 0;
@@ -2050,13 +2045,14 @@ input, select { font-family: inherit; }
  * The pair dock and the transport bar (screen 1a, right side)
  * ══════════════════════════════════════════════════════════════════════════ */
 
-/* Library, dock and transport in one grid. The transport row is `auto` so an
-   idle dock does not reserve 62px of nothing. */
+/* Library and dock. The transport used to be a third grid row here; it is the
+   app's now and lives under .app-main, because a player that only exists on one
+   screen stops when you leave it. */
 .lib-layout {
   flex: 1; min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 404px;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr);
 }
 .lib-main {
   min-width: 0; display: flex; flex-direction: column; overflow: hidden;
@@ -2210,8 +2206,10 @@ input, select { font-family: inherit; }
 .pc-studio:hover { color: var(--accent); }
 
 /* ── the transport bar ─────────────────────────────────────────────────── */
+/* The bar is the last child of .app-main now, not a cell of .lib-layout — it
+   has to survive navigation, and it is the only thing on screen that does. */
 .transport {
-  grid-column: 1 / span 2;
+  flex: none;
   height: 62px; display: flex; align-items: center; gap: 14px; padding: 0 16px;
   background: var(--topbar); border-top: 1px solid var(--border-top);
 }
@@ -2242,18 +2240,35 @@ input, select { font-family: inherit; }
 .tr-stems button.on { background: var(--raised); color: var(--text); font-weight: 600; }
 
 .tr-mid { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+/* A control, not a readout. It was neither clickable nor focusable, which was
+   the whole of "I cannot scrub through the song". touch-action keeps a drag
+   from scrolling the page under it. */
 .tr-strip {
-  position: relative; height: 16px; border-radius: 4px;
+  position: relative; height: 16px; border-radius: 4px; cursor: pointer;
   background: var(--inset-2); border: 1px solid var(--border); overflow: hidden;
+  touch-action: none;
 }
+.tr-strip:hover { border-color: var(--border-ctrl); }
+.tr-strip:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
 .tr-region {
-  position: absolute; inset: 0;
+  position: absolute; top: 0; bottom: 0; left: 0;
   background: rgba(91, 140, 255, 0.22);
-  border-left: 1px solid var(--accent); border-right: 1px solid var(--accent);
+  border-right: 1px solid var(--accent);
+}
+/* The looped window, under the progress fill. The strip spans the whole record
+   even while a section loops — otherwise there is nowhere to scrub TO. */
+.tr-loop {
+  position: absolute; top: 0; bottom: 0;
+  background: rgba(245, 158, 11, 0.20);
+  border-left: 1.5px solid var(--amber);
+  border-right: 1.5px solid var(--amber);
 }
 .tr-head {
   position: absolute; top: 0; bottom: 0; width: 1.5px;
   background: var(--playhead);
+}
+.tr-strip:hover .tr-head {
+  width: 3px; margin-left: -0.75px; border-radius: 2px;
 }
 .tr-read {
   display: flex; align-items: center; gap: 10px;
@@ -2261,9 +2276,48 @@ input, select { font-family: inherit; }
 }
 .tr-read .now { color: var(--text-2); }
 .tr-read .pass { color: var(--green); }
+.tr-read .tr-total { color: var(--faint); }
+.tr-read .tr-err { color: var(--amber); }
 .tr-read .align { margin-left: auto; white-space: nowrap; }
 
 .tr-right { flex: none; display: flex; align-items: center; gap: 9px; }
+/* Attribution, and the way out to the real thing. Only while SoundCloud is the
+   source — the widget itself is parked off-screen. */
+.tr-src {
+  font: 500 10px var(--font-mono); color: var(--muted); text-decoration: none;
+  padding: 3px 7px; border-radius: 5px; border: 1px solid var(--border-ctrl);
+  white-space: nowrap;
+}
+.tr-src:hover { color: var(--accent-light); border-color: var(--accent); }
+.tr-dismiss {
+  width: 22px; height: 22px; flex: none; cursor: pointer; border-radius: 5px;
+  background: transparent; border: 1px solid var(--border-ctrl);
+  color: var(--faint); font-size: 9px;
+}
+.tr-dismiss:hover { color: var(--text-2); border-color: var(--border-top); }
+
+/* Each source kind tints its own play button, so a glance at the bar says what
+   you are listening to without reading it. A looping section is not its own
+   kind — it is a window on a track — so the amber follows the loop. */
+.transport.is-looping .tr-play { background: var(--amber); }
+.transport.k-sc .tr-play { background: var(--cyan); }
+/* A stem with no separated file is offered but not clickable — the alternative
+   is a button whose only outcome is a 404 that wipes the source. */
+.tr-stems button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ── sortable column heads (both tables) ───────────────────────────────── */
+.sort-head {
+  display: inline-flex; align-items: center; gap: 3px; min-width: 0;
+  padding: 0; background: none; border: 0; cursor: pointer;
+  font: inherit; letter-spacing: inherit; color: inherit; text-align: left;
+}
+.sort-head:hover { color: var(--text-2); }
+.sort-head.on { color: var(--accent-light); }
+.sort-head .sh-label { overflow: hidden; text-overflow: ellipsis; }
+.sort-head .sh-arrow { font-size: 7px; line-height: 1; }
+.sh-sep { color: var(--faint-2); margin: 0 1px; }
+.tt-h, .sc-h { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.tt-h.right, .sc-h.right { justify-content: flex-end; }
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Track detail (screen 1b)
@@ -2301,6 +2355,16 @@ input, select { font-family: inherit; }
 }
 .hero-sep { font-size: 10.5px; color: var(--faint); }
 
+/* Play the whole record, on the stem the segmented control is showing. The
+   library row could do this and the track's own screen could not — it only
+   offered twelve-second sections of the thing you came here to hear. */
+.hero-transport { display: flex; align-items: center; gap: 7px; }
+.hero-play {
+  width: 28px; height: 28px; flex: none; cursor: pointer; border: none;
+  border-radius: 7px; background: var(--accent); color: #07090d; font-size: 10px;
+}
+.hero-play:hover { background: var(--accent-light); }
+
 .tiles { display: flex; gap: 7px; flex-wrap: wrap; }
 .tile {
   display: flex; align-items: center; gap: 7px;
@@ -2327,24 +2391,40 @@ input, select { font-family: inherit; }
 .struct-meta { margin-left: auto; font-size: 10.5px; color: var(--faint); }
 .struct-body { padding: 12px; }
 
-.struct-labels { display: flex; gap: 1px; margin-bottom: 7px; }
+/* Blocks are absolutely positioned in SECONDS, on the same axis as the loop and
+   the playhead below. They used to be flex children sized by bar count, which
+   is a different axis — and `flex: n` expands to `flex: n 1 0%`, so the 1px gaps
+   and the 1px dividers were taken out of the distributable space BEFORE the
+   proportional split while the percentage-positioned playhead paid nothing. On a
+   700px strip with 12 sections that is ~3.3% of the width, drifting worst at the
+   end of the track. Hence: no gap, no border-right, one axis. */
+.struct-labels { position: relative; height: 15px; margin-bottom: 7px; }
 .struct-label {
-  min-width: 0; padding: 0; border: none; background: transparent; cursor: pointer;
+  position: absolute; top: 0; min-width: 0; padding: 0; border: none;
+  background: transparent; cursor: pointer;
 }
 .struct-label > span {
   display: flex; align-items: center; height: 15px; padding: 0 5px;
   border-radius: 3px 3px 0 0; overflow: hidden; white-space: nowrap;
   font: 600 8.5px var(--font-mono); letter-spacing: 0.06em; color: #07090d;
+  /* The hairline that the removed flex gap used to draw. */
+  box-shadow: inset -1px 0 0 rgba(7, 9, 13, 0.45);
 }
 .struct-label:hover > span { filter: brightness(1.18); }
 
+/* A seek surface, not a picture. touch-action keeps a drag from scrolling the
+   page out from under the playhead. */
 .struct-wave {
   position: relative; height: 78px; background: var(--bg);
   border-radius: 0 0 3px 3px; overflow: hidden;
+  cursor: pointer; touch-action: none;
 }
 .struct-wave svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.struct-dividers { position: absolute; inset: 0; display: flex; gap: 1px; }
-.struct-dividers > div { border-right: 1px solid rgba(35, 44, 61, 0.85); }
+.struct-dividers { position: absolute; inset: 0; pointer-events: none; }
+.struct-dividers > div {
+  position: absolute; top: 0; bottom: 0;
+  border-left: 1px solid rgba(35, 44, 61, 0.85);
+}
 .struct-loop {
   position: absolute; top: 0; bottom: 0;
   background: rgba(91, 140, 255, 0.16);
@@ -2353,6 +2433,12 @@ input, select { font-family: inherit; }
 .struct-playhead {
   position: absolute; top: 0; bottom: 0; width: 1.5px; background: var(--playhead);
 }
+/* 1.5px is not a grab target, so widen the hit area without widening the line. */
+.struct-grab {
+  position: absolute; top: 0; bottom: 0; left: -5px; width: 12px;
+  cursor: grab;
+}
+.struct-wave:hover .struct-playhead { width: 3px; margin-left: -0.75px; }
 .struct-nowave {
   position: absolute; inset: 0; display: flex; align-items: center;
   justify-content: center; font-size: 11px; color: var(--faint);
@@ -2361,6 +2447,8 @@ input, select { font-family: inherit; }
   display: flex; gap: 14px; margin-top: 8px;
   font-size: 10px; font-weight: 500; color: var(--faint);
 }
+/* Which stem the selected layer actually is. */
+.struct-legend .live { color: var(--text-2); font-weight: 600; }
 .struct-legend i { font-style: normal; }
 
 /* ── section table ─────────────────────────────────────────────────────── */
@@ -2727,11 +2815,32 @@ input, select { font-family: inherit; }
 .sc-row.owned .sc-title { color: var(--muted); }
 .sc-row.nav .sc-title { color: var(--accent-light); }
 
+/* Which row the bar is on. `current` is loaded, `playing` is sounding — two
+   different facts, and neither had any cue at all: you could start a preview and
+   then lose which of fifty rows it came from. */
+.sc-row.current { background: rgba(56, 189, 248, 0.07); }
+.sc-row.current .sc-title { color: var(--text); }
+.sc-row.playing {
+  background: rgba(56, 189, 248, 0.13);
+  box-shadow: inset 3px 0 0 var(--cyan);
+}
+.sc-row.playing .sc-title { color: var(--cyan); font-weight: 600; }
+.sc-row.current .sc-open { border-color: var(--cyan); color: var(--cyan); }
+.sc-row.playing .sc-open {
+  background: var(--cyan); border-color: var(--cyan); color: #07090d;
+  animation: sc-pulse 1.8s ease-in-out infinite;
+}
+@keyframes sc-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.5); }
+  50% { box-shadow: 0 0 0 4px rgba(56, 189, 248, 0); }
+}
+
 .sc-open {
   width: 20px; height: 20px; display: flex; align-items: center;
   justify-content: center; border-radius: 4px; background: var(--raised);
   border: 1px solid var(--border-ctrl); color: var(--text-2);
   font-size: 8px; text-decoration: none;
+  padding: 0; cursor: pointer; font-family: inherit;
 }
 .sc-open:hover { border-color: var(--accent); color: var(--accent-light); }
 .sc-art { width: 32px; height: 32px; border-radius: 4px; }

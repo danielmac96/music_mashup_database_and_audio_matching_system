@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
+import { yearOf } from "../theme";
 
 /**
  * Filtering and sorting for a page of Discovery results.
@@ -48,10 +49,17 @@ export const SORTS = {
   track: {
     title: { label: "Title", text: (r) => r.title },
     artist: { label: "Artist", text: (r) => r.artist },
+    genre: { label: "Genre", text: (r) => r.genre },
     plays: { label: "Plays", num: (r) => r.plays },
     likes: { label: "Likes", num: (r) => r.likes },
     reposts: { label: "Reposts", num: (r) => r.reposts },
     duration: { label: "Duration", num: (r) => r.duration_secs },
+    // The YEAR column's own accessor, imported rather than re-derived: it
+    // prefers release_year and falls back to the upload year, and a header that
+    // ordered rows by a number the cell is not showing would be worse than no
+    // header at all. `upload` below is the raw upload date, which is a
+    // different question and keeps its own key.
+    year: { label: "Year", num: yearOf },
     // upload_date is yt-dlp's YYYYMMDD, which sorts correctly as a number.
     upload: { label: "Upload date", num: (r) => Number(r.upload_date) || 0 },
   },

@@ -223,7 +223,11 @@ export class MashupEngine {
 
   seek(pos) {
     this._position = pos;
-    if (this._playing) this._rearm();
+    // _rearm() with no argument re-derives the position from the live clock, so
+    // it threw away the value just written and re-armed at the playhead: seeking
+    // a pair WHILE IT PLAYED was a no-op with a 30ms glitch for a symptom. The
+    // requested position has to be passed through explicitly.
+    if (this._playing) this._rearm(pos);
     else this._emit();
   }
 
@@ -255,10 +259,12 @@ export class MashupEngine {
     return start;
   }
 
-  _rearm() {
-    const pos = this._currentDisplayPos();
+  /** Re-arm every voice. With no argument this continues from wherever the
+   *  playhead actually is (a stem solo, a gain change); with one it MOVES there. */
+  _rearm(pos = null) {
+    const at = pos == null ? this._currentDisplayPos() : pos;
     this._stopAllVoices();
-    this._arm(this.loop ? this._wrapIntoLoop(pos) : pos);
+    this._arm(this.loop ? this._wrapIntoLoop(at) : at);
   }
 
   _arm(pos) {

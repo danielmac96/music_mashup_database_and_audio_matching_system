@@ -3,7 +3,8 @@ import { api } from "../api";
 import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
 import { useRowSelection } from "../hooks/useRowSelection";
-import { ScHeader, PlaylistRow, TrackRow, UserRow, rowKey } from "./ScRows";
+import { ScHeader, PlaylistRow, TrackRow, UserRow, rowKey, scSource,
+         scRowState } from "./ScRows";
 import { ShortlistDock } from "./ShortlistDock";
 import { useCrateMembership } from "../hooks/useCrateMembership";
 import { useResultFilters } from "../hooks/useResultFilters";
@@ -33,7 +34,7 @@ const GROUPS = [
 // on every render and re-run its memos for nothing.
 const NO_ROWS = [];
 
-export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
+export function Suggestions({ player, onStatus, onOpenLibrary, onNavigate }) {
   const [source, setSource] = useState("library");
   const [seeds, setSeeds] = useState([]);
   const [filter, setFilter] = useState("");
@@ -119,6 +120,15 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
 
   const { filters, setFilters, reset: resetFilters, visible } =
     useResultFilters(rows, crateOf);
+
+  // ▶ on a row plays through the app-wide player, which drives SoundCloud's own
+  // embed widget. Nothing is fetched from api-v2 to do it, so the scraped
+  // client_id the frozen mixes resolver shares is untouched. The source and the
+  // "is this row the one" test are shared with the other pane (ScRows) — they
+  // were duplicated byte for byte here, and the copy compared track_id, which
+  // matches undefined to undefined on rows SoundCloud returned without an id.
+  const playRow = (row) => player?.toggle(scSource(row));
+
 
   // Selection follows what is shown, not what is loaded — see the same note in
   // SoundCloudBrowser.
@@ -321,7 +331,7 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
             </div>
           )}
 
-          <ScHeader />
+          <ScHeader filters={filters} onChange={setFilters} />
           <div className="sc-rows">
             {visible.map((row, i) => group === "artists" ? (
               <UserRow key={`u${row.user_id}`} row={row}
@@ -337,6 +347,7 @@ export function Suggestions({ onStatus, onOpenLibrary, onNavigate }) {
                 onArtist={() => onNavigate?.({ kind: "user", id: row.user?.id,
                                                label: row.user?.username })}
                 onOpenLibrary={onOpenLibrary}
+                onPlay={playRow} {...scRowState(player, row)}
                 crates={crateOf(row)} />
             ))}
           </div>
