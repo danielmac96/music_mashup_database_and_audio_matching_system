@@ -52,5 +52,9 @@ scikit-learn>=1.3,<2     # HistGradientBoostingClassifier + LogisticRegression b
 joblib>=1.3.0            # model artifact (de)serialisation
 
 # ── Web API ───────────────────────────────────────────────────────────────────
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
+# Pinned to the versions the suite passes on. Unpinned, CI resolved a newer
+# Starlette whose TestClient demands a different HTTP client package, and every
+# route test failed at collection.
+fastapi==0.136.1
+starlette==1.0.0
+uvicorn[standard]==0.46.0
