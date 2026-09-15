@@ -98,6 +98,24 @@ def test_the_card_draws_the_four_weighted_terms():
         assert absent not in terms, absent
 
 
+def test_every_score_term_explains_its_abbreviation():
+    """LBL / DUR / VOI / PHR mean nothing on their own; each carries hover text."""
+    terms = MODEL[MODEL.index("export const SCORE_TERMS"):]
+    terms = terms[:terms.index("];")]
+    assert terms.count("what:") == terms.count("key:") == 4
+    assert "title={t.what}" in CARD
+
+
+def test_each_side_shows_its_own_key_and_bpm():
+    """Both songs' tempo and key, before adjustment, on their own line."""
+    assert "bpm={c.vocal_bpm}" in CARD
+    assert "bpm={c.inst_bpm}" in CARD
+    assert "bars={c.section_bars_vocal}" in CARD
+    assert "bars={c.section_bars_bed}" in CARD
+    css = _read("styles.css")
+    assert ".pc-bpm {" in css and ".pc-bpm.none" in css
+
+
 def test_an_unmeasured_term_is_not_drawn_as_zero():
     """A candidate scored before those columns existed has no value for three of
     the four. An empty bar would claim it failed a test it was never given."""

@@ -83,10 +83,14 @@ def _structure_pass(job_id: str, song_id: int) -> None:
     from api.workers.bulk_worker import sections_are_current
 
     if sections_are_current(song_id):
+        jobs.stage_finish(job_id, "structure", "skipped",
+                          message="sections already current")
         return
     jobs.update(job_id, stage="structure", progress=0, message="structure: starting…")
+    jobs.stage_start(job_id, "structure")
     try:
-        stages.do_structure(song_id, jobs.progress_updater(job_id, "structure"))
+        stages.do_structure(song_id, jobs.progress_updater(job_id, "structure",
+                                                           stage_key="structure"))
     except Exception as exc:  # noqa: BLE001
         # Deliberately wider than StageError: do_structure wraps only
         # detect_sections, while replace_sections, _persist_hooks and
@@ -94,8 +98,11 @@ def _structure_pass(job_id: str, song_id: int) -> None:
         # documented as non-fatal, and on a whole-library backfill this
         # exposure is taken once per track rather than once.
         log.warning("structure detection non-fatal failure for %s: %s", song_id, exc)
+        # Failed on the timeline (you should see it), not on the job.
+        jobs.stage_finish(job_id, "structure", "failed", error=str(exc))
         return
 
+    jobs.stage_finish(job_id, "structure", "done")
     if not sections_are_current(song_id):
         # Not an error: analysis/structure.py falls back to the track BPM when a
         # section has no measurable grid. Logged because it is the difference
@@ -123,23 +130,30 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
         jobs.fail(job_id, f"Song {song_id} not found")
         return "failed"
 
+    if stage not in STAGES:
+        jobs.fail(job_id, f"Unknown pipeline stage {stage!r}")
+        return "failed"
+
     jobs.update(job_id, status="running", song_id=song_id, stage=stage,
                 progress=0, message=f"{stage}: starting…")
+    jobs.stage_start(job_id, stage)
 
     try:
         if stage == "download":
-            stages.do_download(song_id, jobs.progress_updater(job_id, "download"))
+            stages.do_download(song_id, jobs.progress_updater(
+                job_id, "download", stage_key="download"))
         elif stage == "stems":
-            stages.do_stems(song_id, jobs.progress_updater(job_id, "stems"))
-        elif stage == "analysis":
-            stages.do_analyze(song_id, jobs.progress_updater(job_id, "analyze"))
+            stages.do_stems(song_id, jobs.progress_updater(
+                job_id, "stems", stage_key="stems"))
         else:
-            jobs.fail(job_id, f"Unknown pipeline stage {stage!r}")
-            return "failed"
+            stages.do_analyze(song_id, jobs.progress_updater(
+                job_id, "analyze", stage_key="analysis"))
     except stages.StageError as exc:
+        jobs.stage_finish(job_id, stage, "failed", error=str(exc))
         jobs.fail(job_id, str(exc), exc.traceback_text)
         return "failed"
 
+    jobs.stage_finish(job_id, stage, "done")
     if next_stage(song_id) is None:
         _finalize(job_id, song_id)
         return "done"

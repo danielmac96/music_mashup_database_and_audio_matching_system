@@ -39,11 +39,17 @@ export const EFFORT_TONE = { Free: "free", Light: "light", Heavy: "heavy" };
 // first saturates (bar-profile cosine over 4/4 dance records has stdev .003)
 // and the second correlates .88 with label, so weighting both counts one
 // signal twice — which is why neither gets a bar.
+// `what` is the hover text: the abbreviations stay, so they have to explain
+// themselves somewhere.
 export const SCORE_TERMS = [
-  { key: "score_label", label: "LBL", color: "var(--accent)" },
-  { key: "score_duration", label: "DUR", color: "var(--cyan)" },
-  { key: "score_voice", label: "VOI", color: "var(--violet)" },
-  { key: "score_phrase", label: "PHR", color: "var(--amber)" },
+  { key: "score_label", label: "LBL", color: "var(--accent)",
+    what: "label — chorus over drop ranks above verse over breakdown" },
+  { key: "score_duration", label: "DUR", color: "var(--cyan)",
+    what: "duration — the bed section covers the vocal section in bars, looping allowed" },
+  { key: "score_voice", label: "VOI", color: "var(--violet)",
+    what: "voice — how much real singing the vocal section carries" },
+  { key: "score_phrase", label: "PHR", color: "var(--amber)",
+    what: "phrase — equal phrase lengths best, clean multiples high" },
 ];
 
 // null is UNMEASURED, not zero. A candidate scored before these were stored has

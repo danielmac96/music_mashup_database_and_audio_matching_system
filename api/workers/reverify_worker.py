@@ -23,7 +23,8 @@ def run(job_id: str, song_id: int) -> None:
 
     conn = get_conn()
     row = conn.execute(
-        "SELECT id, title, artist, source_url FROM songs WHERE id=?", (song_id,)
+        "SELECT id, title, artist, source_url, origin_duration_secs "
+        "FROM songs WHERE id=?", (song_id,)
     ).fetchone()
     conn.close()
     if not row:
@@ -33,7 +34,8 @@ def run(job_id: str, song_id: int) -> None:
     try:
         res = reverify_track(row["id"], row["title"], row["source_url"],
                              artist=row["artist"] or "",
-                             on_progress=jobs.progress_updater(job_id))
+                             on_progress=jobs.progress_updater(job_id),
+                             expected_duration=row["origin_duration_secs"])
     except Exception as exc:  # noqa: BLE001
         log.exception("reverify_track raised")
         tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))

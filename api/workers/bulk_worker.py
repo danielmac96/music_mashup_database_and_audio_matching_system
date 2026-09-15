@@ -9,10 +9,16 @@ not a thing anyone will do.
 Re-separation is deliberately separate from re-analysis: switching to four-stem
 mode is hours of Demucs, while re-analysing is minutes, and conflating them
 would make the cheap operation cost the expensive one's time.
+
+Suspect audio is the third kind of backfill: tracks whose YouTube download
+fallback ran before it verified what it substituted (see
+ingest.match_score.assess_substitute), so the file may be a remix or a different
+cut of the record the track was linked to.
 """
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from api import jobs, queue_runner
 
@@ -30,6 +36,10 @@ ACTIONS = {
     "separate": {"status": "downloaded", "label": "re-separating"},
     # Everything from the download down, for a track whose audio is suspect.
     "process": {"status": "queued", "label": "reprocessing"},
+    # Point a suspect track back at the link it was imported from — re-fetching
+    # that link, its length and its credited artist when a fallback overwrote
+    # them — and download again through the verified fallback.
+    "redownload_suspect": {"status": "queued", "label": "re-downloading"},
 }
 
 
@@ -45,6 +55,10 @@ def run(job_id: str, action: str, song_ids: list[int]) -> None:
 
     jobs.update(job_id, status="running",
                 message=f"{spec['label'].capitalize()} {len(song_ids)} tracks…")
+
+    if action == "redownload_suspect":
+        _redownload_suspect(job_id, song_ids)
+        return
 
     # Imported here, not at module scope: get_conn's default db_path binds at
     # function definition, so a module-scope import pins whichever database was
@@ -64,10 +78,16 @@ def run(job_id: str, action: str, song_ids: list[int]) -> None:
             jobs.update(job_id, progress=int(100 * n / len(song_ids)),
                         message=f"Queued {n}/{len(song_ids)} for {spec['label']}…")
 
+    _done(job_id, action, spec, queued, failed)
+
+
+def _done(job_id: str, action: str, spec: dict, queued: int, failed: int,
+          reasons: list[str] | None = None) -> None:
     jobs.done(job_id, {
         "action": action,
         "queued": queued,
         "failed": failed,
+        "reasons": reasons or [],
         # The per-track work now runs on the bounded pipeline queue, so this job
         # finishing means "all queued", not "all done". The Library's own
         # progress dots are the real indicator.
@@ -75,6 +95,100 @@ def run(job_id: str, action: str, song_ids: list[int]) -> None:
                     f"{spec['label']}"
                     + (f" · {failed} could not be queued" if failed else "")),
     })
+
+
+# ── Suspect audio ─────────────────────────────────────────────────────────────
+
+def _suspect_audio_sql() -> str:
+    """SQL (over ``songs``) for a track whose audio may not be its record.
+
+    Either a fallback overwrote the SoundCloud link before the link was kept
+    (origin unknown, so nothing was ever checked), or the file's length disagrees
+    with the linked record's by more than the substitute tolerance. A manual pick
+    or a confirmation ("✓ Sounds right") is the user's decision and is never
+    suspect."""
+    from database.models import SC_LINK_OVERWRITTEN_SQL
+    from ingest.match_score import (
+        SUBSTITUTE_DURATION_TOLERANCE_FRAC as frac,
+        SUBSTITUTE_DURATION_TOLERANCE_SECS as secs,
+    )
+    return f"""(
+        (origin_url IS NULL AND ({SC_LINK_OVERWRITTEN_SQL}))
+     OR (origin_duration_secs IS NOT NULL AND duration_secs > 0
+         AND COALESCE(origin_url, '') != COALESCE(source_url, '')
+         AND ABS(duration_secs - origin_duration_secs)
+             > MAX({secs}, {frac} * origin_duration_secs))
+    ) AND COALESCE(json_extract(audio_provenance, '$.via'), '') != 'manual'
+      AND COALESCE(json_extract(audio_provenance, '$.confirmed'), 0) != 1
+      AND status NOT IN ('queued', 'error_download')"""
+
+
+def suspect_audio_ids(db_path=None) -> list[int]:
+    from database.models import get_conn
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        rows = conn.execute(
+            f"SELECT id FROM songs WHERE {_suspect_audio_sql()} ORDER BY id").fetchall()
+        return [r[0] for r in rows]
+    finally:
+        conn.close()
+
+
+def _soundcloud_rows(track_ids: list[str]) -> dict[str, dict]:
+    """Canonical rows for these SoundCloud track ids, by id. Best effort: the
+    browse layer is throttled and breaker-guarded, and a failure here means
+    those tracks are reported, not guessed at."""
+    from ingest import soundcloud_browse as browse
+    try:
+        return {r["track_id"]: r for r in browse.get_tracks(track_ids)}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("could not re-fetch %d SoundCloud tracks: %s", len(track_ids), exc)
+        return {}
+
+
+def _redownload_suspect(job_id: str, song_ids: list[int]) -> None:
+    from database.models import get_conn, set_song_origin, update_song_url
+
+    conn = get_conn()
+    rows = [dict(r) for r in conn.execute(
+        f"SELECT id, title, artist, track_id, origin_url, origin_duration_secs "
+        f"FROM songs WHERE id IN ({','.join('?' * len(song_ids))})", song_ids)]
+    conn.close()
+
+    sc_ids = [r["track_id"] for r in rows if (r["track_id"] or "").isdigit()]
+    fetched = _soundcloud_rows(sc_ids) if sc_ids else {}
+
+    spec = ACTIONS["redownload_suspect"]
+    queued, failed, reasons = 0, 0, []
+    for n, row in enumerate(rows, start=1):
+        try:
+            sc = fetched.get(row["track_id"] or "")
+            origin = row["origin_url"] or (sc or {}).get("source_url")
+            if not origin:
+                failed += 1
+                reasons.append(f"{row['title']}: could not recover its SoundCloud link")
+                continue
+            if sc:
+                # The credited artist too: a row whose artist is the uploader
+                # handle searches YouTube for the wrong thing all over again.
+                set_song_origin(row["id"], origin, sc.get("duration_secs") or None,
+                                artist=sc.get("artist") or None)
+            result = update_song_url(row["id"], origin, provenance=None)
+            for p in result["files"]:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            queue_runner.enqueue_song(row["id"])
+            queued += 1
+        except Exception as exc:  # noqa: BLE001 — one bad track must not stop the batch
+            log.exception("re-download of suspect song %s failed", row["id"])
+            failed += 1
+            reasons.append(f"{row['title']}: {exc}")
+        jobs.update(job_id, progress=int(100 * n / len(rows)),
+                    message=f"Queued {n}/{len(rows)} for {spec['label']}…")
+
+    _done(job_id, "redownload_suspect", spec, queued, failed, reasons)
 
 
 # ── Staleness ─────────────────────────────────────────────────────────────────
@@ -217,6 +331,9 @@ def staleness(db_path=None) -> dict:
             f"""SELECT COUNT(*) FROM songs s
                 WHERE s.status='analysed' AND ({_STALE_ANALYSIS_SQL})"""
         ).fetchone()[0]
+
+        suspect_audio = conn.execute(
+            f"SELECT COUNT(*) FROM songs WHERE {_suspect_audio_sql()}").fetchone()[0]
         return {
             "total_analysed": total,
             "needs_analysis": needs_analysis,
@@ -227,6 +344,7 @@ def staleness(db_path=None) -> dict:
             "missing_sections": no_sections,
             "missing_four_stems": wrong_stem_mode,
             "stem_mode": "four" if four else "two",
+            "suspect_audio": suspect_audio,
         }
     finally:
         conn.close()
@@ -238,6 +356,8 @@ def stale_song_ids(action: str, db_path=None) -> list[int]:
     Offered so "re-analyse what needs it" is one click and does not re-do the
     whole library every time one track is added.
     """
+    if action == "redownload_suspect":
+        return suspect_audio_ids(db_path)
     from database.models import get_conn
     conn = get_conn(db_path) if db_path else get_conn()
     try:
@@ -263,6 +383,10 @@ def stale_song_ids(action: str, db_path=None) -> list[int]:
 
 def all_song_ids(action: str, db_path=None) -> list[int]:
     """Every track the action can run on, stale or not."""
+    if action == "redownload_suspect":
+        # Re-downloading a track nothing is wrong with is not a thing to offer
+        # for a whole library; "all" means every suspect one.
+        return suspect_audio_ids(db_path)
     from database.models import get_conn
     conn = get_conn(db_path) if db_path else get_conn()
     try:

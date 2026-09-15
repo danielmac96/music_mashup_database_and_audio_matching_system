@@ -300,6 +300,121 @@ def _padding_factor(title: str, artist: str, entry_title: str) -> float:
     return max(_PADDING_FLOOR, 1.0 - _PADDING_PER_WORD * len(extra))
 
 
+def is_rework_title(text: Optional[str]) -> bool:
+    """Whether a title names somebody's rework of the record ("(X Remix)")."""
+    return bool(_version_tag(text))
+
+
+# ── Is a substitute upload the same RECORDING? ────────────────────────────────
+# score_candidate answers "is this the track"; a download fallback has to answer
+# the stricter "is this the same audio". A remix of the right song by the right
+# artist scores 0.85 — above the auto-link floor — and is still the wrong file:
+# Drake - Massive resolved to "Drake - Massive (OCTANE Remix)", 3:00 against a
+# 5:37 record, exactly this way. So the substitute gate adds hard vetoes on top
+# of the score, and the one that cannot be fooled by a title is the length.
+
+# In the hit's title but not the wanted one: somebody else's rework. Checked on
+# bare words as well as bracketed asides, because uploads write "Song X Remix"
+# as often as "Song (X Remix)". "edit" and "mix" are absent on purpose — "Radio
+# Edit" and "Original Mix" are cuts of the record, and length catches the cut.
+_REWORK_WORDS = frozenset({
+    "remix", "flip", "bootleg", "mashup", "rework", "refix", "remake", "vip",
+})
+
+# ...and words meaning the audio itself was altered: tempo, pitch, arrangement
+# or a different performance.
+_ALTERED_WORDS = frozenset({
+    "sped", "slowed", "nightcore", "reverb", "8d", "432hz", "hz", "boosted",
+    "chopped", "screwed", "reversed", "instrumental", "acapella", "cappella",
+    "karaoke", "cover", "live",
+})
+
+# "Official Audio + Cover Art" is the record with a picture, not a cover version.
+_COVER_ART_RE = re.compile(r"cover\s*art")
+
+# How far a substitute's length may drift from the record it replaces. Uploads of
+# one master differ by a second or two of silence; a remix, radio edit or
+# extended cut differs by tens of seconds.
+SUBSTITUTE_DURATION_TOLERANCE_SECS = 6.0
+SUBSTITUTE_DURATION_TOLERANCE_FRAC = 0.03
+
+
+@dataclass(frozen=True)
+class Verdict:
+    """Whether a search hit may stand in for the record. ``reason`` is '' when it
+    passes; ``duration_delta`` is hit minus expected seconds, None when either
+    length is unknown."""
+    passes: bool
+    reason: str
+    duration_delta: Optional[float]
+
+
+def _positive(value) -> Optional[float]:
+    try:
+        secs = float(value)
+    except (TypeError, ValueError):
+        return None
+    return secs if secs > 0 else None
+
+
+def duration_agrees(found, expected) -> bool:
+    """Is ``found`` the same length as ``expected``? True when either is unknown:
+    an unreported length is not evidence of a different cut."""
+    f, e = _positive(found), _positive(expected)
+    if f is None or e is None:
+        return True
+    return abs(f - e) <= max(SUBSTITUTE_DURATION_TOLERANCE_SECS,
+                             SUBSTITUTE_DURATION_TOLERANCE_FRAC * e)
+
+
+def _mmss(secs: float) -> str:
+    m, s = divmod(int(round(secs)), 60)
+    return f"{m}:{s:02d}"
+
+
+def assess_substitute(artist: str, title: str, hit: dict,
+                      expected_duration: Optional[float] = None) -> Verdict:
+    """May this search hit replace the record we could not download?
+
+    ``hit`` is a search row (``title``, ``uploader``/``channel``,
+    ``duration_secs`` or ``duration``). Vetoes run first and name the problem
+    — rework, altered audio, length — then the trust gate the auto-linker uses
+    (config.AUTO_LINK_MIN_ARTIST / AUTO_LINK_MIN_SCORE)."""
+    from config import AUTO_LINK_MIN_ARTIST, AUTO_LINK_MIN_SCORE
+
+    hit = hit or {}
+    hit_title = hit.get("title") or ""
+    found = _positive(hit.get("duration_secs", hit.get("duration")))
+    expected = _positive(expected_duration)
+    delta = round(found - expected, 1) if found and expected else None
+
+    wanted = set(_words(title)) | set(_words(artist))
+    # Stripped before BOTH checks: "cover" is also a rework word inside brackets.
+    plain = _COVER_ART_RE.sub(" ", _fold(hit_title))
+    extra = set(_words(plain)) - wanted
+
+    if (extra & _REWORK_WORDS) or \
+            _version_factor(_version_tag(title), _version_tag(plain)) < 1.0:
+        return Verdict(False, "a remix or rework, not the original record", delta)
+    altered = sorted(extra & _ALTERED_WORDS)
+    if altered:
+        return Verdict(False, f"altered audio ({', '.join(altered)})", delta)
+    if not duration_agrees(found, expected):
+        return Verdict(False, f"length {_mmss(found)} vs expected {_mmss(expected)}",
+                       delta)
+
+    m = score_candidate(artist, title, {
+        "title": hit_title,
+        "uploader": hit.get("uploader") or hit.get("channel") or "",
+        "duration": found,
+    })
+    if m.artist < AUTO_LINK_MIN_ARTIST:
+        return Verdict(False, "artist not credited on the upload", delta)
+    if m.score < AUTO_LINK_MIN_SCORE:
+        return Verdict(False, f"weak title match ({m.score:.2f})", delta)
+    return Verdict(True, "", delta)
+
+
 def score_candidate(artist: str, title: str, entry: dict) -> Match:
     """Score one search hit against the track we were looking for.
 

@@ -31,11 +31,15 @@ def test_fallback_bails_without_usable_terms(monkeypatch, tmp_path):
     # If the guard failed, _fallback_youtube would call _download_ytdlp and try
     # a real ytsearch. Make that explode so a leak is a hard failure.
     monkeypatch.setattr(
+        download, "youtube_candidates",
+        lambda *a, **k: pytest.fail("must not search YouTube for an empty query"),
+    )
+    monkeypatch.setattr(
         download, "_download_ytdlp",
         lambda *a, **k: pytest.fail("must not search YouTube for an empty query"),
     )
     result = download._fallback_youtube("Unknown", "", tmp_path / "x.mp3")
-    assert result is None
+    assert result.result is None
 
 
 # ── SoundCloud-first download ladder ──────────────────────────────────────────

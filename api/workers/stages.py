@@ -102,12 +102,42 @@ def _record_actual_source(song_id: int, old_url: str, new_url: str) -> None:
         conn.close()
 
 
+def _record_provenance(song_id: int, row, result) -> None:
+    """Write songs.audio_provenance: where this file's audio came from.
+
+    A fallback reports what it substituted and why it was trusted. A direct
+    download is the row's own link — except that a manual pick of that same link
+    keeps saying so, so "you chose this upload" survives a re-download."""
+    import json
+
+    from database.models import set_audio_provenance
+    from ingest.sources import classify_url, normalize_url
+
+    if result.provenance:
+        prov = dict(result.provenance)
+        prov["url"] = normalize_url(prov.get("url") or "") or prov.get("url")
+        set_audio_provenance(song_id, prov)
+        return
+    try:
+        current = json.loads(row["audio_provenance"] or "null") or {}
+    except (TypeError, ValueError):
+        current = {}
+    # A manual pick or a confirmation of this same link is your decision, and
+    # downloading the same link again does not change the audio it vouches for.
+    if ((current.get("via") == "manual" or current.get("confirmed"))
+            and current.get("url") == row["source_url"]):
+        return
+    set_audio_provenance(song_id, {"via": classify_url(row["source_url"])[0],
+                                   "url": row["source_url"]})
+
+
 def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
-    from downloader.download import DownloadError, download_track
+    from downloader.download import DownloadError, download_track, expected_length
 
     conn = get_conn()
     row = conn.execute(
-        "SELECT id, title, artist, source_url FROM songs WHERE id=?", (song_id,)
+        "SELECT id, title, artist, source_url, origin_duration_secs, audio_provenance "
+        "FROM songs WHERE id=?", (song_id,)
     ).fetchone()
     conn.close()
     if not row:
@@ -118,6 +148,9 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
             result = download_track(
                 song_id=row["id"], title=row["title"], source_url=row["source_url"],
                 artist=row["artist"] or "", on_progress=on_progress,
+                # The length of the record the row was LINKED to — never
+                # duration_secs, which a previous substitute may have rewritten.
+                expected_duration=expected_length(row["origin_duration_secs"]),
             )
     except DownloadError as exc:
         # Classified failure (DRM / Go+ / geo / private / removed / network /
@@ -138,6 +171,7 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
             update_song_duration(song_id, result.duration_secs)
         if result.source_url and result.source_url != row["source_url"]:
             _record_actual_source(song_id, row["source_url"], result.source_url)
+        _record_provenance(song_id, row, result)
         return {"path": str(result.path)}
 
     update_song_error(song_id, "error_download",

@@ -192,7 +192,11 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
 
 - **Everything slow is a job.** Routes return a `job_id`; the UI polls
   `/api/jobs`. Jobs live in memory; durable progress is the track's `status`
-  column, which is why resume works without persisting jobs.
+  column, which is why resume works without persisting jobs. A pipeline job
+  also carries a per-stage timeline (`stages.download/stems/analysis/structure`:
+  state, enqueued/started/finished, progress, message, error), and
+  `GET /api/jobs/queue` snapshots each stage pool (workers, busy, waiting) and
+  every waiting job's place in line.
 - **Stages are shared.** `api/workers/stages.py` `do_download/do_stems/do_analyze/do_structure`
   are called both by the auto-chain and by the per-track buttons, and each sets
   the lifecycle status (`queued → downloaded → stemmed → analysed`) or an
@@ -209,8 +213,8 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
 
 ## 4. Using the app
 
-The shell is a left **rail** (Library · Mixes · Discover · Studio, plus library
-groups and ⚙ Settings) and one **player bar** at the bottom that every screen
+The shell is a left **rail** (Library · Queue · Discover · Mixes · Studio, plus
+library groups and ⚙ Settings) and one **player bar** at the bottom that every screen
 shares.
 
 ### Library
@@ -231,8 +235,48 @@ reprocesses), add to a group, or delete the track and its files.
 - The permanent **pair dock** lists the best pairs for the selected track (as
   vocal or as bed) or for the whole library. Keys: `↑↓` move · `space` loop ·
   `1–5` rate · `V`/`B` solo · `⏎` open in Studio.
+- Each pair card gives one line per song — title, section span and bars, key,
+  BPM — then the adjustments (key relation + semitones, tempo change, nudge),
+  the four section-fit bars and the rating. **LBL** label priority, **DUR**
+  bars covered (looping allowed), **VOI** vocal presence, **PHR** phrase-length
+  agreement (§5.7); hover a label for its meaning. A **hatched** bar is not
+  measured (the pair was scored before that term was stored) — **Score
+  library** fills it.
+
+### Queue
+
+The pipeline in detail. The rail counts active tracks; the Library's
+"Processing…" pill opens this screen.
+
+- **Pools**: download, stems and analyse + structure — busy slots out of
+  workers, and how many tracks wait.
+- **Other jobs**: library-wide work (Score library, bulk reprocess, dataset,
+  training, exports) with progress, kept for ten minutes after it ends.
+- **One row per track** that has a job this server session or an `error_*`
+  status, with a cell per stage: running (progress or a moving bar, message,
+  elapsed), `#n in line`, ✓ with its duration (`earlier` when it finished before
+  this session, `manual` when a row-menu button ran it), ✓ already current
+  (structure skipped), ✕ failed with the reason. **Why?** expands the error and
+  traceback; **Retry** (and **Retry all failed**) re-enters at the failed stage.
+- Filters in the rail: Active · Waiting · Failed · Done · All. Click a title for
+  the track detail. There is no cancel or reorder — a running Demucs cannot be
+  stopped mid-run, and the queue order is ingest order.
 
 ### Track detail
+
+Under the title, **where the audio came from**: the imported link, and — when
+the file is not that link — the YouTube upload substituted for it (a `YT` chip
+marks those rows in the library; `YT?` marks ones downloaded before substitutes
+were verified). **Wrong audio?** (also in the row menu) lists YouTube uploads
+with the same verdict the downloader applies — ✓ or the reason it was rejected,
+and the length difference — and **Use this** re-downloads and reprocesses. A
+pick is recorded as yours and never flagged. **✓ Sounds right** (on `YT` and
+`YT?` audio) records that you listened and it is the record: `YT?` becomes `YT`,
+the line says "confirmed by you", and the track leaves the suspect count. The
+confirmation is pinned to the link the audio came from — re-downloading that
+link keeps it, audio from any other link starts unconfirmed. Settings' bulk bar offers
+**Re-download** for suspect tracks: it re-fetches each one's SoundCloud link,
+length and credited artist, then downloads through the verified fallback.
 
 Stats, a **structure strip** (sections, vocal and bed envelopes, loop window,
 playhead — click or drag to seek), a section table with loop buttons,
@@ -322,6 +366,12 @@ export read the same functions).
   likes, reposts, comments, genre, tags, release year, thumbnail, upload date).
   `ingest.soundcloud._normalise` and `soundcloud_browse.track_row` must emit
   the same key set.
+- **`artist` is the credited artist, not the uploader**: yt-dlp's `artist`
+  (SoundCloud publisher metadata) / v2 `publisher_metadata.artist`, falling
+  back to the uploader handle. A label account is not the artist — Drake's
+  "Massive" is uploaded by `octobersveryown`, and storing the handle sent the
+  download fallback searching YouTube for the wrong thing. `artist_id` stays
+  the uploader's id.
 
 ### 5.2 Download
 
@@ -330,9 +380,21 @@ export read the same functions).
 1. **Anonymous SoundCloud** download (never logged in — cookies would tie
    downloads to a real account).
 2. If SoundCloud refuses (Go+/private/DRM) or serves a **≤35s preview**, a
-   **YouTube search** on title + artist walks the top results through a retry
-   ladder.
-3. The row's `source_url` is updated to the URL the audio really came from.
+   **verified YouTube substitute**: flat searches for `artist title` (then
+   `… official audio`) are ranked, and each hit must pass
+   `ingest/match_score.assess_substitute` — no rework credit (bracketed or bare
+   "remix/flip/bootleg/VIP…") or altered audio (sped/slowed/live/instrumental/
+   432Hz…) the title did not ask for; the same length as the linked record
+   within `max(6 s, 3 %)`; then the auto-link trust gate (artist ≥ 0.5, score ≥
+   0.72). The score alone is not enough — a remix of the right song scores
+   0.85. Passing hits download best-first through the retry ladder and the
+   file's real length is re-checked. Nothing passing is an `error_download`
+   naming the closest rejected upload, never a guess.
+3. The row's `source_url` is updated to the URL the audio really came from and
+   `audio_provenance` records what was substituted (title, uploader, score,
+   lengths). `origin_url` / `origin_duration_secs` — the imported link and its
+   length — are written once at insert and never change; they are what the
+   length check reads.
 
 Failures are classified (`drm / premium / geo / private / removed / network /
 outdated / unknown`) into a user-facing `last_error`. **Re-verify** re-checks a
@@ -622,11 +684,12 @@ caches responses, and opens a breaker after repeated failures.
 | `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py` |
 | `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py` |
 | `render/` | `dsp.py`, `mixdown.py`, `session.py` |
-| `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, filters, library, ratings, groups, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`; `public/soundtouch-processor.js` |
+| `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen` + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`; `public/soundtouch-processor.js` |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS |
 
 **Tables.** `songs` (metadata, status, `last_error`, `variant_cluster`,
-`track_id`) · `stems` (path, separator tag, quality metrics) · `features` (per
+`track_id`; `origin_url` / `origin_duration_secs` — the imported link and its
+length, write-once; `audio_provenance` — JSON, where the file came from) · `stems` (path, separator tag, quality metrics) · `features` (per
 stem: tempo/grid/phase, key/confidence/Camelot, loudness, MFCC, spectral, bands,
 envelope, beats, hook window) · `sections` (see §5.5) · `mashup_candidates` (one
 row per section pair: sub-scores, effort, section terms, harmony, alignment,
@@ -654,6 +717,20 @@ candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
   **Do not repoint training at `rating`.** Verdict names map to an older
   vocabulary (good→ok, saved→love, bad→no, ignored→hidden/excluded); renaming
   them invalidates every stored judgement.
+- **`origin_url` / `origin_duration_secs` are write-once.** `upsert_song` fills
+  them on insert and `COALESCE`s on conflict; only `set_song_origin` (the
+  suspect-audio recovery) writes them afterwards. The download stage checks a
+  substitute against `origin_duration_secs`, never `duration_secs`, which a
+  fallback rewrites. Dedup (`get_song_by_url`, `songs_by_identity`) matches
+  either URL.
+- **One substitute gate.** `ingest/match_score.assess_substitute` decides for
+  the download fallback (`downloader.download.youtube_candidates`), the
+  "Wrong audio?" picker (`GET /api/tracks/{id}/audio-candidates`) and nothing
+  else re-derives it. A `manual` provenance, or one with `confirmed: true`
+  (`models.confirm_audio`, "✓ Sounds right"), is the user's call and is never
+  counted as suspect audio (`bulk_worker._suspect_audio_sql`). Both are pinned
+  to their `url`: `stages._record_provenance` keeps them only while the audio
+  still comes from that link.
 - **NULL is unmeasured, never zero** — see the §5 conventions. `alignment_offset`
   is `None` without a grid; `section_class = unknown` means no stem.
 - **`SECTION_PAIR_COLUMNS` is the tuple that binds.** Forget a new term there
@@ -724,7 +801,13 @@ candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
 - **Timing pills** re-fetch options by pair ids, apply `alignment_offset`, loop
   the *intersection* of the two trims, and resolve lanes by `songId`.
 - **Filtering never fetches**; selection derives from visible rows.
-- **Library, judgements and groups are fetched once, in `App.jsx`.**
+- **Library, judgements and groups are fetched once, in `App.jsx`.** The Queue
+  screen reads that library and polls only `/api/jobs` + `/api/jobs/queue`.
+- **"Running" is a stage record, not job status.** A pipeline job stays
+  `running` while it waits in the next stage's queue; `useQueue.jobRunning` and
+  the `/api/jobs/queue` busy count read `stages[*].state`. `/api/jobs` is
+  newest-first, so the job for a song is the first one seen
+  (`latestJobBySong`). `/queue` is declared before `/{job_id}`.
 - **A hidden pane must not own the keyboard.**
 - `MashupEngine.seek` passes an explicit position to `_rearm`; `useHookAudition`
   resets `lastPos` on seek.

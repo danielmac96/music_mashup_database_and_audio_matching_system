@@ -14,6 +14,11 @@ SoundCloud-first policy:
   attach ToS-violating downloads to a real SoundCloud account. Gated tracks fall
   through to the YouTube fallback instead.
 
+  The fallback is VERIFIED, not "first result longer than 35s": every hit is
+  checked by ingest.match_score.assess_substitute — no remix or altered audio,
+  the credited artist on the upload, and the same length as the record we were
+  linked to. Nothing passing is a clear failure, never a guess.
+
 Output: MP3 in config.RAW_DIR / "{title}_{artist}.mp3"
 """
 from __future__ import annotations
@@ -27,6 +32,7 @@ import re
 from pathlib import Path
 
 from config import RAW_DIR, YTDLP_FORMAT, YTDLP_FORMAT_FALLBACK, YTDLP_POSTARGS
+from ingest.match_score import duration_agrees, is_rework_title
 
 log = logging.getLogger(__name__)
 
@@ -94,11 +100,27 @@ def classify_download_error(error_lines: list[str]) -> tuple[str, str]:
 # Files shorter than this are considered previews and trigger the YT fallback
 PREVIEW_MAX_SECS = 35
 
-# How many YouTube search results to try per query (1 = top hit, …, N = Nth hit)
+# How many YouTube search hits to rank per query, and how many verified ones to
+# try downloading before giving up.
 YOUTUBE_SEARCH_MAX_RESULTS = 5
 
 # Optional progress callback. percent is None for status-only updates.
 ProgressCb = Optional[Callable[[Optional[int], str], None]]
+
+
+def expected_length(*values) -> Optional[float]:
+    """The first of ``values`` that is a real track length, else None.
+
+    A length at or under PREVIEW_MAX_SECS is a Go+ snippet's, not the record's,
+    so it says nothing about how long the full upload should be."""
+    for value in values:
+        try:
+            secs = float(value)
+        except (TypeError, ValueError):
+            continue
+        if secs > PREVIEW_MAX_SECS:
+            return secs
+    return None
 
 
 class DownloadResult(NamedTuple):
@@ -110,6 +132,10 @@ class DownloadResult(NamedTuple):
     # the track instead. Callers persist it so the row records where the file
     # really came from; None means "the recorded source_url still holds".
     source_url: Optional[str] = None
+    # What the fallback substituted and why it was trusted (upload title,
+    # uploader, score, lengths) — songs.audio_provenance. None for a direct
+    # download of source_url.
+    provenance: Optional[dict] = None
 
 
 class _YtAttempt(NamedTuple):
@@ -143,28 +169,34 @@ def _youtube_attempts() -> tuple[_YtAttempt, ...]:
 
 def download_track(song_id: int, title: str, source_url: str,
                    artist: str = "",
-                   on_progress: ProgressCb = None) -> DownloadResult:
+                   on_progress: ProgressCb = None,
+                   expected_duration: Optional[float] = None) -> DownloadResult:
     """Download a track's audio. Returns a DownloadResult on success; raises
-    DownloadError with a user-facing reason on failure (never returns None)."""
+    DownloadError with a user-facing reason on failure (never returns None).
+
+    ``expected_duration`` is the length of the record the row was linked to
+    (songs.origin_duration_secs). A substitute upload must agree with it."""
     out_path = RAW_DIR / f"{_safe(title)}_{_safe(artist)}.mp3"
+
+    # A direct YouTube source routes through the retry ladder (see _download_ytdlp)
+    # and a short result is a genuine short video, not a SoundCloud Go+ preview —
+    # so we skip the preview→YouTube-search fallback for it.
+    is_yt_source = _is_youtube_like(source_url)
+    expected = expected_length(expected_duration)
 
     if out_path.exists():
         duration = _get_duration(out_path)
-        if duration and duration > PREVIEW_MAX_SECS:
+        if (duration and duration > PREVIEW_MAX_SECS
+                and (is_yt_source or duration_agrees(duration, expected))):
             log.info(f"Already downloaded (full): {out_path.name}")
             if on_progress:
                 on_progress(100, "Already downloaded")
             # Pass duration so the worker refreshes the DB row — fixes stale 30s
             # rows seeded from SoundCloud Go+ previews during ingest.
             return DownloadResult(out_path, duration)
-        else:
-            log.warning(f"Existing file is a preview ({duration:.0f}s) — re-downloading")
-            out_path.unlink()
-
-    # A direct YouTube source routes through the retry ladder (see _download_ytdlp)
-    # and a short result is a genuine short video, not a SoundCloud Go+ preview —
-    # so we skip the preview→YouTube-search fallback for it.
-    is_yt_source = _is_youtube_like(source_url)
+        log.warning(f"Existing file is {duration or 0:.0f}s — not the "
+                    f"{expected or 0:.0f}s record, or a preview — re-downloading")
+        out_path.unlink()
 
     if on_progress:
         on_progress(0, "Downloading from YouTube…" if is_yt_source
@@ -183,12 +215,14 @@ def download_track(song_id: int, title: str, source_url: str,
             if on_progress:
                 on_progress(None, "Got SoundCloud preview only — searching YouTube fallback…")
             path.unlink()
-            fb = _fallback_youtube(title, artist, out_path, on_progress=on_progress)
-            if fb:
-                return DownloadResult(fb.path, fb.duration_secs, fb.url)
+            fb = _fallback_youtube(title, artist, out_path, on_progress=on_progress,
+                                   expected_duration=expected)
+            if fb.result:
+                return _from_fallback(fb.result)
             raise DownloadError(
-                "SoundCloud served only a Go+ 30s preview and no full-length "
-                "YouTube match was found.", kind="premium")
+                "SoundCloud served only a Go+ 30s preview and no matching "
+                f"full-length YouTube upload was found. {fb.note}".strip(),
+                kind="premium")
 
     if path and path.exists():
         return DownloadResult(path, _get_duration(path))
@@ -201,10 +235,11 @@ def download_track(song_id: int, title: str, source_url: str,
         log.warning(f"SoundCloud blocked this track ({kind}) — trying YouTube fallback")
         if on_progress:
             on_progress(None, "SoundCloud blocked this track — searching YouTube…")
-        fb = _fallback_youtube(title, artist, out_path, on_progress=on_progress)
-        if fb:
-            return DownloadResult(fb.path, fb.duration_secs, fb.url)
-        msg += " No full-length YouTube match was found either."
+        fb = _fallback_youtube(title, artist, out_path, on_progress=on_progress,
+                               expected_duration=expected)
+        if fb.result:
+            return _from_fallback(fb.result)
+        msg = f"{msg} No matching YouTube upload was found either. {fb.note}".strip()
 
     raise DownloadError(msg, kind=kind)
 
@@ -221,7 +256,8 @@ class ReverifyResult(NamedTuple):
 
 def reverify_track(song_id: int, title: str, source_url: str,
                    artist: str = "",
-                   on_progress: ProgressCb = None) -> ReverifyResult:
+                   on_progress: ProgressCb = None,
+                   expected_duration: Optional[float] = None) -> ReverifyResult:
     """Re-check a previously-downloaded track.
 
     If the file on disk is already full-length, just report its true duration so
@@ -239,7 +275,8 @@ def reverify_track(song_id: int, title: str, source_url: str,
     was_preview = disk_dur is not None and disk_dur <= PREVIEW_MAX_SECS
     try:
         result = download_track(song_id, title, source_url, artist=artist,
-                                on_progress=on_progress)
+                                on_progress=on_progress,
+                                expected_duration=expected_duration)
     except DownloadError as exc:
         log.warning(f"Reverify re-download failed: {exc}")
         return ReverifyResult(None, None, replaced=False)
@@ -464,22 +501,103 @@ def _usable_search_terms(title: str, artist: str) -> bool:
     return bool(t or (artist or "").strip())
 
 
+_BRACKET_RE = re.compile(r"\s*[\(\[][^\)\]]*[\)\]]")
+
+
+def _search_title(title: str) -> str:
+    """The title as a search query: bracketed noise ("(Official Audio)",
+    "[Free DL]") dropped, but a rework credit kept — searching "Levels" for
+    "Levels (Skrillex Remix)" would only find the original."""
+    kept = _BRACKET_RE.sub(
+        lambda m: m.group(0) if is_rework_title(m.group(0)) else "", title or "")
+    return kept.strip() or (title or "").strip()
+
+
+def youtube_candidates(title: str, artist: str,
+                       expected_duration: Optional[float] = None, *,
+                       exhaustive: bool = False,
+                       limit: int = YOUTUBE_SEARCH_MAX_RESULTS) -> list[dict]:
+    """Ranked YouTube uploads that might stand in for this record.
+
+    Each hit is a search row (url, title, uploader, duration_secs, score,
+    artist_score) annotated with ``passes``, ``reason`` and ``duration_delta``
+    from ingest.match_score.assess_substitute — the one gate both the download
+    fallback and the "Wrong audio?" picker use. Passing hits come first.
+
+    Stops after the first query that yields a passing hit unless ``exhaustive``.
+    Scoring uses the full title, so a requested remix is not mistaken for an
+    unrequested one."""
+    from ingest.match_score import assess_substitute
+    from ingest.soundcloud import search_candidates
+
+    if not _usable_search_terms(title, artist):
+        return []
+    name = (artist or "").strip()
+    base = " ".join(p for p in (name, _search_title(title)) if p)
+    seen: dict[str, dict] = {}
+    for query in (base, f"{base} official audio"):
+        for hit in search_candidates(name, title, platform="youtube",
+                                     limit=limit, query=query):
+            if hit["url"] in seen:
+                continue
+            verdict = assess_substitute(name, title, hit, expected_duration)
+            seen[hit["url"]] = {**hit, "passes": verdict.passes,
+                                "reason": verdict.reason,
+                                "duration_delta": verdict.duration_delta}
+        if not exhaustive and any(h["passes"] for h in seen.values()):
+            break
+    return sorted(seen.values(), key=lambda h: (h["passes"], h["score"]),
+                  reverse=True)
+
+
 class _FallbackResult(NamedTuple):
     """What the YouTube fallback actually fetched. ``url`` is the watch URL of
     the upload the audio came from, so the caller can record where the file
-    really came from instead of leaving a stale SoundCloud URL on the row. It is
-    None when yt-dlp's output didn't name the video."""
+    really came from instead of leaving a stale SoundCloud URL on the row."""
     path: Path
     duration_secs: float
     url: Optional[str]
+    provenance: dict
+
+
+class _FallbackOutcome(NamedTuple):
+    result: Optional[_FallbackResult]
+    # Why nothing was accepted, for the user-facing error. '' on success.
+    note: str = ""
+
+
+def _from_fallback(fb: _FallbackResult) -> DownloadResult:
+    return DownloadResult(fb.path, fb.duration_secs, fb.url, fb.provenance)
+
+
+def _mmss(secs: Optional[float]) -> str:
+    if not secs:
+        return "?"
+    m, s = divmod(int(round(secs)), 60)
+    return f"{m}:{s:02d}"
+
+
+def _no_match_note(hits: list[dict], expected: Optional[float]) -> str:
+    if not hits:
+        return "YouTube search returned nothing."
+    rejected = [h for h in hits if not h["passes"]]
+    if not rejected:
+        return "The matching uploads could not be downloaded."
+    best = rejected[0]
+    length = _mmss(best.get("duration_secs"))
+    if expected:
+        length += f" vs expected {_mmss(expected)}"
+    return (f"Closest: '{best['title']}' by {best.get('uploader') or '?'} "
+            f"({length}) — rejected: {best['reason']}.")
 
 
 def _fallback_youtube(title: str, artist: str, out_path: Path,
-                       on_progress: ProgressCb = None) -> Optional[_FallbackResult]:
-    """
-    Search YouTube for the full track using multiple query strategies.
-    Strips parenthetical suffixes from title for cleaner search results.
-    Uses ytsearchN and walks top results so one bad hit does not sink the track.
+                      on_progress: ProgressCb = None,
+                      expected_duration: Optional[float] = None) -> _FallbackOutcome:
+    """Find this record on YouTube and download it — only if an upload passes
+    verification (see youtube_candidates). Tries the verified hits best-first,
+    and re-checks the downloaded file's real length, since a search listing's
+    duration is the video's and a download can still come back as something else.
     """
     # Guard: a title-based YouTube search only makes sense with real search
     # terms. If metadata extraction failed upstream we may have "Unknown"/""
@@ -491,39 +609,45 @@ def _fallback_youtube(title: str, artist: str, out_path: Path,
             "Skipping YouTube fallback — no usable title/artist to search "
             f"(title={title!r}, artist={artist!r})"
         )
-        return None
+        return _FallbackOutcome(None, "No usable title or artist to search for.")
 
-    clean_title = re.sub(r'\s*[\(\[].*?[\)\]]', '', title).strip()
-    n = YOUTUBE_SEARCH_MAX_RESULTS
-    queries = [
-        f"ytsearch{n}:{artist} {clean_title} official audio",
-        f"ytsearch{n}:{artist} {clean_title} lyrics",
-        f"ytsearch{n}:{artist} {clean_title}",
-    ]
+    if on_progress:
+        on_progress(None, f"Searching YouTube: {(title or '')[:40]}")
+    hits = youtube_candidates(title, artist, expected_duration)
+    accepted = [h for h in hits if h["passes"]]
 
-    for query in queries:
-        for rank in range(1, n + 1):
-            log.info(f"YouTube search: {query}  [trying result #{rank}]")
-            if on_progress:
-                on_progress(None, f"YT search #{rank}: {clean_title[:40]}")
-            dl = _download_ytdlp(query, out_path, playlist_item=rank,
-                                 on_progress=on_progress)
-            path = dl.path
-            if path and path.exists():
-                duration = _get_duration(path)
-                if duration and duration > PREVIEW_MAX_SECS:
-                    log.info(f"YouTube fallback succeeded ({duration:.0f}s): {out_path.name}"
-                             + (f" from {dl.resolved_url}" if dl.resolved_url else ""))
-                    return _FallbackResult(path, duration, dl.resolved_url)
-                log.warning(
-                    f"YouTube result #{rank} too short ({duration or 0:.0f}s), trying next"
-                )
-                if path.exists():
-                    path.unlink()
-            _cleanup_stem_outputs(out_path)
+    for rank, hit in enumerate(accepted[:YOUTUBE_SEARCH_MAX_RESULTS], start=1):
+        log.info(f"YouTube fallback #{rank}: '{hit['title']}' by {hit.get('uploader')} "
+                 f"({hit.get('duration_secs') or 0:.0f}s, score {hit['score']})")
+        if on_progress:
+            on_progress(None, f"YouTube: {hit['title'][:50]}")
+        dl = _download_ytdlp(hit["url"], out_path, on_progress=on_progress)
+        path = dl.path
+        if path and path.exists():
+            duration = _get_duration(path)
+            if (duration and duration > PREVIEW_MAX_SECS
+                    and duration_agrees(duration, expected_duration)):
+                url = dl.resolved_url or hit["url"]
+                log.info(f"YouTube fallback succeeded ({duration:.0f}s): "
+                         f"{out_path.name} from {url}")
+                return _FallbackOutcome(_FallbackResult(path, duration, url, {
+                    "via": "youtube_fallback",
+                    "url": url,
+                    "title": hit["title"],
+                    "uploader": hit.get("uploader") or "",
+                    "score": hit["score"],
+                    "duration_secs": round(duration, 1),
+                    "expected_secs": round(expected_duration, 1)
+                                     if expected_duration else None,
+                }))
+            log.warning(f"YouTube upload downloaded as {duration or 0:.0f}s — "
+                        "not the expected record, trying next")
+            path.unlink()
+        _cleanup_stem_outputs(out_path)
 
-    log.error(f"Could not find full version of '{title}' by '{artist}' on YouTube")
-    return None
+    note = _no_match_note(hits, expected_duration)
+    log.error(f"No verified YouTube upload of '{title}' by '{artist}'. {note}")
+    return _FallbackOutcome(None, note)
 
 
 # ── Duration check ────────────────────────────────────────────────────────────

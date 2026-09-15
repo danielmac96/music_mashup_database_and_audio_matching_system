@@ -57,7 +57,7 @@ def test_the_library_layout_is_main_plus_a_404px_dock():
 
 
 def test_every_route_renders_something():
-    for route in ("library", "track", "discovery", "mixes", "studio"):
+    for route in ("library", "queue", "track", "discovery", "mixes", "studio"):
         assert f'route === "{route}"' in APP, route
 
 

@@ -7,6 +7,7 @@ import { TrackActions } from "./TrackActions";
 import { TrackEditor } from "./TrackEditor";
 import { PlaylistImporter } from "./PlaylistImporter";
 import { useLibraryFilters, VIEWS, countView } from "../hooks/useLibraryFilters";
+import { isActiveJob, jobRunning, latestJobBySong } from "../hooks/useQueue";
 import { toast } from "../toast";
 
 // Screen 1a's left two thirds: the library, its filters, and the rail furniture
@@ -19,6 +20,9 @@ import { toast } from "../toast";
 // never be written back.
 const VIEWS_KEY = "mashup.library.views.v1";
 
+// pipeline job stage → the row-menu job kind theme.pipelineDots keys on.
+const PIPE_STAGE_KIND = { stems: "separate", analysis: "analyze" };
+
 function loadSavedViews() {
   try {
     const raw = JSON.parse(localStorage.getItem(VIEWS_KEY) || "[]");
@@ -29,7 +33,8 @@ function loadSavedViews() {
 }
 
 export function LibraryScreen({ library, ratings, groups, player, selectedId,
-                                onSelect, onOpen, onRailSlot, onStatus }) {
+                                onSelect, onOpen, onRailSlot, onStatus,
+                                onOpenQueue }) {
   const { tracks, pipeJobs, loading, error, refresh } = library;
 
   const starOf = useCallback((songId) => ratings.bySong[songId] ?? null,
@@ -68,11 +73,7 @@ export function LibraryScreen({ library, ratings, groups, player, selectedId,
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const pipeBySong = useMemo(() => {
-    const m = {};
-    for (const j of pipeJobs) m[j.song_id] = j;
-    return m;
-  }, [pipeJobs]);
+  const pipeBySong = useMemo(() => latestJobBySong(pipeJobs), [pipeJobs]);
 
   // The star column reads from the pair judgements: a track's star is the best
   // any pairing it appears in has earned. Merged onto the row here so the table
@@ -109,14 +110,16 @@ export function LibraryScreen({ library, ratings, groups, player, selectedId,
   }, [tracks, filters.view, filters.group, groups.groups]);
 
   useEffect(() => {
-    const active_ = pipeJobs.filter((j) => j.status === "running"
-      || j.status === "queued");
+    const active_ = pipeJobs.filter(isActiveJob);
     if (active_.length) {
-      const running = active_.filter((j) => j.status === "running").length;
+      // Running = a stage is executing, not job status: a job between stages is
+      // "running" while it waits in the next queue.
+      const running = active_.filter(jobRunning).length;
       onStatus({
         locked: true,
         text: `Processing ${active_.length} tracks · ${running} running`
           + ` · ${active_.length - running} queued`,
+        onClick: onOpenQueue,
       });
     } else if (groupName) {
       // Inside a group the denominator that matters is the group, not the
@@ -126,13 +129,15 @@ export function LibraryScreen({ library, ratings, groups, player, selectedId,
     } else {
       onStatus({ text: `${rows.length} of ${tracks.length} tracks · ${ready} ready` });
     }
-  }, [pipeJobs, rows.length, tracks.length, ready, groupName, onStatus]);
+  }, [pipeJobs, rows.length, tracks.length, ready, groupName, onStatus, onOpenQueue]);
 
   const runningKind = useCallback((t) => {
     const j = jobs[t.id];
     if (j) return j.kind;
     const p = pipeBySong[t.id];
-    return p && p.status === "running" ? p.stage : null;
+    // The dots are keyed by the menu's job kinds; the pipeline names two of its
+    // stages differently.
+    return jobRunning(p) ? (PIPE_STAGE_KIND[p.stage] || p.stage) : null;
   }, [jobs, pipeBySong]);
 
   // Playback is the app-wide player's, not this screen's. It used to be a

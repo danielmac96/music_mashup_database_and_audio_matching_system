@@ -1,6 +1,7 @@
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
 import { SortHead } from "./SortHead";
+import { audioSubstitution } from "../sources";
 import {
   camelotColor, fmtDur, fmtPlays, fmtYear, pipelineDots, playsColor, yearColor,
 } from "../theme";
@@ -96,6 +97,9 @@ function TrackRow({ t, selected, playing, running, menuOpen, onMenu,
   const f = t.features?.full || {};
   const dots = pipelineDots(t, running);
   const cam = f.camelot;
+  // Audio that is not the link it was imported from (a YouTube substitute, or
+  // your own pick) is marked on the row — the stems are cut from that file.
+  const sub = audioSubstitution(t);
 
   return (
     <div
@@ -122,6 +126,11 @@ function TrackRow({ t, selected, playing, running, menuOpen, onMenu,
               long enough to truncate — which is most of them at this column
               width — eats the only affordance the row has. */}
           <span className="tt-text">{t.title}</span>
+          {sub && (
+            <span className={`tt-src mono ${sub.kind}`} title={`${sub.label}. ${sub.title}`}>
+              {sub.chip}
+            </span>
+          )}
           <span className="tt-go">›</span>
         </span>
         <span className="tt-artist">{t.artist || "—"}</span>

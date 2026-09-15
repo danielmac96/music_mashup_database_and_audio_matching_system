@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { JobBadge } from "./JobBadge";
+import { AudioSourcePicker } from "./AudioSourcePicker";
 import { isAnalysed } from "../theme";
 import { toast } from "../toast";
 
@@ -42,6 +43,7 @@ export function TrackActions({ track, job, pipeJob, onStarted, onDone, onClose,
                               onEdit, groups, activeGroup }) {
   const ref = useRef(null);
   const [error, setError] = useState(null);
+  const [picking, setPicking] = useState(false);
   const g = gatingFor(track, job, pipeJob);
 
   useEffect(() => {
@@ -85,7 +87,7 @@ export function TrackActions({ track, job, pipeJob, onStarted, onDone, onClose,
       {job && <JobBadge jobId={job.jobId} onComplete={() => onDone(track.id)} />}
       {g.pipelining && (
         <div className="tt-menu-note mono">
-          {pipeJob.stage || "pipeline"} · {Math.round((pipeJob.progress || 0) * 100)}%
+          {pipeJob.stage || "pipeline"} · {Math.round(pipeJob.progress || 0)}%
         </div>
       )}
 
@@ -105,6 +107,14 @@ export function TrackActions({ track, job, pipeJob, onStarted, onDone, onClose,
       <button className="tt-menu-item" disabled={!g.canReverify}
         title="Under 40s after downloading is usually a Go+ preview, not the record"
         onClick={() => start("reverify", api.reverifyTrack)}>Re-verify (looks like a preview)</button>
+      {picking ? (
+        <AudioSourcePicker track={track} onClose={() => setPicking(false)}
+          onChanged={() => { onDone(track.id); onClose(); }} />
+      ) : (
+        <button className="tt-menu-item" disabled={g.busy}
+          title="Search YouTube for uploads of this record and pick the right one"
+          onClick={() => setPicking(true)}>Wrong audio? Pick another upload…</button>
+      )}
       <button className="tt-menu-item" onClick={() => { onEdit(track.id); onClose(); }}>
         Correct BPM / key / URL…
       </button>

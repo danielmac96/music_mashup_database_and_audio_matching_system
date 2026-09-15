@@ -351,10 +351,13 @@ def track_row(hit: dict) -> dict:
     """A v2 track hit as a canonical ingest row, plus discovery-only extras.
 
     v2 quirks handled here: duration is milliseconds, and for Go+ tracks it is the
-    SNIPPET length while full_duration is the real one. Artist is user.username.
+    SNIPPET length while full_duration is the real one. Artist is the credited
+    publisher_metadata.artist, falling back to user.username — a label account
+    is not the artist, and ingest.soundcloud._normalise makes the same choice.
     The URL is permalink_url, normalised so it dedups against songs.source_url
     with no extra work at the call site."""
     user = hit.get("user") or {}
+    credited = (hit.get("publisher_metadata") or {}).get("artist")
     ms = hit.get("full_duration") or hit.get("duration") or 0
     duration_secs = float(ms) / 1000.0
     upload_date = _upload_date(hit)
@@ -362,7 +365,7 @@ def track_row(hit: dict) -> dict:
     return {
         # ── the canonical ingest contract ──
         "title": hit.get("title") or "",
-        "artist": user.get("username") or "",
+        "artist": credited or user.get("username") or "",
         "artist_id": str(user.get("id") or ""),
         "track_id": str(hit.get("id") or ""),
         "duration_secs": duration_secs,

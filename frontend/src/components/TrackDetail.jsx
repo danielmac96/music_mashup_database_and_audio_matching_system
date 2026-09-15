@@ -5,6 +5,7 @@ import { StarRating } from "./StarRating";
 import { StructureStrip } from "./StructureStrip";
 import { SectionTable } from "./SectionTable";
 import { PartnersRail } from "./PartnersRail";
+import { AudioSource, AudioSourcePicker } from "./AudioSourcePicker";
 import { keyOf } from "./pairs/pairModel";
 import { camelotColor, fmtDur, fmtPlays, fmtYear } from "../theme";
 
@@ -24,8 +25,13 @@ const STEM_LABEL = Object.fromEntries(STEMS);
 const PAIR_LIMIT = 500;
 
 export function TrackDetail({ track, tracks, ratings, groups, player, role,
-                              onRole, onBack, onStudio, onOpenTrack, onStatus }) {
+                              onRole, onBack, onStudio, onOpenTrack, onStatus,
+                              onChanged }) {
   const [sections, setSections] = useState([]);
+  // The "Wrong audio?" picker. Closed on every walk to another track: it holds
+  // one track's search results, and they must not sit under another's title.
+  const [picking, setPicking] = useState(false);
+  useEffect(() => { setPicking(false); }, [track?.id]);
   const [candidates, setCandidates] = useState([]);
   const [stem, setStem] = useState("full");
   const [error, setError] = useState(null);
@@ -261,6 +267,15 @@ export function TrackDetail({ track, tracks, ratings, groups, player, role,
                     </span>
                   ))}
                 </div>
+              )}
+              {/* Where the audio came from. A substituted download used to be
+                  invisible here — the link said SoundCloud while the stems
+                  were cut from a YouTube remix. */}
+              <AudioSource track={track} onPick={() => setPicking((v) => !v)}
+                onChanged={onChanged} />
+              {picking && (
+                <AudioSourcePicker track={track} onClose={() => setPicking(false)}
+                  onChanged={onChanged} />
               )}
               <div className="tiles">
                 <Tile label="BPM" value={f.bpm != null ? f.bpm.toFixed(1) : "—"} />

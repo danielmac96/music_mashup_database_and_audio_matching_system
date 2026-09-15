@@ -176,8 +176,19 @@ def list_tracks() -> dict:
             "section_classes": section_counts.get(sid, {}).get("classes", {}),
             "track_class": _dominant_class(section_counts.get(sid, {}).get("classes")),
             "variant_count": variant_sizes.get(s.get("variant_cluster"), 0),
+            "audio_provenance": _provenance(s.get("audio_provenance")),
         })
     return {"count": len(rows), "tracks": rows}
+
+
+def _provenance(raw: Optional[str]) -> Optional[dict]:
+    """songs.audio_provenance decoded for the browser; None when unrecorded."""
+    import json
+    try:
+        value = json.loads(raw) if raw else None
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
 
 
 @router.post("/{song_id}/process")
@@ -220,7 +231,7 @@ def queue_download(song_id: int, background: BackgroundTasks) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="song not found")
 
-    job_id = jobs.new_job(kind="download", message="Queued for download")
+    job_id = jobs.new_job(kind="download", song_id=song_id, message="Queued for download")
     background.add_task(download_worker.run, job_id, song_id)
     return {"job_id": job_id}
 
@@ -237,7 +248,8 @@ def queue_separate(song_id: int, background: BackgroundTasks) -> dict:
     if not row["raw_path"]:
         raise HTTPException(status_code=400, detail="track is not downloaded yet")
 
-    job_id = jobs.new_job(kind="separate", message="Queued for stem separation")
+    job_id = jobs.new_job(kind="separate", song_id=song_id,
+                          message="Queued for stem separation")
     background.add_task(stems_worker.run, job_id, song_id)
     return {"job_id": job_id}
 
@@ -254,7 +266,7 @@ def queue_analyze(song_id: int, background: BackgroundTasks) -> dict:
     if not row["raw_path"]:
         raise HTTPException(status_code=400, detail="track is not downloaded yet")
 
-    job_id = jobs.new_job(kind="analyze", message="Queued for analysis")
+    job_id = jobs.new_job(kind="analyze", song_id=song_id, message="Queued for analysis")
     background.add_task(analysis_worker.run, job_id, song_id)
     return {"job_id": job_id}
 
@@ -273,7 +285,8 @@ def queue_structure(song_id: int, background: BackgroundTasks) -> dict:
     if not row["raw_path"]:
         raise HTTPException(status_code=400, detail="track is not downloaded yet")
 
-    job_id = jobs.new_job(kind="structure", message="Queued for structure detection")
+    job_id = jobs.new_job(kind="structure", song_id=song_id,
+                          message="Queued for structure detection")
     background.add_task(structure_worker.run, job_id, song_id)
     return {"job_id": job_id}
 
@@ -454,6 +467,65 @@ def delete_track(song_id: int) -> dict:
 
 class UrlUpdate(BaseModel):
     source_url: str
+    # Set when the link was chosen from the "Wrong audio?" picker: the upload's
+    # title, uploader and duration_secs, recorded as the audio's provenance.
+    pick: Optional[dict] = None
+
+
+@router.get("/{song_id}/audio-candidates")
+def audio_candidates(song_id: int) -> dict:
+    """YouTube uploads that could be this track's audio, for the "Wrong audio?"
+    picker. Every hit carries the same verdict the download fallback applies
+    (passes / reason / duration_delta against the linked record), so the picker
+    and the pipeline cannot disagree about what counts as the record. Rejected
+    hits are still listed: the picker explains, it does not forbid."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, title, artist, source_url, origin_url, origin_duration_secs "
+        "FROM songs WHERE id=?", (song_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="song not found")
+
+    from downloader.download import expected_length, youtube_candidates
+
+    expected = expected_length(row["origin_duration_secs"])
+    hits = youtube_candidates(row["title"] or "", row["artist"] or "", expected,
+                              exhaustive=True)
+    current = row["source_url"] or ""
+    for hit in hits:
+        hit["in_use"] = normalize_url(hit["url"]) == current
+    return {
+        "song_id": song_id,
+        "title": row["title"],
+        "artist": row["artist"],
+        "origin_url": row["origin_url"],
+        "expected_duration": expected,
+        "current_url": current,
+        "candidates": hits,
+    }
+
+
+@router.post("/{song_id}/audio-confirm")
+def confirm_track_audio(song_id: int) -> dict:
+    """You listened, and this track's audio is the record.
+
+    For a YouTube substitute — verified (YT) or from before verification (YT?)
+    — this settles it: the suspect-audio scan stops counting the track and the
+    library chip reads as confirmed. Pinned to the current link, so a download
+    from a different one starts unconfirmed again."""
+    from database.models import confirm_audio
+
+    conn = get_conn()
+    exists = conn.execute("SELECT 1 FROM songs WHERE id=?", (song_id,)).fetchone()
+    conn.close()
+    if not exists:
+        raise HTTPException(status_code=404, detail="song not found")
+    prov = confirm_audio(song_id)
+    if prov is None:
+        raise HTTPException(status_code=409,
+                            detail="This track has no downloaded audio to confirm yet.")
+    return {"song_id": song_id, "audio_provenance": prov}
 
 
 @router.patch("/{song_id}/url")
@@ -461,7 +533,10 @@ def change_url(song_id: int, body: UrlUpdate) -> dict:
     """Repoint a song at a corrected source URL. Because the current audio/stems/
     analysis belong to the OLD url, this resets the pipeline: it deletes the
     stale audio + derived rows, sets status back to 'queued', and re-runs the
-    full download → stems → analyze → structure chain from the new URL."""
+    full download → stems → analyze → structure chain from the new URL.
+
+    The import link (origin_url) is left alone, and the audio's provenance says
+    this was your choice — so the suspect-audio scan never second-guesses it."""
     new_url = normalize_url(body.source_url or "")
     if not new_url:
         raise HTTPException(status_code=400, detail="source_url is required")
@@ -469,8 +544,12 @@ def change_url(song_id: int, body: UrlUpdate) -> dict:
         raise HTTPException(
             status_code=400,
             detail="Unrecognised link — paste a SoundCloud or YouTube URL.")
+    pick = body.pick or {}
+    provenance = {"via": "manual", "url": new_url,
+                  **{k: pick[k] for k in ("title", "uploader", "duration_secs")
+                     if pick.get(k) is not None}}
     try:
-        result = update_song_url(song_id, new_url)
+        result = update_song_url(song_id, new_url, provenance=provenance)
     except ValueError as exc:
         msg = str(exc)
         if "already uses" in msg:

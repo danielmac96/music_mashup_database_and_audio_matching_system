@@ -72,7 +72,7 @@ def _fake_download(stages, monkeypatch, tmp_path, actual_url):
     audio.write_bytes(b"x")
     import downloader.download as dl
 
-    def fake(song_id, title, source_url, artist="", on_progress=None):
+    def fake(song_id, title, source_url, artist="", on_progress=None, **_kw):
         return dl.DownloadResult(audio, 200.0, actual_url)
 
     monkeypatch.setattr(dl, "download_track", fake)

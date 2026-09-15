@@ -298,7 +298,7 @@ def _normalise_flat(info: dict) -> dict:
     duration_f = float(raw_duration) if raw_duration is not None else 0.0
     return {
         "title": info.get("title") or "Unknown",
-        "artist": _str_or_empty(info.get("uploader") or info.get("channel") or info.get("artist")),
+        "artist": _str_or_empty(_credited_artist(info)),
         "artist_id": _str_or_empty(info.get("uploader_id")),
         "track_id": _str_or_empty(info.get("id")),
         "duration_secs": duration_f,
@@ -316,13 +316,19 @@ def _normalise_flat(info: dict) -> dict:
     }
 
 
+def _credited_artist(info: dict) -> str:
+    """The recording artist, falling back to whoever uploaded it.
+
+    yt-dlp's ``artist`` is SoundCloud's publisher metadata (and YouTube Music's
+    credit). The uploader is an account: a label upload of Drake's "Massive" is
+    uploaded by ``octobersveryown``. Storing the handle as the artist sent the
+    download fallback searching YouTube for "octobersveryown Massive", which
+    found a remix."""
+    return info.get("artist") or info.get("uploader") or info.get("channel") or ""
+
+
 def _normalise(info: dict) -> dict:
-    artist = (
-        info.get("uploader")
-        or info.get("channel")
-        or info.get("artist")
-        or "Unknown"
-    )
+    artist = _credited_artist(info) or "Unknown"
     raw_duration = info.get("duration")
     duration_f = float(raw_duration) if raw_duration is not None else 0.0
     webpage = info.get("webpage_url") or info.get("url") or ""

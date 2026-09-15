@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { MixImporter } from "./components/MixImporter";
 import { LibraryScreen } from "./components/LibraryScreen";
+import { QueueScreen } from "./components/QueueScreen";
 import { PairDock } from "./components/PairDock";
 import { PlayerBar } from "./components/PlayerBar";
 import { TrackDetail } from "./components/TrackDetail";
@@ -17,6 +18,7 @@ import { useLibraryGroups } from "./hooks/useLibraryGroups";
 import { useRatings } from "./hooks/useRatings";
 import { usePairDock } from "./hooks/usePairDock";
 import { usePlayer } from "./hooks/usePlayer";
+import { isActiveJob } from "./hooks/useQueue";
 import { scoredOptionOf } from "./components/MashupSuggestions";
 import { api } from "./api";
 import { onToast } from "./toast";
@@ -133,6 +135,15 @@ export default function App() {
     setRouteState(next);
   };
 
+  // Stable, because the Library puts it inside the header status it reports
+  // from an effect — a fresh function every render would re-fire that effect
+  // forever.
+  const openQueue = useCallback(() => {
+    setHeaderStatus(null);
+    setRailSlot(null);
+    setRouteState("queue");
+  }, []);
+
   // Each send is its own instruction, not a patch over the last one: a pair
   // from Discover opens as a pair, and a single track from Library is added as
   // one lane to whatever is already arranged.
@@ -204,9 +215,14 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [route, player]);
 
-  const counts = useMemo(() => ({
-    library: library.tracks.length,
-  }), [library.tracks]);
+  const counts = useMemo(() => {
+    const active = library.pipeJobs.filter(isActiveJob).length;
+    return {
+      library: library.tracks.length,
+      // Only while something is processing: an idle "0" is noise.
+      queue: active || null,
+    };
+  }, [library.tracks, library.pipeJobs]);
 
   // Selecting a row scopes the dock; it does not navigate. Clearing it is what
   // puts the dock back on "the best pairs in the library".
@@ -241,7 +257,10 @@ export default function App() {
 
       <div className="app-main">
         {headerStatus?.text ? (
-          <div className={`float-status${headerStatus.locked ? " locked" : ""}`}>
+          <div className={`float-status${headerStatus.locked ? " locked" : ""}`
+              + `${headerStatus.onClick ? " clickable" : ""}`}
+            onClick={headerStatus.onClick || undefined}
+            title={headerStatus.onClick ? "Open the queue" : undefined}>
             {headerStatus.locked && <span className="dot pulse" />}
             <span className="txt">
               {headerStatus.locked ? `◈ ${headerStatus.text}` : headerStatus.text}
@@ -263,12 +282,20 @@ export default function App() {
                 onOpen={(id) => { setSelectedTrackId(id); setRoute("track"); }}
                 onRailSlot={setRailSlot}
                 onStatus={setHeaderStatus}
+                onOpenQueue={openQueue}
               />
             </main>
             <PairDock dock={dock} ratings={ratings}
               scopeTitle={selectedTrack?.title || null}
               role={dockRole} onRole={setDockRole} />
           </div>
+        )}
+        {route === "queue" && (
+          <QueueScreen
+            library={library}
+            onOpen={(id) => { setSelectedTrackId(id); setRoute("track"); }}
+            onRailSlot={setRailSlot}
+          />
         )}
         {route === "track" && (
           <TrackDetail
@@ -283,6 +310,7 @@ export default function App() {
             onStudio={pairToStudio}
             onOpenTrack={setSelectedTrackId}
             onStatus={setHeaderStatus}
+            onChanged={() => library.refresh(true)}
           />
         )}
         {route === "discovery" && (

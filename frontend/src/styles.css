@@ -200,6 +200,9 @@ input, select { font-family: inherit; }
   width: 7px; height: 7px; border-radius: 50%; background: var(--green);
   box-shadow: 0 0 8px var(--green);
 }
+/* While the Library is processing, the pill is the way into the Queue. */
+.float-status.clickable { pointer-events: auto; cursor: pointer; }
+.float-status.clickable:hover { filter: brightness(1.2); }
 
 .topbar {
   height: 60px;
@@ -1559,7 +1562,8 @@ input, select { font-family: inherit; }
   background: var(--raised); border: 1px solid var(--border-ctrl);
   border-radius: 7px; padding: 5px 10px;
 }
-.head-btn:hover { color: var(--text); border-color: var(--accent); }
+.head-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.head-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .import-drop {
   flex: none; padding: 12px 16px; background: var(--inset);
@@ -1822,6 +1826,97 @@ input, select { font-family: inherit; }
   min-width: 0; display: flex; flex-direction: column; overflow: hidden;
 }
 
+/* ── Queue: every track's pipeline, stage by stage ─────────────────────── */
+.q-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.q-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px 24px; }
+
+.q-pools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.q-pool {
+  display: flex; flex-direction: column; gap: 7px; padding: 10px 12px;
+  background: var(--inset); border: 1px solid var(--border); border-radius: 9px;
+}
+.q-pool.busy { border-color: rgba(245, 166, 35, 0.4); }
+.q-pool-name { font-size: 12px; font-weight: 600; color: var(--text-2); }
+.q-slots { display: flex; gap: 4px; min-height: 6px; }
+.q-slot { width: 22px; height: 6px; border-radius: 3px; background: var(--faint-2); }
+.q-slot.on { background: var(--amber); box-shadow: 0 0 6px rgba(245, 166, 35, 0.5); }
+.q-pool-nums { font-size: 11px; color: var(--muted); }
+
+.q-others {
+  margin-top: 10px; display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 12px; background: var(--inset-2);
+  border: 1px solid var(--border-ctrl); border-radius: 9px;
+}
+.q-other { display: flex; align-items: center; gap: 10px; font-size: 12px; min-width: 0; }
+.q-other-kind { font-weight: 600; color: var(--text-2); flex: none; min-width: 130px; }
+.q-other .q-bar { width: 120px; flex: none; }
+.q-other-msg {
+  color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+}
+.q-other.failed .q-other-msg { color: var(--red); }
+
+.q-table { margin-top: 14px; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
+.q-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.5fr) repeat(4, minmax(0, 1fr)) 64px 110px;
+  gap: 10px; align-items: center; padding: 8px 12px;
+}
+.q-head {
+  font-size: 9.5px; font-weight: 600; letter-spacing: 0.09em; color: var(--faint);
+  background: var(--inset-2); border-bottom: 1px solid var(--border);
+}
+.q-item { border-bottom: 1px solid var(--hair); }
+.q-item:last-child { border-bottom: none; }
+.q-item.running { background: rgba(245, 166, 35, 0.03); }
+.q-item.failed { background: rgba(248, 113, 113, 0.04); }
+.q-empty { padding: 28px 12px; text-align: center; color: var(--faint); font-size: 12.5px; }
+
+.q-track { display: flex; flex-direction: column; min-width: 0; }
+.q-title {
+  all: unset; cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.q-title:hover { color: var(--accent-light); text-decoration: underline; }
+.q-artist {
+  font-size: 11px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.q-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; font-size: 11.5px; }
+.q-cell-top { display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--muted); }
+.q-state { font-weight: 600; white-space: nowrap; }
+.q-msg {
+  font-size: 10.5px; color: var(--faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.q-cell.running .q-state { color: var(--amber-light); }
+.q-cell.waiting .q-state { color: var(--accent-light); }
+.q-cell.done .q-state, .q-cell.skipped .q-state { color: var(--green); }
+.q-cell.failed .q-state { color: var(--red); }
+.q-cell.failed .q-msg { color: #ff9b9b; }
+.q-cell.pending .q-state, .q-cell.todo .q-state { color: var(--faint-2); }
+
+.q-bar {
+  position: relative; display: block; height: 4px; border-radius: 2px;
+  background: var(--inset-2); overflow: hidden;
+}
+.q-bar .fill {
+  display: block; height: 100%; border-radius: 2px;
+  background: linear-gradient(90deg, var(--amber), var(--amber-light));
+  transition: width 0.3s ease;
+}
+/* No percentage reported (analysis, structure): movement, not a stuck 0%. */
+.q-bar.indet .fill { position: absolute; width: 35%; animation: q-slide 1.4s ease-in-out infinite; }
+@keyframes q-slide { from { left: -35%; } to { left: 100%; } }
+
+.q-total { font-size: 11px; color: var(--muted); }
+.q-act { display: flex; gap: 5px; justify-content: flex-end; }
+.q-detail {
+  padding: 0 12px 10px; font-size: 12px; color: #ff9b9b;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.q-detail b { color: var(--text-2); }
+
 .pair-dock {
   min-width: 0; background: var(--topbar);
   border-left: 1px solid var(--border-top);
@@ -1926,6 +2021,14 @@ input, select { font-family: inherit; }
   padding: 2px 5px; border-radius: 4px;
 }
 .pc-key.none { background: var(--raised); color: var(--faint-2); }
+/* The song's own tempo, beside its key. Fixed width so the column lines up
+   down the dock. */
+.pc-bpm {
+  flex: none; min-width: 26px; text-align: center;
+  font-size: 10.5px; font-weight: 600; color: var(--text-2);
+  padding: 2px 5px; border-radius: 4px; background: var(--raised);
+}
+.pc-bpm.none { color: var(--faint-2); }
 
 .pc-tags { padding: 0 11px 9px; display: flex; flex-wrap: wrap; gap: 5px; }
 .pc-tag { font-size: 10px; font-weight: 600; padding: 3px 6px; border-radius: 4px; }
@@ -2820,3 +2923,47 @@ input, select { font-family: inherit; }
    button IS disabled, because adding it twice is a no-op the server would
    report as a skip. */
 .tt-menu-item.on { color: var(--accent); }
+
+/* ── audio provenance: where a track's audio actually came from ────────────
+   A substituted download used to be invisible — the row showed the SoundCloud
+   link while the speakers played a YouTube remix. The chip says "not the link",
+   the detail line says what it is, the picker says why. */
+.tt-src {
+  flex: none; margin-left: 6px; padding: 0 5px; border-radius: 4px;
+  font-size: 9.5px; font-weight: 600; line-height: 1.6;
+  color: var(--muted); border: 1px solid var(--border-ctrl); cursor: help;
+}
+.tt-src.unverified { color: var(--amber); border-color: rgba(245, 166, 35, 0.45); }
+
+.audio-src {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: -6px 0 12px; font: 400 12px var(--font-ui); color: var(--muted);
+}
+.audio-src a { color: var(--text-2); text-decoration: none; }
+.audio-src a:hover { color: var(--accent-light); text-decoration: underline; }
+.audio-src-sub.unverified, .audio-src-sub.unverified a { color: var(--amber); }
+
+.asp {
+  display: flex; flex-direction: column; gap: 6px;
+  margin: 0 0 14px; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+}
+.tt-menu .asp { width: 440px; max-width: 80vw; margin: 4px 0; }
+.asp-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-size: 10.5px; color: var(--faint);
+}
+.asp-note { font-size: 11px; line-height: 1.45; }
+.asp-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px; align-items: center; padding: 5px 0; border-top: 1px solid var(--hair);
+}
+.asp-text { min-width: 0; display: flex; flex-direction: column; }
+.asp-title {
+  font: 500 12px var(--font-ui); color: var(--text); text-decoration: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.asp-title:hover { color: var(--accent-light); text-decoration: underline; }
+.asp-meta { font-size: 10.5px; color: var(--faint); }
+.asp-verdict { font-size: 10.5px; color: var(--faint); max-width: 200px; text-align: right; }
+.asp-verdict.ok { color: var(--green, #4ade80); }

@@ -403,7 +403,28 @@ _SONGS_OPTIONAL_COLUMNS = (
     # perfectly on every sub-score and would otherwise fill the ranked list.
     # Computed by matcher.dedup.rebuild_variant_clusters.
     ("variant_cluster", "INTEGER"),
+    # Provenance. source_url is where the AUDIO came from, and a download
+    # fallback rewrites it; origin_url / origin_duration_secs are the link the
+    # track was imported from and that record's length, written once and never
+    # changed, so a substitute can be checked against what was asked for.
+    # audio_provenance is JSON: {via: soundcloud|youtube|youtube_fallback|manual,
+    # url, title, uploader, score, duration_secs, expected_secs}.
+    ("origin_url", "TEXT"),
+    ("origin_duration_secs", "REAL"),
+    ("audio_provenance", "TEXT"),
 )
+
+# A length at or under this is a Go+ preview's, not the record's. Mirrors
+# downloader.download.PREVIEW_MAX_SECS (a test pins the two), duplicated so the
+# database layer does not import the downloader.
+_PREVIEW_MAX_SECS = 35
+
+# SQL: a row whose SoundCloud link a download fallback has already overwritten —
+# a SoundCloud track id (all digits; YouTube ids are not) or SoundCloud artwork,
+# but YouTube audio. Its original link and length are unknown until re-fetched.
+SC_LINK_OVERWRITTEN_SQL = """source = 'youtube' AND (
+       (COALESCE(track_id, '') != '' AND track_id NOT GLOB '*[^0-9]*')
+    OR COALESCE(thumbnail, '') LIKE '%sndcdn.com%')"""
 
 
 _FEATURES_OPTIONAL_COLUMNS = (
@@ -804,6 +825,18 @@ def _migrate_songs_columns(conn: sqlite3.Connection) -> None:
     for col, decl in _SONGS_OPTIONAL_COLUMNS:
         if col not in existing:
             conn.execute(f"ALTER TABLE songs ADD COLUMN {col} {decl}")
+    # Backfill the import link for rows that predate it: the current source_url
+    # IS the import link, unless a download fallback already overwrote it. Those
+    # stay NULL — guessing would record YouTube audio as what was asked for — and
+    # bulk_worker's suspect-audio scan re-fetches the real link and length.
+    conn.execute(
+        f"""UPDATE songs SET
+               origin_url = source_url,
+               origin_duration_secs = CASE WHEN duration_secs > {_PREVIEW_MAX_SECS}
+                                           THEN duration_secs END
+           WHERE origin_url IS NULL AND COALESCE(source_url, '') != ''
+             AND NOT ({SC_LINK_OVERWRITTEN_SQL})"""
+    )
     # Backfill release_year for rows ingested before the column existed.
     conn.execute(
         """UPDATE songs SET release_year = CAST(substr(upload_date, 1, 4) AS INTEGER)
@@ -882,6 +915,8 @@ def upsert_song(
     tags: str = "",
     release_year: int = 0,
     source: str = "",
+    origin_url: str = "",
+    origin_duration_secs: Optional[float] = None,
     db_path: Path = DB_PATH,
 ) -> int:
     """Insert or update a song row. Returns the song id.
@@ -889,22 +924,33 @@ def upsert_song(
     `metadata_partial=1` marks rows seeded from a flat playlist enumerate where
     full per-track enrichment failed. On re-upsert, the flag can only be cleared
     (partial → full), never re-raised, so an already-enriched row is not downgraded
-    by a later flat-only save."""
+    by a later flat-only save.
+
+    `origin_url` / `origin_duration_secs` default to the link being saved and its
+    length (unless that is a preview's). They are written once: a re-upsert
+    never replaces them, because they are what a substitute download is checked
+    against."""
     # Derive release_year at insert time — the migration-time backfill only runs
     # on the first open of a DB path per process, so rows inserted after that
     # would otherwise sit at 0 until the next restart.
     if not release_year and len(upload_date) >= 4 and upload_date[:4].isdigit():
         release_year = int(upload_date[:4])
+    origin_url = origin_url or source_url
+    if origin_duration_secs is None and (duration_secs or 0) > _PREVIEW_MAX_SECS:
+        origin_duration_secs = float(duration_secs)
     conn = get_conn(db_path)
     cur = conn.execute(
         """INSERT INTO songs (
                title, artist, source_url, source, duration_secs, genre, raw_path, status,
                artist_id, track_id, duration_str, upload_date,
                likes, reposts, comments, plays, thumbnail, metadata_partial,
-               tags, release_year
+               tags, release_year, origin_url, origin_duration_secs
            )
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(source_url) DO UPDATE SET
+               origin_url=COALESCE(origin_url, excluded.origin_url),
+               origin_duration_secs=COALESCE(origin_duration_secs,
+                                             excluded.origin_duration_secs),
                title=excluded.title,
                artist=excluded.artist,
                source=CASE WHEN excluded.source != '' THEN excluded.source ELSE source END,
@@ -947,6 +993,8 @@ def upsert_song(
             int(bool(metadata_partial)),
             tags,
             int(release_year or 0),
+            origin_url,
+            origin_duration_secs,
         ),
     )
     conn.commit()
@@ -1161,11 +1209,18 @@ def get_song(song_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
 def get_song_by_url(source_url: str, db_path: Path = DB_PATH) -> Optional[Dict]:
     """Look up a song by its exact source_url (used for pre-ingest dedup).
     Callers should pass an already-normalized URL (ingest.sources.normalize_url)
-    so trivial variants of the same link collide."""
+    so trivial variants of the same link collide.
+
+    The import link counts too: a track whose audio came from a YouTube
+    substitute is still the SoundCloud link you pasted, and pasting it again
+    must not import it twice."""
     if not source_url:
         return None
     conn = get_conn(db_path)
-    row = conn.execute("SELECT * FROM songs WHERE source_url=?", (source_url,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM songs WHERE source_url=? OR origin_url=? "
+        "ORDER BY source_url=? DESC LIMIT 1",
+        (source_url, source_url, source_url)).fetchone()
     conn.close()
     return dict(row) if row else None
 
@@ -1204,23 +1259,26 @@ def songs_by_identity(source_urls: Sequence[str] = (),
 
     clauses, params = [], []
     if urls:
-        clauses.append(f"source_url IN ({','.join('?' * len(urls))})")
-        params.extend(urls)
+        # The import link as well as the audio's: see get_song_by_url.
+        marks = ",".join("?" * len(urls))
+        clauses.append(f"source_url IN ({marks}) OR origin_url IN ({marks})")
+        params.extend(urls + urls)
     if tids:
         clauses.append(f"(track_id != '' AND track_id IN ({','.join('?' * len(tids))}))")
         params.extend(tids)
 
     conn = get_conn(db_path)
     rows = conn.execute(
-        "SELECT id, title, artist, source_url, track_id, status, last_error "
+        "SELECT id, title, artist, source_url, origin_url, track_id, status, last_error "
         f"FROM songs WHERE {' OR '.join(clauses)}", params).fetchall()
     conn.close()
 
     url_set, tid_set = set(urls), set(tids)
     for row in rows:
         r = dict(row)
-        if r["source_url"] in url_set:
-            out["by_url"][r["source_url"]] = r
+        for url in (r["origin_url"], r["source_url"]):
+            if url and url in url_set:
+                out["by_url"][url] = r
         if r["track_id"] and r["track_id"] in tid_set:
             out["by_track_id"][r["track_id"]] = r
     return out
@@ -1319,13 +1377,84 @@ def delete_song(song_id: int, db_path: Path = DB_PATH) -> Dict:
     return {"existed": True, "files": files}
 
 
-def update_song_url(song_id: int, new_url: str, db_path: Path = DB_PATH) -> Dict:
+def set_audio_provenance(song_id: int, provenance: Optional[Dict],
+                         db_path: Path = DB_PATH) -> None:
+    """Record where this song's audio file came from (None clears it). See the
+    audio_provenance column in _SONGS_OPTIONAL_COLUMNS for the shape."""
+    conn = get_conn(db_path)
+    conn.execute("UPDATE songs SET audio_provenance=? WHERE id=?",
+                 (json.dumps(provenance) if provenance else None, song_id))
+    conn.commit()
+    conn.close()
+
+
+def set_song_origin(song_id: int, origin_url: str,
+                    origin_duration_secs: Optional[float] = None,
+                    artist: Optional[str] = None,
+                    db_path: Path = DB_PATH) -> None:
+    """Restore the link a track was imported from, re-fetched after a download
+    fallback overwrote it. The only writer of origin_* besides the insert: this
+    is recovery of what was always true, not a change of what was asked for.
+
+    A re-fetched length replaces a stored one (a preview's never does), and a
+    credited artist replaces an uploader handle only when one is given."""
+    dur = (float(origin_duration_secs)
+           if origin_duration_secs and float(origin_duration_secs) > _PREVIEW_MAX_SECS
+           else None)
+    conn = get_conn(db_path)
+    conn.execute(
+        """UPDATE songs SET origin_url=?,
+               origin_duration_secs=COALESCE(?, origin_duration_secs),
+               artist=COALESCE(NULLIF(?, ''), artist),
+               updated_at=datetime('now')
+           WHERE id=?""",
+        (origin_url, dur, artist or "", song_id))
+    conn.commit()
+    conn.close()
+
+
+def confirm_audio(song_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
+    """Record that you listened to this track's audio and it IS the record.
+
+    Added to what the provenance already says (a fallback's upload title,
+    uploader, score) rather than replacing it, and pinned to the current
+    source_url: audio later downloaded from a different link is different audio,
+    so stages._record_provenance drops the confirmation then. Returns the new
+    provenance, or None when the song is missing or has no downloaded audio."""
+    from ingest.sources import classify_url
+    conn = get_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT source_url, raw_path, audio_provenance FROM songs WHERE id=?",
+            (song_id,)).fetchone()
+        if not row or not row["raw_path"]:
+            return None
+        try:
+            prov = json.loads(row["audio_provenance"] or "null") or {}
+        except (TypeError, ValueError):
+            prov = {}
+        if prov.get("url") != row["source_url"]:
+            prov = {"via": classify_url(row["source_url"])[0], "url": row["source_url"]}
+        prov["confirmed"] = True
+        conn.execute("UPDATE songs SET audio_provenance=? WHERE id=?",
+                     (json.dumps(prov), song_id))
+        conn.commit()
+        return prov
+    finally:
+        conn.close()
+
+
+def update_song_url(song_id: int, new_url: str, db_path: Path = DB_PATH,
+                    provenance: Optional[Dict] = None) -> Dict:
     """Point a song at a new source_url and reset its derived pipeline data so a
     re-run re-downloads from the new URL. Deletes stale stems/features/sections
     rows + mashup candidates, blanks raw_path, and sets status back to 'queued'.
     Returns ``{"files": [paths]}`` of stale audio/stem files for the caller to
     unlink. Raises ValueError on an empty URL, a missing song, or a collision
-    with another song's URL (source_url is UNIQUE)."""
+    with another song's URL (source_url is UNIQUE).
+
+    ``provenance`` replaces songs.audio_provenance (None clears it — the next
+    download writes its own). origin_url is never touched."""
     new_url = (new_url or "").strip()
     if not new_url:
         raise ValueError("URL cannot be empty")
@@ -1351,10 +1480,15 @@ def update_song_url(song_id: int, new_url: str, db_path: Path = DB_PATH) -> Dict
     conn.execute(
         "DELETE FROM mashup_candidates WHERE vocal_song_id=? OR inst_song_id=?",
         (song_id, song_id))
+    # source follows the link: a track pointed back at SoundCloud must stop
+    # claiming the YouTube source a fallback once gave it.
+    from ingest.sources import classify_url
+    source = classify_url(new_url)[0]
     conn.execute(
-        "UPDATE songs SET source_url=?, raw_path='', status='queued', "
-        "last_error=NULL, updated_at=datetime('now') WHERE id=?",
-        (new_url, song_id))
+        "UPDATE songs SET source_url=?, source=?, raw_path='', status='queued', "
+        "last_error=NULL, audio_provenance=?, updated_at=datetime('now') WHERE id=?",
+        (new_url, source if source != "unknown" else "",
+         json.dumps(provenance) if provenance else None, song_id))
     conn.commit()
     conn.close()
     return {"files": files}

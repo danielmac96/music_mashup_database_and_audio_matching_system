@@ -44,11 +44,17 @@ class FirecrawlAuthError(FirecrawlError):
 # the page's track links. Undetected, that reads downstream as "this tracklist has
 # no tracks", which is how two of the Big Bootie mixes appeared permanently
 # unimportable. Sniff the interstitial and retry with a longer budget instead.
+# The markers alone are not evidence: the real page embeds a Turnstile widget in
+# its footer ("Checking your Browser… Stuck? [Troubleshoot](challenges.cloudflare…)"),
+# which flagged every good render as the wall. Track links win over markers.
 _CHALLENGE_MARKERS = (
     "checking your browser",
     "you will be forwarded to the requested page",
     "challenges.cloudflare.com",
 )
+
+# Every rendered track row carries this link; the interstitial never does.
+_TRACK_LINK = "[open track page]"
 
 # Escalating render budgets, in ms. 6s clears the wall on most tracklist pages;
 # the heaviest ones (~240 tracks) need appreciably longer.
@@ -57,15 +63,19 @@ _WAIT_SCHEDULE = (6000, 15000, 25000)
 
 def _is_challenge(data: dict) -> bool:
     """True when `data` is Cloudflare's interstitial rather than the real page."""
+    md = data.get("markdown") or ""
+    if _TRACK_LINK in md:
+        return False
     if (data.get("metadata") or {}).get("statusCode") == 206:
         return True
-    md = (data.get("markdown") or "").lower()
-    return any(marker in md for marker in _CHALLENGE_MARKERS)
+    low = md.lower()
+    return any(marker in low for marker in _CHALLENGE_MARKERS)
 
 
 # A rendered track row: "Artist \- Title[open track page](https://.../track/ID/index.html ...".
 _TRACK_LINE_RE = re.compile(
-    r"^(?P<body>.+?)\[open track page\]\((?P<url>https://www\.1001tracklists\.com/track/[^ )]+)")
+    r"^(?P<body>.+?)" + re.escape(_TRACK_LINK)
+    + r"\((?P<url>https://www\.1001tracklists\.com/track/[^ )]+)")
 # A remix/edit annotation that trails after the first link — fold it back into the title
 # so the shared parse_line can derive the remixer.
 _REMIX_PAREN_RE = re.compile(
@@ -138,8 +148,8 @@ def _post_scrape(url: str, formats: list, api_key: str, _post) -> dict:
         if not _is_challenge(data):
             return data
         failure = FirecrawlChallenge(
-            f"Cloudflare challenge did not clear in {len(_WAIT_SCHEDULE)} attempts "
-            f"(up to {_WAIT_SCHEDULE[-1] // 1000}s) — the site is rate-limiting; retry shortly.")
+            f"Cloudflare interstitial returned on all {len(_WAIT_SCHEDULE)} attempts "
+            f"(up to {_WAIT_SCHEDULE[-1] // 1000}s render budget) — retry shortly.")
     raise failure
 
 

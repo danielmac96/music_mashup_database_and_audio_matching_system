@@ -21,9 +21,7 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
   const pct = pctOf(c);
   const rel = keyRel(c.vocal_camelot, c.inst_camelot);
   const effort = c.effort_label || null;
-  const bars = c.section_bars_vocal != null
-    ? `${Math.round(c.section_bars_vocal)} bars` : null;
-  const tempo = c.target_bpm != null ? `${c.target_bpm.toFixed(1)} BPM` : null;
+  const tempo = c.target_bpm != null ? `→ ${c.target_bpm.toFixed(1)} BPM` : null;
 
   return (
     <div
@@ -37,7 +35,7 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
           title={`percentile ${pct} · raw score ${rawPctOf(c)}`}>{pct}</div>
         <div className="pc-headtext">
           <div className="pc-tier mono" style={{ color: tier.color }}>{tier.tier}</div>
-          <div className="pc-sub">{[bars, tempo].filter(Boolean).join(" · ") || "—"}</div>
+          <div className="pc-sub">{tempo || "—"}</div>
         </div>
         {effort && (
           <span className={`pc-effort mono ${EFFORT_TONE[effort] || ""}`}
@@ -51,11 +49,13 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
         <Side role="VOX" songId={c.vocal_song_id} title={c.vocal_title}
           span={spanLabel(c.vocal_section_label, c.vocal_section_start,
             c.vocal_section_end)}
-          camelot={c.vocal_camelot} />
+          bars={c.section_bars_vocal}
+          camelot={c.vocal_camelot} bpm={c.vocal_bpm} />
         <Side role="BED" songId={c.inst_song_id} title={c.inst_title}
           span={spanLabel(c.inst_section_label, c.inst_section_start,
             c.inst_section_end)}
-          camelot={c.inst_camelot} />
+          bars={c.section_bars_bed}
+          camelot={c.inst_camelot} bpm={c.inst_bpm} />
       </div>
 
       <div className="pc-tags">
@@ -90,20 +90,30 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
   );
 }
 
-function Side({ role, songId, title, span, camelot }) {
+// One song of the pair: what it is, which stretch of it plays, and the key and
+// tempo it brings before any adjustment. A null bpm is unanalysed, drawn as a
+// dash like the key chip, never as 0.
+function Side({ role, songId, title, span, bars, camelot, bpm }) {
+  const barText = bars != null && Number.isFinite(Number(bars))
+    ? ` · ${Math.round(bars)} bars` : "";
   return (
     <div className="pc-side">
       <span className={`pc-role mono ${role.toLowerCase()}`}>{role}</span>
       <TrackArt id={songId} className="pc-art" />
       <div className="pc-sidetext">
         <div className="pc-title">{title}</div>
-        <div className="pc-span mono">{span}</div>
+        <div className="pc-span mono">{span}{barText}</div>
       </div>
       {camelot
         ? <span className="pc-key mono" style={{ background: camelotColor(camelot) }}>
             {camelot}
           </span>
         : <span className="pc-key mono none">—</span>}
+      {bpm != null && Number.isFinite(Number(bpm))
+        ? <span className="pc-bpm mono" title={`${Number(bpm).toFixed(1)} BPM`}>
+            {Math.round(bpm)}
+          </span>
+        : <span className="pc-bpm mono none" title="Tempo not analysed">—</span>}
     </div>
   );
 }
@@ -119,11 +129,11 @@ function ScoreBars({ candidate }) {
     <div className="pc-bars">
       {termsOf(candidate).map((t) => (
         <div key={t.key} className="pc-bar-row">
-          <span className="pc-bar-label mono">{t.label}</span>
+          <span className="pc-bar-label mono" title={t.what}>{t.label}</span>
           <span className={`pc-bar${t.known ? "" : " unmeasured"}`}
             title={t.known
-              ? `${t.label} ${(t.value * 100).toFixed(0)}%`
-              : `${t.label} not measured — re-score the library to fill this in`}>
+              ? `${t.label} ${(t.value * 100).toFixed(0)}% — ${t.what}`
+              : `${t.label} not measured — re-score the library to fill this in (${t.what})`}>
             {t.known && (
               <span style={{ width: `${Math.round(t.value * 100)}%`,
                              background: t.color }} />

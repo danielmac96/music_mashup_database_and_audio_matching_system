@@ -41,6 +41,8 @@ _STAGE_WORKERS = {
 }
 _STARTED = False
 _LOCK = threading.Lock()
+# Worker threads actually started per stage (start() may be forced to a size).
+_POOL_SIZES: dict[str, int] = {}
 
 
 def enqueue_song(song_id: int) -> str:
@@ -63,6 +65,9 @@ def _dispatch(job_id: str, song_id: int) -> None:
         # (cheap no-op when sections exist) so re-Process behaves like before.
         _QUEUES["analysis"].put((job_id, song_id))
         return
+    # Recorded before the put: a free worker can take the item at once, and its
+    # 'running' must not be overwritten by a late 'waiting'.
+    jobs.stage_wait(job_id, stage)
     _QUEUES[stage].put((job_id, song_id))
 
 
@@ -80,6 +85,8 @@ def _worker_loop(stage: str, worker_index: int) -> None:
                 pipeline_worker._finalize(job_id, song_id)
             elif wanted != stage:
                 # Status moved while queued (e.g. manual button) — re-route.
+                jobs.stage_drop(job_id, stage)
+                jobs.stage_wait(job_id, wanted)
                 _QUEUES[wanted].put((job_id, song_id))
             else:
                 outcome = pipeline_worker.run_stage(job_id, song_id, stage)
@@ -105,6 +112,7 @@ def start(num_workers: Optional[int] = None) -> None:
         _STARTED = True
         for stage, q_workers in _STAGE_WORKERS.items():
             n = max(1, num_workers if num_workers is not None else q_workers)
+            _POOL_SIZES[stage] = n
             for i in range(n):
                 threading.Thread(
                     target=_worker_loop, args=(stage, i),
@@ -132,3 +140,18 @@ def resume_pending() -> int:
 
 def queued_count() -> int:
     return sum(q.qsize() for q in _QUEUES.values())
+
+
+def snapshot() -> dict[str, dict]:
+    """What each stage queue holds, in line order: {stage: {workers, waiting:
+    [job_id, ...]}}. Reads the queue's deque under its own mutex, so the order
+    is the order workers will take them."""
+    out: dict[str, dict] = {}
+    for stage, q in _QUEUES.items():
+        with q.mutex:
+            waiting = [job_id for job_id, _song_id in q.queue]
+        out[stage] = {
+            "workers": _POOL_SIZES.get(stage, max(1, _STAGE_WORKERS[stage])),
+            "waiting": waiting,
+        }
+    return out

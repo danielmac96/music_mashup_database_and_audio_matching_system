@@ -23,6 +23,75 @@ export function classifyUrl(url) {
   return { source: "unknown", kind: "track" };
 }
 
+// When a library track's audio is NOT the link it was imported from, say what it
+// is: { kind, chip, label, title, url, confirmed }, or null when the audio is the
+// link. Reads songs.audio_provenance (api/workers/stages._record_provenance) and
+// mirrors the "overwritten SoundCloud link" test in database/models.py
+// (SC_LINK_OVERWRITTEN_SQL) for tracks downloaded before provenance existed.
+//
+// `confirmed` is "✓ Sounds right" (POST /api/tracks/{id}/audio-confirm): you
+// listened and it is the record. It is pinned to the link the audio came from,
+// so a download from anywhere else starts unconfirmed again.
+export function audioSubstitution(track) {
+  const p = track?.audio_provenance;
+  const confirmed = !!p?.confirmed && p.url === track?.source_url;
+  const byYou = confirmed ? " · ✓ confirmed by you" : "";
+  if (p?.via === "youtube_fallback") {
+    const delta = p.duration_secs && p.expected_secs
+      ? Math.round(p.duration_secs - p.expected_secs) : null;
+    return {
+      kind: "fallback",
+      chip: "YT",
+      label: `Audio: YouTube — ${p.title || "upload"}${p.uploader ? ` by ${p.uploader}` : ""}`
+        + (delta != null ? ` (Δ ${delta >= 0 ? "+" : "−"}${Math.abs(delta)}s)` : "")
+        + byYou,
+      title: confirmed
+        ? "A YouTube upload stood in for this track, and you confirmed it is the record."
+        : "SoundCloud would not serve this track, so a YouTube upload that "
+          + "passed the same-record check was downloaded instead.",
+      url: p.url,
+      confirmed,
+    };
+  }
+  if (p?.via === "manual" && track.origin_url && p.url !== track.origin_url) {
+    return {
+      kind: "manual",
+      chip: classifyUrl(p.url).source === "youtube" ? "YT" : "↗",
+      label: `Audio: your pick — ${p.title || p.url}`,
+      title: "You chose this upload. It is never flagged as suspect.",
+      url: p.url,
+      // A pick is already your decision; there is nothing left to confirm.
+      confirmed: true,
+    };
+  }
+  const scLooking = /^\d+$/.test(track?.track_id || "")
+    || /sndcdn\.com/.test(track?.thumbnail || "");
+  if (track && !track.origin_url && track.source === "youtube" && scLooking) {
+    if (confirmed) {
+      return {
+        kind: "confirmed",
+        chip: "YT",
+        label: `Audio: YouTube${byYou}`,
+        title: "Downloaded from YouTube before substitutes were checked — you "
+          + "listened and confirmed it is the record.",
+        url: track.source_url,
+        confirmed,
+      };
+    }
+    return {
+      kind: "unverified",
+      chip: "YT?",
+      label: "Audio: YouTube — unverified",
+      title: "Downloaded from YouTube before substitutes were checked, so it may "
+        + "be a remix or a different cut. Listen, then ✓ Sounds right or Wrong "
+        + "audio? — or re-download the suspect tracks from the library bar.",
+      url: track.source_url,
+      confirmed,
+    };
+  }
+  return null;
+}
+
 // Junk suffixes YouTube uploaders bolt onto titles. Applied repeatedly so
 // "Song (Official Video) [HQ]" fully unwraps.
 const TITLE_JUNK = [

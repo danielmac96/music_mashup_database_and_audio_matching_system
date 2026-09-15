@@ -220,6 +220,7 @@ def test_stage_queues_route_track_through_pipeline(env, monkeypatch):
 
     sid = models.upsert_song(title="T", artist="A", source_url="http://x/1", status="queued")
     jid = queue_runner.enqueue_song(sid)
+    assert jobs.get(jid)["stages"]["download"]["state"] == "waiting"
 
     for expected in ("download", "stems", "analysis"):
         job_id, song_id = queue_runner._QUEUES[expected].get_nowait()
@@ -248,6 +249,106 @@ def test_dispatch_resumes_mid_pipeline_track_at_right_stage(env, monkeypatch):
     queue_runner.enqueue_song(sid)
     assert queue_runner._QUEUES["download"].qsize() == 0
     assert queue_runner._QUEUES["stems"].qsize() == 1
+
+
+# ── The per-stage timeline the Queue screen reads ────────────────────────────
+
+def _stages(jid):
+    import api.jobs as jobs
+    return jobs.get(jid)["stages"]
+
+
+def test_job_timeline_records_every_stage(env, monkeypatch):
+    models = env
+    _mock_stages(monkeypatch)
+    import api.workers.pipeline_worker as pw
+    import api.jobs as jobs
+
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/1", status="queued")
+    jid = jobs.new_job(kind="pipeline", song_id=sid)
+    pw.run(jid, sid)
+
+    stages = _stages(jid)
+    assert list(stages) == ["download", "stems", "analysis", "structure"]
+    for name, rec in stages.items():
+        assert rec["state"] == "done", name
+        assert rec["started_at"] <= rec["finished_at"], name
+        assert rec["progress"] == 100, name
+
+
+def test_job_timeline_stops_at_the_failed_stage(env, monkeypatch):
+    models = env
+    sid = models.upsert_song(title="Bad", artist="B", source_url="http://x/b", status="queued")
+    _mock_stages(monkeypatch, fail_stems_for={sid})
+    import api.workers.pipeline_worker as pw
+    import api.jobs as jobs
+
+    jid = jobs.new_job(kind="pipeline", song_id=sid)
+    pw.run(jid, sid)
+
+    stages = _stages(jid)
+    assert stages["download"]["state"] == "done"
+    assert stages["stems"]["state"] == "failed"
+    assert stages["stems"]["error"] == "boom stems"
+    assert "analysis" not in stages and "structure" not in stages
+
+
+def test_job_timeline_marks_current_structure_skipped(env, monkeypatch):
+    models = env
+    _mock_stages(monkeypatch)
+    import api.workers.pipeline_worker as pw
+    import api.jobs as jobs
+
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/1",
+                             status="analysed")
+    models.replace_sections(sid, [dict(_CURRENT_SECTION)])
+    jid = jobs.new_job(kind="pipeline", song_id=sid)
+    pw.run(jid, sid)
+
+    # Stages passed before this job are not invented; the frontend reads the track.
+    assert _stages(jid) == {"structure": _stages(jid)["structure"]}
+    assert _stages(jid)["structure"]["state"] == "skipped"
+
+
+def test_structure_failure_shows_on_the_timeline_not_the_job(env, monkeypatch):
+    models = env
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/1", status="queued")
+    _mock_stages(monkeypatch, fail_structure_for={sid})
+    import api.workers.pipeline_worker as pw
+    import api.jobs as jobs
+
+    jid = jobs.new_job(kind="pipeline", song_id=sid)
+    pw.run(jid, sid)
+
+    assert jobs.get(jid)["status"] == "completed"
+    assert _stages(jid)["structure"]["state"] == "failed"
+    assert "boom structure" in _stages(jid)["structure"]["error"]
+
+
+def test_progress_lands_on_the_stage_record(env, monkeypatch):
+    models = env
+    _mock_stages(monkeypatch)
+    import api.workers.stages as stages
+    import api.workers.pipeline_worker as pw
+    import api.jobs as jobs
+
+    seen = {}
+
+    def dl(sid, on_progress=None):
+        on_progress(42, "yt-dlp: 42%")
+        seen.update(jobs.get(jid)["stages"]["download"])
+        models.update_song_status(sid, "downloaded", raw_path=f"/f/{sid}.mp3")
+        return {}
+    monkeypatch.setattr(stages, "do_download", dl)
+
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/1", status="queued")
+    jid = jobs.new_job(kind="pipeline", song_id=sid)
+    pw.run_stage(jid, sid, "download")
+
+    assert seen["state"] == "running"
+    assert seen["progress"] == 42 and seen["message"] == "yt-dlp: 42%"
+    # The job-level fields keep their old 'stage: message' form.
+    assert jobs.get(jid)["message"] != "yt-dlp: 42%"
 
 
 def test_error_records_last_error_and_progress_clears_it(env):

@@ -123,6 +123,25 @@ def test_challenge_on_every_attempt_raises_a_challenge_error():
     assert len(sent) == len(fc._WAIT_SCHEDULE) > 1
 
 
+def test_real_page_with_a_turnstile_footer_widget_is_not_the_wall():
+    # The bug: 1001tracklists embeds a Turnstile widget in the footer of the real,
+    # fully rendered page (HTTP 200, all track links). The marker sniff matched it,
+    # burned every attempt, and reported "challenge did not clear" (Big Bootie 27).
+    footer = (
+        "\nChecking your Browser…\n\nVerifying...\n\n"
+        "Stuck? [Troubleshoot](https://challenges.cloudflare.com/cdn-cgi/challenge-platform/"
+        "h/g/turnstile/f/av0/rch/pva50/0x4AAAAAACGccIXqjGsL5W5F/auto/fbE/new/normal"
+        "?lang=auto#refresh)\n\nSuccess!\n\nVerification failed\n"
+    )
+    post, sent = _recording_post([
+        {"success": True, "data": {"markdown": _MD + footer, "metadata": {"statusCode": 200}}},
+    ])
+    rows = fc.scrape_tracklist("https://www.1001tracklists.com/tracklist/x.html",
+                               api_key="fc-k", _post=post)
+    assert len(rows) == 4
+    assert len(sent) == 1
+
+
 def test_track_links_scrape_also_retries_the_challenge():
     # The per-track JSON scrape hits the same wall; it has no markdown to sniff,
     # so the 206 status is what identifies the interstitial.

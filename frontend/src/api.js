@@ -69,6 +69,10 @@ export const api = {
     return jsonFetch(`/api/jobs?${params}`);
   },
 
+  // The pipeline pools (workers / busy / waiting per stage) and each waiting
+  // job's place in line — the Queue screen.
+  getQueue: () => jsonFetch("/api/jobs/queue"),
+
   correctFeatures: (id, { bpm, key, mode } = {}) =>
     jsonFetch(`/api/tracks/${id}/features`, {
       method: "PATCH",
@@ -106,11 +110,23 @@ export const api = {
 
   // Repoint a song at a corrected URL. Resets download/stems/analysis and
   // re-runs the pipeline from the new URL.
-  updateTrackUrl: (id, sourceUrl) =>
+  // `pick` ({ title, uploader, duration_secs }) is set when the link came from
+  // the "Wrong audio?" picker, and is recorded as where the audio came from.
+  updateTrackUrl: (id, sourceUrl, pick = null) =>
     jsonFetch(`/api/tracks/${id}/url`, {
       method: "PATCH",
-      body: JSON.stringify({ source_url: sourceUrl }),
+      body: JSON.stringify({ source_url: sourceUrl, pick }),
     }),
+
+  // YouTube uploads that could be this track's audio, each with the verdict the
+  // download fallback applies (passes / reason / duration_delta). Slow — two
+  // live searches — so the picker shows that it is searching.
+  audioCandidates: (id) => jsonFetch(`/api/tracks/${id}/audio-candidates`),
+
+  // "✓ Sounds right": you listened and a substituted track's audio is the
+  // record. Settles YT? to YT and drops it from the suspect-audio count.
+  confirmAudio: (id) =>
+    jsonFetch(`/api/tracks/${id}/audio-confirm`, { method: "POST" }),
 
   getJob: (jobId) => jsonFetch(`/api/jobs/${jobId}`),
 
