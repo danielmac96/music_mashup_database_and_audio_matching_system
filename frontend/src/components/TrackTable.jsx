@@ -1,6 +1,7 @@
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
 import { SortHead } from "./SortHead";
+import { useColumnWidths } from "../hooks/useColumnWidths";
 import { audioSubstitution } from "../sources";
 import {
   camelotColor, fmtDur, fmtPlays, fmtYear, pipelineDots, playsColor, yearColor,
@@ -12,23 +13,28 @@ import {
 // column width it cannot spare at this frame size, and both are one click away
 // on the track's own screen — where there is room to show them properly.
 
-const COLS = "26px 30px minmax(170px,1fr) 56px 40px 52px 52px 44px 56px 70px 44px";
-
+// One entry per column, in order: the id widths are stored under, the default
+// grid track, the floor a drag may not go below, and the sort key.
+//
+// TITLE and GENRE are both flexible. Title used to be the only `1fr`, so it
+// absorbed every pixel of slack on a wide desktop while GENRE stayed at its
+// 56px floor and truncated the one thing it exists to show.
+//
 // The sort keys are useLibraryFilters' own — the state already existed and was
 // reachable only through the dropdown in the filter bar, which still shares it.
 // PIPE has no key: it is four assembled booleans, not a value to order by.
 const HEADS = [
-  { label: "" },
-  { label: "" },
-  { label: "TITLE", key: "title", also: { label: "ARTIST", key: "artist" } },
-  { label: "GENRE", key: "genre" },
-  { label: "YEAR", key: "year", numeric: true },
-  { label: "PLAYS", key: "plays", numeric: true },
-  { label: "BPM", key: "bpm", numeric: true },
-  { label: "KEY", key: "key" },
-  { label: "PIPE" },
-  { label: "RATING", key: "rating", numeric: true },
-  { label: "TIME", key: "duration", numeric: true, right: true },
+  { id: "play", label: "", w: "26px" },
+  { id: "art", label: "", w: "30px" },
+  { id: "name", label: "TITLE", key: "title", also: { label: "ARTIST", key: "artist" }, w: "minmax(200px,1.6fr)", min: 160, grip: true },
+  { id: "genre", label: "GENRE", key: "genre", w: "minmax(96px,0.7fr)", min: 56, grip: true },
+  { id: "year", label: "YEAR", key: "year", numeric: true, w: "44px", min: 36, grip: true },
+  { id: "plays", label: "PLAYS", key: "plays", numeric: true, w: "56px", min: 44, grip: true },
+  { id: "bpm", label: "BPM", key: "bpm", numeric: true, w: "52px", min: 40, grip: true },
+  { id: "key", label: "KEY", key: "key", w: "46px", min: 38, grip: true },
+  { id: "pipe", label: "PIPE", w: "56px", min: 44, grip: true },
+  { id: "rating", label: "RATING", key: "rating", numeric: true, w: "70px", min: 56, grip: true },
+  { id: "time", label: "TIME", key: "duration", numeric: true, right: true, w: "48px", min: 40 },
 ];
 
 // Four stages, in the order they run: downloaded, analysed, sections, stems.
@@ -53,12 +59,31 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
   const dir = sort?.primaryDir ?? "desc";
   const setKey = (p) => onSort?.({ ...(sort || {}), primary: p.sort,
                                    primaryDir: p.dir });
+  const { template, setWidth, resetColumn } = useColumnWidths(HEADS);
+
+  // Dragging measures the header cell rather than reading the stored width,
+  // because a column still on its default has no stored width to read — and a
+  // `fr` track's rendered size is the only honest starting point.
+  const onGrab = (h) => (e) => {
+    e.preventDefault();
+    e.stopPropagation();      // never let a grip reach the SortHead beneath it
+    const cell = e.currentTarget.parentElement;
+    const startX = e.clientX;
+    const startW = cell.getBoundingClientRect().width;
+    const move = (ev) => setWidth(h.id, startW + (ev.clientX - startX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
 
   return (
     <div className="track-table">
-      <div className="tt-head" style={{ gridTemplateColumns: COLS }}>
+      <div className="tt-head" style={{ gridTemplateColumns: template }}>
         {HEADS.map((h, i) => (
-          <div key={i} className={`tt-h${h.right ? " right" : ""}`}>
+          <div key={h.id} className={`tt-h${h.right ? " right" : ""}`}>
             <SortHead label={h.label} sortKey={sortable ? h.key : null}
               sort={key} dir={dir} onSort={setKey} numeric={h.numeric} />
             {h.also && (
@@ -68,12 +93,17 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
                   sort={key} dir={dir} onSort={setKey} />
               </>
             )}
+            {h.grip && (
+              <span className="tt-grip" onPointerDown={onGrab(h)}
+                onDoubleClick={(e) => { e.stopPropagation(); resetColumn(h.id); }}
+                title="Drag to resize · double-click to reset" />
+            )}
           </div>
         ))}
       </div>
       <div className="tt-body">
         {tracks.map((t) => (
-          <TrackRow key={t.id} t={t}
+          <TrackRow key={t.id} t={t} cols={template}
             selected={selectedId === t.id}
             playing={playingId === t.id}
             running={runningKind(t)}
@@ -92,7 +122,7 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
   );
 }
 
-function TrackRow({ t, selected, playing, running, menuOpen, onMenu,
+function TrackRow({ t, cols, selected, playing, running, menuOpen, onMenu,
                     renderMenu, onSelect, onOpen, onPlay }) {
   const f = t.features?.full || {};
   const dots = pipelineDots(t, running);
@@ -104,7 +134,7 @@ function TrackRow({ t, selected, playing, running, menuOpen, onMenu,
   return (
     <div
       className={`tt-row${selected ? " selected" : ""}${playing ? " playing" : ""}`}
-      style={{ gridTemplateColumns: COLS }}
+      style={{ gridTemplateColumns: cols }}
       onClick={() => onSelect(t.id)}
       onDoubleClick={() => onOpen(t.id)}
       title="Click to scope the pair list">
@@ -115,10 +145,11 @@ function TrackRow({ t, selected, playing, running, menuOpen, onMenu,
 
       <TrackArt id={t.id} thumbnail={t.thumbnail} className="tt-art" />
 
-      {/* The title is the link into the track's own screen. The row itself
-          still belongs to the dock — clicking it scopes the pair list — so
-          navigation needs a surface of its own, and it has to look like one.
-          stopPropagation is what stops one click doing both. */}
+      {/* The whole title/artist cell is the link into the track's own screen —
+          the button fills the cell, height included, so there is no dead strip
+          that falls through to the row. The rest of the row still belongs to
+          the dock, which is what clicking it scopes. stopPropagation is what
+          stops one click doing both. */}
       <button className="tt-name" title={`Open ${t.title}`}
         onClick={(e) => { e.stopPropagation(); onOpen(t.id); }}>
         <span className="tt-title">

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { keyOf } from "../components/pairs/pairModel";
+import { toast } from "../toast";
+import { keyOf, SCORE_TERMS } from "../components/pairs/pairModel";
 
 // The pair dock: what it shows, where the cursor is, and what the keyboard does.
 //
@@ -9,17 +10,24 @@ import { keyOf } from "../components/pairs/pairModel";
 // your place again. Here the list is always beside the library, and a whole
 // judgement is one keypress.
 //
-// ORDERS. "score" and "uncertain" are the server's — uncertain surfaces the
-// model's blind spots, where a verdict buys the most information per keypress.
-// "effort" sorts client-side over the page the server returned, and says so:
-// re-asking the server for cheap-to-build pairs would be a different query, not
-// a re-ordering of this one.
+// ORDERS. Everything except "effort" is the server's, so it ranks the library
+// rather than the page: uncertain surfaces the model's blind spots, where a
+// verdict buys the most information per keypress, and the four section terms
+// ask "which pairs agree on phrasing?" of the whole table.
+//
+// "effort" alone sorts client-side over the page the server returned, and says
+// so: re-asking the server for cheap-to-build pairs would be a different query
+// (max_effort), not a re-ordering of this one.
 export const ORDERS = [
   ["score", "Score", "Best fit first."],
   ["effort", "Effort", "Cheapest to build first, within the rows already loaded."],
   ["uncertain", "Uncertain",
    "Where the learned scorer is least sure — a verdict here teaches it the most."],
+  ...SCORE_TERMS.map((t) => [t.order, t.label, `Best ${t.what}`, t.color]),
 ];
+
+// The one order the server does not do. Everything else is sent as-is.
+const CLIENT_ORDER = "effort";
 
 const LIMIT = 40;
 // One song may not own the dock. Three rows is enough to show that a pair works
@@ -60,7 +68,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       if (role === "instrumental") opts.instSongId = selectedTrackId;
       else opts.vocalSongId = selectedTrackId;
     }
-    if (order === "uncertain") opts.order = "uncertain";
+    if (order !== CLIENT_ORDER) opts.order = order;
     api.getMashups(opts)
       .then((d) => {
         if (cancelled) return;
@@ -73,7 +81,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   }, [selectedTrackId, role, order]);
 
   const visible = useMemo(() => {
-    if (order !== "effort") return rows;
+    if (order !== CLIENT_ORDER) return rows;
     // Missing effort sorts last: an unscored row is not a cheap one.
     return [...rows].sort((a, b) => {
       const x = a.score_effort, y = b.score_effort;
@@ -111,6 +119,22 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     });
   }, []);
 
+  // Hiding is a display preference, not a verdict: it is suppressed by the SQL
+  // and never becomes training data. The row goes immediately rather than on a
+  // refetch — waiting for the list to blink is what makes triage feel slow.
+  const hide = useCallback(async (candidate) => {
+    if (!candidate) return;
+    const k = keyOf(candidate);
+    const before = rowsRef.current;
+    setRows((rs) => rs.filter((r) => keyOf(r) !== k));
+    try {
+      await api.hidePair(candidate.vocal_song_id, candidate.inst_song_id);
+    } catch (e) {
+      setRows(before);
+      toast(`Could not hide that pair: ${e.message}`);
+    }
+  }, []);
+
   const openStudio = useCallback((candidate) => {
     if (!candidate) return;
     player.stop();
@@ -118,7 +142,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   }, [player, onOpenStudio]);
 
   // The keyboard model, from the dock's own footer: ↑↓ move, space loop,
-  // 1-5 rate, V/B solo, ⏎ studio. `enabled` is what stops it firing while
+  // 1-5 rate, V/B solo, h hide, ⏎ studio. `enabled` is what stops it firing while
   // another screen is on top — a window listener that ignores which screen is
   // showing is how two keyboard models end up fighting over the space bar.
   const bindKeys = useCallback((enabled) => {
@@ -145,6 +169,11 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
         audio.setStemMode(audio.stemMode === "bed" ? "both" : "bed");
         return;
       }
+      if (e.key === "h" || e.key === "H") {
+        e.preventDefault();
+        hide(row);
+        return;
+      }
       if (e.key >= "1" && e.key <= "5" && row) {
         e.preventDefault();
         ratings.rate(row, Number(e.key));
@@ -152,11 +181,11 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, cursor, move, play, openStudio, audio, ratings]);
+  }, [visible, cursor, move, play, openStudio, hide, audio, ratings]);
 
   return {
     order, setOrder, rows: visible, loading, error,
     cursor, setCursor, current, armedKey,
-    play, move, openStudio, bindKeys, audio,
+    play, move, openStudio, hide, bindKeys, audio,
   };
 }

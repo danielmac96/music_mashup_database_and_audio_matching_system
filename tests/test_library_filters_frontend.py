@@ -116,3 +116,70 @@ def test_a_track_star_is_the_best_pairing_it_appears_in():
     fn = fn[:fn.index("}, [rows])")]
     assert "f.vocal_song_id, f.inst_song_id" in fn
     assert "stars > out[id]" in fn
+
+
+# ── columns ──────────────────────────────────────────────────────────────────
+# The table is CSS-grid divs, so the column model IS the grid template. Head and
+# rows share one string; two copies would drift and every cell below the header
+# would draw under the wrong column.
+
+def test_the_head_and_the_rows_share_one_template():
+    assert TABLE.count("gridTemplateColumns: template") == 1
+    assert "gridTemplateColumns: cols" in TABLE
+    assert "<TrackRow key={t.id} t={t} cols={template}" in TABLE
+
+
+def test_every_column_declares_an_id_and_a_width():
+    """Widths are stored per id. An index would silently re-point every stored
+    width the first time a column moved, and the symptom — one narrow column
+    somewhere else — looks nothing like the cause."""
+    heads = TABLE[TABLE.index("const HEADS = ["):]
+    heads = heads[:heads.index("];")]
+    entries = [l for l in heads.split("\n") if l.strip().startswith("{ id:")]
+    assert len(entries) == 11, entries
+    for line in entries:
+        assert " w: " in line, line
+    # Each entry stays on ONE line: test_sc_preview_frontend parses this block
+    # line-by-line to assert PIPE carries no sort key.
+    assert "\n" not in "".join(e for e in entries if e.count("{") != e.count("}"))
+
+
+def test_title_and_genre_both_flex():
+    """Title used to be the only 1fr, so it absorbed every pixel of slack on a
+    wide desktop while GENRE sat at its floor and truncated the one thing it
+    exists to show."""
+    heads = TABLE[TABLE.index("const HEADS = ["):]
+    heads = heads[:heads.index("];")]
+    name = next(l for l in heads.split("\n") if '{ id: "name"' in l)
+    genre = next(l for l in heads.split("\n") if '{ id: "genre"' in l)
+    assert "fr)" in name and "minmax(" in name
+    assert "fr)" in genre and "minmax(" in genre
+
+
+def test_a_grip_drag_never_reaches_the_sort_header():
+    grip = TABLE[TABLE.index("const onGrab"):]
+    grip = grip[:grip.index("return (")]
+    assert "e.stopPropagation()" in grip
+    assert "getBoundingClientRect" in grip, "a fr column has no stored width to read"
+    assert 'className="tt-grip"' in TABLE
+    assert "resetColumn" in TABLE, "double-click should restore the default"
+
+
+def test_stored_widths_survive_a_column_change():
+    hook = _read("hooks/useColumnWidths.js")
+    assert "localStorage" in hook
+    # Unknown ids ignored, missing ones fall back — neither may throw.
+    assert "try {" in hook and "catch" in hook
+    assert "Number.isFinite" in hook, "a half-written value must not collapse a column"
+
+
+# ── the class filter is gone ─────────────────────────────────────────────────
+
+def test_no_class_filter():
+    """Every row in the library is a whole track, and playback already toggles
+    vocal/bed — the chip filtered on a dominant section class that answered a
+    question the screen does not ask."""
+    for src in (HOOK, BAR):
+        assert "track_class" not in src
+        assert "CLASSES" not in src
+        assert "cls:" not in src

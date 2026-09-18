@@ -41,14 +41,17 @@ export const EFFORT_TONE = { Free: "free", Light: "light", Heavy: "heavy" };
 // signal twice — which is why neither gets a bar.
 // `what` is the hover text: the abbreviations stay, so they have to explain
 // themselves somewhere.
+// `order` is the value GET /api/mashups accepts to rank by this one term —
+// database.models.SECTION_TERM_ORDERS. The dock's sort buttons are built from
+// this list, so a button and the bar it corresponds to cannot drift apart.
 export const SCORE_TERMS = [
-  { key: "score_label", label: "LBL", color: "var(--accent)",
+  { key: "score_label", label: "LBL", order: "label", color: "var(--accent)",
     what: "label — chorus over drop ranks above verse over breakdown" },
-  { key: "score_duration", label: "DUR", color: "var(--cyan)",
+  { key: "score_duration", label: "DUR", order: "duration", color: "var(--cyan)",
     what: "duration — the bed section covers the vocal section in bars, looping allowed" },
-  { key: "score_voice", label: "VOI", color: "var(--violet)",
+  { key: "score_voice", label: "VOI", order: "voice", color: "var(--violet)",
     what: "voice — how much real singing the vocal section carries" },
-  { key: "score_phrase", label: "PHR", color: "var(--amber)",
+  { key: "score_phrase", label: "PHR", order: "phrase", color: "var(--amber)",
     what: "phrase — equal phrase lengths best, clean multiples high" },
 ];
 
@@ -61,6 +64,31 @@ export function termsOf(candidate) {
     const known = v != null && Number.isFinite(Number(v));
     return { ...t, value: known ? Number(v) : null, known };
   });
+}
+
+/* ── handing a pair to Studio ─────────────────────────────────────────────── */
+
+/** A candidate row, reshaped into the timing-option key set the plan emits.
+ *
+ * Studio holds one list of options and does not care which came from the plan
+ * and which from the row it was opened on — that only works while both speak
+ * the `_pair_row` vocabulary (matcher/sections.py). Keep these names in step
+ * with matcher.sections._pair_row if you add a field. */
+export function scoredOptionOf(c) {
+  return {
+    vocal_section_idx: c.vocal_section_idx ?? null,
+    inst_section_idx: c.inst_section_idx ?? null,
+    vocal_section_start: c.vocal_section_start,
+    vocal_section_end: c.vocal_section_end,
+    inst_section_start: c.inst_section_start,
+    inst_section_end: c.inst_section_end,
+    vocal_section_label: c.vocal_section_label,
+    inst_section_label: c.inst_section_label,
+    score_section: c.score_section,
+    section_bars_vocal: c.section_bars_vocal,
+    alignment_offset: c.alignment_offset ?? null,
+    reason: c.reason,
+  };
 }
 
 /* ── section spans ───────────────────────────────────────────────────────── */

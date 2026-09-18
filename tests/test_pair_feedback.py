@@ -156,3 +156,49 @@ def test_pair_feedback_is_browsable_in_the_database_tab(tmp_path, monkeypatch):
     from api.routes import database as db_route
     importlib.reload(db_route)
     assert "pair_feedback" in db_route._TABLES
+
+
+# ── clearing ─────────────────────────────────────────────────────────────────
+
+def test_the_endpoint_round_trips_a_clear(tmp_path, monkeypatch):
+    """Rate, read it back, clear, and it is gone. The DELETE takes the same four
+    ids as the POST, because candidate.id does not survive a re-score."""
+    models, mashups = _setup(tmp_path, monkeypatch)
+    v, i = _pair(models)
+
+    mashups.save_feedback(mashups.PairVerdict(
+        vocal_song_id=v, inst_song_id=i, rating=4,
+        vocal_section=1, inst_section=2))
+    assert len(mashups.list_feedback()["feedback"]) == 1
+
+    out = mashups.clear_feedback(mashups.PairKey(
+        vocal_song_id=v, inst_song_id=i, vocal_section=1, inst_section=2))
+    assert out["deleted"] == 1
+    assert mashups.list_feedback()["feedback"] == []
+
+
+def test_clearing_an_unjudged_pair_answers_ok(tmp_path, monkeypatch):
+    """Not a 404. The dock clears optimistically and only then tells the
+    server, so "forget a pair you never knew" is the state it asked for."""
+    models, mashups = _setup(tmp_path, monkeypatch)
+    v, i = _pair(models)
+
+    out = mashups.clear_feedback(mashups.PairKey(vocal_song_id=v, inst_song_id=i))
+    assert out == {"ok": True, "deleted": 0}
+
+
+def test_a_clear_leaves_the_other_overlays_of_the_same_records(tmp_path, monkeypatch):
+    models, mashups = _setup(tmp_path, monkeypatch)
+    v, i = _pair(models)
+
+    for vs, is_ in ((0, 0), (3, 4)):
+        mashups.save_feedback(mashups.PairVerdict(
+            vocal_song_id=v, inst_song_id=i, rating=5,
+            vocal_section=vs, inst_section=is_))
+
+    mashups.clear_feedback(mashups.PairKey(
+        vocal_song_id=v, inst_song_id=i, vocal_section=0, inst_section=0))
+
+    rows = mashups.list_feedback()["feedback"]
+    assert len(rows) == 1
+    assert (rows[0]["vocal_section"], rows[0]["inst_section"]) == (3, 4)

@@ -24,7 +24,10 @@ export function StarRating({ value, onRate = null, size = 12, title }) {
       {[1, 2, 3, 4, 5].map((n) => (
         <button key={n} type="button"
           className={n <= stars ? "on" : ""}
-          title={`Rate ${n} of 5`}
+          /* Clicking the star already set clears the rating — useRatings.rate
+             treats a repeat as an undo. The number keys make a stray judgement
+             one keypress, so undoing one is one click. */
+          title={n === stars ? "Clear this rating" : `Rate ${n} of 5`}
           onClick={(e) => { e.stopPropagation(); onRate(n); }}>
           {n <= stars ? "★" : "☆"}
         </button>

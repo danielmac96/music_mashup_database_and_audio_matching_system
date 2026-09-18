@@ -58,11 +58,37 @@ export function useRatings() {
   // Optimistic, with a revert. A star that silently failed to save is worse
   // than one that visibly did not take: the next re-score would train on a
   // judgement the user believes they gave.
+  //
+  // Re-sending the star already stored CLEARS it. The number keys make a stray
+  // judgement cheap, so undoing one has to be as cheap, and the affordance is
+  // the star already lit. It lives here rather than in a call site so every
+  // StarRating that can write — the dock, the player bar, the partners rail,
+  // Studio — undoes the same way. Clearing removes the row, so the verdict the
+  // star implied goes with it (see models.delete_pair_feedback).
   const rate = useCallback(async (candidate, stars) => {
     if (!candidate) return;
     const k = keyOf(candidate);
     const prevR = byPair[k] ?? null;
     const prevV = verdicts[k] ?? null;
+    if (stars === prevR) {
+      setByPair((m) => { const o = { ...m }; delete o[k]; return o; });
+      setVerdicts((m) => { const o = { ...m }; delete o[k]; return o; });
+      setRows((rs) => rs.filter((f) => feedbackKey(f) !== k));
+      try {
+        await api.clearPairFeedback({
+          vocalSongId: candidate.vocal_song_id,
+          instSongId: candidate.inst_song_id,
+          vocalSection: candidate.vocal_section_idx ?? null,
+          instSection: candidate.inst_section_idx ?? null,
+        });
+      } catch (e) {
+        setByPair((m) => ({ ...m, [k]: prevR }));
+        setVerdicts((m) => ({ ...m, [k]: prevV }));
+        load();
+        toast(`Could not clear that rating: ${e.message}`);
+      }
+      return;
+    }
     setByPair((m) => ({ ...m, [k]: stars }));
     try {
       const body = await api.savePairFeedback({
@@ -88,7 +114,7 @@ export function useRatings() {
       setVerdicts((m) => ({ ...m, [k]: prevV }));
       toast(`Could not save that rating: ${e.message}`);
     }
-  }, [byPair, verdicts]);
+  }, [byPair, verdicts, load]);
 
   return { byPair, bySong, ratingOf, verdictOf, rate, refresh: load,
            count: rows.length };

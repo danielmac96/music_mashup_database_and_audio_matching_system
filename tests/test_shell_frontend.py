@@ -125,7 +125,8 @@ def test_no_dead_player_bar_rules_remain():
 
 
 def test_chip_active_is_defined():
-    """MashupSuggestions writes `chip active` in four places. Only .chip.on
-    existed, so those chips silently showed no on-state at all."""
+    """Chips built with a template literal write `chip active`. Only .chip.on
+    existed once, so those chips silently showed no on-state at all."""
     assert ".chip.active" in CSS
-    assert "chip${" in _read("components/MashupSuggestions.jsx")
+    writers = [p.name for p in SRC.rglob("*.jsx") if "chip${" in p.read_text(encoding="utf-8")]
+    assert writers, "nothing builds a chip class dynamically any more"

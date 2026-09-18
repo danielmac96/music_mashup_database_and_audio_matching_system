@@ -152,8 +152,8 @@ browser reads `GET /api/settings`.
  1. COLLECT     Library paste bar ─┐   Discover search/browse ─┐   Mixes tracklist import ─┐
                                    └──────────► POST /api/playlists/ingest ◄───────────────┘
  2. PROCESS     per track, on bounded queues:  download → stems → analyse → structure (+ hooks)
- 3. SCORE       ⚙ / Discover "Score library" → every vocal × bed section pair → mashup_candidates
- 4. JUDGE       pair dock / Find mashups: loop the moment, rate 1–5 or ✓ ~ ✗, hide, exclude
+ 3. SCORE       ⚙ "Score library" → every vocal × bed section pair → mashup_candidates
+ 4. JUDGE       pair dock: loop the moment, rate 1–5 (again to clear), hide, exclude
  5. BUILD       Studio: conformed lanes, timing pills, trim/loop/level → Export WAV or FL session
  6. LEARN       documented w/ pairs + your verdicts → dataset → model → "Score library" uses it
 ```
@@ -230,18 +230,27 @@ reprocesses), add to a group, or delete the track and its files.
 - The table filters and sorts **in memory** (`GET /api/tracks` is unpaginated).
   Column headers sort in three states: unsorted → one direction → the other →
   unsorted, because import order is a meaningful order.
-- Click a row to **scope the pair dock** to it; click the **title** to open the
-  track detail screen.
+- **Columns drag to resize** by the handle on a header's right edge;
+  double-click it to restore the default. Widths persist per column id in
+  `localStorage`. Title/artist and genre both flex, so a wide window gives
+  genre room instead of handing every spare pixel to the title.
+- Click a row to **scope the pair dock** to it; click anywhere in the
+  **title/artist column** to open the track detail screen.
 - The permanent **pair dock** lists the best pairs for the selected track (as
   vocal or as bed) or for the whole library. Keys: `↑↓` move · `space` loop ·
-  `1–5` rate · `V`/`B` solo · `⏎` open in Studio.
+  `1–5` rate · `V`/`B` solo · `h` hide · `⏎` open in Studio.
+- **Sort the dock** by Score, Effort, Uncertain, or by one section term —
+  LBL / DUR / VOI / PHR. Every order but Effort is the server's, so it ranks
+  the library; Effort re-sorts the page already fetched and says so. An
+  unmeasured term sorts last, never as zero.
 - Each pair card gives one line per song — title, section span and bars, key,
   BPM — then the adjustments (key relation + semitones, tempo change, nudge),
   the four section-fit bars and the rating. **LBL** label priority, **DUR**
   bars covered (looping allowed), **VOI** vocal presence, **PHR** phrase-length
   agreement (§5.7); hover a label for its meaning. A **hatched** bar is not
   measured (the pair was scored before that term was stored) — **Score
-  library** fills it.
+  library** fills it. Clicking the star you already set **clears** the rating,
+  which removes the judgement entirely (§7).
 
 ### Queue
 
@@ -296,14 +305,12 @@ Clicking a partner opens *its* track with the role flipped. `esc` returns.
 - **Suggestions** — seed from your library, a crate or a pasted link, or connect
   your public profile (identifies, does not log in). Returns tracks, artists and
   sets, each with the seeds that agreed.
-- **Find mashups** — the ranked section-pair list: filters (genre, era, energy,
-  BPM band, vocal-forward, max effort), a per-song cap, **Hide** / **Top track**
-  suppression, a Per-vocal view, "uncertain first" ordering, `Plan ▾` recipes,
-  **Audition** (opens Studio) and batch FL export of the filtered list.
-  Keyboard triage: `j/k/f/d/s/h`.
 
 Filters and sorts act only on rows already loaded ("showing 12 of 47 loaded");
 nothing auto-fetches to make a sort look global.
+
+Pairs are **not** here. Ranked section pairs live in the library's pair dock,
+beside the tracks they are made of, and go straight to Studio from there.
 
 ### Mixes
 
@@ -325,7 +332,7 @@ gain/mute/solo, pitch ±12 st, ⚡key, ⇥grid, alt+click to set bar 1, A/B
 crossfader, loops. Lane controls live in the adjustments rail; every slider has
 a tick at the matcher's suggested value.
 
-A pair sent from Discover or the dock arrives conformed and placed, with a
+A pair sent from the dock arrives conformed and placed, with a
 **TIMING** pill row — one pill per suggested overlay (`[` `]` cycle, `1–6` jump),
 each with ✓/~/✗. "Next pair" walks the dock's list. The arrangement auto-saves
 locally. **Export WAV** renders server-side; **FL session** export writes a
@@ -333,11 +340,13 @@ drop-in folder (§5.11). The player bar hides in Studio.
 
 ### ⚙ Settings drawer
 
-Inst-over-inst toggle, **Bulk reprocess** (staleness per feature generation;
-re-analyse or re-separate only what needs it), **Tuning** (match width presets,
-match and section weights, effort weight, gates, separator, stem mode), **Train
-from imported mixes** (build dataset → train → activate), and a read-only
-**database browser**.
+**↻ Score library** — the one trigger for a re-score in the app — with its
+Tight/Balanced/Wide **match width** preset and, when anything is suppressed,
+**restore N hidden** (hidden pairs and excluded tracks). Then **Bulk
+reprocess** (staleness per feature generation; re-analyse or re-separate only
+what needs it), **Tuning** (match and section weights, effort weight, gates,
+separator, stem mode), **Train from imported mixes** (build dataset → train →
+activate), and a read-only **database browser**.
 
 ---
 
@@ -712,6 +721,14 @@ candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
 - **`pair_feedback` is irreplaceable user input.** Its unique key includes the
   section indexes. Any migration must copy, count, and refuse to drop the
   original on a short copy.
+- **One path takes a judgement away**, and it deletes the whole row:
+  `delete_pair_feedback` / `DELETE /api/mashups/feedback`, reached by clicking
+  the star already set. `verdict` is `NOT NULL`, so there is no "rated nothing"
+  state — clearing a stray `3` has to clear the `ok` it implied, and a verdict
+  set in Studio goes with it. Its `WHERE` mirrors `ux_pair_feedback_section`,
+  `COALESCE` included; match the index loosely and a NULL-sectioned row
+  survives a clear that reported success. Sending `rating: null` to the POST
+  does **not** clear — the upsert `COALESCE`s it into the star already stored.
 - **Stars sit alongside the verdict.** 5,4→love · 3→ok · 2,1→no on write;
   love→5 · ok→3 · no→1 on read; ✓/~/✗ `COALESCE`s rather than blanking a star.
   **Do not repoint training at `rating`.** Verdict names map to an older
@@ -801,6 +818,16 @@ candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
 - **Timing pills** re-fetch options by pair ids, apply `alignment_offset`, loop
   the *intersection* of the two trims, and resolve lanes by `songId`.
 - **Filtering never fetches**; selection derives from visible rows.
+- **The dock's orders are the server's, except Effort.** `SECTION_TERM_ORDERS`
+  (`database/models.py`) is the one table the SQL, the route whitelist and the
+  dock's buttons all read, and `ORDERS` is built from `SCORE_TERMS` so a button
+  labelled LBL cannot come to mean something else. Sorting the dock's page
+  client-side would rank a top-40 the server already truncated by score — a
+  page, not a library. An unmeasured term sorts last, never as zero.
+- **Library column widths are keyed by column id**, not position
+  (`hooks/useColumnWidths.js`). An index re-points every stored width the first
+  time a column moves, and the symptom looks nothing like the cause. Each
+  `HEADS` entry stays on one line — a test parses the block line-by-line.
 - **Library, judgements and groups are fetched once, in `App.jsx`.** The Queue
   screen reads that library and polls only `/api/jobs` + `/api/jobs/queue`.
 - **"Running" is a stage record, not job status.** A pipeline job stays

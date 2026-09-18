@@ -53,7 +53,6 @@ CSS = _read("styles.css")
 FORMER_OWNERS = (
     "components/LibraryScreen.jsx",
     "components/TrackDetail.jsx",
-    "components/MashupSuggestions.jsx",
 )
 
 
@@ -89,11 +88,12 @@ def test_only_the_player_builds_the_engine():
     assert callers == ["usePlayer.js"], callers
 
 
-def test_the_dock_and_discover_borrow_the_shared_player():
-    for rel in ("hooks/usePairDock.js", "components/MashupSuggestions.jsx"):
-        src = _code(rel)
-        assert "useHookAudition" not in src, rel
-        assert "player." in src, rel
+def test_the_dock_borrows_the_shared_player():
+    """The dock used to build a MashupEngine of its own, which is how the app
+    ended up with several players and one bar that belonged to none of them."""
+    src = _code("hooks/usePairDock.js")
+    assert "useHookAudition" not in src
+    assert "player." in src
 
 
 def test_starting_one_source_silences_the_others():

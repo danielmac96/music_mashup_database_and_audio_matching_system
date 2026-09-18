@@ -16,7 +16,7 @@ import { bpmTag, camelotColor, keyRel } from "../theme";
 
 export function PairCard({ candidate: c, rating, onRate, focused = false,
                            playing = false, compact = false,
-                           onSelect, onPlay, onStudio }) {
+                           onSelect, onPlay, onStudio, onHide = null }) {
   const tier = tierOf(c);
   const pct = pctOf(c);
   const rel = keyRel(c.vocal_camelot, c.inst_camelot);
@@ -85,6 +85,10 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
         </button>
         <button className="pc-studio" onClick={(e) => { e.stopPropagation(); onStudio(); }}
           title="Open both tracks in Studio (enter)">Studio ⏎</button>
+        {onHide && (
+          <button className="pc-hide" onClick={(e) => { e.stopPropagation(); onHide(); }}
+            title="Hide this pair (h). A display preference, not a verdict — it never trains the scorer, and ⚙ restores it.">⊘</button>
+        )}
       </div>
     </div>
   );

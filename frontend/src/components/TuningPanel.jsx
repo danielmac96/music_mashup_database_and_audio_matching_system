@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
+import { JobBadge } from "./JobBadge";
 import { toast } from "../toast";
 
 // Every knob that changes what the ranked list contains, in one place.
@@ -11,6 +12,20 @@ import { toast } from "../toast";
 //
 // Anything pinned by an environment variable renders disabled with an "env"
 // badge rather than as a control whose value would be silently ignored.
+
+// Pre-filter width presets passed to "Score library" (bpm = max BPM diff,
+// key = min Camelot score). Tight = only clean matches; Wide = more candidates.
+//
+// Balanced and Wide no longer gate on key at all (P1.1). Transposing a bed by a
+// semitone or two is an ordinary move and the effort penalty already prices it,
+// so a key gate on top deleted the pair before scoring AND would have demoted
+// it if it had survived. Tight keeps the gate for the days you only want pairs
+// that need no transpose at all.
+const MATCH_PRESETS = [
+  { label: "Tight", bpm: 8, key: 0.75 },
+  { label: "Balanced", bpm: 16, key: 0 },
+  { label: "Wide", bpm: 24, key: 0 },
+];
 
 const SCORE_KNOBS = [
   {
@@ -43,7 +58,7 @@ const GATE_KNOBS = [
   {
     key: "bpm_max_diff", label: "BPM gate", min: 1, max: 60, step: 1,
     help: "Widest tempo gap scored at all, after half/double-time folding. This bounds how " +
-      "much work a re-score does; the Match width preset in Discover overrides it per run.",
+      "much work a re-score does; the Match width preset above overrides it per run.",
   },
   {
     key: "key_min_score", label: "Key gate", min: 0, max: 1, step: 0.05,
@@ -145,6 +160,44 @@ export function TuningPanel() {
   const [secWeights, setSecWeights] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [presetIdx, setPresetIdx] = useState(1);   // Balanced
+  const [scoreJobId, setScoreJobId] = useState(null);
+  // Hidden pairs and excluded tracks are suppressed by the SQL, so without a
+  // count and a way back the only record that they exist is the rows missing
+  // from the dock.
+  const [hiddenCount, setHiddenCount] = useState(0);
+
+  const refreshHidden = useCallback(() => {
+    api.getHidden()
+      .then((d) => setHiddenCount((d.pairs?.length || 0) + (d.tracks?.length || 0)))
+      .catch(() => {});
+  }, []);
+  useEffect(() => { refreshHidden(); }, [refreshHidden]);
+
+  const startScoring = async () => {
+    try {
+      const p = MATCH_PRESETS[presetIdx];
+      const { job_id } = await api.startScoring({ bpmMaxDiff: p.bpm, keyMinScore: p.key });
+      setScoreJobId(job_id);
+      toast(`Scoring library (${p.label} match)…`);
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
+  const unhideAll = async () => {
+    try {
+      const d = await api.getHidden();
+      await Promise.all([
+        ...(d.pairs || []).map((x) => api.unhidePair(x.vocal_song_id, x.inst_song_id)),
+        ...(d.tracks || []).map((t) => api.includeTrack(t.song_id)),
+      ]);
+      refreshHidden();
+      toast("Restored every hidden pair and excluded track");
+    } catch (e) {
+      setError(e.message);
+    }
+  };
 
   const load = () => api.getSettings()
     .then((s) => { setSettings(s); setWeights(null); setSecWeights(null); setDraft({}); })
@@ -192,7 +245,29 @@ export function TuningPanel() {
           {error && <div className="error-text" style={{ marginBottom: 8 }}>{error}</div>}
           <div className="faint" style={{ fontSize: 11, marginBottom: 10 }}>
             Every change here applies to the <b>next re-score</b> — nothing is
-            recomputed until you press “Score library” in Discover.
+            recomputed until you press “Score library” below.
+          </div>
+
+          {/* The one trigger for a re-score in the whole app. It lives beside
+              the knobs it re-applies, rather than a screen away from them. */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center",
+                        padding: "4px 0 10px" }}>
+            {scoreJobId ? (
+              <JobBadge jobId={scoreJobId} onComplete={() => setScoreJobId(null)} />
+            ) : (
+              <button className="btn" onClick={startScoring}>↻ Score library</button>
+            )}
+            <button className="mini-btn"
+              title="Pre-filter width used by 'Score library' — re-score to apply"
+              onClick={() => setPresetIdx((presetIdx + 1) % MATCH_PRESETS.length)}>
+              {MATCH_PRESETS[presetIdx].label} match
+            </button>
+            {hiddenCount > 0 && (
+              <button className="mini-btn" onClick={unhideAll}
+                title="Hidden pairs and excluded tracks are filtered out of the pair dock">
+                restore {hiddenCount} hidden
+              </button>
+            )}
           </div>
 
           <h4 style={{ margin: "10px 0 2px", fontSize: 12 }}>Separation</h4>

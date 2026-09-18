@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  BPM_BANDS, CLASSES, KEY_TOLERANCES, PLAYS_BANDS, SORT_KEYS,
+  BPM_BANDS, KEY_TOLERANCES, PLAYS_BANDS, SORT_KEYS,
 } from "../hooks/useLibraryFilters";
 
 // The library's filter bar, and the saved-view / sort bar under it.
@@ -144,15 +144,6 @@ export function LibraryFilters({ filters, patch, reset, active, facets,
               onClick={() => { patch({ bpmMin: lo, bpmMax: hi }); close(); }}>
               {label}
             </button>
-          ))}
-        </MenuChip>
-
-        <MenuChip label="Class" value={filters.cls || "Any"} width={160}
-          on={!!filters.cls}
-          title="What the track's sections mostly are. Measured from the separated stems, so a track whose stems were never split has no class.">
-          {(close) => CLASSES.map(([v, label]) => (
-            <button key={v || "any"} className="fmenu-opt"
-              onClick={() => { patch({ cls: v }); close(); }}>{label}</button>
           ))}
         </MenuChip>
 

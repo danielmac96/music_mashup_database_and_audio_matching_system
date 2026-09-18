@@ -23,19 +23,25 @@ sys.path.insert(0, str(ROOT))
 
 SRC = ROOT / "frontend" / "src"
 STUDIO = "components/MixStudio.jsx"
-DISCOVER = "components/MashupSuggestions.jsx"
+# The pair model, shared by every surface that can hand a pair to Studio: the
+# dock, the track detail's partners rail and the player bar.
+PAIR_MODEL = "components/pairs/pairModel.js"
+APP = "App.jsx"
 
 
 def _read(rel: str) -> str:
     return (SRC / rel).read_text(encoding="utf-8")
 
 
-def test_discover_hands_the_scored_pair_across():
+def test_the_pair_handed_across_carries_its_scored_option():
     """Studio offers the row's own pair as a pill. top_section_pairs is capped,
-    so a row scored under different weights need not be in the plan's six —
-    without this the pill you arrived on could be missing from its own list."""
-    src = _read(DISCOVER)
-    assert "scoredOption: scoredOptionOf(c)" in src
+    so a row scored under different weights need not be in the plan's six -
+    without this the pill you arrived on could be missing from its own list.
+
+    scoredOptionOf lives in the pair model rather than one screen: App's
+    pairToStudio is reached from the dock, the partners rail and the bar."""
+    assert "scoredOption: scoredOptionOf(c)" in _read(APP)
+    src = _read(PAIR_MODEL)
     fn = src[src.index("export function scoredOptionOf"):]
     fn = fn[:fn.index("\n}")]
     for key in ("vocal_section_idx", "inst_section_idx",
@@ -44,12 +50,6 @@ def test_discover_hands_the_scored_pair_across():
                 "alignment_offset", "score_section"):
         assert key in fn, key
 
-
-def test_discover_renders_the_scored_options():
-    src = _read(DISCOVER)
-    assert "plan.section_options" in src
-    # ...and still falls back to the older list rather than showing nothing.
-    assert "plan.pairings" in src
 
 
 def test_studio_fetches_the_options_from_the_pair():

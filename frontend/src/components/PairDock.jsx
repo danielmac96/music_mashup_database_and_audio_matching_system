@@ -8,12 +8,12 @@ import { keyOf } from "./pairs/pairModel";
 
 const KEYS = [
   ["↑↓", "move"], ["space", "loop"], ["1–5", "rate"],
-  ["V/B", "solo"], ["⏎", "studio"],
+  ["V/B", "solo"], ["h", "hide"], ["⏎", "studio"],
 ];
 
 export function PairDock({ dock, ratings, scopeTitle, role, onRole }) {
   const { order, setOrder, rows, loading, error, cursor, setCursor, armedKey,
-          play, openStudio, audio } = dock;
+          play, openStudio, hide, audio } = dock;
   const listRef = useRef(null);
 
   // Keep the keyboard cursor on screen. Without this, arrowing past the fold
@@ -34,9 +34,14 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole }) {
         <span className="pd-title">Pairs</span>
         <span className="pd-count mono">{loading ? "…" : rows.length}</span>
         <div className="pd-seg">
-          {ORDERS.map(([id, label, why]) => (
+          {ORDERS.map(([id, label, why, color]) => (
             <button key={id} className={order === id ? "on" : ""}
-              title={why} onClick={() => setOrder(id)}>{label}</button>
+              title={why} onClick={() => setOrder(id)}
+              /* The four term buttons carry their bar's colour, so "sort by
+                 LBL" and the LBL bar on every card read as one thing. */
+              style={color && order === id ? { borderColor: color, color } : undefined}>
+              {label}
+            </button>
           ))}
         </div>
       </div>
@@ -62,7 +67,7 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole }) {
             <span className="hint">
               {scopeTitle
                 ? "This track has no partner that cleared the technical gates. It may need analysing, or its stems separating."
-                : "Run “Score library” from Discover once tracks are analysed."}
+                : "Run “Score library” from ⚙ Settings once tracks are analysed."}
             </span>
           </div>
         )}
@@ -76,7 +81,8 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole }) {
               playing={armedKey === k && audio.playing}
               onSelect={() => setCursor(i)}
               onPlay={() => { setCursor(i); play(c); }}
-              onStudio={() => { setCursor(i); openStudio(c); }} />
+              onStudio={() => { setCursor(i); openStudio(c); }}
+              onHide={() => hide(c)} />
           );
         })}
       </div>

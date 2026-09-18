@@ -139,3 +139,58 @@ def test_starred_rows_reach_the_training_query_as_verdicts(db):
     upsert_pair_feedback(3, 4, "love", db_path=db)
     assert {r["verdict"] for r in get_pair_feedback("love", db_path=db)} == {"love"}
     assert len(get_pair_feedback("love", db_path=db)) == 2
+
+
+# ── clearing ─────────────────────────────────────────────────────────────────
+# The one path that takes something away. pair_feedback is otherwise
+# append-and-correct, so the delete has to be as precisely keyed as the write.
+
+def test_clearing_removes_the_row_the_four_ids_name(db):
+    from database.models import (
+        delete_pair_feedback, get_pair_feedback, upsert_pair_feedback,
+    )
+    upsert_pair_feedback(1, 2, None, vocal_section=0, inst_section=3,
+                         rating=4, db_path=db)
+    upsert_pair_feedback(1, 2, None, vocal_section=1, inst_section=5,
+                         rating=2, db_path=db)
+
+    assert delete_pair_feedback(1, 2, vocal_section=0, inst_section=3,
+                                db_path=db) == 1
+
+    left = get_pair_feedback(db_path=db)
+    assert len(left) == 1, "the sibling section pair went with it"
+    assert (left[0]["vocal_section"], left[0]["inst_section"]) == (1, 5)
+
+
+def test_clearing_takes_the_verdict_with_the_star(db):
+    """`verdict` is NOT NULL, so there is no "rated nothing" state to fall back
+    to. A stray 3 wrote verdict='ok' as well, and clearing the star has to
+    clear what it implied."""
+    from database.models import (
+        delete_pair_feedback, get_pair_feedback, upsert_pair_feedback,
+    )
+    upsert_pair_feedback(7, 8, None, vocal_section=2, inst_section=2,
+                         rating=3, db_path=db)
+    assert get_pair_feedback(db_path=db)[0]["verdict"] == "ok"
+
+    delete_pair_feedback(7, 8, vocal_section=2, inst_section=2, db_path=db)
+    assert get_pair_feedback(db_path=db) == []
+
+
+def test_clearing_matches_null_sections_the_way_the_index_does(db):
+    """The unique index COALESCEs a NULL section to -1. Match it loosely here
+    and a NULL-sectioned row survives a clear that reported success."""
+    from database.models import (
+        delete_pair_feedback, get_pair_feedback, upsert_pair_feedback,
+    )
+    upsert_pair_feedback(4, 5, None, rating=5, db_path=db)
+    assert delete_pair_feedback(4, 5, db_path=db) == 1
+    assert get_pair_feedback(db_path=db) == []
+
+
+def test_clearing_nothing_is_not_an_error(db):
+    """The UI clears optimistically and only then tells the server. Asking it
+    to forget a pair it never knew is the state the caller wanted."""
+    from database.models import delete_pair_feedback
+    assert delete_pair_feedback(99, 100, vocal_section=0, inst_section=0,
+                                db_path=db) == 0

@@ -3,6 +3,7 @@ import { MixImporter } from "./components/MixImporter";
 import { LibraryScreen } from "./components/LibraryScreen";
 import { QueueScreen } from "./components/QueueScreen";
 import { PairDock } from "./components/PairDock";
+import { scoredOptionOf } from "./components/pairs/pairModel";
 import { PlayerBar } from "./components/PlayerBar";
 import { TrackDetail } from "./components/TrackDetail";
 import { Discovery } from "./components/Discovery";
@@ -19,7 +20,6 @@ import { useRatings } from "./hooks/useRatings";
 import { usePairDock } from "./hooks/usePairDock";
 import { usePlayer } from "./hooks/usePlayer";
 import { isActiveJob } from "./hooks/useQueue";
-import { scoredOptionOf } from "./components/MashupSuggestions";
 import { api } from "./api";
 import { onToast } from "./toast";
 
@@ -28,19 +28,6 @@ import { onToast } from "./toast";
 // judging a pair and browsing the library stop being two places you switch
 // between. The order is still the order the work happens in — get tracks in,
 // tag the documented mixes, find pairs, build them.
-
-// Client-side preferences. Kept in localStorage rather than the server settings
-// table because they are about this browser's view, not how audio is processed.
-const PREFS_KEY = "mashup.prefs.v1";
-const DEFAULT_PREFS = { showInstOverInst: false };
-
-function loadPrefs() {
-  try {
-    return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) || "{}") };
-  } catch {
-    return { ...DEFAULT_PREFS };
-  }
-}
 
 function Toast() {
   const [msg, setMsg] = useState("");
@@ -69,12 +56,9 @@ export default function App() {
   // Pair handed to Studio from Library/Discover. `at` is bumped on every send
   // so re-sending the same pair still re-seeds.
   const [studioSeed, setStudioSeed] = useState({ vocalId: null, instId: null });
-  // Seed passed into the Mashups pane for a directed "find matches" search.
-  const [mashupSeed, setMashupSeed] = useState(null); // { songId, role }
   // Right-side header status readout — each screen reports its own.
   const [headerStatus, setHeaderStatus] = useState(null); // { locked, text }
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [prefs, setPrefs] = useState(loadPrefs);
   // The library row the pair dock is scoped to, and the track the detail view
   // is open on. Selecting re-scopes; opening is a separate, deliberate act.
   const [selectedTrackId, setSelectedTrackId] = useState(null);
@@ -106,12 +90,6 @@ export default function App() {
   // narrowed by one and the row menu writes to them. A second copy would still
   // be showing the old shelf after the first one added a track to it.
   const groups = useLibraryGroups();
-
-  const setPref = (key, value) => {
-    const next = { ...prefs, [key]: value };
-    setPrefs(next);
-    try { localStorage.setItem(PREFS_KEY, JSON.stringify(next)); } catch { /* full */ }
-  };
 
   useEffect(() => {
     if (!settingsOpen) return undefined;
@@ -145,16 +123,11 @@ export default function App() {
   }, []);
 
   // Each send is its own instruction, not a patch over the last one: a pair
-  // from Discover opens as a pair, and a single track from Library is added as
+  // from the pair dock opens as a pair, and a single track from Library is added as
   // one lane to whatever is already arranged.
   const sendToStudio = (patch) => {
     setStudioSeed({ ...patch, at: Date.now() });
     setRoute("studio");
-  };
-
-  const findMatches = (songId, role) => {
-    setMashupSeed({ songId, role });
-    setRoute("discovery");
   };
 
   // A pair goes to Studio with both tracks in full and the suggestion marked as
@@ -316,12 +289,8 @@ export default function App() {
         {route === "discovery" && (
           <Discovery
             player={player}
-            seed={mashupSeed}
             onGroupsChanged={groups.refresh}
-            onClearSeed={() => setMashupSeed(null)}
-            onAudition={(patch) => sendToStudio(patch)}
             onStatus={setHeaderStatus}
-            showInstOverInst={prefs.showInstOverInst}
             onOpenLibrary={() => setRoute("library")}
             onRailSlot={setRailSlot}
           />
@@ -355,19 +324,6 @@ export default function App() {
               <button className="drawer-x" onClick={() => setSettingsOpen(false)}
                 title="Close (esc)">✕</button>
             </div>
-
-            <label className="drawer-pref">
-              <input type="checkbox" checked={prefs.showInstOverInst}
-                onChange={(e) => setPref("showInstOverInst", e.target.checked)} />
-              <span>
-                <b>Show instrumental-over-instrumental pairs</b>
-                <span className="hint">
-                  Off by default: the goal is a vocal over a bed, and this combo
-                  doubles the scoring work for a segmented control at the top of
-                  Discover. The scoring path is unchanged either way.
-                </span>
-              </span>
-            </label>
 
             <div className="drawer-section">
               <h3>Re-process the library</h3>

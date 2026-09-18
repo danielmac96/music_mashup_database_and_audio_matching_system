@@ -18,7 +18,6 @@ export const EMPTY_FILTERS = {
   key: "",             // a Camelot key, e.g. "8A"
   keyTolerance: 1,     // +/- n steps around the wheel
   bpmMin: "", bpmMax: "",
-  cls: "",             // vocal | instrumental | mixed
   genres: [],          // multi-select; empty = any
   playsMin: "",        // a floor, e.g. 100000
   yearMin: "", yearMax: "",
@@ -38,8 +37,6 @@ export const BPM_BANDS = [
   ["125", "135", "125–135"], ["135", "150", "135–150"], ["150", "", "150+"],
 ];
 export const KEY_TOLERANCES = [0, 1, 2];
-export const CLASSES = [["", "Any"], ["vocal", "vocal"],
-                        ["instrumental", "instrumental"], ["mixed", "mixed"]];
 
 export const VIEWS = [
   ["ready", "Ready to mash", "var(--green)", isReadyToMash],
@@ -139,7 +136,7 @@ export function facetsOf(rows) {
 
 export function isActive(f) {
   return !!(f.search || f.view || f.group || f.key || f.bpmMin || f.bpmMax
-    || f.cls || (f.genres && f.genres.length) || f.playsMin || f.yearMin
+    || (f.genres && f.genres.length) || f.playsMin || f.yearMin
     || f.yearMax || f.minStars);
 }
 
@@ -172,7 +169,6 @@ export function applyLibraryFilters(rows, f, starOf = () => null,
       if (!hay.includes(needle)) return false;
     }
     if (genres.size && !genres.has((t.genre || "").toLowerCase())) return false;
-    if (filters.cls && t.track_class !== filters.cls) return false;
 
     const f0 = feat(t);
     if (bpmMin != null || bpmMax != null) {

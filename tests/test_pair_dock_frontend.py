@@ -63,10 +63,25 @@ def test_a_rating_carries_the_section_indexes():
     """Without them the server's unique index collapses every overlay of the
     same two records onto one row."""
     fn = RATINGS[RATINGS.index("const rate = useCallback"):]
-    fn = fn[:fn.index("}, [byPair, verdicts])")]
+    fn = fn[:fn.index("}, [byPair, verdicts, load])")]
     assert "vocalSection: candidate.vocal_section_idx" in fn
     assert "instSection: candidate.inst_section_idx" in fn
     assert "rating: stars" in fn
+
+
+def test_re_sending_the_same_star_clears_the_rating():
+    """The number keys make a stray judgement one keypress, so undoing one has
+    to be as cheap. It lives in the hook rather than a call site so every
+    writable StarRating undoes the same way, and it calls the DELETE — a null
+    rating on the POST is COALESCEd into the star already stored."""
+    fn = RATINGS[RATINGS.index("const rate = useCallback"):]
+    fn = fn[:fn.index("}, [byPair, verdicts, load])")]
+    assert "if (stars === prevR)" in fn
+    assert "api.clearPairFeedback" in fn
+    assert "vocalSection: candidate.vocal_section_idx" in fn
+    api = _read("api.js")
+    assert "clearPairFeedback" in api
+    assert 'method: "DELETE"' in api[api.index("clearPairFeedback"):]
 
 
 def test_the_feedback_key_matches_the_pair_key():
@@ -141,14 +156,13 @@ def test_cards_scroll_rather_than_compress():
 
 
 def test_the_keyboard_is_gated_on_the_visible_screen():
-    """Discover's Find-mashups pane has its own model over the same rows and
-    stays mounted under display:none. Two window listeners racing for the space
-    bar is the bug this prevents."""
+    """A window listener that ignores which screen is showing is how two
+    keyboard models end up fighting over the space bar. The dock's is bound
+    only while the library is the visible route."""
     assert "bindKeys" in DOCK_HOOK
     app = _read("App.jsx")
     assert 'dock.bindKeys(route === "library")' in app
-    assert "active={mode === \"mashups\"}" in _read("components/Discovery.jsx")
-    assert "if (!active) return undefined;" in _read("components/MashupSuggestions.jsx")
+    assert "if (!enabled) return undefined;" in DOCK_HOOK
 
 
 def test_the_keyboard_map_is_the_one_the_footer_advertises():
@@ -178,3 +192,30 @@ def test_the_dock_scopes_to_the_selected_track_server_side():
     fn = fn[:fn.index("}, [selectedTrackId, role, order]);")]
     assert "opts.instSongId = selectedTrackId" in fn
     assert "opts.vocalSongId = selectedTrackId" in fn
+
+
+def test_hiding_a_pair_is_reachable_and_reversible():
+    """Hiding is a display preference, not a verdict: it is suppressed by SQL
+    and never becomes training data. Without a restore it would be permanent,
+    so the count and the way back live in the Tuning panel."""
+    hook = DOCK_HOOK[DOCK_HOOK.index("const bindKeys"):]
+    assert 'e.key === "h"' in hook
+    assert "api.hidePair" in DOCK_HOOK
+    assert '["h", "hide"]' in DOCK, "the footer must advertise the key it binds"
+    tuning = _read("components/TuningPanel.jsx")
+    assert "api.getHidden" in tuning
+    assert "api.unhidePair" in tuning and "api.includeTrack" in tuning
+
+
+def test_score_library_lives_with_the_knobs_it_re_applies():
+    """It is the one trigger for a re-score in the whole app. It used to sit in
+    a Discover pane, a screen away from the weights it reads."""
+    tuning = _read("components/TuningPanel.jsx")
+    assert "api.startScoring" in tuning
+    assert "Score library" in tuning
+    assert "MATCH_PRESETS" in tuning
+    # ...and nothing still sends the user to Discover to find it.
+    for rel in ("components/PairDock.jsx", "components/TuningPanel.jsx",
+                "components/PartnersRail.jsx"):
+        src = _read(rel)
+        assert "Score library" not in src or "Discover" not in src, rel

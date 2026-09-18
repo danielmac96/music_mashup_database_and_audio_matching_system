@@ -1993,6 +1993,37 @@ def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int,
     conn.close()
 
 
+def delete_pair_feedback(vocal_song_id: int, inst_song_id: int,
+                         vocal_section: Optional[int] = None,
+                         inst_section: Optional[int] = None,
+                         db_path: Path = DB_PATH) -> int:
+    """Forget one section pair's judgement entirely. Returns rows removed.
+
+    This is the ONLY way to unsay a judgement, and it removes the whole row —
+    the star and the verdict together — because `verdict` is NOT NULL, so there
+    is no state meaning "rated nothing". That is the intent: a stray `3` from
+    the dock's number keys wrote `verdict='ok'` as well, and clearing the star
+    has to clear what it implied. It does mean a verdict set elsewhere (Studio's
+    pills, the implicit `ok` an FL export records) goes with it.
+
+    The WHERE clause mirrors ux_pair_feedback_section exactly, COALESCE
+    included: match the index loosely and a NULL-sectioned row would survive a
+    clear that appeared to succeed."""
+    conn = get_conn(db_path)
+    cur = conn.execute(
+        """DELETE FROM pair_feedback
+            WHERE vocal_song_id = ?
+              AND inst_song_id = ?
+              AND COALESCE(vocal_section, -1) = COALESCE(?, -1)
+              AND COALESCE(inst_section, -1) = COALESCE(?, -1)""",
+        (vocal_song_id, inst_song_id, vocal_section, inst_section),
+    )
+    conn.commit()
+    n = cur.rowcount or 0
+    conn.close()
+    return n
+
+
 def get_pair_feedback(verdict: str = "", db_path: Path = DB_PATH) -> List[Dict]:
     """Every judgment, newest first. Pass a verdict to filter."""
     conn = get_conn(db_path)
@@ -2028,6 +2059,17 @@ def get_candidates(min_score: float = 0.0, limit: int = 100,
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# The single section term a caller may rank by, mapped to its column. The dock
+# draws these same four as LBL / DUR / VOI / PHR on every card — one table, so a
+# sort button and the bar it corresponds to can never drift apart.
+SECTION_TERM_ORDERS = {
+    "label": "score_label",
+    "duration": "score_duration",
+    "voice": "score_voice",
+    "phrase": "score_phrase",
+}
 
 
 def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
@@ -2070,7 +2112,12 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     scorer is least sure about, i.e. closest to a coin flip. With hundreds of
     thousands of viable pairs and maybe 200 keypresses of patience per session,
     spending them on rows the model is already confident about buys nothing;
-    the uncertain ones are where a verdict carries the most information."""
+    the uncertain ones are where a verdict carries the most information.
+
+    It can also be one of SECTION_TERM_ORDERS — label / duration / voice /
+    phrase — which ranks by that one section term. This runs in SQL for the
+    same reason the filters do: re-sorting the page the server already
+    truncated by score would rank a page, not a library."""
     conn = get_conn(db_path)
     # min_score gates on the PERCENTILE, not the raw composite — the same number
     # the row displays and the same one `tierFor` colours.
@@ -2154,6 +2201,14 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     if order == "uncertain":
         order_sql = ("CASE WHEN mc.scorer='model' THEN ABS(mc.score_total - 0.5) "
                      "ELSE 9 END ASC, mc.score_total DESC")
+    elif order in SECTION_TERM_ORDERS:
+        # One section term at a time, for "show me the pairs whose phrasing
+        # agrees" regardless of what the composite made of them. NULLs sort
+        # last rather than as zero: an unmeasured term is a pair scored before
+        # the column existed (the hatched bar in the dock), not a bad one.
+        col = SECTION_TERM_ORDERS[order]
+        order_sql = (f"(mc.{col} IS NULL) ASC, mc.{col} DESC, "
+                     "mc.score_total DESC")
     else:
         order_sql = "mc.score_total DESC"
 

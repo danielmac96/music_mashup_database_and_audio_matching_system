@@ -160,3 +160,15 @@ def test_app_hands_the_detail_screen_a_way_to_change_tracks():
     assert "onOpenTrack={setSelectedTrackId}" in block, \
         "the raw setter, not selectTrack — that one toggles, and opening a " \
         "partner you are already scoped to would clear the selection instead"
+
+
+def test_the_whole_name_cell_opens_the_track():
+    """The button spans the column's WIDTH already; at content height the strips
+    above and below the two lines fell through to the row, so a click half a row
+    from the title scoped the dock instead of opening the track."""
+    block = CSS[CSS.index(".tt-name {"):]
+    block = block[:block.index("}")]
+    assert "height: 100%" in block
+    assert "display: flex" in block and "flex-direction: column" in block
+    # ...and the row still owns everything else.
+    assert "onClick={() => onSelect(t.id)}" in _row(TABLE)

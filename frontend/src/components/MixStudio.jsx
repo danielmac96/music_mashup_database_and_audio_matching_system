@@ -31,7 +31,7 @@ import { toast } from "../toast";
 // what those buttons did.
 //
 // `seed` ({ vocalId, instId, ... }) opens the arranger on one pair straight
-// from Discover — that is what the Audition tab used to be.
+// from the pair dock — that is what the Audition tab used to be.
 
 const SECTION_COLORS = {
   intro: "#6b7280", verse: "#3b82f6", chorus: "#ec4899", drop: "#f59e0b",
@@ -390,8 +390,8 @@ const VERDICT_MARK = { love: "✓", ok: "~", no: "✗" };
 // ── timing options (the pills) ────────────────────────────────────────────────
 // One option is one suggested overlay: this vocal section over that bed section.
 // They arrive from GET /api/mashups/plan as `section_options`, which is
-// matcher.sections.top_section_pairs — the same scored engine the Discover row
-// is built from. The row's OWN pair rides along on the seed as `scoredOption`,
+// matcher.sections.top_section_pairs — the same scored engine a pair-dock card
+// is built from. The card's OWN pair rides along on the seed as `scoredOption`,
 // because top_section_pairs is capped at six and a row scored under different
 // weights need not be among them.
 
@@ -496,7 +496,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
   const [pairCtx, setPairCtx] = useState(null);   // { vocalSongId, instSongId, scoredOption }
   const [activeOptionKey, setActiveOptionKey] = useState(null);
   // "vId:iId:vSec:iSec" -> love|ok|no, the same key MashupSuggestions builds so
-  // a timing judged in Discover already shows as judged here.
+  // a timing judged in the dock already shows as judged here.
   const [optionVerdicts, setOptionVerdicts] = useState({});
   // Stars on the same key as the verdicts. A star writes its mapped verdict
   // too, so rating a build here reaches the learned scorer exactly as a ✓ does.
@@ -744,7 +744,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
   // ── lane moves ported from Audition ─────────────────────────────────────
   // Audition's "match key to the other deck" and "align downbeats" were its two
   // one-click alignment moves. With N lanes the reference is lane 1: it is the
-  // first thing you added and, from Discover, the vocal everything else sits
+  // first thing you added and, from the dock, the vocal everything else sits
   // under.
   const referenceLane = lanes[0] || null;
 
@@ -762,7 +762,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
 
   // Snap the lane so its nearest downbeat lands on the nearest project bar line.
   // Dragging already snaps, but only while you drag — this fixes a lane that
-  // arrived pre-placed (from Discover) or drifted after a tempo change.
+  // arrived pre-placed (from the dock) or drifted after a tempo change.
   const alignLaneToGrid = (lane) => {
     if (!projectBpm) { toast("Set a project BPM first"); return; }
     const downs = downbeatsOf(lane.beatTimes || [], lane.beatPhase)
@@ -796,7 +796,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
   useEffect(() => {
     if (restoreRan.current) return; // StrictMode double-invoke guard
     restoreRan.current = true;
-    // Arriving with a PAIR from Discover means the user asked for that pair —
+    // Arriving with a PAIR from the dock means the user asked for that pair —
     // restoring the previous project first would only be thrown away. A single
     // track is added to the existing project, so that one still restores.
     const s = seedAtMount.current;
@@ -954,8 +954,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
     () => mergeTimingOptions(pairCtx?.scoredOption, pairPlan?.section_options),
     [pairCtx, pairPlan]);
 
-  // Verdicts already recorded for this pair, so a timing judged in Discover
-  // shows as judged here. Keyed exactly as MashupSuggestions keys them.
+  // Verdicts already recorded for this pair, so a timing judged in the dock
+  // shows as judged here. Keyed exactly as pairModel.feedbackKey keys them.
   useEffect(() => {
     if (!pairCtx) { setOptionVerdicts({}); return; }
     let cancelled = false;

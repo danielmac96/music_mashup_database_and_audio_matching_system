@@ -251,14 +251,6 @@ input, select { font-family: inherit; }
   border: 1px solid var(--border-ctrl); border-radius: 7px; padding: 4px 9px;
 }
 .drawer-x:hover { color: var(--text); }
-.drawer-pref {
-  display: flex; gap: 10px; align-items: flex-start; cursor: pointer;
-  border: 1px solid var(--border); border-radius: 9px;
-  background: var(--panel); padding: 12px 14px; margin-bottom: 18px;
-}
-.drawer-pref input { margin-top: 3px; accent-color: var(--accent); }
-.drawer-pref b { display: block; font-size: 13px; margin-bottom: 3px; }
-.drawer-pref .hint { display: block; }
 .drawer-section h3 { font-size: 13px; margin: 0 0 3px; }
 .drawer-body { margin-top: 6px; }
 /* The browser already wraps itself in .page; inside the drawer that padding
@@ -340,14 +332,6 @@ input, select { font-family: inherit; }
   border-color: rgba(46, 204, 113, 0.5);
   color: var(--green);
 }
-.chip.seed {
-  background: var(--accent-tint);
-  border-color: rgba(91, 140, 255, 0.4);
-  color: var(--accent-light);
-  cursor: default;
-}
-.chip.seed .x { cursor: pointer; color: var(--faint); margin-left: 2px; }
-
 .search-box {
   display: flex;
   align-items: center;
@@ -494,9 +478,6 @@ input, select { font-family: inherit; }
   background: rgba(245,166,35,0.1); border: 1px solid rgba(245,166,35,0.35);
   border-radius: 8px; padding: 8px 12px; margin-bottom: 14px;
 }
-.bpm-warn { color: var(--amber-light); font-size: 13px; cursor: help; margin-left: -2px; }
-.pair-meta .pop { color: var(--amber-light); }
-
 .elapsed { font-size: 0.68rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .details-toggle {
   background: transparent; color: var(--muted); padding: 2px 6px;
@@ -509,144 +490,13 @@ input, select { font-family: inherit; }
 }
 
 /* ========================================================================== *
- * MASHUPS
+ * VERDICTS — Studio's timing pills. The ranked-list styles that used to lead
+ * this section went with the Discover pane; judging happens in the pair dock.
  * ========================================================================== */
-.legend {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  font-size: 11px;
-  color: var(--faint);
-  margin-bottom: 11px;
-  flex-wrap: wrap;
-}
-.legend .sw { display: flex; align-items: center; gap: 5px; }
-.legend .sw i { width: 18px; height: 5px; border-radius: 3px; display: inline-block; }
-.legend .weights { margin-left: auto; }
-
-.pair-list { display: flex; flex-direction: column; gap: 11px; }
-.pair {
-  display: grid;
-  grid-template-columns: 30px 1fr 230px 1fr 210px;
-  align-items: center;
-  gap: 16px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 11px;
-  padding: 14px 16px;
-}
-.pair.top { border-color: var(--border-accent); }
-
-/* ── T1.7 keyboard triage ───────────────────────────────────────────────── */
-/* The highlighted row has to be findable at a glance while arrowing fast, so
-   it gets a solid left rail rather than a subtle tint. */
-.pair { cursor: pointer; transition: border-color 120ms, box-shadow 120ms; }
-.pair.cursor {
-  border-color: var(--accent, #38bdf8);
-  box-shadow: inset 3px 0 0 var(--accent, #38bdf8), 0 0 0 1px var(--accent, #38bdf8);
-}
-.pair.playing { box-shadow: inset 3px 0 0 #22c55e, 0 0 0 1px #22c55e; border-color: #22c55e; }
-/* Judged rows recede — you have already spent attention on them. */
-.pair.judged-no { opacity: 0.45; }
-.pair.judged-love { border-color: #22c55e55; }
 .verdict-chip { display: block; font-size: 12px; line-height: 1.4; }
 .verdict-chip.love { color: #22c55e; }
 .verdict-chip.ok { color: var(--amber-light, #fbbf24); }
 .verdict-chip.no { color: #ff9b9b; }
-
-.key-legend {
-  display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
-  background: var(--panel); border: 1px solid var(--border-accent);
-  border-radius: 9px; padding: 10px 14px; margin-bottom: 11px;
-  font-size: 0.82rem; color: var(--faint);
-}
-.key-legend b { color: var(--text, #e6edf3); }
-.key-legend kbd {
-  font-family: var(--font-mono); font-size: 0.78rem;
-  background: var(--bg, #0d1117); border: 1px solid var(--border);
-  border-radius: 4px; padding: 1px 5px; margin: 0 1px;
-}
-.key-legend .faint { flex-basis: 100%; opacity: 0.7; }
-
-/* T2.2: the row headline is a library percentile; the raw composite and its
-   four sub-scores live in the Plan expander. */
-.pct-suffix { font-size: 0.6rem; letter-spacing: 0.06em; color: var(--faint); margin-left: 2px; }
-.raw-scores {
-  font-size: 0.78rem; color: var(--faint);
-  padding-bottom: 8px; margin-bottom: 8px;
-  border-bottom: 1px solid var(--border);
-}
-.raw-scores b { color: var(--text, #e6edf3); }
-
-.pair-rank { font-family: var(--font-mono); font-size: 18px; color: var(--faint); text-align: center; }
-.pair-side { display: flex; gap: 11px; align-items: center; min-width: 0; }
-.pair-side.bed { justify-content: flex-end; text-align: right; }
-.pair-art {
-  width: 42px; height: 42px; border-radius: 7px; flex-shrink: 0;
-  display: flex; align-items: center; justify-content: center; color: #3f4a5e;
-  background-size: cover; background-position: center;
-}
-.pair-role { font-size: 9.5px; letter-spacing: 0.06em; font-weight: 600; }
-.pair-role.vocal { color: var(--cyan-light); }
-.pair-role.bed { color: var(--amber-light); }
-.pair-title { font-weight: 600; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pair-meta { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
-
-.score-cluster { display: flex; flex-direction: column; align-items: center; gap: 7px; }
-.score-hero { display: flex; align-items: baseline; gap: 8px; }
-.score-hero .pctv { font-family: var(--font-mono); font-size: 30px; font-weight: 600; line-height: 1; }
-.tier-badge { font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em; padding: 3px 8px; border-radius: 5px; }
-.subscores { display: flex; gap: 5px; width: 180px; }
-.subscores .cell { flex: 1; height: 5px; background: var(--inset-2); border-radius: 3px; overflow: hidden; }
-.subscores .cell > span { display: block; height: 100%; }
-.relation-chips { display: flex; gap: 6px; }
-.rel-chip { font-family: var(--font-mono); font-size: 10px; padding: 2px 7px; border-radius: 4px; }
-.rel-chip.bpm { color: var(--cyan-light); background: rgba(56, 189, 248, 0.12); }
-/* Effort (Phase C) — what the pair COSTS to build, next to how well it fits.
-   Green reads "drag it in and go"; amber "some work"; red "this will hurt". */
-/* Phase E — the measured transpose, and the bass clash that a high-pass fixes. */
-/* Phase F — why the learned scorer placed a row where it did. */
-.rel-chip.reason      { font-size: 9.5px; opacity: 0.9; }
-.rel-chip.reason.up   { color: var(--green); background: rgba(52,211,153,0.10); }
-.rel-chip.reason.down { color: var(--text-dim, #9aa7bd); background: rgba(120,144,180,0.12); }
-.rel-chip.harmony    { color: var(--violet, #a78bfa); background: rgba(167,139,250,0.12); }
-.rel-chip.bass-clash { color: var(--amber-light); background: rgba(245,166,35,0.16); }
-.rel-chip.effort.free  { color: var(--green);  background: rgba(52, 211, 153, 0.12); }
-.rel-chip.effort.light { color: var(--amber-light); background: rgba(245, 166, 35, 0.12); }
-.rel-chip.effort.heavy { color: var(--red, #f87171); background: rgba(248, 113, 113, 0.12); }
-
-.pair-actions { display: flex; gap: 8px; justify-content: flex-end; }
-.pair-actions .plan {
-  cursor: pointer; background: var(--inset-2); border: 1px solid var(--border-ctrl);
-  border-radius: 7px; padding: 9px 13px; font-size: 12px; color: var(--text-2);
-}
-.pair-actions .audition {
-  cursor: pointer; background: var(--green); color: var(--green-ink);
-  border: none; border-radius: 7px; padding: 9px 18px; font-size: 13px; font-weight: 600;
-}
-
-.plan-detail {
-  background: var(--inset);
-  border: 1px solid var(--border);
-  border-top: none;
-  border-radius: 0 0 11px 11px;
-  margin-top: -11px;
-  padding: 14px 16px;
-  font-size: 12.5px;
-}
-.plan-detail ol { margin: 6px 0 10px 18px; padding: 0; }
-.plan-detail .mono-grid {
-  display: grid;
-  gap: 2px 12px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-}
-
-@media (max-width: 1080px) {
-  .pair { grid-template-columns: 26px 1fr 200px; }
-  .pair-side.bed, .pair-actions { grid-column: 2 / 4; justify-content: flex-start; }
-  .pair-side.bed { text-align: left; }
-}
 
 .picker-overlay { position: fixed; inset: 0; z-index: 45; }
 .picker-menu {
@@ -1534,10 +1384,6 @@ input, select { font-family: inherit; }
 /* Spec §10's human-readable candidate line: "chorus 1:12–1:44 over drop
    0:48–1:20 · 16 bars · 120→128 BPM · nudge the bed +300 ms". Deliberately
    quiet — it is the answer to "and then what?", not the headline. */
-.pair-reason {
-  font-family: var(--font-mono); font-size: 10.5px; color: var(--muted);
-  text-align: center; margin: 5px 0 2px; line-height: 1.45;
-}
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Library (screen 1a)
@@ -1719,9 +1565,13 @@ input, select { font-family: inherit; }
 .tt-play:hover { border-color: var(--accent); color: var(--accent-light); }
 .tt-art { width: 28px; height: 28px; border-radius: 4px; }
 /* A button, but it has to keep behaving like the grid cell it replaced —
-   default button padding and centring would break the ellipsis. */
+   default button padding and centring would break the ellipsis.
+   It fills the cell's full HEIGHT as well as its width: at content height the
+   strips above and below the two lines fell through to the row, so a click
+   half a row from the title scoped the dock instead of opening the track. */
 .tt-name {
-  min-width: 0; display: block; width: 100%; text-align: left;
+  min-width: 0; width: 100%; height: 100%; text-align: left;
+  display: flex; flex-direction: column; justify-content: center;
   padding: 0; background: none; border: 0; cursor: pointer;
 }
 .tt-title {
@@ -1750,6 +1600,19 @@ input, select { font-family: inherit; }
   text-decoration: underline; text-underline-offset: 2px;
 }
 .tt-name:hover .tt-go { color: var(--accent-light); opacity: 1; }
+/* The resize grip sits in the 8px gap to the right of its header cell, so it
+   overlays nothing. pointer-events stay off the hairline itself until hover so
+   the column keeps reading as a sort button first. */
+.tt-h { position: relative; }
+.tt-grip {
+  position: absolute; right: -8px; top: 0; bottom: 0; width: 9px;
+  cursor: col-resize; z-index: 2;
+}
+.tt-grip::after {
+  content: ""; position: absolute; left: 4px; top: 4px; bottom: 4px; width: 1px;
+  background: var(--faint-2); opacity: 0; transition: opacity 0.12s;
+}
+.tt-grip:hover::after { opacity: 1; }
 .tt-cell { min-width: 0; }
 .tt-num { font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-2); }
 .tt-num.right { text-align: right; color: var(--faint); }
@@ -1923,9 +1786,13 @@ input, select { font-family: inherit; }
   display: flex; flex-direction: column; overflow: hidden;
 }
 
+/* The strip takes a line of its own (flex-basis: 100% forces the wrap). Seven
+   buttons beside the title would fit the 404px on paper, but .float-status is
+   pinned over this corner of the dock and would sit on top of them. */
 .pd-head {
-  height: 46px; flex: none;
-  display: flex; align-items: center; gap: 8px; padding: 0 14px;
+  flex: none;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 7px 8px;
+  padding: 11px 14px 9px;
   border-bottom: 1px solid var(--border-top);
 }
 .pd-title { font: 600 13px var(--font-ui); }
@@ -1935,9 +1802,14 @@ input, select { font-family: inherit; }
   background: var(--inset-2); border: 1px solid var(--border-ctrl); border-radius: 7px;
 }
 .pd-seg button {
-  cursor: pointer; border: none; background: transparent; border-radius: 5px;
-  padding: 3px 8px; font: 500 10.5px var(--font-ui); color: var(--muted);
+  cursor: pointer; border: 1px solid transparent; background: transparent;
+  border-radius: 5px; white-space: nowrap;
+  padding: 3px 7px; font: 500 10.5px var(--font-ui); color: var(--muted);
 }
+/* Discover's sub-tabs borrow .pd-seg and sit in a header with room to spare.
+   Only the DOCK's strip takes a line of its own and divides it evenly. */
+.pd-head .pd-seg { flex-basis: 100%; margin-left: 0; }
+.pd-head .pd-seg button { flex: 1; padding: 3px 6px; }
 .pd-seg button:hover { color: var(--text-2); }
 .pd-seg button.on { background: var(--raised); color: var(--text); font-weight: 600; }
 
@@ -2071,6 +1943,11 @@ input, select { font-family: inherit; }
   font: 600 10.5px var(--font-ui); color: var(--accent-light); padding: 0;
 }
 .pc-studio:hover { color: var(--accent); }
+.pc-hide {
+  cursor: pointer; border: none; background: transparent; padding: 0 2px;
+  font-size: 12px; color: var(--faint-2); transition: color 0.12s;
+}
+.pc-hide:hover { color: var(--red); }
 
 /* ── the transport bar ─────────────────────────────────────────────────── */
 /* The bar is the last child of .app-main now, not a cell of .lib-layout — it

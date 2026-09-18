@@ -97,6 +97,19 @@ export const api = {
       }),
     }),
 
+  // Forget a judgement — the star, and the verdict it implied, together. The
+  // four ids are the key; there is no "rating: 0", because the POST above
+  // COALESCEs a null rating into the one already stored.
+  clearPairFeedback: ({ vocalSongId, instSongId,
+                        vocalSection = null, instSection = null }) =>
+    jsonFetch("/api/mashups/feedback", {
+      method: "DELETE",
+      body: JSON.stringify({
+        vocal_song_id: vocalSongId, inst_song_id: instSongId,
+        vocal_section: vocalSection, inst_section: instSection,
+      }),
+    }),
+
   // Which beat of the bar this stem's grid starts on (0-3). Set by alt+clicking
   // a beat line in Studio when detected bar lines don't match what you hear.
   setBeatPhase: (id, stem, phase) =>
@@ -233,20 +246,6 @@ export const api = {
     return jsonFetch(`/api/mashups?${params}`);
   },
 
-  // Which filter values this library actually contains.
-  getMashupFilters: (comboType = "") =>
-    jsonFetch(`/api/mashups/filters${comboType ? `?combo_type=${comboType}` : ""}`),
-
-  // "The best bed for each of my vocals" — every acapella gets a turn instead
-  // of one well-placed vocal owning the page.
-  getBestBedPerVocal: ({ limit = 50, perVocal = 1, minScore = 0 } = {}) => {
-    const params = new URLSearchParams({
-      limit: String(limit), per_vocal: String(perVocal),
-    });
-    if (minScore) params.set("min_score", String(minScore));
-    return jsonFetch(`/api/mashups/by-vocal?${params}`);
-  },
-
   // ── Hidden pairs / excluded tracks (T3.4) ─────────────────────────────────
   // Display preferences, not judgments: they survive "Score library" but are
   // deliberately not training data.
@@ -290,15 +289,6 @@ export const api = {
     jsonFetch("/api/studio/session", {
       method: "POST",
       body: JSON.stringify({ vocal_song_id: vocalSongId, inst_song_id: instSongId }),
-    }),
-
-  // The same, for the top N of the currently filtered ranked list. Filters go to
-  // the server rather than a list of ids so the export matches what is on
-  // screen — including the diversity cap, which is applied after the SQL.
-  startBatchSessionExport: (opts = {}) =>
-    jsonFetch("/api/mashups/session/batch", {
-      method: "POST",
-      body: JSON.stringify(opts),
     }),
 
   sessionArchiveUrl: (token) => `/api/studio/session/${token}/archive`,
@@ -417,12 +407,6 @@ export const api = {
   activateModel: (id) => jsonFetch(`/api/models/${id}/activate`, { method: "POST" }),
 
   getScorerStatus: () => jsonFetch("/api/mashups/scorer-status"),
-
-  // Render one candidate's two sections into a single mix. NOT the
-  // triage path — Discover already auditions client-side in under a second;
-  // this is for checking a build and sharing the result.
-  startCandidatePreview: (candidateId) =>
-    jsonFetch(`/api/mashups/${candidateId}/preview`, { method: "POST" }),
 
   // ── Discovery (SoundCloud search/browse) + crates ──────────────────────────
   // Every track row comes back with `in_library` already resolved server-side,

@@ -66,6 +66,16 @@ export function TrackActions({ track, job, pipeJob, onStarted, onDone, onClose,
     }
   };
 
+  const exclude = async () => {
+    try {
+      await api.excludeTrack(track.id);
+      toast(`"${track.title}" will not appear in pairs`);
+      onClose();
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   const remove = async () => {
     // window.confirm blocks the whole extension host, and this is destructive:
     // it deletes the row AND the audio. Two clicks in the menu instead.
@@ -118,6 +128,12 @@ export function TrackActions({ track, job, pipeJob, onStarted, onDone, onClose,
       <button className="tt-menu-item" onClick={() => { onEdit(track.id); onClose(); }}>
         Correct BPM / key / URL…
       </button>
+      {/* Excluding is a track-level display preference, which is why it sits
+          here and not on a pair card — a card has two sides and no room to say
+          which one you meant. ⚙ Settings restores it. */}
+      <button className="tt-menu-item"
+        title="Stop this track appearing on either side of any pair. Not a verdict — it never trains the scorer."
+        onClick={exclude}>Exclude from pairs</button>
 
       {groups && (
         <>

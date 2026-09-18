@@ -11,8 +11,9 @@ from database.models import (
     get_conn,
     BPM_BANDS, ENERGY_BANDS, ERA_BANDS, VERDICTS, best_bed_per_vocal,
     candidate_filter_options, exclude_track, get_candidates_enriched,
-    get_pair_feedback, hide_pair, include_track, list_hidden, unhide_pair,
-    upsert_pair_feedback, verdict_for_rating,
+    delete_pair_feedback, get_pair_feedback, hide_pair, include_track,
+    list_hidden, unhide_pair,
+    SECTION_TERM_ORDERS, upsert_pair_feedback, verdict_for_rating,
 )
 
 from api import jobs
@@ -24,6 +25,11 @@ from matcher.plan import build_mashup_plan
 router = APIRouter()
 
 _COMBO_TYPES = {"vocal_over_instrumental", "instrumental_over_instrumental"}
+
+# "score" and "uncertain" rank the composite; the rest rank one section term
+# each (see SECTION_TERM_ORDERS). All of them are the SQL's, not a re-sort of
+# the returned page.
+_ORDERS = {"score", "uncertain"} | set(SECTION_TERM_ORDERS)
 
 # What the dominant effort component means in the DAW, for the chip's tooltip.
 _EFFORT_REASONS = {
@@ -155,9 +161,9 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     if max_per_song < 0:
         raise HTTPException(status_code=400,
                             detail="max_per_song must be 0 or greater")
-    if order not in ("score", "uncertain"):
+    if order not in _ORDERS:
         raise HTTPException(status_code=400,
-                            detail="order must be score|uncertain")
+                            detail=f"order must be one of {sorted(_ORDERS)}")
     if not (0.0 <= adventure <= 1.0):
         raise HTTPException(status_code=400,
                             detail="adventure must be in [0, 1]")
@@ -254,11 +260,20 @@ def list_suppressed() -> dict:
 class PairVerdict(BaseModel):
     vocal_song_id: int
     inst_song_id: int
-    # Either is enough. The dock sends a star, Discover's ✓/~/✗ sends a
+    # Either is enough. The dock sends a star, Studio's ✓/~/✗ sends a
     # verdict, and the model derives whichever is missing — see
     # database.models.RATING_TO_VERDICT.
     verdict: Optional[str] = None
     rating: Optional[int] = None
+    vocal_section: Optional[int] = None
+    inst_section: Optional[int] = None
+
+
+class PairKey(BaseModel):
+    """The four ids that identify a pair — never candidate.id, which a
+    re-score invalidates. Same key as ux_pair_feedback_section."""
+    vocal_song_id: int
+    inst_song_id: int
     vocal_section: Optional[int] = None
     inst_section: Optional[int] = None
 
@@ -289,6 +304,24 @@ def save_feedback(body: PairVerdict) -> dict:
     return {"ok": True, "vocal_song_id": body.vocal_song_id,
             "inst_song_id": body.inst_song_id, "verdict": verdict,
             "rating": body.rating}
+
+
+@router.delete("/feedback")
+def clear_feedback(body: PairKey) -> dict:
+    """Forget a judgement — the dock's "click the star you already set".
+
+    Deleting nothing answers 200 with deleted=0: clearing a pair that carries
+    no judgement is the state the caller asked for, not an error, and the UI
+    clears optimistically before it hears back.
+
+    It removes the row, so the verdict goes with the star (see
+    models.delete_pair_feedback). pair_feedback is otherwise append-and-correct
+    only, and this is the one path that takes something away."""
+    n = delete_pair_feedback(
+        body.vocal_song_id, body.inst_song_id,
+        vocal_section=body.vocal_section, inst_section=body.inst_section,
+    )
+    return {"ok": True, "deleted": n}
 
 
 @router.get("/feedback")
