@@ -452,3 +452,60 @@ def test_ingest_enqueues_one_job_per_track(env, monkeypatch):
     assert body["count"] == 2
     assert len(body["job_ids"]) == 2
     assert len(enqueued) == 2
+
+
+def _fresh_playlists(monkeypatch):
+    """The playlists route, rebound to the DB the `env` fixture just made.
+
+    It imports upsert_song/get_song_by_url from database.models at load, and
+    those carry `db_path=DB_PATH` as a DEFAULT ARGUMENT — bound when models was
+    last reloaded. Without this reload the route writes to a previous test's
+    database, and the assertions pass or fail for the wrong reason."""
+    import importlib
+    import api.routes.playlists as playlists_route
+    importlib.reload(playlists_route)
+    monkeypatch.setattr(playlists_route.queue_runner, "enqueue_song",
+                        lambda sid: f"job-{sid}")
+    monkeypatch.setattr(playlists_route, "enrich_track", lambda url: None)
+    return playlists_route
+
+
+def test_ingest_rows_reports_every_row_in_order(env, monkeypatch):
+    """`ordered_song_ids` is positionally aligned with the input.
+
+    It is what lets a caller re-point its own rows at the songs they became —
+    the mix ingester writes mix_tracks.song_id from it — so a row that produced
+    no id must still take a slot, or every id after it lands on the wrong row.
+    """
+    playlists_route = _fresh_playlists(monkeypatch)
+
+    first = playlists_route.ingest_rows(
+        [{"title": "One", "artist": "A", "source_url": "http://ord/1"}])
+    out = playlists_route.ingest_rows([
+        {"title": "One", "artist": "A", "source_url": "http://ord/1"},   # already here
+        {"title": "NoUrl", "artist": "B", "source_url": ""},             # unsavable
+        {"title": "Three", "artist": "C", "source_url": "http://ord/3"},  # new
+    ])
+
+    ids = out["ordered_song_ids"]
+    assert len(ids) == 3
+    assert ids[0] == first["inserted_ids"][0]
+    assert ids[1] is None
+    assert ids[2] == out["inserted_ids"][0]
+
+
+def test_a_row_with_no_url_is_reported_not_saved(env, monkeypatch):
+    # songs.source_url is UNIQUE and SQLite treats '' as a real value, so these
+    # used to collapse onto one row, each silently overwriting the last.
+    models = env
+    playlists_route = _fresh_playlists(monkeypatch)
+
+    out = playlists_route.ingest_rows([
+        {"title": "A", "artist": "", "source_url": ""},
+        {"title": "B", "artist": "", "source_url": ""},
+    ])
+
+    assert out["count"] == 0
+    assert out["unresolvable_count"] == 2
+    assert [r["title"] for r in out["unresolvable"]] == ["A", "B"]
+    assert models.get_all_songs() == []

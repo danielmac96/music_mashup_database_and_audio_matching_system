@@ -115,7 +115,12 @@ def ingest_rows(tracks: list[dict[str, Any]],
     get subtly wrong. Rows are the canonical shape ingest.soundcloud._normalise
     and soundcloud_browse.track_row produce; a row marked ``hydrated`` skips the
     metadata refetch, which is why browse results ingest without touching the
-    network again."""
+    network again.
+
+    Returns the import's accounting — ``inserted_ids`` (saved now), ``skipped``
+    (already here), ``unresolvable`` (no usable URL) — plus
+    ``ordered_song_ids``, one entry per input row in order, which is what lets a
+    caller re-point its own rows at the songs they became."""
     # Metadata resolution runs in parallel (hydrated/cached rows return
     # instantly; only genuinely unfetched tracks hit the network). The DB
     # upserts + queueing below stay serial: fast writes, deterministic order.
@@ -124,29 +129,42 @@ def ingest_rows(tracks: list[dict[str, Any]],
 
     inserted_ids: list[int] = []
     skipped: list[dict] = []   # already in the library — reported, not re-processed
+    unresolvable: list[dict] = []  # no usable URL — cannot be saved at all
     partial_count = 0
-    # Every row's library id, IN THE ORDER THEY WERE IMPORTED, whether it was
-    # saved now or was already here. A saved playlist has to be the whole
-    # playlist: a group built only from the new rows would be missing exactly
-    # the tracks you already owned, which is most of them the second time you
-    # import from an artist you follow.
-    ordered_song_ids: list[int] = []
+    # Every row's library id, POSITIONALLY ALIGNED WITH `tracks`: the id it was
+    # saved under, the id it already had, or None when the row could not be
+    # saved. Callers that map their own rows onto songs (the mix ingester
+    # re-pointing mix_tracks.song_id) index into this, so a row must never be
+    # silently dropped from it — that would shift every id after it onto the
+    # wrong row. `_save_as_group` filters the Nones back out: a saved playlist
+    # has to be the whole playlist, a group built only from the new rows would
+    # be missing exactly the tracks you already owned.
+    ordered_song_ids: list[Optional[int]] = []
     for merged, is_rich in resolved:
         source_url = normalize_url(merged.get("source_url") or "")
 
+        # No URL, nothing to save. `songs.source_url` is UNIQUE and SQLite
+        # treats '' as a real value, so upserting these would collapse every
+        # one of them onto a single row, each silently overwriting the last.
+        if not source_url:
+            unresolvable.append({"title": merged.get("title") or "Unknown", "url": ""})
+            ordered_song_ids.append(None)
+            log.warning("skipping a row with no usable source_url: %r",
+                        merged.get("title"))
+            continue
+
         # Dedup: a URL already in the library is skipped (and surfaced) rather
-        # than silently re-downloaded/re-analyzed. Empty URLs can't be deduped.
-        if source_url:
-            existing = get_song_by_url(source_url)
-            if existing:
-                skipped.append({
-                    "title": merged.get("title") or existing.get("title") or "Unknown",
-                    "url": source_url,
-                    "id": existing.get("id"),
-                })
-                if existing.get("id"):
-                    ordered_song_ids.append(int(existing["id"]))
-                continue
+        # than silently re-downloaded/re-analyzed.
+        existing = get_song_by_url(source_url)
+        if existing:
+            skipped.append({
+                "title": merged.get("title") or existing.get("title") or "Unknown",
+                "url": source_url,
+                "id": existing.get("id"),
+            })
+            ordered_song_ids.append(
+                int(existing["id"]) if existing.get("id") else None)
+            continue
 
         if not is_rich:
             partial_count += 1
@@ -202,13 +220,18 @@ def ingest_rows(tracks: list[dict[str, Any]],
         "count": len(inserted_ids),
         "skipped": skipped,
         "skipped_count": len(skipped),
+        "unresolvable": unresolvable,
+        "unresolvable_count": len(unresolvable),
         "partial_count": partial_count,
         "job_ids": job_ids,
         "group": group,
+        # One entry per input row, in order, id or None. See the comment above.
+        "ordered_song_ids": ordered_song_ids,
     }
 
 
-def _save_as_group(group_name: Optional[str], song_ids: list[int]) -> Optional[dict]:
+def _save_as_group(group_name: Optional[str],
+                   song_ids: list[Optional[int]]) -> Optional[dict]:
     """Put this import into a named library group, making it if needed.
 
     Returns the group as the Library's rail sees it — name, counts and the song
@@ -220,11 +243,14 @@ def _save_as_group(group_name: Optional[str], song_ids: list[int]) -> Optional[d
     because a shelf label collided would be a lie about what happened to their
     audio."""
     name = (group_name or "").strip()
-    if not name or not song_ids:
+    # `song_ids` is positionally aligned with the import and carries a None for
+    # every row that could not be saved; a shelf only holds the real ones.
+    ids = [i for i in song_ids if i]
+    if not name or not ids:
         return None
     try:
         crate = get_or_create_crate(name)
-        add_songs_to_crate(crate["id"], song_ids)
+        add_songs_to_crate(crate["id"], ids)
         return next((g for g in library_groups() if g["id"] == crate["id"]), None)
     except Exception:  # noqa: BLE001 — the import itself already succeeded
         log.exception("could not save import as the group %r", name)

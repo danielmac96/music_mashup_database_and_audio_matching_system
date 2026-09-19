@@ -299,8 +299,15 @@ export const api = {
   // payload shape.
 
   // ── Mixes (1001tracklists ingestion) ──────────────────────────────────────
-  importMix: (url) =>
-    jsonFetch("/api/mixes/import", { method: "POST", body: JSON.stringify({ url }) }),
+  // A 1001tracklists URL answers { job_id } — a stealth render of a heavy set
+  // is minutes of work and never belonged inside the request. A plain-HTML
+  // tracklist page still answers with the mix itself. `refresh` pays for a
+  // fresh render instead of re-parsing the cached markdown.
+  importMix: (url, refresh = false) =>
+    jsonFetch("/api/mixes/import", {
+      method: "POST",
+      body: JSON.stringify({ url, refresh }),
+    }),
 
   getMixes: () => jsonFetch("/api/mixes"),
 
@@ -350,6 +357,8 @@ export const api = {
   scrapeMixTrackLink: (trackId) =>
     jsonFetch(`/api/mixes/tracks/${trackId}/scrape-link`, { method: "POST" }),
 
+  // Answers { job_id, queued }: a 200-track mix is 200 metadata fetches. Poll
+  // the job; its result carries the counts.
   ingestMix: (id) => jsonFetch(`/api/mixes/${id}/ingest`, { method: "POST" }),
 
   // Manually add a track (artist/title + optional SC/YT link). No link → the row

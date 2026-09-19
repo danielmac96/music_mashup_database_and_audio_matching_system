@@ -3,6 +3,14 @@ import pytest
 from ingest import firecrawl_scrape as fc
 
 
+@pytest.fixture(autouse=True)
+def _isolated_markdown_cache(tmp_path, monkeypatch):
+    """Point the rendered-markdown cache at a temp dir. It is a module global
+    bound from DATA_DIR at import, so without this the suite would write into
+    the repo and one test's cached page would answer another's scrape."""
+    monkeypatch.setattr(fc, "MARKDOWN_CACHE_DIR", tmp_path / "tracklist_cache")
+
+
 def _fake_post(payload, *, expect_format):
     def _post(url, body, headers):
         assert "Authorization" in headers
@@ -215,3 +223,215 @@ def test_only_a_refused_key_raises_the_auth_error(monkeypatch, code, auth):
     with pytest.raises(fc.FirecrawlError) as exc:
         fc._real_post("https://api.firecrawl.dev/v2/scrape", {}, {})
     assert isinstance(exc.value, fc.FirecrawlAuthError) is auth
+
+
+# ── transient upstream failures (the 429/5xx/529 class) ──────────────────────
+#
+# These used to escape the whole retry schedule on the first attempt: every
+# HTTPError became a plain FirecrawlError and the user got a 502 for what was a
+# passing hiccup on Firecrawl's side.
+
+def _http_error(code, retry_after=None):
+    import io
+    import urllib.error
+    headers = {"Retry-After": retry_after} if retry_after is not None else {}
+    return urllib.error.HTTPError("https://api.firecrawl.dev/v2/scrape", code, "x",
+                                  headers, io.BytesIO(b'{"error": "upstream"}'))
+
+
+# _real_post is what classifies an HTTPError, so drive the classification
+# through it rather than re-implementing the mapping in a double.
+def _classify(code, retry_after=None):
+    def refuse(req, timeout=None):
+        raise _http_error(code, retry_after)
+    return refuse
+
+
+@pytest.mark.parametrize("code", [429, 500, 502, 503, 504, 529])
+def test_transient_codes_are_retried_not_raised(monkeypatch, code):
+    monkeypatch.setattr(fc.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def _post(url, body, headers):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise fc._Transient(f"Firecrawl HTTP {code}")
+        return {"success": True, "data": {"markdown": _MD, "metadata": {"statusCode": 200}}}
+
+    rows = fc.scrape_tracklist("https://x", api_key="fc-k", _post=_post)
+    assert len(rows) == 4
+    assert calls["n"] == 2          # the hiccup was retried, not surfaced
+
+
+def test_transient_retries_are_bounded_and_then_reported(monkeypatch):
+    slept = []
+    monkeypatch.setattr(fc.time, "sleep", slept.append)
+    calls = {"n": 0}
+
+    def _post(url, body, headers):
+        calls["n"] += 1
+        raise fc._Transient("Firecrawl HTTP 529")
+
+    with pytest.raises(fc.FirecrawlError) as exc:
+        fc.scrape_tracklist("https://x", api_key="fc-k", _post=_post)
+    assert "529" in str(exc.value)
+    # Every attempt costs credits, so one click has a hard ceiling.
+    assert calls["n"] == fc._MAX_REQUESTS
+    assert slept and all(s > 0 for s in slept)
+
+
+def test_retry_after_beats_our_own_backoff(monkeypatch):
+    slept = []
+    monkeypatch.setattr(fc.time, "sleep", slept.append)
+    calls = {"n": 0}
+
+    def _post(url, body, headers):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise fc._Transient("Firecrawl HTTP 429", retry_after=7)
+        return {"success": True, "data": {"markdown": _MD}}
+
+    fc.scrape_tracklist("https://x", api_key="fc-k", _post=_post)
+    assert slept == [7]
+
+
+@pytest.mark.parametrize("code, kind", [
+    (429, fc._Transient), (503, fc._Transient), (529, fc._Transient),
+    (402, fc.FirecrawlQuotaError), (401, fc.FirecrawlAuthError),
+    (400, fc.FirecrawlError),
+])
+def test_http_codes_are_classified(monkeypatch, code, kind):
+    monkeypatch.setattr(fc.urllib.request, "urlopen", _classify(code))
+    with pytest.raises(kind):
+        fc._real_post("https://api.firecrawl.dev/v2/scrape", {}, {})
+
+
+def test_retry_after_header_is_read_and_capped(monkeypatch):
+    monkeypatch.setattr(fc.urllib.request, "urlopen", _classify(429, retry_after="3"))
+    with pytest.raises(fc._Transient) as exc:
+        fc._real_post("https://api.firecrawl.dev/v2/scrape", {}, {})
+    assert exc.value.retry_after == 3
+    monkeypatch.setattr(fc.urllib.request, "urlopen",
+                        _classify(429, retry_after="99999"))
+    with pytest.raises(fc._Transient) as exc:
+        fc._real_post("https://api.firecrawl.dev/v2/scrape", {}, {})
+    assert exc.value.retry_after == fc._MAX_BACKOFF
+
+
+def test_a_socket_timeout_is_transient_not_fatal(monkeypatch):
+    def time_out(req, timeout=None):
+        raise TimeoutError("timed out")
+    monkeypatch.setattr(fc.urllib.request, "urlopen", time_out)
+    with pytest.raises(fc._Transient):
+        fc._real_post("https://api.firecrawl.dev/v2/scrape", {}, {})
+
+
+# ── the socket budget ────────────────────────────────────────────────────────
+
+def test_the_socket_budget_covers_the_render_budget(monkeypatch):
+    # A fixed 90s was shorter than a 25s render of a ~200-track page plus proxy
+    # overhead: Firecrawl rendered and billed the page, we hung up on it, and
+    # the user saw a failed scrape.
+    post, sent = _recording_post([_challenge_payload()])
+    with pytest.raises(fc.FirecrawlChallenge):
+        fc.scrape_tracklist("https://x", api_key="fc-k", _post=post)
+    for body in sent:
+        assert body["timeout"] > body["waitFor"]
+        assert fc.socket_timeout(body) > body["waitFor"] / 1000
+
+
+# ── envelope shape ───────────────────────────────────────────────────────────
+
+def test_a_nested_data_envelope_is_still_read():
+    # Reading only resp["data"]["markdown"] turned any other shape into a silent
+    # "no tracks" on a scrape that succeeded and was billed.
+    payload = {"success": True, "data": {"data": {"markdown": _MD}}}
+    rows = fc.scrape_tracklist("https://x", api_key="fc-k",
+                               _post=_fake_post(payload, expect_format="markdown"))
+    assert len(rows) == 4
+
+
+def test_a_non_dict_data_is_a_clear_error_not_an_attributeerror():
+    payload = {"success": True, "data": ["nope"]}
+    with pytest.raises(fc.FirecrawlError) as exc:
+        fc.scrape_tracklist("https://x", api_key="fc-k",
+                            _post=_fake_post(payload, expect_format="markdown"))
+    assert "unexpected payload shape" in str(exc.value)
+
+
+def test_a_missing_success_flag_is_reported_not_swallowed(monkeypatch):
+    # It used to `continue` in silence, burning every attempt on an envelope
+    # nobody ever saw, and reporting the generic "returned no data".
+    post, sent = _recording_post([{"data": {"markdown": _MD}}])
+    with pytest.raises(fc.FirecrawlError) as exc:
+        fc.scrape_tracklist("https://x", api_key="fc-k", _post=post)
+    assert "success=true" in str(exc.value)
+    assert len(sent) == len(fc._WAIT_SCHEDULE)
+
+
+def test_a_relabelled_track_link_is_not_mistaken_for_the_wall():
+    # The link TEXT was the only "this render is good" signal, and the real page
+    # always carries the footer challenge markers — so a site-side label change
+    # would flag a perfect render as the wall and burn every attempt on it.
+    md = _MD.replace("[open track page]", "[view track]")
+    post, sent = _recording_post([
+        {"success": True, "data": {"markdown": md, "metadata": {"statusCode": 200}}}])
+    with pytest.raises(fc.FirecrawlError) as exc:
+        fc.scrape_tracklist("https://x", api_key="fc-k", _post=post)
+    # The href still identifies it as a rendered page, so we stop at one request
+    # and report a parse problem rather than pretending it is Cloudflare.
+    assert not isinstance(exc.value, fc.FirecrawlChallenge)
+    assert len(sent) == 1
+
+
+def test_the_challenge_error_carries_the_payload_it_saw():
+    post, _sent = _recording_post([_challenge_payload()])
+    with pytest.raises(fc.FirecrawlChallenge) as exc:
+        fc.scrape_tracklist("https://x", api_key="fc-k", _post=post)
+    assert "statusCode=206" in str(exc.value)
+
+
+# ── the rendered-markdown disk cache ─────────────────────────────────────────
+#
+# A stealth render costs real credits. Nothing used to be kept, so every retry
+# — and every re-import — paid again, and a failed scrape left nothing behind
+# to look at.
+
+def test_a_scraped_page_is_cached_and_the_next_import_is_free():
+    post, sent = _recording_post([{"success": True, "data": {"markdown": _MD}}])
+    url = "https://www.1001tracklists.com/tracklist/x.html"
+    assert len(fc.scrape_tracklist(url, api_key="fc-k", _post=post)) == 4
+    assert fc.markdown_cache_path(url).exists()
+
+    again = fc.scrape_tracklist(url, api_key="fc-k", _post=post)
+    assert len(again) == 4
+    assert len(sent) == 1          # no second request, no second charge
+
+
+def test_refresh_pays_for_a_fresh_render_and_bypasses_both_caches():
+    post, sent = _recording_post([{"success": True, "data": {"markdown": _MD}}])
+    url = "https://www.1001tracklists.com/tracklist/x.html"
+    fc.scrape_tracklist(url, api_key="fc-k", _post=post)
+
+    fc.scrape_tracklist(url, api_key="fc-k", refresh=True, _post=post)
+    assert len(sent) == 2
+    assert sent[1]["maxAge"] == 0   # Firecrawl's own cache bypassed too
+
+
+def test_an_unparseable_render_is_kept_on_disk_for_diagnosis():
+    post, _sent = _recording_post([
+        {"success": True, "data": {"markdown": "rendered, but nothing we know\n",
+                                   "metadata": {"statusCode": 200}}}])
+    url = "https://www.1001tracklists.com/tracklist/y.html"
+    with pytest.raises(fc.FirecrawlError):
+        fc.scrape_tracklist(url, api_key="fc-k", _post=post)
+    assert fc.markdown_cache_path(url).exists()
+
+
+def test_a_cached_page_that_parses_to_nothing_is_re_scraped():
+    url = "https://www.1001tracklists.com/tracklist/z.html"
+    fc.MARKDOWN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    fc.markdown_cache_path(url).write_text("stale junk\n", encoding="utf-8")
+    post, sent = _recording_post([{"success": True, "data": {"markdown": _MD}}])
+    assert len(fc.scrape_tracklist(url, api_key="fc-k", _post=post)) == 4
+    assert len(sent) == 1
