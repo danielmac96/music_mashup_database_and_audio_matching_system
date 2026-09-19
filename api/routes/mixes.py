@@ -13,6 +13,11 @@ line parser in ingest/tracklist_parse.py.
 Each mix track can then be resolved to a playable SoundCloud/YouTube link
 (POST /tracks/{id}/resolve) and the whole mix ingested into the normal
 download → stems → analyze → structure pipeline (POST /{id}/ingest).
+
+The two slow buttons — the Firecrawl import and the whole-mix ingest — answer
+with a job_id and run in api/workers/mix_ingest_worker.py. Neither fits in an
+HTTP request at 200 tracks, and the ingest that tried also deadlocked SQLite
+against itself (see that module).
 """
 from __future__ import annotations
 
@@ -24,21 +29,20 @@ import urllib.error
 import urllib.request
 from html import unescape
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
-from api import jobs, queue_runner
-from api.workers import mix_resolve_worker
+from api import jobs
+from api.workers import mix_ingest_worker, mix_resolve_worker
 from config import DATA_DIR, current_firecrawl_api_key
-from database.models import get_conn, get_song_by_url, is_trusted_link, upsert_song
-from ingest.firecrawl_scrape import (FirecrawlAuthError, FirecrawlError, scrape_tracklist,
-                                    scrape_track_links)
+from database.models import get_conn, is_trusted_link
+from ingest.firecrawl_scrape import FirecrawlError, scrape_track_links
 from ingest.soundcloud import search_candidates as yt_search_candidates
 from ingest.soundcloud_api import SoundCloudAPIError
 from ingest.soundcloud_api import search_candidates as sc_search_candidates
-from ingest.sources import classify_url, normalize_url
+from ingest.sources import classify_url
 from ingest.tracklist_parse import parse_line, parse_tracklist
 
 log = logging.getLogger(__name__)
@@ -221,6 +225,9 @@ def _mix_detail(conn, mix_id: int) -> dict:
 
 class ImportRequest(BaseModel):
     url: str
+    # Bypass the cached markdown of a previous successful scrape and pay for a
+    # fresh render. Off by default — a re-import of the same URL should be free.
+    refresh: bool = False
 
 
 class ResolveRequest(BaseModel):
@@ -264,6 +271,11 @@ def _scraped_rows_to_persist_rows(scraped: list[dict]) -> list[dict]:
     We rebuild the canonical tracklist line and re-parse it with parse_line, so
     remixer/is_id/mashup_parts/parse_confidence come from the same tested parser
     the paste path uses. Firecrawl's is_overlay wins the bed/overlay decision.
+
+    A line parse_line rejects (a title that is one of its skip prefixes, a row
+    left too short after URL-fragment stripping) is DROPPED. It used to become
+    an empty dict, which _persist_mix then indexed with r["artist"] — a KeyError
+    and a 500 on an import Firecrawl had already been paid for.
     """
     rows: list[dict] = []
     bed_n = 0
@@ -275,7 +287,12 @@ def _scraped_rows_to_persist_rows(scraped: list[dict]) -> list[dict]:
         else:
             bed_n += 1
             line = f"{bed_n}. {body}"
-        row = _parse_line(line) or {}
+        row = _parse_line(line)
+        if not row:
+            log.warning("dropping an unparseable scraped tracklist row: %r", line)
+            if not t.get("is_overlay"):
+                bed_n -= 1   # the number goes to the next bed, not into a gap
+            continue
         row["is_overlay"] = bool(t.get("is_overlay"))
         row["raw_label"] = line
         row["tl_track_url"] = (t.get("tl_track_url") or "").strip()
@@ -426,11 +443,17 @@ def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
 
 
 @router.post("/import")
-def import_mix(req: ImportRequest) -> dict:
+def import_mix(req: ImportRequest, background: BackgroundTasks) -> dict:
     """Best-effort scrape of a tracklist URL. Works for plain-HTML tracklist/
     festival-set pages; 1001tracklists is Turnstile-walled and goes through
     Firecrawl. Without a key that is a 501 — the one status the Mixes tab turns
-    into a key prompt."""
+    into a key prompt.
+
+    The 1001tracklists branch answers with a ``job_id``: a heavy set can take a
+    stealth render of half a minute per attempt, which is far too long to hold a
+    request open with nothing to show for it. Poll the job; on success its
+    result carries ``mix_id``. The plain-HTML branch is a single ~25s fetch
+    through a write-once cache, so it still answers inline."""
     url = (req.url or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="url is required")
@@ -443,29 +466,16 @@ def import_mix(req: ImportRequest) -> dict:
     # 1001tracklists is Turnstile-walled; Firecrawl's stealth proxy renders it and
     # returns structured tracks + each track's detail-page URL (for A6 link scrape).
     # The page is ALWAYS walled, so with no key a direct fetch cannot succeed —
-    # ask for the key before spending a request on it. The key is read live, so
-    # one saved from the Mixes tab applies to the retry without a restart.
+    # ask for the key before spending a request on it. The check is free and
+    # instant, so it stays on the route: 501 is what raises the key prompt, and a
+    # key saved from the Mixes tab is read live, so the retry needs no restart.
     if "1001tracklists.com" in url.lower():
         if not current_firecrawl_api_key():
             raise HTTPException(status_code=501, detail=_FIRECRAWL_KEY_MSG)
-        try:
-            scraped = scrape_tracklist(url)
-        except FirecrawlAuthError as exc:
-            # A mistyped key must bring the prompt back (501), not strand the
-            # user behind a 502 with the bad key still saved.
-            raise HTTPException(
-                status_code=501,
-                detail=f"Firecrawl rejected the API key ({exc}). Paste a valid one "
-                       "below, or fix FIRECRAWL_API_KEY in .env.") from exc
-        except FirecrawlError as exc:
-            raise HTTPException(status_code=502,
-                                detail=f"Firecrawl scrape failed ({exc}).") from exc
-        rows = _scraped_rows_to_persist_rows(scraped)
-        if not rows:
-            raise HTTPException(status_code=422,
-                                detail="Scraped the page but found no tracks.")
-        title = _title_from_rows("", rows, url)[0] or "Imported tracklist"
-        return _persist_mix(title, url, rows, method="scrape")
+        job_id = jobs.new_job(kind="mix_import", message="Queued tracklist scrape")
+        background.add_task(mix_ingest_worker.run_import, job_id, url,
+                            bool(req.refresh))
+        return {"job_id": job_id, "url": url, "refresh": bool(req.refresh)}
 
     html = _fetch_tracklist_html(url)
     rows = _parse_tracklist(html)
@@ -980,65 +990,38 @@ def auto_resolve_mix(mix_id: int, req: AutoResolveRequest,
 
 
 @router.post("/{mix_id}/ingest")
-def ingest_mix(mix_id: int) -> dict:
-    """Save every resolved track of this mix to the library and queue it
-    through the full pipeline — same flow as the playlist importer."""
+def ingest_mix(mix_id: int, background: BackgroundTasks) -> dict:
+    """Save every linked track of this mix to the library and queue it through
+    the full pipeline — same flow, and now the same code, as the playlist
+    importer (``api.routes.playlists.ingest_rows``).
+
+    Returns a ``job_id`` to poll. A 200-track set is 200 yt-dlp metadata
+    fetches; that never belonged inside one HTTP request, and the version that
+    tried also deadlocked SQLite against itself after the first track (see
+    api/workers/mix_ingest_worker). Tracks already ingested (``song_id`` set)
+    are left alone, so running this again is safe and cheap."""
     conn = get_conn()
-    if not conn.execute("SELECT id FROM mixes WHERE id=?", (mix_id,)).fetchone():
+    try:
+        if not conn.execute("SELECT id FROM mixes WHERE id=?", (mix_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="mix not found")
+        pending = conn.execute(
+            "SELECT COUNT(*) AS n FROM mix_tracks WHERE mix_id=? "
+            f"AND {mix_ingest_worker.pending_track_sql()}", (mix_id,)).fetchone()["n"]
+        linked_any = conn.execute(
+            "SELECT COUNT(*) AS n FROM mix_tracks WHERE mix_id=? "
+            "AND link_url IS NOT NULL AND link_url != ''", (mix_id,)).fetchone()["n"]
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail="mix not found")
-    tracks = [dict(r) for r in conn.execute(
-        "SELECT * FROM mix_tracks WHERE mix_id=? AND link_url IS NOT NULL "
-        "AND link_url != '' ORDER BY position", (mix_id,)).fetchall()]
-    if not tracks:
-        conn.close()
+
+    if not linked_any:
         raise HTTPException(
             status_code=400,
             detail="No resolved tracks — attach a SoundCloud/YouTube link to at "
                    "least one track first.",
         )
 
-    from ingest.soundcloud import enrich_track  # lazy: needs yt-dlp
-
-    inserted: list[int] = []
-    linked: list[int] = []   # already in the library — relinked, not re-processed
-    job_ids: dict[int, str] = {}
-    for t in tracks:
-        # Dedup: if this link is already a song, just re-point the tracklist row
-        # at the existing song instead of re-fetching + re-processing it.
-        norm = normalize_url(t["link_url"])
-        existing = get_song_by_url(norm) if norm else None
-        if existing:
-            conn.execute("UPDATE mix_tracks SET song_id=?, resolve_status='resolved' "
-                         "WHERE id=?", (existing["id"], t["id"]))
-            linked.append(existing["id"])
-            continue
-
-        rich: dict[str, Any] | None = None
-        try:
-            rich = enrich_track(t["link_url"])
-        except Exception:  # noqa: BLE001
-            log.exception("enrich_track raised for %s", t["link_url"])
-        merged = rich or {"title": t["title"], "artist": t["artist"],
-                          "source_url": t["link_url"]}
-        source_url = normalize_url(merged.get("source_url", t["link_url"]))
-        source, _ = classify_url(source_url)
-        sid = upsert_song(
-            title=merged.get("title") or t["title"] or "Unknown",
-            artist=merged.get("artist") or t["artist"] or "",
-            source_url=source_url,
-            duration_secs=float(merged.get("duration_secs") or 0),
-            genre=merged.get("genre", ""),
-            thumbnail=merged.get("thumbnail", ""),
-            metadata_partial=0 if rich else 1,
-            source=source,
-        )
-        inserted.append(sid)
-        conn.execute("UPDATE mix_tracks SET song_id=?, resolve_status='resolved' "
-                     "WHERE id=?", (sid, t["id"]))
-        job_ids[sid] = queue_runner.enqueue_song(sid)
-
-    conn.commit()
-    conn.close()
-    return {"mix_id": mix_id, "inserted_ids": inserted, "count": len(inserted),
-            "linked_existing": linked, "linked_count": len(linked), "job_ids": job_ids}
+    job_id = jobs.new_job(kind="mix_ingest",
+                          message=f"Queued {pending} track(s) for the library")
+    background.add_task(mix_ingest_worker.run_ingest, job_id, mix_id)
+    return {"job_id": job_id, "mix_id": mix_id, "queued": pending,
+            "already_ingested": linked_any - pending}

@@ -323,6 +323,13 @@ SoundCloud/YouTube links (§5.9), **Scrape link** pulls the exact link from a
 track's 1001tracklists page, **Confirm** trusts a flagged auto-link, and
 **Ingest** sends resolved tracks into the pipeline.
 
+Both the scrape and the ingest are **jobs** — a stealth render of a 200-track
+set takes minutes, and ingesting one is 200 metadata fetches — so each reports
+live progress under its button rather than freezing it. Re-running Ingest is
+safe and cheap: a track already in the library is left alone, never re-queued.
+A scraped page is cached on disk, so re-importing the same URL costs no
+Firecrawl credits (use the scrape again only when the tracklist itself changed).
+
 ### Studio
 
 A multi-track DAW over any number of stems: SoundTouch worklet playback (tempo
@@ -619,7 +626,25 @@ composite (which clusters near 0.78).
   are scraped by Firecrawl as markdown and parsed deterministically (LLM
   extraction truncated long sets); a track's exact external link is scraped
   from its sub-page on demand only. Re-importing a URL replaces the mix while
-  carrying over links, roles and manual matches.
+  carrying over links, roles and manual matches. A row the line parser rejects
+  is dropped, not persisted half-built.
+- **Paying for scrapes once** (`ingest/firecrawl_scrape.py`). Every request can
+  cost credits, so: the rendered markdown is cached to
+  `<data_dir>/tracklist_cache/` and re-parsed for free (`refresh` forces a new
+  render); the socket budget is derived from the render budget asked for, so a
+  page Firecrawl renders and bills is never hung up on; a transient upstream
+  failure — timeout, 429, any 5xx including **529** — is retried with backoff
+  honouring `Retry-After`, and 402 says the account is out of credits; the wall
+  sniff takes the track *href* as well as its link text, so a label change
+  cannot make a perfect render look like Cloudflare; and every failure branch
+  logs the payload, because a scrape the dashboard calls a success and the app
+  calls a failure is otherwise unexplainable.
+- **Ingesting a mix** (`api/workers/mix_ingest_worker.py`): both slow buttons
+  are jobs, and the saving itself goes through `ingest_rows` — the one ingest
+  implementation, shared with the paste bar, Discover and crates. Dedup is
+  `mix_tracks.song_id IS NOT NULL`, not a URL match: a track saved under
+  yt-dlp's canonical URL rather than the tracklist's link would otherwise be
+  re-upserted, and a re-upsert resets an analysed song to `queued`.
 - **Auto-link** (`api/workers/mix_resolve_worker.py`): SoundCloud v2 search
   (frozen resolver), YouTube via yt-dlp, or SoundCloud-then-YouTube. Hits are
   scored by `ingest/match_score.py`:
@@ -686,7 +711,7 @@ caches responses, and opens a breaker after repeated failures.
 | `api/server.py` | FastAPI app, routers, health/deps, yt-dlp update, SPA serving with stale-build detection |
 | `api/routes/` | `tracks`, `playlists`, `jobs`, `mashups`, `mixes`, `discovery`, `crates`, `studio`, `settings`, `datasets`, `models`, `database` |
 | `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py` | per-stage worker pools + resume, job registry, playlist preview hydration |
-| `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage download/stems/analysis/structure; `bulk`, `match`, `hook`, `candidate_preview`, `mixdown`, `session`, `mix_resolve`, `reverify`, `discovery` (`suggest`), `ml` |
+| `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage download/stems/analysis/structure; `bulk`, `match`, `hook`, `candidate_preview`, `mixdown`, `session`, `mix_resolve`, `mix_ingest` (Mixes import + ingest), `reverify`, `discovery` (`suggest`), `ml` |
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py` |
 | `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
 | `stems/separate.py` | Demucs / MDX-Net, two or four stems |
@@ -842,6 +867,21 @@ candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
 
 ### Operations
 
+- **Never hold an open write transaction across a call that opens its own
+  connection.** SQLite has one writer. `upsert_song`, `get_song_by_url` and
+  every other `database/models.py` helper open, commit and close their own
+  connection, so a caller sitting on an uncommitted `UPDATE` blocks them for
+  `busy_timeout=5000` and then gets `database is locked`. That is what made
+  ingesting a 206-track mix save exactly one track and answer 500 forever:
+  first `UPDATE mix_tracks` took the lock, the second `upsert_song` hit it, the
+  exception escaped unhandled, and the leaked connection kept the lock. Open →
+  execute → `commit()` → `close()`, per write, as `mix_resolve_worker` and
+  `mix_ingest_worker` do; a route that opens a connection wraps it in
+  `try/finally: conn.close()`.
+- **Everything slow is a job, and "slow" scales with the library.** A route that
+  is fine on 3 rows and impossible on 206 is not fine. Both Mixes-tab buttons
+  had to move (§5.9); the pattern to copy is `auto_resolve_mix` →
+  `jobs.new_job` + `background.add_task`.
 - **Run the whole suite in one invocation** from the repo root — ~20 files reload
   `config` → `database.models` → routes and the order is load-bearing.
 - **Always pass `encoding="utf-8"`** to `read_text`/`write_text` (Windows codepage).
@@ -876,6 +916,9 @@ sidebar revamp.**
    learned scorer or supervised weight tuning mean anything; then re-measure the
    section weights with Spearman against stored verdicts.
 2. **Import the documented Big Bootie mixes** (~17) to build training positives.
+   The two things that blocked this are fixed (§5.9): the ingest deadlock that
+   saved one track of 206, and the Firecrawl failures that threw away scrapes
+   the dashboard had already billed.
 3. **Studio:** per-clip fades → multiple clips per lane → per-lane low/high-cut
    (bass swap) → auto-arrange → stereo mixdown + limiter/meters → undo/redo.
 4. **Engine:** match 8/16/32-bar **phrases** instead of whole sections (the

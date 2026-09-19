@@ -261,6 +261,12 @@ export function MixImporter() {
   const [addingTrack, setAddingTrack] = useState(false);
   const [resolveJobId, setResolveJobId] = useState(null);
   const { job: resolveJob } = useJobPolling(resolveJobId);
+  // Import and Ingest are jobs too: a stealth render and a 200-track metadata
+  // sweep are both far too long to hold a request open for.
+  const [importJobId, setImportJobId] = useState(null);
+  const { job: importJob, error: importPollError } = useJobPolling(importJobId);
+  const [ingestJobId, setIngestJobId] = useState(null);
+  const { job: ingestJob, error: ingestPollError } = useJobPolling(ingestJobId);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
   const onReorder = async ({ active, over }) => {
@@ -338,23 +344,68 @@ export function MixImporter() {
     }
   }, [resolveJob]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const importUrl = async () => {
+  // A scraped mix arrives one of two ways: a plain-HTML page answers with the
+  // mix, a 1001tracklists page answers with a job_id the effect below follows.
+  const finishImport = async (mix) => {
+    toast(`Imported “${mix.title}” (${mix.track_count} tracks)`);
+    setUrl("");
+    await loadMixes();
+    setActiveId(mix.id);
+  };
+
+  const importUrl = async (refresh = false) => {
     setError(null);
     setNeedsKey(false);
     setBusy(true);
     try {
-      const mix = await api.importMix(url.trim());
-      toast(`Imported “${mix.title}” (${mix.track_count} tracks)`);
-      setUrl("");
-      await loadMixes();
-      setActiveId(mix.id);
+      const res = await api.importMix(url.trim(), refresh);
+      if (res.job_id) {
+        setImportJobId(res.job_id);
+        return;   // `busy` is cleared by the job effect, not here
+      }
+      await finishImport(res);
     } catch (e) {
       setError(e.message);
       setNeedsKey(e.message.startsWith("501"));
-    } finally {
+      setBusy(false);
+      return;
+    }
+    setBusy(false);
+  };
+
+  // The scrape job. A Firecrawl key that turns out to be bad is only discovered
+  // once the job runs, so the key prompt is raised off result.needs_key here —
+  // the route's own 501 (no key at all) still raises it above.
+  useEffect(() => {
+    if (!importPollError) return;
+    setError(importPollError);
+    setImportJobId(null);
+    setBusy(false);
+  }, [importPollError]);
+
+  useEffect(() => {
+    if (!ingestPollError) return;
+    setError(ingestPollError);
+    setIngestJobId(null);
+    setIngesting(false);
+  }, [ingestPollError]);
+
+  useEffect(() => {
+    if (!importJob) return;
+    if (importJob.status === "completed") {
+      const r = importJob.result || {};
+      setImportJobId(null);
+      setBusy(false);
+      api.getMix(r.mix_id)
+        .then((mix) => finishImport(mix))
+        .catch((e) => setError(e.message));
+    } else if (importJob.status === "failed") {
+      setError(importJob.error || "Tracklist scrape failed");
+      setNeedsKey(!!(importJob.result || {}).needs_key);
+      setImportJobId(null);
       setBusy(false);
     }
-  };
+  }, [importJob]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The key is read live server-side, so the retry needs no restart. It leaves
   // component state as soon as it is saved, and is never echoed back.
@@ -432,15 +483,35 @@ export function MixImporter() {
     setError(null);
     try {
       const res = await api.ingestMix(detail.id);
-      toast(`Auto-processing ${res.count} track${res.count === 1 ? "" : "s"} from this mix`);
-      const d = await api.getMix(detail.id);
-      setDetail(d);
+      setIngestJobId(res.job_id);
+      toast(res.queued
+        ? `Saving ${res.queued} track${res.queued === 1 ? "" : "s"} to the library…`
+        : "Every linked track is already in the library");
     } catch (e) {
       setError(e.message);
-    } finally {
       setIngesting(false);
     }
   };
+
+  // The ingest job. It walks the mix in batches, so `message` is the live
+  // "n–m of 206" and the mix is only re-read once it is done.
+  useEffect(() => {
+    if (!ingestJob) return;
+    if (ingestJob.status === "completed") {
+      const r = ingestJob.result || {};
+      toast(`Auto-processing ${r.count ?? 0} track${r.count === 1 ? "" : "s"}` +
+            (r.linked_count ? ` · ${r.linked_count} already in the library` : "") +
+            (r.unresolvable_count ? ` · ${r.unresolvable_count} unusable` : ""));
+      setIngestJobId(null);
+      setIngesting(false);
+      if (detail) api.getMix(detail.id).then(setDetail).catch((e) => setError(e.message));
+    } else if (ingestJob.status === "failed") {
+      setError(ingestJob.error || "Ingest failed");
+      setIngestJobId(null);
+      setIngesting(false);
+      if (detail) api.getMix(detail.id).then(setDetail).catch(() => {});
+    }
+  }, [ingestJob]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onTrackResolved = (updated) => {
     setDetail((d) => d && {
@@ -517,9 +588,15 @@ export function MixImporter() {
             placeholder="tracklist URL…"
             value={url} onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && url.trim()) importUrl(); }} />
-          <button className="mix-scrape" onClick={importUrl} disabled={busy || !url.trim()}>
+          <button className="mix-scrape" onClick={() => importUrl()}
+            disabled={busy || !url.trim()}>
             {busy ? "Scraping…" : "Scrape tracklist"}
           </button>
+          {busy && importJob && (
+            <span className="hint">
+              <span className="spin-dot" /> {importJob.message || "Queued…"}
+            </span>
+          )}
           <span className="hint">
             1001tracklists, Big Bootie, festival set pages. Add or remove tracks
             after.
@@ -681,6 +758,13 @@ export function MixImporter() {
                   </button>
                 </div>
               </div>
+              {ingesting && (
+                <div className="hint" style={{ margin: "2px 0 8px" }}>
+                  <span className="spin-dot" /> {ingestJob?.message || "Queued…"}
+                  {typeof ingestJob?.progress === "number" && ingestJob.progress > 0
+                    ? ` (${ingestJob.progress}%)` : ""}
+                </div>
+              )}
               {resolving && (
                 <div className="hint" style={{ margin: "2px 0 8px" }}>
                   <span className="spin-dot" /> {resolveJob?.message || "Queued…"}
