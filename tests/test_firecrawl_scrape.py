@@ -376,11 +376,10 @@ def test_a_relabelled_track_link_is_not_mistaken_for_the_wall():
     md = _MD.replace("[open track page]", "[view track]")
     post, sent = _recording_post([
         {"success": True, "data": {"markdown": md, "metadata": {"statusCode": 200}}}])
-    with pytest.raises(fc.FirecrawlError) as exc:
-        fc.scrape_tracklist("https://x", api_key="fc-k", _post=post)
     # The href still identifies it as a rendered page, so we stop at one request
-    # and report a parse problem rather than pretending it is Cloudflare.
-    assert not isinstance(exc.value, fc.FirecrawlChallenge)
+    # — and the parser keys on the href too, so the rows come out of it.
+    rows = fc.scrape_tracklist("https://x", api_key="fc-k", _post=post)
+    assert len(rows) == 4
     assert len(sent) == 1
 
 
@@ -435,3 +434,45 @@ def test_a_cached_page_that_parses_to_nothing_is_re_scraped():
     post, sent = _recording_post([{"success": True, "data": {"markdown": _MD}}])
     assert len(fc.scrape_tracklist(url, api_key="fc-k", _post=post)) == 4
     assert len(sent) == 1
+
+
+# Render variants that each used to parse to ZERO rows: the scrape succeeded
+# (and was billed) on Firecrawl's side, and failed here as "no tracks".
+@pytest.mark.parametrize("md", [
+    # the track link text is not "open track page"
+    "Guns N' Roses \\- Welcome To The Jungle[](https://www.1001tracklists.com/track/2r55l8f/x/index.html)\n",
+    # the href is left site-relative
+    "Guns N' Roses \\- Welcome To The Jungle[open track page](/track/2r55l8f/x/index.html \"open track page\")\n",
+    # no www.
+    "Guns N' Roses \\- Welcome To The Jungle[open track page](https://1001tracklists.com/track/2r55l8f/x/index.html)\n",
+    # the name itself is the link
+    "[Guns N' Roses \\- Welcome To The Jungle](https://www.1001tracklists.com/track/2r55l8f/x/index.html)\n",
+    # artwork, a list bullet, a number and a cue in front; linked artist
+    "- 01. [0:00] ![Artwork](https://cdn.x/a.jpg)[Guns N' Roses](https://www.1001tracklists.com/artist/1/gnr/index.html)"
+    " \\- Welcome To The Jungle[open track page](https://www.1001tracklists.com/track/2r55l8f/x/index.html)\n",
+])
+def test_render_variants_still_parse(md):
+    rows = fc.parse_markdown_tracklist(md)
+    assert len(rows) == 1, rows
+    assert rows[0]["artist"] == "Guns N' Roses"
+    assert rows[0]["title"] == "Welcome To The Jungle"
+    assert rows[0]["tl_track_url"] == \
+        "https://www.1001tracklists.com/track/2r55l8f/x/index.html"
+    assert fc._rendered_ok(md)
+
+
+def test_overlay_marker_on_the_track_line_itself():
+    md = (_MD.splitlines()[0] + "\n"
+          "w/ Siik \\- Saviour[open track page](https://www.1001tracklists.com/track/y/index.html)\n"
+          "W/\n"
+          "Blink-182 \\- I Miss You[open track page](https://www.1001tracklists.com/track/z/index.html)\n")
+    rows = fc.parse_markdown_tracklist(md)
+    assert [r["is_overlay"] for r in rows] == [False, True, True]
+    assert rows[1]["artist"] == "Siik"
+
+
+def test_the_whole_page_is_requested_not_main_content_only():
+    post, sent = _recording_post([{"success": True, "data": {"markdown": _MD}}])
+    fc.scrape_tracklist("https://www.1001tracklists.com/tracklist/y.html",
+                        api_key="fc-k", _post=post)
+    assert sent[0]["onlyMainContent"] is False

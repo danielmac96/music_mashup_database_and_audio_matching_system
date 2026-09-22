@@ -199,3 +199,35 @@ def test_refresh_is_passed_through_to_the_scraper(tmp_path, monkeypatch):
 
     _run_import(mixes, worker, _TL_URL, refresh=True)
     assert seen["refresh"] is True
+
+
+def test_the_rendered_page_is_recorded_on_the_mix(tmp_path, monkeypatch):
+    # The scrape was paid for: the mix row points at the saved render, so it
+    # can be re-parsed without another Firecrawl request.
+    monkeypatch.setenv("MASHUP_DB_PATH", str(tmp_path / "t.db"))
+    monkeypatch.setenv("MASHUP_SETTINGS_DIR", str(tmp_path))
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-k")
+    import config
+    importlib.reload(config)
+    from database import models
+    importlib.reload(models)
+    models.init_db()
+    mixes, firecrawl_scrape, worker = _reload_routes()
+
+    md = ("A \\- Bed[open track page](https://www.1001tracklists.com/track/1/index.html)\n"
+          "w/\n"
+          "B \\- Voc[open track page](https://www.1001tracklists.com/track/2/index.html)\n")
+    monkeypatch.setattr(firecrawl_scrape, "_real_post",
+                        lambda url, body, headers: {"success": True,
+                                                    "data": {"markdown": md}})
+    _out, job = _run_import(mixes, worker, _TL_URL)
+    assert job["status"] == "completed", job.get("error")
+
+    detail = mixes.get_mix(job["result"]["mix_id"])
+    assert detail["track_count"] == 2 and detail["match_count"] == 1
+    assert detail["raw_snapshot_path"]
+    from pathlib import Path
+    assert Path(detail["raw_snapshot_path"]).read_text(encoding="utf-8") == md
+    assert [t["tl_track_url"] for t in detail["tracks"]] == [
+        "https://www.1001tracklists.com/track/1/index.html",
+        "https://www.1001tracklists.com/track/2/index.html"]

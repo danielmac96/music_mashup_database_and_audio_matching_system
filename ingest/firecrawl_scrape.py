@@ -32,6 +32,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from html import unescape
 from pathlib import Path
 
 import config
@@ -79,6 +80,8 @@ _TRACK_LINK = "[open track page]"
 # carries the footer markers above), and a site-side label change would otherwise
 # flag a perfect render as the wall and burn every attempt on it.
 _TRACK_HREF = "1001tracklists.com/track/"
+# The same href left site-relative, which a render occasionally does.
+_RELATIVE_TRACK_HREF = "](/track/"
 
 # Escalating render budgets, in ms. 6s clears the wall on most tracklist pages;
 # the heaviest ones (~240 tracks) need appreciably longer.
@@ -106,7 +109,8 @@ _MAX_REQUESTS = 5
 def _rendered_ok(md: str) -> bool:
     """True when this markdown carries real tracklist rows."""
     low = md.lower()
-    return _TRACK_LINK.lower() in low or _TRACK_HREF in low
+    return (_TRACK_LINK.lower() in low or _TRACK_HREF in low
+            or _RELATIVE_TRACK_HREF in low)
 
 
 def _is_challenge(data: dict) -> bool:
@@ -133,9 +137,25 @@ def _describe(data: dict) -> str:
 
 
 # A rendered track row: "Artist \- Title[open track page](https://.../track/ID/index.html ...".
-_TRACK_LINE_RE = re.compile(
-    r"^(?P<body>.+?)" + re.escape(_TRACK_LINK)
-    + r"\((?P<url>https://www\.1001tracklists\.com/track/[^ )]+)")
+# Matched loosely, because a render that differs in any small way from the one
+# the parser was written against used to parse to NOTHING — a scrape Firecrawl
+# reported (and billed) as a success, failed here as "no tracks". So: any link
+# text, an absolute (with or without www.) or site-relative href, an optional
+# "tooltip". The track text is whatever precedes the first track link, or the
+# link text itself when the name is the link.
+_TRACK_LINK_RE = re.compile(
+    r"\[(?P<text>[^\]]*)\]\((?P<url>(?:https?://(?:www\.)?1001tracklists\.com)?"
+    r"/track/[^\s)]+)(?:\s+\"[^\"]*\")?\)", re.I)
+# A bare overlay marker line ("w/", "W/", "w/:").
+_OVERLAY_LINE_RE = re.compile(r"^w/\s*:?$", re.I)
+# Markdown cruft around the track text: artwork images, links (keep the text),
+# backslash escapes, list/table/quote markers, "01." numbering and "[12:34]" cues.
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_MD_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_ESCAPE_RE = re.compile(r"\\(.)")
+_LEAD_CRUFT_RE = re.compile(
+    r"^(?:[-*+|>#]\s*|\d{1,3}[.)]\s+|\[?\d{1,2}:\d{2}(?::\d{2})?\]?\s*)+")
+_LEAD_OVERLAY_RE = re.compile(r"^w/\s*", re.I)
 # A remix/edit annotation that trails after the first link — fold it back into the title
 # so the shared parse_line can derive the remixer.
 _REMIX_PAREN_RE = re.compile(
@@ -297,6 +317,9 @@ def _post_scrape(url: str, formats: list, api_key: str, _post,
         if budget.left <= 0:
             break
         body = {"url": url, "formats": formats, "proxy": "stealth",
+                # The tracklist is not what Firecrawl's main-content heuristic
+                # keeps; ask for the whole page and let the parser pick rows.
+                "onlyMainContent": False,
                 "waitFor": wait_ms,
                 # Bound Firecrawl's own render too, so its answer arrives inside
                 # our socket budget rather than after it.
@@ -369,12 +392,29 @@ def _scrape_json(url: str, schema: dict, prompt: str, api_key: str, _post) -> di
     return data.get("json") or {}
 
 
+def _clean_track_text(text: str) -> str:
+    text = _MD_IMAGE_RE.sub("", text)
+    text = _MD_LINK_RE.sub(r"\1", text)
+    text = _MD_ESCAPE_RE.sub(r"\1", text)
+    # Never let a leaked "(https://…/track/…" URL fragment into the artist/title
+    # — it wrecks a downstream title search.
+    text = _URL_FRAGMENT_RE.sub("", unescape(text))
+    return text.replace("\\", "").strip(" |\t")
+
+
+def _absolute_track_url(url: str) -> str:
+    if url.startswith("/"):
+        return "https://www.1001tracklists.com" + url
+    return re.sub(r"^https?://(?:www\.)?", "https://www.", url)
+
+
 def parse_markdown_tracklist(md: str) -> list[dict]:
     """Deterministically parse a rendered 1001tracklists page into track rows.
 
-    Each track is a line ending in an "[open track page](…/track/ID…)" link; a bare
-    "w/" line immediately before a track marks it as a mashup overlay on the previous
-    (non-overlay) bed. Returns rows shaped like the old LLM output:
+    Each track is a line carrying a link to its "/track/ID/…" page; a bare "w/"
+    line immediately before a track (or a "w/" leading the track line itself)
+    marks it as a mashup overlay on the previous (non-overlay) bed. Returns rows
+    shaped like the old LLM output:
     {position, artist, title, is_overlay, tl_track_url}.
     """
     rows: list[dict] = []
@@ -383,16 +423,26 @@ def parse_markdown_tracklist(md: str) -> list[dict]:
         line = raw.strip()
         if not line:
             continue
-        if line.lower() == "w/":
+        if _OVERLAY_LINE_RE.match(line):
             pending_overlay = True
             continue
-        m = _TRACK_LINE_RE.match(line)
+        m = _TRACK_LINK_RE.search(line)
         if not m:
             continue
-        body = m.group("body").replace("\\-", "-").replace("\\", "").strip()
-        # Defensive: never let a leaked "(https://…/track/…" URL fragment into the
-        # artist/title — it wrecks a downstream title search.
-        body = _URL_FRAGMENT_RE.sub("", body).strip()
+        body = _clean_track_text(line[:m.start()])
+        body = _LEAD_CRUFT_RE.sub("", body).strip()
+        if not body:
+            # The track name IS the link: "[Artist - Title](…/track/…)".
+            text = m.group("text").strip()
+            if text.lower() != _TRACK_LINK.strip("[]"):
+                body = _LEAD_CRUFT_RE.sub("", _clean_track_text(text)).strip()
+        overlay = pending_overlay
+        if _LEAD_OVERLAY_RE.match(body):
+            overlay = True
+            body = _LEAD_OVERLAY_RE.sub("", body).strip()
+        pending_overlay = False
+        if not body:
+            continue
         if " - " in body:
             artist, title = body.split(" - ", 1)
         else:
@@ -414,13 +464,12 @@ def parse_markdown_tracklist(md: str) -> list[dict]:
         # Defensive last resort: never let a leaked URL fragment survive into a title.
         title = _URL_FRAGMENT_RE.sub("", title).strip()
         rows.append({
-            "position": "w/" if pending_overlay else "",
+            "position": "w/" if overlay else "",
             "artist": artist.strip(" -"),
             "title": title.strip(" -"),
-            "is_overlay": pending_overlay,
-            "tl_track_url": m.group("url"),
+            "is_overlay": overlay,
+            "tl_track_url": _absolute_track_url(m.group("url")),
         })
-        pending_overlay = False
     return rows
 
 
