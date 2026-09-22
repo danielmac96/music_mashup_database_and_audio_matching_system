@@ -638,7 +638,13 @@ composite (which clusters near 0.78).
   sniff takes the track *href* as well as its link text, so a label change
   cannot make a perfect render look like Cloudflare; and every failure branch
   logs the payload, because a scrape the dashboard calls a success and the app
-  calls a failure is otherwise unexplainable.
+  calls a failure is otherwise unexplainable. The whole page is requested
+  (`onlyMainContent: false`), and the parser keys on any link to a `/track/`
+  page (any link text, absolute or relative href, the name itself as the link,
+  artwork/bullets/numbering/cues in front, `w/` on its own line or leading the
+  row) — a render that differed slightly from the one it was written against
+  used to parse to nothing. The mix row's `raw_snapshot_path` points at the
+  cached render its tracks came from.
 - **Ingesting a mix** (`api/workers/mix_ingest_worker.py`): both slow buttons
   are jobs, and the saving itself goes through `ingest_rows` — the one ingest
   implementation, shared with the paste bar, Discover and crates. Dedup is

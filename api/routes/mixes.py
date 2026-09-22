@@ -337,13 +337,15 @@ def _seed_parsed_matches(conn, mix_id: int) -> None:
         (mix_id,))
 
 
-def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
+def _persist_mix(title: str, url: str, rows: list[dict], method: str,
+                 snapshot_path: Optional[str] = None) -> dict:
     """Upsert a mix + its tracks, rebuild documented 'w/' mashup pairs, return
     the full detail. source_url is UNIQUE, so re-importing the same page replaces
     that mix's tracks rather than duplicating it — while carrying over resolved
     links, roles, and manual matches for entries still present (matched on
     raw_label + position, then raw_label alone so inserted lines don't orphan
-    everything below them)."""
+    everything below them). ``snapshot_path`` records the rendered page the rows
+    came from, so a scrape that was paid for can be re-parsed later."""
     conn = get_conn()
     try:
         existing = conn.execute("SELECT id FROM mixes WHERE source_url=?",
@@ -371,12 +373,14 @@ def _persist_mix(title: str, url: str, rows: list[dict], method: str) -> dict:
             conn.execute("DELETE FROM mix_tracks WHERE mix_id=?", (mix_id,))
             conn.execute("DELETE FROM mashup_pairs WHERE mix_id=?", (mix_id,))
             conn.execute("UPDATE mixes SET title=?, import_method=?, "
+                         "raw_snapshot_path=COALESCE(?, raw_snapshot_path), "
                          "imported_at=datetime('now') WHERE id=?",
-                         (title, method, mix_id))
+                         (title, method, snapshot_path, mix_id))
         else:
             cur = conn.execute(
-                "INSERT INTO mixes (title, source_url, import_method) VALUES (?,?,?)",
-                (title, url or None, method),
+                "INSERT INTO mixes (title, source_url, import_method, raw_snapshot_path) "
+                "VALUES (?,?,?,?)",
+                (title, url or None, method, snapshot_path),
             )
             mix_id = cur.lastrowid
 

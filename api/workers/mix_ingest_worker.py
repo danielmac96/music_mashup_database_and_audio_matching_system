@@ -136,7 +136,7 @@ def run_import(job_id: str, url: str, refresh: bool = False) -> None:
     this module: the scrape helpers it owns are pulled in when the job runs."""
     from api.routes import mixes as mix_routes
     from ingest.firecrawl_scrape import (FirecrawlAuthError, FirecrawlError,
-                                         scrape_tracklist)
+                                         markdown_cache_path, scrape_tracklist)
 
     jobs.update(job_id, status="running", progress=5,
                 message="Rendering the tracklist page…")
@@ -162,10 +162,15 @@ def run_import(job_id: str, url: str, refresh: bool = False) -> None:
     try:
         rows = mix_routes._scraped_rows_to_persist_rows(scraped)
         if not rows:
-            jobs.fail(job_id, "Scraped the page but found no tracks.")
+            jobs.fail(job_id, f"Scraped {len(scraped)} track line(s) but none "
+                              "parsed as 'Artist - Title'. The rendered page is "
+                              f"saved as {markdown_cache_path(url)}.")
             return
         title = mix_routes._title_from_rows("", rows, url)[0] or "Imported tracklist"
-        detail = mix_routes._persist_mix(title, url, rows, method="scrape")
+        snapshot = markdown_cache_path(url)
+        detail = mix_routes._persist_mix(
+            title, url, rows, method="scrape",
+            snapshot_path=str(snapshot) if snapshot.exists() else None)
     except Exception as exc:  # noqa: BLE001
         log.exception("could not persist the scraped mix for %s", url)
         jobs.fail(job_id, f"Could not save the tracklist ({exc})",
