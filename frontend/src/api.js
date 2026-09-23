@@ -320,6 +320,15 @@ export const api = {
       body: JSON.stringify({ content, url }),
     }),
 
+  // A capture from the browser bookmarklet. It IS the markdown a scrape would
+  // have returned, so the server runs it through the same parser — and caches it
+  // under `url`, which makes a later URL import succeed with no network call.
+  importMixMarkdown: (markdown, url = "") =>
+    jsonFetch("/api/mixes/import-markdown", {
+      method: "POST",
+      body: JSON.stringify({ markdown, url }),
+    }),
+
   getMixes: () => jsonFetch("/api/mixes"),
 
   getMix: (id) => jsonFetch(`/api/mixes/${id}`),

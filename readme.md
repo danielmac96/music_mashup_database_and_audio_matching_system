@@ -314,27 +314,38 @@ beside the tracks they are made of, and go straight to Studio from there.
 
 ### Mixes
 
-Import a documented mix two ways: paste a 1001tracklists **URL** (scraped
+Import a documented mix three ways: paste a 1001tracklists **URL** (scraped
 through **Firecrawl** — the tab asks for a key the first time and saves it
-live), or **paste the tracklist text** ("or paste the tracklist text" under the
-URL box). Numbered entries are **beds**; `w/` lines are **vocal overlays**
+live); **capture it from your own browser** with the bookmarklet (below); or
+**paste the tracklist text**. All three end in the same rows. Numbered entries
+are **beds**; `w/` lines are **vocal overlays**
 paired to the preceding bed. The match board lets you re-assign roles and
 pairings (reset to original any time) and reorder the set. **Auto-link** finds
 SoundCloud/YouTube links (§5.9), **Scrape link** pulls the exact link from a
 track's 1001tracklists page, **Confirm** trusts a flagged auto-link, and
 **Ingest** sends resolved tracks into the pipeline.
 
-> **As of 2026-09-19 the URL scrape does not work on 1001tracklists.** Cloudflare
-> Turnstile rejects Firecrawl's stealth browser outright — "Verification
-> failed", HTTP 206, no track rows — including URLs that imported cleanly
-> before, so this is the site blocking the scraper rather than a slow render or
-> a bug here. Retrying cannot clear it and each attempt bills three scrapes, so
-> the failure says "paste the tracklist text instead" and opens the paste box
-> for you. Copy the tracklist out of your own browser, where the challenge
-> passes. Fill in the URL field as well: `source_url` is UNIQUE, so it is what
-> makes a corrected re-paste replace the mix and keep the links you already
-> resolved. Re-check the scrape occasionally — if Firecrawl starts passing
-> again, nothing else has to change.
+**Grab from your browser.** Drag **⤓ Grab tracklist** from the Mixes rail to
+your bookmarks bar. On a set page, click it: it reads the tracklist out of the
+page you are looking at, shows you what it found (a count, and the rows), and
+you copy and paste it into the same box the plain text goes in — the app tells
+the two apart by the per-track link and routes accordingly. A capture keeps each
+track's 1001tracklists link (so **Scrape link** still works) and its cue time,
+which the scrape never captured. Fill in the URL field too: `source_url` is
+UNIQUE, so it is what makes a re-capture replace the mix and keep the links you
+already resolved — and it caches the capture, which makes a later URL import of
+that page succeed offline.
+
+> **The URL scrape has been blocked on 1001tracklists since 2026-09-19.**
+> Cloudflare Turnstile rejects Firecrawl's stealth browser — "Verification
+> failed", HTTP 206, no track rows — including URLs that imported cleanly on
+> 2026-09-15, so it is the site refusing the scraper, not a slow render or a bug
+> here. `proxy: "enhanced"` silently downgrades to `stealth` and hits the same
+> wall. **This is not proven permanent**: proxy pools get flagged and rotated,
+> and the scrape path is left exactly as it was, so it resumes on its own if
+> Firecrawl is unblocked. Retrying during a block will not clear it and each
+> attempt bills three scrapes, so the failure points at the capture instead and
+> opens the paste box for you. Worth re-testing every few weeks.
 
 Both the scrape and the ingest are **jobs** — a stealth render of a 200-track
 set takes minutes, and ingesting one is 200 metadata fetches — so each reports
@@ -635,7 +646,11 @@ composite (which clusters near 0.78).
 - **Parsing** (`ingest/tracklist_parse.py`): one line → one track with
   `raw_label`, cue time, artists split, remixer, mashup parts, ID detection and
   `parse_confidence` (1.0 clean · 0.5 title-only · 0.2 ID). `w/` lines are
-  overlays on the preceding bed and seed `mashup_pairs`. 1001tracklists pages
+  overlays on the preceding bed and seed `mashup_pairs`. **Peel the `w/` marker
+  before the leading cruft** (`_split_lead`): the cue sits behind the marker in
+  `w/ [0:40] Artist - Title`, so stripping cruft first strands it inside the
+  artist name. Firecrawl put `w/` on its own line and never exercised the
+  inline form; the capture always does. 1001tracklists pages
   are scraped by Firecrawl as markdown and parsed deterministically (LLM
   extraction truncated long sets); a track's exact external link is scraped
   from its sub-page on demand only. Re-importing a URL replaces the mix while
@@ -667,6 +682,18 @@ composite (which clusters near 0.78).
   cached render its tracks came from.
 - **Ingesting a mix** (`api/workers/mix_ingest_worker.py`): both slow buttons
   are jobs, and the saving itself goes through `ingest_rows` — the one ingest
+- **Three doors, one parser.** The bookmarklet
+  (`frontend/src/bookmarklet/grabTracklist.js`, minified into a `javascript:`
+  URL by `npm run bookmarklet`) emits **the markdown Firecrawl emitted** rather
+  than a format of its own, so `parse_markdown_tracklist` serves the scrape and
+  the capture alike and `POST /import-markdown` is `run_import` with the network
+  removed. It selects on `a[href*="/track/"]` only — 1001tracklists' class names
+  are obfuscated and change, while "every row links to its track page" is what
+  every page Firecrawl ever returned proves. Transport is the clipboard, not an
+  HTTP POST from the page: CORS allows only the dev origins, and widening it to
+  a third-party origin would open a hole into a server running on your machine.
+  The capture is written to `tracklist_cache/` under the set URL, so a later
+  `POST /import` on that URL re-parses it with no request and no credits.
   implementation, shared with the paste bar, Discover and crates. Dedup is
   `mix_tracks.song_id IS NOT NULL`, not a URL match: a track saved under
   yt-dlp's canonical URL rather than the tracklist's link would otherwise be

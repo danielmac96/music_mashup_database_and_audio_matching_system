@@ -8,8 +8,8 @@ __pycache__/
 venv/
 env/
 # ...including one created in-place at the repo root
-Lib/
-Scripts/
+/Lib/
+/Scripts/
 pyvenv.cfg
 
 # Database (generated at runtime)

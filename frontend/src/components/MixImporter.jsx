@@ -3,6 +3,7 @@ import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from 
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { api } from "../api";
+import { GRAB_BOOKMARKLET } from "../bookmarklet/generated";
 import { classifyUrl } from "../sources";
 import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
@@ -47,6 +48,12 @@ function StageStepper({ status, error }) {
 // Mixes tab: import a DJ-set tracklist by URL, resolve each entry to a
 // SoundCloud/YouTube link, then ingest the resolved tracks through the normal
 // pipeline.
+
+// What tells a bookmarklet capture from plain pasted text: every captured row
+// carries a link to the track's own 1001tracklists page, absolute or relative.
+// Mirrors _TRACK_LINK_RE in ingest/firecrawl_scrape.py.
+const CAPTURE_RE =
+  /\]\((?:https?:\/\/(?:www\.)?1001tracklists\.com)?\/track\//;
 
 function ResolveInput({ track, onResolved }) {
   const [url, setUrl] = useState("");
@@ -255,6 +262,7 @@ export function MixImporter() {
   // paste and then having to find the control is two steps too many.
   const [paste, setPaste] = useState("");
   const [showPaste, setShowPaste] = useState(false);
+  const [copiedBm, setCopiedBm] = useState(false);
   // /import answers 501 for exactly one thing — a Firecrawl key would fix it —
   // so that status is what raises the key prompt.
   const [needsKey, setNeedsKey] = useState(false);
@@ -358,11 +366,21 @@ export function MixImporter() {
     if (/paste the tracklist/i.test(msg || "")) setShowPaste(true);
   };
 
+  // A capture is recognised by the per-track link; plain pasted text has none.
+  const isCapture = CAPTURE_RE.test(paste);
+
+  // One box, two payloads. A bookmarklet capture carries a link to each track's
+  // page; plain text does not. Branching on the content beats asking the user to
+  // know which kind of paste they are holding — and the capture is worth
+  // detecting, because those links are what "Scrape link" needs later.
   const importPaste = async () => {
     setError(null);
     setBusy(true);
     try {
-      await finishImport(await api.importMixPaste(paste, url.trim()));
+      const mix = isCapture
+        ? await api.importMixMarkdown(paste, url.trim())
+        : await api.importMixPaste(paste, url.trim());
+      await finishImport(mix);
       setPaste("");
     } catch (e) {
       setError(e.message);
@@ -639,16 +657,45 @@ export function MixImporter() {
                 placeholder={"1. Artist - Title\n2. [12:34] Artist - Title\n   w/ Artist - Title\n…"} />
             <button className="mix-scrape" onClick={importPaste}
               disabled={busy || !paste.trim()}>
-              {busy ? "Parsing…" : "Parse pasted tracklist"}
+              {busy ? "Parsing…"
+                : isCapture ? "Import captured tracklist"
+                : "Parse pasted tracklist"}
             </button>
             <span className="hint">
-              Numbered lines are beds, <code>w/</code> lines are the vocals over
-              them. Fill in the URL above too and this stays the same mix —
+              {isCapture
+                ? "A bookmarklet capture — each track keeps its 1001tracklists link and cue time."
+                : "Numbered lines are beds, w/ lines are the vocals over them."}
+              {" "}Fill in the URL above too and this stays the same mix —
               re-pasting replaces its tracks and keeps the links you have
               already resolved.
             </span>
           </div>
         )}
+
+        {/* The way in when the scrape is blocked. Your browser renders these
+            pages because you are a person; the bookmarklet reads the tracklist
+            out of the page you are already looking at. */}
+        <div className="mix-rail-block">
+          <span className="micro-label">GRAB FROM YOUR BROWSER</span>
+          <a className="mix-bookmarklet" href={GRAB_BOOKMARKLET}
+            onClick={(e) => e.preventDefault()}
+            title="Drag me to your bookmarks bar">
+            ⤓ Grab tracklist
+          </a>
+          <button className="mini-btn"
+            onClick={() => {
+              navigator.clipboard.writeText(GRAB_BOOKMARKLET)
+                .then(() => setCopiedBm(true), () => setCopiedBm(false));
+            }}>
+            {copiedBm ? "copied ✓" : "copy the bookmarklet"}
+          </button>
+          <span className="hint">
+            Drag the link to your bookmarks bar. On a set page, click it: it
+            shows what it found, you copy, and paste above. Use this when the
+            scrape is blocked.
+          </span>
+        </div>
+
         {error && <div className="error-text" style={{ padding: "0 12px" }}>{error}</div>}
         {needsKey && (
           <div className="mix-rail-block">

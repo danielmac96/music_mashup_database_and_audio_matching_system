@@ -156,6 +156,11 @@ _MD_ESCAPE_RE = re.compile(r"\\(.)")
 _LEAD_CRUFT_RE = re.compile(
     r"^(?:[-*+|>#]\s*|\d{1,3}[.)]\s+|\[?\d{1,2}:\d{2}(?::\d{2})?\]?\s*)+")
 _LEAD_OVERLAY_RE = re.compile(r"^w/\s*", re.I)
+# The cue timestamp inside that leading cruft, kept before the cruft is stripped.
+# Firecrawl's own markdown rarely carries one; a browser capture always does, and
+# it is what seeds mashup_pairs.cue_secs — where in the set the overlay lands.
+_LEAD_CUE_RE = re.compile(
+    r"^(?:[-*+|>#]\s*|\d{1,3}[.)]\s+)*\[?(\d{1,2}:\d{2}(?::\d{2})?)\]?")
 # A remix/edit annotation that trails after the first link — fold it back into the title
 # so the shared parse_line can derive the remixer.
 _REMIX_PAREN_RE = re.compile(
@@ -414,14 +419,37 @@ def _absolute_track_url(url: str) -> str:
     return re.sub(r"^https?://(?:www\.)?", "https://www.", url)
 
 
+def _split_lead(body: str) -> tuple[str, bool, str]:
+    """Peel a leading "w/" overlay marker and a cue timestamp off a track body.
+
+    Returns (body, is_overlay, cue).
+
+    ORDER IS LOAD-BEARING. The marker comes first in the source
+    ("w/ [0:40] Artist - Title"), so stripping cruft before peeling the marker
+    leaves the cue stranded — it is no longer leading, and it ends up inside the
+    artist name. Firecrawl's markdown put "w/" on a line of its own, so nothing
+    exercised the inline form until the browser capture started emitting it.
+    """
+    overlay = False
+    if _LEAD_OVERLAY_RE.match(body):
+        overlay = True
+        body = _LEAD_OVERLAY_RE.sub("", body).strip()
+    m = _LEAD_CUE_RE.match(body)
+    return _LEAD_CRUFT_RE.sub("", body).strip(), overlay, (m.group(1) if m else "")
+
+
 def parse_markdown_tracklist(md: str) -> list[dict]:
     """Deterministically parse a rendered 1001tracklists page into track rows.
 
     Each track is a line carrying a link to its "/track/ID/…" page; a bare "w/"
     line immediately before a track (or a "w/" leading the track line itself)
     marks it as a mashup overlay on the previous (non-overlay) bed. Returns rows
-    shaped like the old LLM output:
-    {position, artist, title, is_overlay, tl_track_url}.
+    shaped like the old LLM output, plus an optional cue:
+    {position, artist, title, is_overlay, tl_track_url, cue}.
+
+    This is the ONE parser for every door into a mix — the Firecrawl scrape and
+    the browser-capture bookmarklet both emit this markdown, so a capture and a
+    scrape produce identical rows.
     """
     rows: list[dict] = []
     pending_overlay = False
@@ -435,17 +463,13 @@ def parse_markdown_tracklist(md: str) -> list[dict]:
         m = _TRACK_LINK_RE.search(line)
         if not m:
             continue
-        body = _clean_track_text(line[:m.start()])
-        body = _LEAD_CRUFT_RE.sub("", body).strip()
+        body, inline_overlay, cue = _split_lead(_clean_track_text(line[:m.start()]))
         if not body:
             # The track name IS the link: "[Artist - Title](…/track/…)".
             text = m.group("text").strip()
             if text.lower() != _TRACK_LINK.strip("[]"):
-                body = _LEAD_CRUFT_RE.sub("", _clean_track_text(text)).strip()
-        overlay = pending_overlay
-        if _LEAD_OVERLAY_RE.match(body):
-            overlay = True
-            body = _LEAD_OVERLAY_RE.sub("", body).strip()
+                body, inline_overlay, cue = _split_lead(_clean_track_text(text))
+        overlay = pending_overlay or inline_overlay
         pending_overlay = False
         if not body:
             continue
@@ -475,6 +499,9 @@ def parse_markdown_tracklist(md: str) -> list[dict]:
             "title": title.strip(" -"),
             "is_overlay": overlay,
             "tl_track_url": _absolute_track_url(m.group("url")),
+            # "" when the source carried no timestamp. Optional by design: the
+            # Firecrawl path mostly has none, a browser capture does.
+            "cue": cue,
         })
     return rows
 

@@ -47,7 +47,8 @@ from api import jobs
 from api.workers import mix_ingest_worker, mix_resolve_worker
 from config import DATA_DIR, current_firecrawl_api_key
 from database.models import get_conn, is_trusted_link
-from ingest.firecrawl_scrape import FirecrawlError, scrape_track_links
+from ingest.firecrawl_scrape import (FirecrawlError, _cache_markdown, _rows_from,
+                                     markdown_cache_path, scrape_track_links)
 from ingest.soundcloud import search_candidates as yt_search_candidates
 from ingest.soundcloud_api import SoundCloudAPIError
 from ingest.soundcloud_api import search_candidates as sc_search_candidates
@@ -239,6 +240,13 @@ class ImportRequest(BaseModel):
     refresh: bool = False
 
 
+class ImportMarkdownRequest(BaseModel):
+    """A capture from the browser bookmarklet — the same markdown Firecrawl
+    emitted, so it goes through the same parser."""
+    markdown: str
+    url: str = ""
+
+
 class ImportPasteRequest(BaseModel):
     content: str
     # Optional, but worth filling in: source_url is UNIQUE, so it is what makes
@@ -287,7 +295,12 @@ def _scraped_rows_to_persist_rows(scraped: list[dict]) -> list[dict]:
 
     We rebuild the canonical tracklist line and re-parse it with parse_line, so
     remixer/is_id/mashup_parts/parse_confidence come from the same tested parser
-    the paste path uses. Firecrawl's is_overlay wins the bed/overlay decision.
+    the paste path uses. The source's is_overlay wins the bed/overlay decision.
+
+    A row's optional "cue" is put back into the line as "[12:34]" so parse_line
+    derives cue_secs — which is what seeds mashup_pairs.cue_secs, i.e. where in
+    the set an overlay lands. Firecrawl's markdown rarely carries one; a browser
+    capture always does, and dropping it here would throw away the better data.
 
     A line parse_line rejects (a title that is one of its skip prefixes, a row
     left too short after URL-fragment stripping) is DROPPED. It used to become
@@ -299,6 +312,9 @@ def _scraped_rows_to_persist_rows(scraped: list[dict]) -> list[dict]:
     for t in scraped:
         artist, title = t.get("artist", ""), t.get("title", "")
         body = f"{artist} - {title}".strip(" -") if artist else title
+        cue = (t.get("cue") or "").strip()
+        if cue:
+            body = f"[{cue}] {body}"
         if t.get("is_overlay"):
             line = f"w/ {body}"
         else:
@@ -506,6 +522,46 @@ def import_mix(req: ImportRequest, background: BackgroundTasks) -> dict:
             detail="Fetched the page but found no 'Artist - Title' tracklist rows.")
     title = _html_title(html) or _title_from_rows("", rows, url)[0] or "Imported tracklist"
     return _persist_mix(title, url, rows, method="scrape")
+
+
+@router.post("/import-markdown")
+def import_mix_markdown(req: ImportMarkdownRequest) -> dict:
+    """Import a tracklist captured from the page by the bookmarklet.
+
+    This is mix_ingest_worker.run_import with the network taken out: the capture
+    IS the markdown a scrape would have returned, so `_rows_from` and everything
+    below it are shared, and a captured mix is indistinguishable from a scraped
+    one except for its import_method.
+
+    Caching the markdown under the set's URL is not an optimisation here — it is
+    what makes a later `POST /import` on that URL succeed offline, re-parsing the
+    capture instead of asking Firecrawl (and paying) for a page it cannot render."""
+    md = req.markdown or ""
+    rows = _rows_from(md)
+    if not rows:
+        raise HTTPException(
+            status_code=422,
+            detail="No tracks in that capture. Each line needs a link to the "
+                   "track's page, e.g. Artist - Title[open track page](/track/ID/…).")
+    url = (req.url or "").strip()
+    if url and classify_url(url)[0] != "unknown":
+        raise HTTPException(
+            status_code=400,
+            detail="That's a SoundCloud/YouTube track link — the URL field is the "
+                   "tracklist page this set came from.")
+    snapshot = None
+    if url:
+        _cache_markdown(url, md)
+        path = markdown_cache_path(url)
+        snapshot = str(path) if path.exists() else None
+    persist_rows = _scraped_rows_to_persist_rows(rows)
+    if not persist_rows:
+        raise HTTPException(
+            status_code=422,
+            detail="Every row in that capture was rejected by the line parser.")
+    title = _title_from_rows("", persist_rows, url)[0] or "Captured tracklist"
+    return _persist_mix(title, url, persist_rows, method="bookmarklet",
+                        snapshot_path=snapshot)
 
 
 @router.post("/import-paste")

@@ -2731,6 +2731,17 @@ input, select { font-family: inherit; }
   border-radius: 7px; padding: 7px 9px;
 }
 .mix-paste::placeholder { color: var(--faint); }
+/* The bookmarklet is a LINK, not a button, because installing it means dragging
+   it to the bookmarks bar — only an <a href> can be dragged there. */
+.mix-bookmarklet {
+  display: block; text-align: center; cursor: grab;
+  background: var(--inset-2); border: 1px dashed var(--border-ctrl);
+  border-radius: 7px; padding: 8px 9px;
+  font: 600 11.5px var(--font-ui); color: var(--accent-light);
+  text-decoration: none;
+}
+.mix-bookmarklet:hover { border-color: var(--accent); color: var(--accent); }
+.mix-bookmarklet:active { cursor: grabbing; }
 /* A button that reads as a link — the paste toggle sits inside a sentence. */
 .mix-rail .linklike {
   align-self: flex-start; cursor: pointer; background: none; border: 0;
