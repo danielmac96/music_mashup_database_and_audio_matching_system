@@ -955,18 +955,23 @@ def upsert_song(
                artist=excluded.artist,
                source=CASE WHEN excluded.source != '' THEN excluded.source ELSE source END,
                duration_secs=excluded.duration_secs,
-               genre=excluded.genre,
+               genre=CASE WHEN excluded.genre != '' THEN excluded.genre ELSE genre END,
                raw_path=CASE WHEN excluded.raw_path != '' THEN excluded.raw_path ELSE raw_path END,
                status=excluded.status,
-               artist_id=excluded.artist_id,
-               track_id=excluded.track_id,
+               -- Descriptive metadata is only ever IMPROVED by a re-upsert.
+               -- A sparse row (a flat playlist seed, a legacy crate payload, a
+               -- mix re-ingest) carries '' / 0 for all of this, and an
+               -- unguarded assignment would blank a row a metadata backfill had
+               -- just repaired. Same shape as tags/release_year below.
+               artist_id=CASE WHEN excluded.artist_id != '' THEN excluded.artist_id ELSE artist_id END,
+               track_id=CASE WHEN excluded.track_id != '' THEN excluded.track_id ELSE track_id END,
                duration_str=excluded.duration_str,
-               upload_date=excluded.upload_date,
-               likes=excluded.likes,
-               reposts=excluded.reposts,
-               comments=excluded.comments,
-               plays=excluded.plays,
-               thumbnail=excluded.thumbnail,
+               upload_date=CASE WHEN excluded.upload_date != '' THEN excluded.upload_date ELSE upload_date END,
+               likes=CASE WHEN excluded.likes > 0 THEN excluded.likes ELSE likes END,
+               reposts=CASE WHEN excluded.reposts > 0 THEN excluded.reposts ELSE reposts END,
+               comments=CASE WHEN excluded.comments > 0 THEN excluded.comments ELSE comments END,
+               plays=CASE WHEN excluded.plays > 0 THEN excluded.plays ELSE plays END,
+               thumbnail=CASE WHEN excluded.thumbnail != '' THEN excluded.thumbnail ELSE thumbnail END,
                metadata_partial=MIN(metadata_partial, excluded.metadata_partial),
                tags=CASE WHEN excluded.tags != '' THEN excluded.tags ELSE tags END,
                release_year=CASE WHEN excluded.release_year > 0
@@ -1411,6 +1416,95 @@ def set_song_origin(song_id: int, origin_url: str,
         (origin_url, dur, artist or "", song_id))
     conn.commit()
     conn.close()
+
+
+# The descriptive columns a metadata re-fetch may restore, split by how a blank
+# is read. A re-fetch that comes back with no genre means "this upload has no
+# genre" — plenty do — not "throw away the genre we hold", so a blank never
+# overwrites (readme §5: unknown is not bad, and never zero).
+_METADATA_TEXT_FIELDS = ("genre", "tags", "upload_date", "thumbnail",
+                         "track_id", "artist_id")
+_METADATA_COUNT_FIELDS = ("plays", "likes", "reposts", "comments", "release_year")
+
+
+def update_song_metadata(song_id: int, row: Dict,
+                         db_path: Path = DB_PATH) -> Dict:
+    """Write a canonical ingest row's descriptive metadata onto an existing song
+    and clear ``metadata_partial``.
+
+    This exists because a backfill CANNOT go through ``upsert_song``: its
+    ON CONFLICT sets ``status=excluded.status`` (default 'queued'), which would
+    rewind every analysed track it touched back through download → Demucs →
+    analysis. Only descriptive columns are written here. status, source_url,
+    source, raw_path, duration_secs, origin_url, origin_duration_secs and
+    last_error belong to the pipeline and the download fallback, and are left
+    exactly as they are.
+
+    ``title`` and ``artist`` are filled only when what is stored is blank or
+    'Unknown'. A mix tracklist's credited artist beats a SoundCloud uploader
+    handle, which is precisely the trap §5.1's artist rule is about.
+
+    Returns ``{"fields": [...]}`` — the columns this call actually changed.
+    """
+    sets: List[str] = []
+    params: List = []
+    changed: List[str] = []
+
+    for key in _METADATA_TEXT_FIELDS:
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        sets.append(f"{key}=?")
+        params.append(str(value))
+        changed.append(key)
+
+    for key in _METADATA_COUNT_FIELDS:
+        try:
+            value = int(row.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+        if value <= 0:
+            continue
+        sets.append(f"{key}=?")
+        params.append(value)
+        changed.append(key)
+
+    for key in ("title", "artist"):
+        value = str(row.get(key) or "").strip()
+        if not value or value == "Unknown":
+            continue
+        sets.append(f"{key}=CASE WHEN COALESCE(NULLIF({key}, ''), 'Unknown')='Unknown'"
+                    f" THEN ? ELSE {key} END")
+        params.append(value)
+        changed.append(f"{key}?")   # ? = only if it was blank
+
+    # Unconditional, even when the fetch carried nothing new: the row HAS been
+    # re-fetched, so it is no longer a flat-only seed waiting for one. Leaving
+    # the flag up would queue it for the same backfill forever.
+    sets.append("metadata_partial=0")
+    sets.append("updated_at=datetime('now')")
+    params.append(song_id)
+
+    conn = get_conn(db_path)
+    try:
+        conn.execute(f"UPDATE songs SET {', '.join(sets)} WHERE id=?", params)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"fields": changed}
+
+
+def partial_metadata_song_ids(db_path: Optional[Path] = None) -> List[int]:
+    """Songs seeded from flat/sparse ingest data whose full metadata fetch never
+    landed: genre, year, play counts and the SoundCloud track id are all still
+    blank, while the audio and analysis are fine. What the 'metadata' bulk
+    action re-fetches."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        return [r[0] for r in conn.execute(
+            "SELECT id FROM songs WHERE metadata_partial=1 ORDER BY id")]
+    finally:
+        conn.close()
 
 
 def confirm_audio(song_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:

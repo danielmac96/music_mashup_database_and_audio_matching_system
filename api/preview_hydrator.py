@@ -126,7 +126,8 @@ def _maybe_finish(session_id: str) -> None:
 
 def _hydrate_one(session_id: str, idx: int) -> None:
     """Enrich one flat row in place. Failures leave the flat row (marked
-    hydrated so the session can complete) — ingest falls back to a live fetch."""
+    hydrated so the session can complete, and ``enriched=False`` so ingest does
+    not mistake it for real metadata) — ingest falls back to a live fetch."""
     with _LOCK:
         s = _SESSIONS.get(session_id)
         if s is None:
@@ -158,6 +159,12 @@ def _hydrate_one(session_id: str, idx: int) -> None:
             continue
         merged[key] = value
     merged["hydrated"] = True
+    # `hydrated` means "we finished trying", which is what lets the session
+    # complete — it does NOT mean we got anything. Ingest used to read the two
+    # as the same thing, so a row whose fetch failed was saved with blank
+    # genre/plays AND metadata_partial=0, invisible to any later backfill.
+    # `enriched` is the honest half.
+    merged["enriched"] = bool(rich)
     with _LOCK:
         s = _SESSIONS.get(session_id)
         if s is None:

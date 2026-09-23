@@ -14,10 +14,17 @@ Suspect audio is the third kind of backfill: tracks whose YouTube download
 fallback ran before it verified what it substituted (see
 ingest.match_score.assess_substitute), so the file may be a remix or a different
 cut of the record the track was linked to.
+
+Missing metadata is the fourth, and the only one that is not about audio at all:
+a track whose per-track metadata fetch was throttled at ingest keeps its audio,
+stems and analysis but has no genre, year or play count. The row is marked
+songs.metadata_partial=1 and, until this worker, nothing ever went back for it.
 """
 from __future__ import annotations
 
 import logging
+import random
+import time
 from pathlib import Path
 
 from api import jobs, queue_runner
@@ -40,6 +47,10 @@ ACTIONS = {
     # that link, its length and its credited artist when a fallback overwrote
     # them — and download again through the verified fallback.
     "redownload_suspect": {"status": "queued", "label": "re-downloading"},
+    # The one action that rewinds NOTHING: it re-fetches descriptive metadata
+    # onto rows whose audio and analysis are already fine. `status` is unused
+    # and deliberately blank — see _backfill_metadata.
+    "metadata": {"status": "", "label": "refreshing metadata"},
 }
 
 
@@ -58,6 +69,10 @@ def run(job_id: str, action: str, song_ids: list[int]) -> None:
 
     if action == "redownload_suspect":
         _redownload_suspect(job_id, song_ids)
+        return
+
+    if action == "metadata":
+        _backfill_metadata(job_id, song_ids)
         return
 
     # Imported here, not at module scope: get_conn's default db_path binds at
@@ -189,6 +204,108 @@ def _redownload_suspect(job_id: str, song_ids: list[int]) -> None:
                     message=f"Queued {n}/{len(rows)} for {spec['label']}…")
 
     _done(job_id, "redownload_suspect", spec, queued, failed, reasons)
+
+
+# ── Missing metadata ──────────────────────────────────────────────────────────
+
+# Serial, with a short gap between tracks. Parallelism is what caused the damage
+# this repairs: ingest_rows runs ENRICH_WORKERS (5) yt-dlp processes at once, and
+# a 200-track mix import throttled hard enough that most rows came back empty.
+# A backfill has all the time in the world and exactly one job — not to lose the
+# rows a second time.
+_METADATA_GAP_SECS = 0.3
+
+
+def _metadata_via_v2(url: str) -> dict | None:
+    """Second opinion for a SoundCloud permalink yt-dlp will not answer for.
+
+    yt-dlp's client gets a flat 403 on a slice of the catalogue (major-label
+    uploads, and tracks whose permissions changed since import) — 20 of the 119
+    rows this was written for. The v2 browse layer resolves those same links
+    fine, and returns the canonical row shape already, so it is a drop-in
+    second try rather than a second normaliser.
+
+    Best effort: browse is throttled, backed off and breaker-guarded, and a
+    failure here means the track is reported, not guessed at.
+    """
+    if "soundcloud.com" not in url:
+        return None
+    try:
+        from ingest import soundcloud_browse as browse
+        resolved = browse.resolve(url) or {}
+    except Exception as exc:  # noqa: BLE001 — a fallback that fails is just no fallback
+        log.warning("v2 resolve failed for %s: %s", url, exc)
+        return None
+    if resolved.get("kind") != "track":
+        return None
+    item = resolved.get("item")
+    return item if isinstance(item, dict) else None
+
+
+def _backfill_metadata(job_id: str, song_ids: list[int]) -> None:
+    """Re-fetch descriptive metadata (genre, year, plays, likes, tags, track id)
+    for tracks whose ingest-time fetch failed, and write it without touching
+    audio, status or analysis.
+
+    The fetch is keyed on ``origin_url`` — the write-once imported link — and
+    only falls back to ``source_url``. A YouTube substitute rewrites
+    ``source_url`` (§5.2), and the SoundCloud metadata lives on the link the
+    track was imported from, not on the upload that was downloaded instead.
+
+    yt-dlp first, then the v2 browse layer for the links it is 403'd on.
+    """
+    from database.models import get_conn, update_song_metadata
+    from ingest.soundcloud import enrich_track
+
+    conn = get_conn()
+    try:
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT id, title, source_url, origin_url FROM songs "
+            f"WHERE id IN ({','.join('?' * len(song_ids))}) ORDER BY id",
+            song_ids)]
+    finally:
+        # Closed BEFORE the network loop: SQLite has one writer, and a
+        # connection held across ~120 fetches would lock out the whole app.
+        conn.close()
+
+    updated, failed, reasons = 0, 0, []
+    for n, row in enumerate(rows, start=1):
+        url = (row["origin_url"] or row["source_url"] or "").strip()
+        title = row["title"] or f"song {row['id']}"
+        jobs.update(job_id, progress=int(100 * (n - 1) / len(rows)),
+                    message=f"Fetching {n}/{len(rows)}: {title[:50]}")
+        try:
+            if not url:
+                failed += 1
+                reasons.append(f"{title}: no link to re-fetch from")
+                continue
+            fetched = enrich_track(url) or _metadata_via_v2(url)
+            if not fetched:
+                failed += 1
+                reasons.append(f"{title}: SoundCloud returned no metadata")
+                continue
+            # A fetch that carries no genre is still a success — plenty of
+            # uploads set none — so the row is un-flagged either way.
+            update_song_metadata(row["id"], fetched)
+            updated += 1
+        except Exception as exc:  # noqa: BLE001 — one bad track must not stop the batch
+            log.exception("metadata backfill failed for song %s", row["id"])
+            failed += 1
+            reasons.append(f"{title}: {exc}")
+        if n < len(rows):
+            time.sleep(_METADATA_GAP_SECS + random.uniform(0, 0.2))
+
+    jobs.done(job_id, {
+        "action": "metadata",
+        # Nothing is queued by this action: unlike every other bulk action, the
+        # job IS the work, so "done" here means done, not handed to a queue.
+        "queued": updated,
+        "updated": updated,
+        "failed": failed,
+        "reasons": reasons[:20],
+        "summary": (f"{updated} track{'s' if updated != 1 else ''} refreshed"
+                    + (f" · {failed} could not be fetched" if failed else "")),
+    })
 
 
 # ── Staleness ─────────────────────────────────────────────────────────────────
@@ -334,6 +451,12 @@ def staleness(db_path=None) -> dict:
 
         suspect_audio = conn.execute(
             f"SELECT COUNT(*) FROM songs WHERE {_suspect_audio_sql()}").fetchone()[0]
+
+        # Not a feature generation: a row whose ingest-time metadata fetch was
+        # throttled. Counted over every status, because the audio and analysis
+        # succeeded — that is exactly why it is invisible otherwise.
+        missing_metadata = conn.execute(
+            "SELECT COUNT(*) FROM songs WHERE metadata_partial=1").fetchone()[0]
         return {
             "total_analysed": total,
             "needs_analysis": needs_analysis,
@@ -345,6 +468,7 @@ def staleness(db_path=None) -> dict:
             "missing_four_stems": wrong_stem_mode,
             "stem_mode": "four" if four else "two",
             "suspect_audio": suspect_audio,
+            "missing_metadata": missing_metadata,
         }
     finally:
         conn.close()
@@ -358,6 +482,9 @@ def stale_song_ids(action: str, db_path=None) -> list[int]:
     """
     if action == "redownload_suspect":
         return suspect_audio_ids(db_path)
+    if action == "metadata":
+        from database.models import partial_metadata_song_ids
+        return partial_metadata_song_ids(db_path)
     from database.models import get_conn
     conn = get_conn(db_path) if db_path else get_conn()
     try:
@@ -387,6 +514,11 @@ def all_song_ids(action: str, db_path=None) -> list[int]:
         # Re-downloading a track nothing is wrong with is not a thing to offer
         # for a whole library; "all" means every suspect one.
         return suspect_audio_ids(db_path)
+    if action == "metadata":
+        # Same reasoning: re-fetching metadata a track already has is a network
+        # round trip that changes nothing, so "all" means every partial row.
+        from database.models import partial_metadata_song_ids
+        return partial_metadata_song_ids(db_path)
     from database.models import get_conn
     conn = get_conn(db_path) if db_path else get_conn()
     try:

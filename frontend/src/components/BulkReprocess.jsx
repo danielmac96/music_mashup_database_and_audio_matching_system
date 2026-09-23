@@ -16,6 +16,12 @@ import { toast } from "../toast";
 // of the record the track links to. That is a correctness problem rather than a
 // missing feature, so it gets its own bar and goes first.
 //
+// And MISSING METADATA: tracks whose per-track SoundCloud fetch was throttled at
+// import. Their audio, stems and analysis are fine — only genre, year and play
+// count are blank — so nothing else in the app ever complains, and the columns
+// just sit empty. This is the only bar whose button IS the work: it finishes
+// when the fetches finish, rather than handing tracks to the pipeline queue.
+//
 // It renders nothing when there is nothing to do, so a current library is not
 // nagged.
 
@@ -42,7 +48,8 @@ export function BulkReprocess({ onQueued }) {
   const needsAnalysis = stale.needs_analysis || 0;
   const needsSeparate = stale.missing_four_stems || 0;
   const suspect = stale.suspect_audio || 0;
-  if (!needsAnalysis && !needsSeparate && !suspect) return null;
+  const noMeta = stale.missing_metadata || 0;
+  if (!needsAnalysis && !needsSeparate && !suspect && !noMeta) return null;
 
   const run = async (action, scope) => {
     setBusy(true);
@@ -50,7 +57,11 @@ export function BulkReprocess({ onQueued }) {
     try {
       const out = await api.bulkReprocess({ action, scope });
       setJob({ id: out.job_id, action });
-      toast(`Queued ${out.count} track${out.count === 1 ? "" : "s"}`);
+      // "metadata" does its own work rather than filling the pipeline queue,
+      // so "queued" would be a lie about what is happening next.
+      toast(action === "metadata"
+        ? `Fetching metadata for ${out.count} track${out.count === 1 ? "" : "s"}…`
+        : `Queued ${out.count} track${out.count === 1 ? "" : "s"}`);
       onQueued?.();
     } catch (e) {
       setError(e.message);
@@ -100,6 +111,33 @@ export function BulkReprocess({ onQueued }) {
                 title="Re-fetch each track's SoundCloud link and length, then download again through the verified fallback"
                 onClick={() => run("redownload_suspect", "stale")}>
                 ⟳ Re-download {suspect}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {noMeta > 0 && (
+        <div className="bulk-bar">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>
+              {noMeta} track{noMeta === 1 ? "" : "s"} {noMeta === 1 ? "is" : "are"} missing
+              {" "}genre, year and play count
+            </div>
+            <div className="faint" style={{ fontSize: 11, lineHeight: 1.45 }}>
+              SoundCloud throttled the metadata fetch while{" "}
+              {noMeta === 1 ? "it was" : "they were"} imported, so the library
+              columns are blank. The audio, stems and analysis are fine and are
+              not touched — this only re-fetches the description. A few seconds
+              a track, and some uploads genuinely carry no genre.
+            </div>
+          </div>
+          {badge("metadata") || (
+            <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+              <button className="btn" disabled={busy || !!job}
+                title="Re-fetch genre, year, play count, likes and tags from the link each track was imported from. Nothing is re-downloaded or re-analysed."
+                onClick={() => run("metadata", "stale")}>
+                ⟳ Refresh metadata {noMeta}
               </button>
             </div>
           )}

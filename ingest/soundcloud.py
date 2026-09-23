@@ -2,8 +2,11 @@
 ingest/soundcloud.py — Pull track metadata from a SoundCloud playlist via yt-dlp.
 """
 import json
+import random
+import re
 import subprocess
 import sys
+import time
 import logging
 from typing import Any, Optional
 
@@ -17,6 +20,42 @@ def _ytdlp_cmd(*args: str) -> list:
     """Invoke yt-dlp via the active Python interpreter so it works even when
     the console script isn't on PATH."""
     return [sys.executable, "-m", "yt_dlp", *args]
+
+
+# Retrying a metadata fetch is the difference between a library with genres and
+# one without. SoundCloud throttles, and ingest_rows runs ENRICH_WORKERS of
+# these at once: a 200-track mix import used to lose most of its rows to 429s
+# that nothing retried, saving them with genre='', plays=0, release_year=0 and
+# metadata_partial=1. Nothing ever went back for them.
+#
+# Only a failure that could come out differently is retried. A removed, private
+# or geo-blocked track is a fact, and sleeping 26 seconds to be told so again
+# per track would make a large import unusable.
+_TRANSIENT_ERROR = re.compile(
+    r"429|too many requests|rate.?limit|temporarily unavailable"
+    r"|timed out|timeout|connection (reset|aborted|refused)"
+    r"|HTTP Error 5\d\d|unable to (download|fetch)|read operation",
+    re.I)
+_PERMANENT_ERROR = re.compile(
+    # Every 4xx except 429 (which is the throttle, and the whole point of
+    # retrying). Permanent wins on a tie, so this is checked first.
+    r"HTTP Error 4(?!29)\d\d"
+    r"|not found|no longer available|has been removed|is private"
+    r"|unsupported url|unavailable in your country|video unavailable",
+    re.I)
+_FETCH_ATTEMPTS = 3
+_FETCH_BACKOFF_SECS = 2.0   # doubled-and-tripled per attempt: ~2s, ~6s
+
+
+def _is_transient(stderr: str) -> bool:
+    """Is this yt-dlp failure worth asking again about?
+
+    Permanent wins on a tie: a stderr that mentions both a 404 and a timeout is
+    about a track that is gone, and the timeout is noise from a retry yt-dlp
+    already did itself."""
+    if _PERMANENT_ERROR.search(stderr):
+        return False
+    return bool(_TRANSIENT_ERROR.search(stderr))
 
 
 def fetch_playlist_flat(url: str) -> list:
@@ -192,6 +231,34 @@ def search_track(artist: str, title: str, platform: str = "soundcloud",
 
 
 def _fetch_via_ytdlp(url: str) -> list:
+    """Metadata for a URL, retrying a throttle or a transient upstream error.
+
+    Returns [] only when the failure will not come out differently, or when
+    every attempt has been used. An empty list here is what ingest_rows turns
+    into a metadata_partial=1 row, so it is worth spending a few seconds on
+    before giving up: those rows are invisible until someone notices four
+    empty columns in the library weeks later."""
+    last: list = []
+    for attempt in range(1, _FETCH_ATTEMPTS + 1):
+        tracks, stderr = _fetch_via_ytdlp_once(url)
+        if tracks:
+            return tracks
+        last = tracks
+        if attempt == _FETCH_ATTEMPTS or not _is_transient(stderr):
+            break
+        # Jittered so ENRICH_WORKERS parallel fetches do not all come back
+        # at the same instant and throttle each other again.
+        delay = _FETCH_BACKOFF_SECS * (attempt ** 2) + random.uniform(0, 1.0)
+        log.warning("metadata fetch for %s hit a transient error "
+                    "(attempt %d/%d), retrying in %.1fs: %s",
+                    url, attempt, _FETCH_ATTEMPTS, delay, stderr[:200])
+        time.sleep(delay)
+    return last
+
+
+def _fetch_via_ytdlp_once(url: str) -> tuple:
+    """One yt-dlp extraction. Returns (tracks, stderr) so the caller can tell
+    a throttle apart from a track that is genuinely gone."""
     try:
         # --ignore-errors keeps yt-dlp going past per-track 404s so one flaky
         # SoundCloud entry doesn't sink the whole playlist.
@@ -231,10 +298,11 @@ def _fetch_via_ytdlp(url: str) -> list:
             else:
                 tracks.append(_normalise(info))
 
+        stderr = (result.stderr or "").strip()
         if result.returncode != 0:
             # Some tracks may have failed individually; surface the error
             # but keep whatever JSON did come back.
-            err = (result.stderr or "").strip().splitlines()
+            err = stderr.splitlines()
             err_summary = "; ".join(err[:3]) if err else "no stderr"
             if tracks:
                 log.warning(
@@ -246,17 +314,18 @@ def _fetch_via_ytdlp(url: str) -> list:
                     f"yt-dlp exited {result.returncode} with no usable JSON. "
                     f"First errors: {err_summary[:300]}"
                 )
-                return []
+                return [], stderr
 
         log.info(f"Fetched {len(tracks)} tracks via yt-dlp")
-        return tracks
+        return tracks, stderr
 
     except FileNotFoundError:
+        # Not transient: retrying a missing yt-dlp three times helps nobody.
         log.error("Python or yt-dlp not found. Install with: pip install yt-dlp")
-        return []
+        return [], ""
     except subprocess.TimeoutExpired:
         log.error("yt-dlp timed out")
-        return []
+        return [], "the read operation timed out"
 
 
 def _str_or_empty(val: Any) -> str:

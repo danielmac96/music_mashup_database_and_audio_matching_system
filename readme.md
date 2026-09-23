@@ -375,9 +375,29 @@ drop-in folder (§5.11). The player bar hides in Studio.
 Tight/Balanced/Wide **match width** preset and, when anything is suppressed,
 **restore N hidden** (hidden pairs and excluded tracks). Then **Bulk
 reprocess** (staleness per feature generation; re-analyse or re-separate only
-what needs it), **Tuning** (match and section weights, effort weight, gates,
-separator, stem mode), **Train from imported mixes** (build dataset → train →
+what needs it), **Refresh metadata** (below), **Tuning** (match and section
+weights, effort weight, gates, separator, stem mode), **Train from imported mixes** (build dataset → train →
 activate), and a read-only **database browser**.
+
+**⟳ Refresh metadata N** appears when tracks are missing genre, year and play
+count. SoundCloud throttles per-track metadata fetches, and a large import (a
+200-track mix especially) can have most of them time out — the audio, stems and
+analysis still succeed, so nothing else in the app ever complains and the
+library just shows empty columns. Those rows are flagged
+`songs.metadata_partial = 1`; this re-fetches each one from the link it was
+imported from (`origin_url`, not a YouTube substitute) and writes **only** the
+description. Nothing is re-downloaded, re-separated or re-analysed, and unlike
+every other bulk action the job *is* the work rather than a hand-off to the
+pipeline queue. Fetches run one at a time — parallelism is what caused the
+damage. Some uploads genuinely carry no genre; a successful fetch clears the
+flag either way, so the same rows are not offered forever.
+
+yt-dlp answers for most links and is tried first; the **v2 browse layer** is the
+fallback for the slice of the catalogue it gets a flat `403` on (major-label
+uploads, and tracks whose permissions changed since import). On the library this
+was written for, yt-dlp recovered 99 of 119 rows and v2 recovered the remaining
+20. `browse.resolve` already returns the canonical row shape, so it is a second
+try rather than a second normaliser.
 
 ---
 
@@ -402,6 +422,21 @@ export read the same functions).
 - Full extraction uses `--ignore-no-formats-error`: SoundCloud serves many
   regular tracks as DRM HLS, and without the flag yt-dlp prints no metadata at
   all.
+- **A metadata fetch retries; a dead track does not.** `_fetch_via_ytdlp` runs up
+  to three attempts with jittered backoff (~2s, ~6s) when yt-dlp returns no JSON
+  *and* stderr looks transient — 429, any 5xx, a timeout, a reset connection.
+  Anything permanent (4xx other than 429, removed, private, geo-blocked) returns
+  immediately, because sleeping through the backoff per dead track would make a
+  large import unusable. Without this, `ENRICH_WORKERS` parallel fetches against
+  SoundCloud silently lost most of a 200-track mix import to throttling.
+- **A row saved without its metadata says so.** When the fetch fails anyway the
+  row is written with `metadata_partial = 1` and blank genre/plays/year, and the
+  Settings drawer offers to re-fetch it (§4). The flag is only trustworthy if
+  nothing sets it to 0 dishonestly, so: the preview hydrator marks a row
+  `hydrated` (it finished trying) *and* `enriched` (it got something), and ingest
+  reads the second; a legacy crate payload rebuilt from three columns is not
+  stamped as canonical; and `upsert_song` only ever improves descriptive columns
+  — a sparse re-upsert can no longer blank a row that was repaired.
 - Every source emits one **canonical row** (title, artist, ids, duration, plays,
   likes, reposts, comments, genre, tags, release year, thumbnail, upload date).
   `ingest.soundcloud._normalise` and `soundcloud_browse.track_row` must emit
@@ -643,6 +678,18 @@ composite (which clusters near 0.78).
 
 ### 5.9 Mix import and link resolution
 
+- **Three doors, one parser.** The bookmarklet
+  (`frontend/src/bookmarklet/grabTracklist.js`, minified into a `javascript:`
+  URL by `npm run bookmarklet`) emits **the markdown Firecrawl emitted** rather
+  than a format of its own, so `parse_markdown_tracklist` serves the scrape and
+  the capture alike and `POST /import-markdown` is `run_import` with the network
+  removed. It selects on `a[href*="/track/"]` only — 1001tracklists' class names
+  are obfuscated and change, while "every row links to its track page" is what
+  every page Firecrawl ever returned proves. Transport is the clipboard, not an
+  HTTP POST from the page: CORS allows only the dev origins, and widening it to
+  a third-party origin would open a hole into a server running on your machine.
+  The capture is written to `tracklist_cache/` under the set URL, so a later
+  `POST /import` on that URL re-parses it with no request and no credits.
 - **Parsing** (`ingest/tracklist_parse.py`): one line → one track with
   `raw_label`, cue time, artists split, remixer, mashup parts, ID detection and
   `parse_confidence` (1.0 clean · 0.5 title-only · 0.2 ID). `w/` lines are
@@ -682,18 +729,6 @@ composite (which clusters near 0.78).
   cached render its tracks came from.
 - **Ingesting a mix** (`api/workers/mix_ingest_worker.py`): both slow buttons
   are jobs, and the saving itself goes through `ingest_rows` — the one ingest
-- **Three doors, one parser.** The bookmarklet
-  (`frontend/src/bookmarklet/grabTracklist.js`, minified into a `javascript:`
-  URL by `npm run bookmarklet`) emits **the markdown Firecrawl emitted** rather
-  than a format of its own, so `parse_markdown_tracklist` serves the scrape and
-  the capture alike and `POST /import-markdown` is `run_import` with the network
-  removed. It selects on `a[href*="/track/"]` only — 1001tracklists' class names
-  are obfuscated and change, while "every row links to its track page" is what
-  every page Firecrawl ever returned proves. Transport is the clipboard, not an
-  HTTP POST from the page: CORS allows only the dev origins, and widening it to
-  a third-party origin would open a hole into a server running on your machine.
-  The capture is written to `tracklist_cache/` under the set URL, so a later
-  `POST /import` on that URL re-parses it with no request and no credits.
   implementation, shared with the paste bar, Discover and crates. Dedup is
   `mix_tracks.song_id IS NOT NULL`, not a URL match: a track saved under
   yt-dlp's canonical URL rather than the tracklist's link would otherwise be
@@ -764,7 +799,7 @@ caches responses, and opens a breaker after repeated failures.
 | `api/server.py` | FastAPI app, routers, health/deps, yt-dlp update, SPA serving with stale-build detection |
 | `api/routes/` | `tracks`, `playlists`, `jobs`, `mashups`, `mixes`, `discovery`, `crates`, `studio`, `settings`, `datasets`, `models`, `database` |
 | `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py` | per-stage worker pools + resume, job registry, playlist preview hydration |
-| `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage download/stems/analysis/structure; `bulk`, `match`, `hook`, `candidate_preview`, `mixdown`, `session`, `mix_resolve`, `mix_ingest` (Mixes import + ingest), `reverify`, `discovery` (`suggest`), `ml` |
+| `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage download/stems/analysis/structure; `bulk`, `match`, `hook`, `candidate_preview`, `mixdown`, `session`, `mix_resolve`, `mix_ingest` (Mixes import + ingest), `reverify`, `discovery` (`suggest`), `ml`; `bulk` also backfills descriptive metadata |
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py` |
 | `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
 | `stems/separate.py` | Demucs / MDX-Net, two or four stems |
@@ -776,7 +811,8 @@ caches responses, and opens a breaker after repeated failures.
 
 **Tables.** `songs` (metadata, status, `last_error`, `variant_cluster`,
 `track_id`; `origin_url` / `origin_duration_secs` — the imported link and its
-length, write-once; `audio_provenance` — JSON, where the file came from) · `stems` (path, separator tag, quality metrics) · `features` (per
+length, write-once; `audio_provenance` — JSON, where the file came from;
+`metadata_partial` — 1 when the per-track metadata fetch never landed) · `stems` (path, separator tag, quality metrics) · `features` (per
 stem: tempo/grid/phase, key/confidence/Camelot, loudness, MFCC, spectral, bands,
 envelope, beats, hook window) · `sections` (see §5.5) · `mashup_candidates` (one
 row per section pair: sub-scores, effort, section terms, harmony, alignment,
@@ -826,6 +862,23 @@ candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
   counted as suspect audio (`bulk_worker._suspect_audio_sql`). Both are pinned
   to their `url`: `stages._record_provenance` keeps them only while the audio
   still comes from that link.
+- **A metadata backfill must never go through `upsert_song`.** Its
+  `ON CONFLICT` sets `status=excluded.status`, whose default is `queued` — so
+  re-upserting to "just fix the genre" would rewind every analysed track it
+  touched back through download → Demucs → analysis. `update_song_metadata` is
+  the one writer for descriptive columns: it touches nothing the pipeline or the
+  download fallback owns (status, source_url, raw_path, duration_secs,
+  `origin_*`), fills `title`/`artist` only when they are blank or `Unknown`
+  (a mix tracklist's credited artist beats an uploader handle, §5.1), and clears
+  `metadata_partial` whether or not the fetch carried a genre — a successful
+  fetch of a genreless upload is still a successful fetch.
+- **Descriptive columns are only ever improved by a re-upsert.** `genre`,
+  `plays`, `likes`, `reposts`, `comments`, `upload_date`, `thumbnail`,
+  `track_id` and `artist_id` are all guarded in `upsert_song`'s `ON CONFLICT`
+  the way `tags`/`release_year` always were. A sparse row — a flat playlist
+  seed, a mix re-ingest, a legacy crate payload — carries `''`/`0` for every one
+  of them, and unguarded assignment silently wiped rows a backfill had just
+  repaired. `title`, `artist`, `duration_secs` and `status` stay authoritative.
 - **NULL is unmeasured, never zero** — see the §5 conventions. `alignment_offset`
   is `None` without a grid; `section_class = unknown` means no stem.
 - **`SECTION_PAIR_COLUMNS` is the tuple that binds.** Forget a new term there

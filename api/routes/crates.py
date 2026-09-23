@@ -36,6 +36,18 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+# The keys a canonical ingest row carries (ingest.soundcloud._normalise /
+# soundcloud_browse.track_row) but a rebuilt legacy payload cannot.
+_CANONICAL_KEYS = ("genre", "plays", "release_year", "track_id", "upload_date")
+
+
+def _is_canonical(payload: dict) -> bool:
+    """Was this payload frozen from a full metadata row, or rebuilt from the
+    three columns crate_items always has? Only the first may skip the refetch."""
+    return any(k in payload for k in _CANONICAL_KEYS)
+
+
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -283,7 +295,14 @@ def ingest(crate_id: int) -> dict:
                 "partial_count": 0, "job_ids": {}, "linked": 0, "group": None,
                 "crate": crate}
 
-    result = ingest_rows([dict(p, hydrated=True) for p in payloads])
+    # `hydrated=True` skips the live metadata refetch, which is right for a
+    # payload frozen from a canonical Discover row — and wrong for a legacy or
+    # corrupt one, which crate_payloads rebuilds from just source_url/title/
+    # artist. Stamping that as hydrated would save it with blank genre, year and
+    # plays AND metadata_partial=0, so nothing would ever come back for it.
+    result = ingest_rows(
+        [dict(p, hydrated=True) if _is_canonical(p) else dict(p)
+         for p in payloads])
     relink_crate_songs(crate_id)
     after = _crate_or_404(crate_id)
     linked = sum(1 for i in after["items"] if i.get("song_id")) - before

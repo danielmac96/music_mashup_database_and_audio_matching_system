@@ -88,7 +88,12 @@ def _resolve_metadata(flat: dict) -> tuple[dict, bool]:
     """Full metadata for one ingest row: already-hydrated row → as-is; else the
     preview cache; else a live enrich_track fetch. Returns (merged, is_rich)."""
     source_url = (flat.get("source_url") or "").strip()
-    if flat.get("hydrated"):
+    # `enriched is not False` rather than a plain truthiness check: Discover and
+    # crates stamp `hydrated=True` on rows that are already canonical and never
+    # set `enriched`, and they must keep skipping the refetch. Only the
+    # hydrator's explicit False — "we tried and got nothing" — falls through to
+    # a live fetch below.
+    if flat.get("hydrated") and flat.get("enriched") is not False:
         return flat, True
     if source_url:
         cached = preview_hydrator.cache_get(source_url)
