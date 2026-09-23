@@ -309,6 +309,17 @@ export const api = {
       body: JSON.stringify({ url, refresh }),
     }),
 
+  // The tracklist text, parsed server-side by the same line parser the scrape
+  // path uses. No key, no render — it works when the scrape is walled, which
+  // on 1001tracklists it currently always is. `url` is the set page this came
+  // from: source_url is UNIQUE, so it is what makes a re-paste replace the mix
+  // rather than add a second copy.
+  importMixPaste: (content, url = "") =>
+    jsonFetch("/api/mixes/import-paste", {
+      method: "POST",
+      body: JSON.stringify({ content, url }),
+    }),
+
   getMixes: () => jsonFetch("/api/mixes"),
 
   getMix: (id) => jsonFetch(`/api/mixes/${id}`),

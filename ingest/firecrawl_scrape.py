@@ -349,10 +349,16 @@ def _post_scrape(url: str, formats: list, api_key: str, _post,
         log.warning("Firecrawl returned the Cloudflare wall for %s "
                     "(attempt %d, waitFor=%dms): %s",
                     url, attempt + 1, wait_ms, _describe(data))
+        # NOT "retry shortly". Since 2026-09-19 Turnstile rejects the stealth
+        # browser outright on 1001tracklists ("Verification failed", not a slow
+        # render), and it does it to URLs that imported cleanly before. Each
+        # retry bills three scrapes, so pointing the user at a button that
+        # cannot work is expensive advice. Paste is the way through.
         failure = FirecrawlChallenge(
-            f"Cloudflare interstitial returned on every attempt "
-            f"(up to {_WAIT_SCHEDULE[-1] // 1000}s render budget) — retry shortly. "
-            f"Last payload: {_describe(data)}")
+            f"Cloudflare blocked the scraper on every attempt "
+            f"(up to {_WAIT_SCHEDULE[-1] // 1000}s render budget). The site is "
+            f"refusing Firecrawl's browser, so retrying will not clear it — "
+            f"paste the tracklist text instead. Last payload: {_describe(data)}")
     raise failure
 
 

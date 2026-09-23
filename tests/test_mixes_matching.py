@@ -270,3 +270,77 @@ def test_import_idempotent_on_url(env):
     n_mixes = conn.execute("SELECT COUNT(*) FROM mixes").fetchone()[0]
     conn.close()
     assert n_mixes == 1
+
+
+# ── the paste route ──────────────────────────────────────────────────────────
+# Restored 2026-09-19: Cloudflare Turnstile now rejects Firecrawl's stealth
+# browser on 1001tracklists outright, including URLs that imported cleanly
+# before, so the scrape is not a path back in. These pin the endpoint itself —
+# the helper above exercises the same parse → persist code without HTTP.
+
+def test_paste_route_imports_a_tracklist(env):
+    res = env["client"].post("/api/mixes/import-paste",
+                             json={"content": PASTE,
+                                   "url": "https://example.com/pasted"})
+    assert res.status_code == 200, res.text
+    mix = res.json()
+    assert mix["track_count"] == 5
+    assert mix["source_url"] == "https://example.com/pasted"
+
+
+def test_paste_route_records_the_documented_overlays(env):
+    """`w/` lines are the whole reason to import a mix: they are documented
+    vocal-over-bed pairs, and the training positives come from them."""
+    mix = env["client"].post("/api/mixes/import-paste",
+                             json={"content": PASTE, "url": ""}).json()
+    pairs = env["client"].get(f"/api/mixes/{mix['id']}").json()["pairs"]
+    assert pairs, "no mashup pairs were seeded from the w/ lines"
+
+
+def test_re_pasting_the_same_url_replaces_rather_than_duplicates(env):
+    """source_url is UNIQUE, and a corrected paste must not cost the linking
+    work already done on the first one."""
+    url = "https://example.com/pasted"
+    one = env["client"].post("/api/mixes/import-paste",
+                             json={"content": PASTE, "url": url}).json()
+    two = env["client"].post("/api/mixes/import-paste",
+                             json={"content": PASTE, "url": url}).json()
+    assert one["id"] == two["id"]
+    assert len(env["client"].get("/api/mixes").json()["mixes"]) == 1
+
+
+def test_paste_with_nothing_parseable_is_a_400(env):
+    res = env["client"].post("/api/mixes/import-paste",
+                             json={"content": "   \n\n  ", "url": ""})
+    assert res.status_code == 400
+    assert "Artist - Title" in res.json()["detail"]
+
+
+def test_paste_of_a_title_alone_says_so(env):
+    """A distinct 400 from the one above — copying the set's heading and
+    missing the rows is the likely paste mistake, and "no Artist - Title
+    lines" would send you looking in the wrong place."""
+    res = env["client"].post("/api/mixes/import-paste",
+                             json={"content": "Big Bootie Mix Vol 26", "url": ""})
+    assert res.status_code == 400
+    assert "title line" in res.json()["detail"]
+
+
+def test_a_track_link_in_the_url_field_is_refused(env):
+    """The URL field is the SET page, not one of its tracks. Accepting a track
+    link would key the mix on it and quietly poison re-import."""
+    res = env["client"].post("/api/mixes/import-paste",
+                             json={"content": PASTE,
+                                   "url": "https://soundcloud.com/artist/track"})
+    assert res.status_code == 400
+    assert "tracklist page" in res.json()["detail"]
+
+
+def test_paste_needs_no_firecrawl_key(env, monkeypatch):
+    """The point of the path: it must not touch the network or the key."""
+    import ingest.firecrawl_scrape as fc
+    monkeypatch.setattr(fc, "_real_post", lambda *a, **k: pytest.fail(
+        "paste import must not call Firecrawl"))
+    res = env["client"].post("/api/mixes/import-paste",
+                             json={"content": PASTE, "url": ""})
+    assert res.status_code == 200

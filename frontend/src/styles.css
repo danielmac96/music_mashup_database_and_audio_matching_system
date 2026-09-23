@@ -2724,6 +2724,20 @@ input, select { font-family: inherit; }
 }
 .mix-scrape:hover:not(:disabled) { background: var(--accent-light); }
 .mix-scrape:disabled { opacity: 0.45; cursor: default; }
+.mix-paste {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font: 400 11px var(--font-mono); color: var(--text);
+  background: var(--inset-2); border: 1px solid var(--border-ctrl);
+  border-radius: 7px; padding: 7px 9px;
+}
+.mix-paste::placeholder { color: var(--faint); }
+/* A button that reads as a link — the paste toggle sits inside a sentence. */
+.mix-rail .linklike {
+  align-self: flex-start; cursor: pointer; background: none; border: 0;
+  padding: 0; font: 400 11px var(--font-ui); color: var(--accent-light);
+  text-decoration: underline;
+}
+.mix-rail .linklike:hover { color: var(--accent); }
 .mix-rail-block .hint { font-size: 10.5px; line-height: 1.5; }
 
 .mix-column {

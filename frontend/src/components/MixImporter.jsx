@@ -250,6 +250,11 @@ export function MixImporter() {
   const [busy, setBusy] = useState(false);
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
+  // Paste is the path that does not depend on anyone letting us render their
+  // page. It opens by itself when a scrape comes back walled — being told to
+  // paste and then having to find the control is two steps too many.
+  const [paste, setPaste] = useState("");
+  const [showPaste, setShowPaste] = useState(false);
   // /import answers 501 for exactly one thing — a Firecrawl key would fix it —
   // so that status is what raises the key prompt.
   const [needsKey, setNeedsKey] = useState(false);
@@ -346,6 +351,26 @@ export function MixImporter() {
 
   // A scraped mix arrives one of two ways: a plain-HTML page answers with the
   // mix, a 1001tracklists page answers with a job_id the effect below follows.
+  // The scraper says so in its own words (ingest/firecrawl_scrape.py); match
+  // on that rather than re-deriving which failures are walls.
+  const failImport = (msg) => {
+    setError(msg);
+    if (/paste the tracklist/i.test(msg || "")) setShowPaste(true);
+  };
+
+  const importPaste = async () => {
+    setError(null);
+    setBusy(true);
+    try {
+      await finishImport(await api.importMixPaste(paste, url.trim()));
+      setPaste("");
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const finishImport = async (mix) => {
     toast(`Imported “${mix.title}” (${mix.track_count} tracks)`);
     setUrl("");
@@ -365,7 +390,7 @@ export function MixImporter() {
       }
       await finishImport(res);
     } catch (e) {
-      setError(e.message);
+      failImport(e.message);
       setNeedsKey(e.message.startsWith("501"));
       setBusy(false);
       return;
@@ -400,7 +425,7 @@ export function MixImporter() {
         .then((mix) => finishImport(mix))
         .catch((e) => setError(e.message));
     } else if (importJob.status === "failed") {
-      setError(importJob.error || "Tracklist scrape failed");
+      failImport(importJob.error || "Tracklist scrape failed");
       setNeedsKey(!!(importJob.result || {}).needs_key);
       setImportJobId(null);
       setBusy(false);
@@ -601,7 +626,29 @@ export function MixImporter() {
             1001tracklists, Big Bootie, festival set pages. Add or remove tracks
             after.
           </span>
+          <button className="linklike" onClick={() => setShowPaste((v) => !v)}>
+            {showPaste ? "hide the paste box" : "or paste the tracklist text"}
+          </button>
         </div>
+
+        {showPaste && (
+          <div className="mix-rail-block">
+            <span className="micro-label">PASTE A TRACKLIST</span>
+            <textarea className="mix-paste" rows={8} value={paste}
+              onChange={(e) => setPaste(e.target.value)}
+                placeholder={"1. Artist - Title\n2. [12:34] Artist - Title\n   w/ Artist - Title\n…"} />
+            <button className="mix-scrape" onClick={importPaste}
+              disabled={busy || !paste.trim()}>
+              {busy ? "Parsing…" : "Parse pasted tracklist"}
+            </button>
+            <span className="hint">
+              Numbered lines are beds, <code>w/</code> lines are the vocals over
+              them. Fill in the URL above too and this stays the same mix —
+              re-pasting replaces its tracks and keeps the links you have
+              already resolved.
+            </span>
+          </div>
+        )}
         {error && <div className="error-text" style={{ padding: "0 12px" }}>{error}</div>}
         {needsKey && (
           <div className="mix-rail-block">

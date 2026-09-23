@@ -5,10 +5,19 @@ one gives the library curated pairing data ('w/' overlay lines = documented
 vocal-over-bed mashups, saved into mashup_pairs) and a shopping list of tracks
 to ingest. Tables come from database/models.py init_db (Phase 3 schema).
 
-Import path: POST /import — fetch + scrape a tracklist URL. Turnstile-walled
-sites (1001tracklists) go through Firecrawl's stealth proxy when
-FIRECRAWL_API_KEY is set; plain-HTML set pages are parsed with the tolerant
-line parser in ingest/tracklist_parse.py.
+Two import paths, both ending in _persist_mix:
+
+  * POST /import       — fetch + scrape a tracklist URL. Turnstile-walled sites
+    (1001tracklists) go through Firecrawl's stealth proxy when
+    FIRECRAWL_API_KEY is set; plain-HTML set pages are parsed with the tolerant
+    line parser in ingest/tracklist_parse.py.
+  * POST /import-paste — the tracklist text, parsed by that same line parser.
+    Needs no key, no network and no render, so it works when the scrape does
+    not. As of 2026-09-19 Cloudflare Turnstile rejects Firecrawl's stealth
+    browser on 1001tracklists outright ("Verification failed", 206, no track
+    links) — even URLs that imported cleanly before — so this is currently the
+    only way to get a 1001tracklists set in. Copy the tracklist out of your own
+    browser, where the challenge passes, and paste it here.
 
 Each mix track can then be resolved to a playable SoundCloud/YouTube link
 (POST /tracks/{id}/resolve) and the whole mix ingested into the normal
@@ -228,6 +237,14 @@ class ImportRequest(BaseModel):
     # Bypass the cached markdown of a previous successful scrape and pay for a
     # fresh render. Off by default — a re-import of the same URL should be free.
     refresh: bool = False
+
+
+class ImportPasteRequest(BaseModel):
+    content: str
+    # Optional, but worth filling in: source_url is UNIQUE, so it is what makes
+    # a re-import replace this mix rather than add a second copy, and it keeps
+    # the set page attached for the per-track link scrape.
+    url: str = ""
 
 
 class ResolveRequest(BaseModel):
@@ -489,6 +506,30 @@ def import_mix(req: ImportRequest, background: BackgroundTasks) -> dict:
             detail="Fetched the page but found no 'Artist - Title' tracklist rows.")
     title = _html_title(html) or _title_from_rows("", rows, url)[0] or "Imported tracklist"
     return _persist_mix(title, url, rows, method="scrape")
+
+
+@router.post("/import-paste")
+def import_mix_paste(req: ImportPasteRequest) -> dict:
+    """Parse a pasted tracklist. No key, no network, no render.
+
+    Answers inline: parsing 200 lines is microseconds, so unlike the scrape
+    there is nothing to poll. Re-pasting with the same `url` replaces that
+    mix's tracks and carries over its resolved links, roles and manual matches
+    (see _persist_mix) — so correcting a mangled paste does not cost you the
+    linking work already done."""
+    rows = _parse_tracklist(req.content)
+    if not rows:
+        raise HTTPException(
+            status_code=400,
+            detail="Could not find any 'Artist - Title' lines in the pasted text.")
+    url = (req.url or "").strip()
+    if url and classify_url(url)[0] != "unknown":
+        raise HTTPException(
+            status_code=400,
+            detail="That's a SoundCloud/YouTube track link — the URL field is the "
+                   "tracklist page this set came from.")
+    title, rows = _title_from_rows(req.content, rows, url)
+    return _persist_mix(title or "Pasted tracklist", url, rows, method="paste")
 
 
 @router.get("")

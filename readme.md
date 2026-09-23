@@ -314,14 +314,27 @@ beside the tracks they are made of, and go straight to Studio from there.
 
 ### Mixes
 
-Import a documented mix: paste a 1001tracklists URL (scraped through
-**Firecrawl** — the tab asks for a key the first time and saves it live) or the
-tracklist text. Numbered entries are **beds**; `w/` lines are **vocal overlays**
+Import a documented mix two ways: paste a 1001tracklists **URL** (scraped
+through **Firecrawl** — the tab asks for a key the first time and saves it
+live), or **paste the tracklist text** ("or paste the tracklist text" under the
+URL box). Numbered entries are **beds**; `w/` lines are **vocal overlays**
 paired to the preceding bed. The match board lets you re-assign roles and
 pairings (reset to original any time) and reorder the set. **Auto-link** finds
 SoundCloud/YouTube links (§5.9), **Scrape link** pulls the exact link from a
 track's 1001tracklists page, **Confirm** trusts a flagged auto-link, and
 **Ingest** sends resolved tracks into the pipeline.
+
+> **As of 2026-09-19 the URL scrape does not work on 1001tracklists.** Cloudflare
+> Turnstile rejects Firecrawl's stealth browser outright — "Verification
+> failed", HTTP 206, no track rows — including URLs that imported cleanly
+> before, so this is the site blocking the scraper rather than a slow render or
+> a bug here. Retrying cannot clear it and each attempt bills three scrapes, so
+> the failure says "paste the tracklist text instead" and opens the paste box
+> for you. Copy the tracklist out of your own browser, where the challenge
+> passes. Fill in the URL field as well: `source_url` is UNIQUE, so it is what
+> makes a corrected re-paste replace the mix and keep the links you already
+> resolved. Re-check the scrape occasionally — if Firecrawl starts passing
+> again, nothing else has to change.
 
 Both the scrape and the ingest are **jobs** — a stealth render of a 200-track
 set takes minutes, and ingesting one is 200 metadata fetches — so each reports
@@ -628,6 +641,13 @@ composite (which clusters near 0.78).
   from its sub-page on demand only. Re-importing a URL replaces the mix while
   carrying over links, roles and manual matches. A row the line parser rejects
   is dropped, not persisted half-built.
+- **Two doors, one parser.** `POST /import` (scrape) and `POST /import-paste`
+  (the text) both end in `_persist_mix`, so a pasted mix and a scraped one are
+  the same object — same `w/` pair seeding, same re-import carry-over, same
+  keying on `source_url`. Paste needs no key, no network and no render, which
+  is why it is the fallback when a site blocks the scraper (§4, Mixes). It was
+  removed on 2026-07-28 while scraping worked and restored on 2026-09-19 when
+  Turnstile stopped letting Firecrawl through.
 - **Paying for scrapes once** (`ingest/firecrawl_scrape.py`). Every request can
   cost credits, so: the rendered markdown is cached to
   `<data_dir>/tracklist_cache/` and re-parsed for free (`refresh` forces a new
