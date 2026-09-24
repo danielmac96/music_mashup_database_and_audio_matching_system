@@ -20,6 +20,11 @@
 // clip is dragged. offsetSec still marks where raw 0 sits on the timeline, so
 // the audible span is [offsetSec + clipStart/rate, offsetSec + clipEnd/rate]
 // and trimming the head does not shift the rest of the audio.
+//
+// LOOPS: under a loop every voice loops natively on the audio clock, playing a
+// loop image (its trimmed audio mapped onto the window, silence elsewhere) —
+// see _loopImage. The window need not sit inside any voice's trim, and nothing
+// is re-armed from JS at the wrap.
 import { SoundTouchNode } from "@soundtouchjs/audio-worklet";
 
 // The SoundTouch AudioWorklet processor is vendored into /public so it loads
@@ -88,7 +93,8 @@ export class MashupEngine {
       buffer, offsetSec, rate, semitones, gainNode, clipStartSec, clipEndSec,
       loop: existing?.loop ?? null,          // per-voice loop {start,end} (display secs)
       src: existing?.src ?? null, st: existing?.st ?? null,
-      _armWhen: 0, _looped: false,           // filled at arm for voicePosition()
+      _armWhen: 0, _looped: false, _loopPhase: 0, // filled at arm for voicePosition()
+      _img: existing?._img ?? null,          // cached loop image (see _loopImage)
     });
   }
 
@@ -128,7 +134,7 @@ export class MashupEngine {
     if (!v || !v.buffer) return this._currentDisplayPos();
     if (this._playing && v._looped && v.loop) {
       const len = v.loop.end - v.loop.start;
-      const off = ((this.ctx.currentTime - v._armWhen) % len + len) % len;
+      const off = ((v._loopPhase + this.ctx.currentTime - v._armWhen) % len + len) % len;
       return v.loop.start + off;
     }
     return this._currentDisplayPos();
@@ -287,8 +293,20 @@ export class MashupEngine {
     const contentAtStart = pos - v.offsetSec; // display seconds into this voice
     const loop = v.loop || this.loop;         // per-voice loop overrides global
 
+    // Every looped voice loops NATIVELY, whatever part of the window its trim
+    // covers. It plays its loop image — its own audio mapped onto the window,
+    // silence where the clip is not — so a bed placed a bar into the loop is
+    // silent for exactly that bar on every pass, as its lane draws it. The old
+    // fallback ("play once and let it fall silent") was never re-armed at the
+    // wrap: from the second pass on the voice ran on linearly, went quiet at
+    // its trim end, and no longer matched its waveform.
+    const image = loop ? this._loopImage(v, loop) : null;
+    if (loop && !image) { v.src = null; v.st = null; return; } // clip never sounds in this loop
+
     const src = this.ctx.createBufferSource();
-    src.buffer = v.buffer;
+    // A source's buffer can be set exactly once — assigning the stem and then
+    // the image throws — so it gets the one it will play.
+    src.buffer = image || v.buffer;
     src.playbackRate.value = v.rate;
     const st = new SoundTouchNode({ context: this.ctx });
     st.playbackRate.value = v.rate;          // mirror source rate so pitch is corrected
@@ -297,25 +315,21 @@ export class MashupEngine {
     st.connect(v.gainNode);
 
     if (loop) {
-      const lsRaw = (loop.start - v.offsetSec) * v.rate;
-      const leRaw = (loop.end - v.offsetSec) * v.rate;
-      // Only loop natively (gaplessly) when the loop window lies fully inside
-      // this voice's content — which now means inside its TRIM, not its buffer:
-      // looping past a trimmed edge would play audio the user cut away.
-      // Otherwise the voice would loop a shorter raw span and drift, so play it
-      // once and let it fall silent.
-      if (lsRaw >= clipStart && leRaw <= clipEnd && leRaw > lsRaw) {
-        src.loop = true;
-        src.loopStart = lsRaw;
-        src.loopEnd = leRaw;
-        // Start at the loop head so voicePosition() can wrap cleanly from armWhen.
-        src.start(when, lsRaw);
-        v.src = src; v.st = st; v._looped = true;
-        return;
-      }
+      const len = loop.end - loop.start;
+      const phase = (((pos - loop.start) % len) + len) % len;
+      v._looped = true;
+      v._loopPhase = phase;
+      src.loop = true;
+      src.loopStart = 0;
+      src.loopEnd = len * v.rate;
+      // Start where the transport is, not at the loop head: a play after a
+      // seek inside the loop must sound where the playhead is drawn.
+      src.start(when, phase * v.rate);
+      v.src = src; v.st = st;
+      return;
     }
 
-    // Non-looped (or loop not covered): play the voice once from `pos`.
+    // Non-looped: play the voice once from `pos`.
     if (contentAtStart >= displayDur) { v.src = null; v.st = st; return; } // already past the trim end
     let startDelay = 0;
     let rawOffset = clipStart;
@@ -328,6 +342,41 @@ export class MashupEngine {
     // buffer and the trim would be silent-looking but audible.
     if (v.clipEndSec != null) src.stop(when + startDelay + (clipEnd - rawOffset) / v.rate);
     v.src = src; v.st = st;
+  }
+
+  /** One loop period of this voice in its RAW time (len * rate seconds): the
+   *  trimmed audio where it overlaps the window, zeros everywhere else. Null
+   *  when the clip does not sound inside the window at all. Cached on the
+   *  voice, so a re-arm with unchanged geometry (a solo, a seek) does not
+   *  re-copy the samples. */
+  _loopImage(v, loop) {
+    const clipStart = this._clipStart(v), clipEnd = this._clipEnd(v);
+    const key = [v.offsetSec, v.rate, clipStart, clipEnd, loop.start, loop.end].join("|");
+    if (v._img && v._img.buffer === v.buffer && v._img.key === key) return v._img.image;
+
+    const buf = v.buffer, sr = buf.sampleRate;
+    const winRaw = (loop.end - loop.start) * v.rate;
+    const lsRaw = (loop.start - v.offsetSec) * v.rate;
+    const a = Math.max(lsRaw, clipStart);
+    const b = Math.min(lsRaw + winRaw, clipEnd);
+    let image = null;
+    if (b > a) {
+      // ceil: the buffer must reach loopEnd, or the loop would clamp short of it
+      // and drift against the transport by a fraction of a sample every pass.
+      const frames = Math.max(1, Math.ceil(winRaw * sr));
+      image = this.ctx.createBuffer(buf.numberOfChannels, frames, sr);
+      const from = Math.max(0, Math.round(a * sr));
+      const dst = Math.max(0, Math.round((a - lsRaw) * sr));
+      const count = Math.min(Math.round(b * sr), buf.length) - from;
+      const n = Math.min(count, frames - dst);
+      if (n > 0) {
+        for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+          image.copyToChannel(buf.getChannelData(ch).subarray(from, from + n), ch, dst);
+        }
+      }
+    }
+    v._img = { buffer: v.buffer, key, image };
+    return image;
   }
 
   _stopVoice(v) {

@@ -440,6 +440,16 @@ export function placementFor(opt, vRate, bRate) {
   const base = Math.max(vAt, bAt - off);
   const vLen = ((opt.vocal_section_end || 0) - (opt.vocal_section_start || 0)) / vr;
   const bLen = ((opt.inst_section_end || 0) - (opt.inst_section_start || 0)) / br;
+  // Loop the OVERLAP of the two placed clips: the vocal sounds over
+  // [base, base + vLen], the bed over [base + off, base + off + bLen]. The
+  // engine loops any window correctly (each voice is silent where its clip is
+  // not); this just keeps a pass from spending |off| seconds on one side alone.
+  let loopStart = Math.max(base, base + off);
+  let loopEnd = Math.min(base + vLen, base + off + bLen);
+  if (!(loopEnd - loopStart >= 1)) {
+    loopStart = base;
+    loopEnd = base + Math.max(1, Math.min(vLen, bLen));
+  }
   return {
     base,
     vocal: { offsetSec: base - vAt,
@@ -448,10 +458,7 @@ export function placementFor(opt, vRate, bRate) {
     bed: { offsetSec: base - bAt + off,
            clipStart: opt.inst_section_start,
            clipEnd: opt.inst_section_end },
-    // Loop the INTERSECTION. _armVoice only loops natively while the loop
-    // window sits inside the trim, so a loop sized to the longer side would
-    // make the shorter one play once and fall silent instead of cycling.
-    loop: { start: base, end: base + Math.max(1, Math.min(vLen, bLen)) },
+    loop: { start: loopStart, end: loopEnd },
   };
 }
 
@@ -666,8 +673,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
     patchLane(vocal.id, place.vocal);
     patchLane(bed.id, place.bed);
     setLoop(place.loop);
-    setPosition(place.base);
-    engineRef.current?.seek(place.base);
+    // The playhead goes to the loop head, which is later than base when the
+    // bed is nudged in: parked at base it would sit outside the loop and jump.
+    setPosition(place.loop.start);
+    engineRef.current?.seek(place.loop.start);
     setViewStart(Math.max(0, place.base - 2));
     setActiveOptionKey(optionKey(opt));
   }, [pairCtx]);
@@ -920,8 +929,9 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
     setLanes([]);
     setLoop(place ? place.loop : null); setSoloId(null); setCross(0.5);
     if (bpm) setProjectBpm(bpm);
-    setPosition(base);
-    engineRef.current?.seek(base);
+    const home = place ? place.loop.start : base;
+    setPosition(home);
+    engineRef.current?.seek(home);
     setViewStart(Math.max(0, base - 2));
 
     setPairCtx({ vocalSongId: vTrack.id, instSongId: bTrack.id,

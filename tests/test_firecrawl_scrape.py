@@ -131,6 +131,38 @@ def test_challenge_on_every_attempt_raises_a_challenge_error():
     assert len(sent) == len(fc._WAIT_SCHEDULE) > 1
 
 
+# 1001tracklists' own image captcha, as Firecrawl rendered it (2026-09-24): a
+# billed "success" with no Cloudflare markers and no 206, which used to surface
+# as "scraped the page but found no tracks".
+_SITE_CAPTCHA_MD = (
+    "# We need to validate your are real human!\n\n"
+    "![Captcha](data:png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAAAy)\n\n"
+    "Submit\n"
+)
+
+
+def test_site_captcha_fails_fast_and_points_at_paste():
+    post, sent = _recording_post([
+        {"success": True,
+         "data": {"markdown": _SITE_CAPTCHA_MD, "metadata": {"statusCode": 200}}}])
+    with pytest.raises(fc.FirecrawlChallenge) as exc:
+        fc.scrape_tracklist("https://x", api_key="fc-k", _post=post)
+    # One billed request: a longer render cannot solve an image captcha.
+    assert len(sent) == 1
+    # The Mixes tab opens the paste box on this phrase.
+    assert "paste the tracklist" in str(exc.value)
+    # The captcha is not cached as though it were the page.
+    assert not fc.markdown_cache_path("https://x").exists()
+
+
+def test_real_page_mentioning_captcha_is_not_the_wall():
+    md = _MD + "\n![Captcha](https://www.1001tracklists.com/img/c.png)\n"
+    post, sent = _recording_post([
+        {"success": True, "data": {"markdown": md, "metadata": {"statusCode": 200}}}])
+    rows = fc.scrape_tracklist("https://x", api_key="fc-k", _post=post)
+    assert len(rows) == 4 and len(sent) == 1
+
+
 def test_real_page_with_a_turnstile_footer_widget_is_not_the_wall():
     # The bug: 1001tracklists embeds a Turnstile widget in the footer of the real,
     # fully rendered page (HTTP 200, all track links). The marker sniff matched it,

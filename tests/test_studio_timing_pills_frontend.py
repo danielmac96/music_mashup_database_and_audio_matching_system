@@ -71,14 +71,40 @@ def test_a_pill_moves_trims_and_loops():
     assert "setLoop(place.loop)" in src
 
 
-def test_the_loop_is_the_intersection_of_the_two_trims():
-    """MashupEngine._armVoice only loops natively while the loop window sits
-    inside the trim. Sized to the longer side, the shorter one plays once and
-    falls silent — which reads as a bug in the suggestion, not in the loop."""
+def test_the_loop_is_the_overlap_of_the_two_placed_clips():
+    """The bed sits at base + alignment_offset, not at base. Looping from base
+    spends |off| seconds of every pass on the vocal alone; the loop is where
+    both clips actually sound, with a fallback when they do not overlap."""
     src = _read(STUDIO)
     body = src[src.index("export function placementFor"):]
     body = body[:body.index("\n}")]
-    assert "Math.min(vLen, bLen)" in body
+    assert "Math.max(base, base + off)" in body
+    assert "Math.min(base + vLen, base + off + bLen)" in body
+    assert "loop: { start: loopStart, end: loopEnd }" in body
+
+
+ENGINE = ROOT / "frontend" / "src" / "engine" / "MashupEngine.js"
+
+
+def test_every_looped_voice_loops_natively():
+    """A looped voice whose trim did not cover the whole window used to 'play
+    once and fall silent' — never re-armed at the wrap, so from the second pass
+    the bed ran on linearly, went quiet, then sounded late against its
+    waveform. Every looped voice now plays a loop image and loops natively."""
+    src = ENGINE.read_text(encoding="utf-8")
+    arm = src[src.index("  _armVoice("):src.index("  _loopImage(")]
+    looped = arm[arm.index("if (loop) {"):arm.index("// Non-looped")]
+    assert "this._loopImage(v, loop)" in arm
+    assert "src.loop = true" in looped
+    # An AudioBufferSourceNode's buffer can be set once; a second assignment
+    # throws "Cannot set buffer to non-null after it has already been set".
+    assert arm.count("src.buffer =") == 1
+    assert "src.buffer = image || v.buffer" in arm
+    assert "lsRaw >= clipStart" not in looped, \
+        "no coverage condition may gate the native loop"
+    # Start where the transport is, not at the loop head.
+    assert "src.start(when, phase * v.rate)" in looped
+    assert "v._loopPhase" in src[src.index("  voicePosition("):]
 
 
 def test_the_bar_nudge_is_unknown_not_zero_when_there_is_no_grid():

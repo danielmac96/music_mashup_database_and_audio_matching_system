@@ -346,6 +346,11 @@ that page succeed offline.
 > Firecrawl is unblocked. Retrying during a block will not clear it and each
 > attempt bills three scrapes, so the failure points at the capture instead and
 > opens the paste box for you. Worth re-testing every few weeks.
+> Since 2026-09-24 the site also serves Firecrawl its **own image captcha**
+> ("We need to validate your are real human!", normal status, no Cloudflare
+> markers). Firecrawl bills and reports that as a successful scrape; the app
+> recognises it, fails on the first attempt without retrying, and opens the
+> paste box the same way.
 
 Both the scrape and the ingest are **jobs** — a stealth render of a 200-track
 set takes minutes, and ingesting one is 200 metadata fetches — so each reports
@@ -718,7 +723,9 @@ composite (which clusters near 0.78).
   failure — timeout, 429, any 5xx including **529** — is retried with backoff
   honouring `Retry-After`, and 402 says the account is out of credits; the wall
   sniff takes the track *href* as well as its link text, so a label change
-  cannot make a perfect render look like Cloudflare; and every failure branch
+  cannot make a perfect render look like Cloudflare; the site's own image
+  captcha (`_CAPTCHA_MARKERS`) is a second, separate wall that is never retried
+  — a longer render budget cannot solve it, and each retry bills; and every failure branch
   logs the payload, because a scrape the dashboard calls a success and the app
   calls a failure is otherwise unexplainable. The whole page is requested
   (`onlyMainContent: false`), and the parser keys on any link to a `/track/`
@@ -946,8 +953,16 @@ candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
   draw at the wrong time with nothing looking broken (test-enforced). Engine
   coordinates are display seconds; trim is a window, not a new origin; painting
   is windowed.
+- **Under a loop, every engine voice loops natively** (`MashupEngine._loopImage`):
+  it plays a loop image — its trimmed audio mapped onto the window, silence
+  where its clip is not — with `src.loop = true`, started at the transport's
+  phase inside the loop. Never gate the native loop on the window sitting inside
+  a trim, and never let a looped voice "play once": nothing re-arms it at the
+  wrap, so from the second pass it runs on linearly and stops matching its
+  waveform (the bed-comes-in-late bug).
 - **Timing pills** re-fetch options by pair ids, apply `alignment_offset`, loop
-  the *intersection* of the two trims, and resolve lanes by `songId`.
+  the *overlap* of the two placed clips (the bed starts at `base + off`), and
+  resolve lanes by `songId`.
 - **Filtering never fetches**; selection derives from visible rows.
 - **The dock's orders are the server's, except Effort.** `SECTION_TERM_ORDERS`
   (`database/models.py`) is the one table the SQL, the route whitelist and the

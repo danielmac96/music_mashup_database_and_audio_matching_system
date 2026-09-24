@@ -124,6 +124,28 @@ def _is_challenge(data: dict) -> bool:
     return any(marker in low for marker in _CHALLENGE_MARKERS)
 
 
+# 1001tracklists' OWN bot check, separate from Cloudflare: "We need to validate
+# your are real human!" (their typo), an inline image captcha and a Submit button,
+# served with an ordinary status. None of the Cloudflare markers match it, so it
+# used to pass as a good render and surface as "scraped the page but found no
+# tracks" — the scrape Firecrawl's dashboard shows as a success. A longer render
+# cannot solve an image captcha, so unlike the interstitial it is not retried.
+_CAPTCHA_MARKERS = (
+    "validate your are real human",
+    "validate you are real human",
+    "![captcha](",
+)
+
+
+def _is_site_captcha(data: dict) -> bool:
+    """True when `data` is 1001tracklists' image captcha rather than the page."""
+    md = data.get("markdown") or ""
+    if _rendered_ok(md):
+        return False
+    low = md.lower()
+    return any(marker in low for marker in _CAPTCHA_MARKERS)
+
+
 def _describe(data: dict) -> str:
     """A one-line fingerprint of a payload, for logs and error messages. Without
     it a failed scrape leaves nothing behind but "returned no data", and there is
@@ -349,6 +371,15 @@ def _post_scrape(url: str, formats: list, api_key: str, _post,
                 "been billed; see the server log for the payload.")
             continue
         data = _unwrap(resp)
+        if _is_site_captcha(data):
+            log.warning("1001tracklists served its captcha to Firecrawl for %s "
+                        "(attempt %d): %s", url, attempt + 1, _describe(data))
+            raise FirecrawlChallenge(
+                "1001tracklists served Firecrawl its \"validate you are a real "
+                "human\" captcha instead of the tracklist. Firecrawl bills that as a "
+                "successful scrape, but no render can solve it, so retrying will not "
+                "help — use ⤓ Grab tracklist from your own browser, or paste the "
+                f"tracklist text instead. Last payload: {_describe(data)}")
         if not _is_challenge(data):
             return data
         log.warning("Firecrawl returned the Cloudflare wall for %s "
