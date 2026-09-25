@@ -27,6 +27,7 @@ from config import AUTO_LINK_MIN_ARTIST, AUTO_LINK_MIN_SCORE
 from database.models import get_conn
 from ingest.soundcloud import search_candidates as yt_search_candidates
 from ingest.soundcloud_api import search_candidates as sc_search_candidates
+from ingest.tracklist_parse import search_credit
 
 from api import jobs
 
@@ -60,6 +61,21 @@ def strip_label_prefix(raw_label: str) -> str:
     """Turn a tracklist raw_label ("1. A - B", "w/ A - B") into a search query,
     dropping any leaked 1001tracklists URL fragment."""
     return _clean_query(_PREFIX_RE.sub("", raw_label or "").strip())
+
+
+def search_terms(track: dict) -> tuple[str, str, str]:
+    """(artist, title, query) to search for a mix_tracks row.
+
+    Built from the parsed artist/title, not the raw line: raw_label keeps the cue
+    ("w/ [01:58] …") and, for a row copied off the page, the label, vote count,
+    IDer and "Save" furniture — all of which went straight into the search. The
+    same (artist, title) is what the hits are scored against, so a search for
+    "Dominic Fike - 3 Nights" is not then marked down for lacking "(Acappella)".
+    See ingest.tracklist_parse.search_credit for what is dropped and why. The
+    raw line is the fallback only for a row with neither field."""
+    artist, title = search_credit(track.get("artist") or "", track.get("title") or "")
+    query = _clean_query(" - ".join(p for p in (artist, title) if p)) or         strip_label_prefix(track.get("raw_label") or "")
+    return artist, title, query
 
 
 def _is_id_entry(artist: str, title: str) -> bool:
@@ -204,11 +220,9 @@ def run(job_id: str, mix_id: int, platform: str = "both",
             if _is_id_entry(t["artist"], t["title"]):
                 skipped += 1
                 continue
-            query = strip_label_prefix(t.get("raw_label") or "") or _clean_query(
-                " - ".join(p for p in ((t["artist"] or "").strip(),
-                                       (t["title"] or "").strip()) if p))
+            artist, title, query = search_terms(t)
             try:
-                hit = resolve_one(t["artist"] or "", t["title"] or "", query, platform)
+                hit = resolve_one(artist, title, query, platform)
             except Exception:  # noqa: BLE001 — one bad search must not kill the batch
                 log.exception("resolve_one raised for mix_track %s", t["id"])
                 hit = None

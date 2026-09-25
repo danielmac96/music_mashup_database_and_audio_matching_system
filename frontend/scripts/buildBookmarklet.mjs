@@ -23,9 +23,12 @@ const { code } = await esbuild.transform(readFileSync(SRC, "utf8"), {
   loader: "js",
 });
 
-// encodeURIComponent, not a raw string: a bookmarklet lives in an href, and a
-// stray `"` or `#` in the source would truncate it silently.
-const url = "javascript:" + encodeURIComponent(code.trim());
+// Percent-encoded, not a raw string: a bookmarklet lives in an href, and a
+// stray `"` or `#` in the source would truncate it silently. encodeURI plus `#`
+// rather than encodeURIComponent: the latter also escapes `;` `,` `=` `:` `/`,
+// which are legal in a URL and are most of minified JS — it cost ~15% of the
+// length, and browsers stop honouring bookmarklets somewhere past ~8KB.
+const url = "javascript:" + encodeURI(code.trim()).replace(/#/g, "%23");
 
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(

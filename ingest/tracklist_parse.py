@@ -54,6 +54,123 @@ _ARTIST_SEP_RE = re.compile(r"\s*(?:,|&|\+|\bx\b|\band\b)\s*", re.IGNORECASE)
 _FEAT_RE = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+", re.IGNORECASE)
 
 
+# ── 1001tracklists row furniture ─────────────────────────────────────────────
+# A row copied off the page as text carries more than the name:
+#   "Dominic Fike - 3 Nights (Acappella) COLUMBIA (SONY) 240 trioxide (17.4k) Save 18"
+# i.e. the label (always printed in capitals), a vote count, the user who IDed
+# the track with their points, and the "Save" button with its count. None of it
+# names the record, and all of it poisons a SoundCloud/YouTube search.
+_SAVE_RE = re.compile(r"\s+Save(?:\s+\d+)?\s*$")
+_IDER_RE = re.compile(r"\s+\S+\s+\(\d+(?:[.,]\d+)?k?\)\s*$", re.IGNORECASE)
+_TRAILING_COUNT_RE = re.compile(r"(?:\s+\d+)+\s*$")
+
+
+def _is_caps_token(tok: str) -> bool:
+    letters = [c for c in tok if c.isalpha()]
+    return bool(letters) and all(c.isupper() for c in letters)
+
+
+def strip_row_furniture(text: str) -> str:
+    """Drop the label / votes / IDer / "Save" tail a 1001tracklists row carries.
+
+    Conservative on purpose: the label is only removed when the rest of the
+    furniture proved this is a row dump, because a bare trailing capital word is
+    just as often the title ("Kendrick Lamar - HUMBLE."). The first word after
+    the artist–title separator is never removed."""
+    s = (text or "").strip()
+    found = False
+    m = _SAVE_RE.search(s)
+    if m:
+        s, found = s[:m.start()], True
+    m = _IDER_RE.search(s)
+    if m and (found or m.group(0).rstrip().lower().endswith("k)")):
+        s, found = s[:m.start()], True
+    if found:
+        s = _TRAILING_COUNT_RE.sub("", s)
+        head, sep, title = s.rpartition(" - ") if " - " in s else ("", "", s)
+        toks = title.split()
+        while len(toks) > 1 and _is_caps_token(toks[-1]):
+            toks.pop()
+        s = f"{head}{sep}{' '.join(toks)}"
+    return s.strip()
+
+
+# ── Tracklist credit → search credit ─────────────────────────────────────────
+# A tracklist names the CUT the DJ played; the library wants the RECORD.
+# "3 Nights (Acappella)" was played, "3 Nights" is what to download: every stem
+# is separated here anyway, the original is the upload that exists on both
+# platforms at full length and quality (acappella/instrumental uploads are fan
+# rips — pitched, trimmed, missing), the download gate rejects altered audio,
+# and one song row per record is what keeps the library free of near-duplicates.
+# So bracketed asides made only of these words are DJ-tool/format tags, not a
+# different record, and are dropped for search. Somebody's rework — "(Dzeko
+# Remix)", "[Disclosure Flip]", "(VIP)" — is a different record and is kept.
+_UTILITY_WORDS = frozenset({
+    "acappella", "acapella", "accapella", "acapela", "acap", "a", "cappella",
+    "capella", "vocal", "vocals", "only", "instrumental", "inst", "intro",
+    "outro", "edit", "clean", "dirty", "explicit", "radio", "extended",
+    "original", "club", "short", "dj", "mix", "version", "remaster",
+    "remastered", "mixed", "full", "length", "tool",
+})
+_ASIDE_RE = re.compile(r"\s*[\(\[]([^()\[\]]*)[\)\]]")
+_DASH_TAG_RE = re.compile(r"\s+[-–—]\s+([^-–—]+)$")
+# A bare "Title ft. X" tail; a bracketed "(feat. X)" is handled as an aside so
+# a rework credit after it ("(feat. X) (Dzeko Remix)") survives.
+_FEAT_TAIL_RE = re.compile(r"\s+(?:feat\.?|ft\.?|featuring)\s+[^()\[\]]*$",
+                           re.IGNORECASE)
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _is_utility(aside: str) -> bool:
+    words = _WORD_RE.findall(aside.lower())
+    return bool(words) and all(w in _UTILITY_WORDS or w.isdigit() for w in words)
+
+
+def _is_label_aside(aside: str) -> bool:
+    # "[ULTRA]" — a label in square brackets, always capitals on 1001tracklists.
+    # "[VIP]" is a rework, not a label.
+    words = _WORD_RE.findall(aside.lower())
+    return _is_caps_token(aside) and "vip" not in words
+
+
+def search_credit(artist: str, title: str) -> tuple[str, str]:
+    """(artist, title) as the record is named on SoundCloud/YouTube.
+
+    - row furniture (label, votes, IDer, "Save") removed;
+    - featured artists dropped from both sides: uploads write them in the title,
+      the artist, or not at all, and every word of a credit the upload lacks
+      costs artist and title coverage (ingest.match_score). Collaborators joined
+      by "&", "x" or "," stay — they are how the record is credited;
+    - DJ-tool and format tags ("(Acappella)", "(Instrumental)", "(Extended
+      Mix)", "(Clean)", "- Radio Edit") and bracketed labels dropped;
+    - rework credits kept.
+    """
+    artist = _FEAT_RE.split(strip_row_furniture(artist or ""), maxsplit=1)[0]
+    title = strip_row_furniture(title or "")
+    title = _FEAT_TAIL_RE.sub("", title)
+
+    def drop(m: re.Match) -> str:
+        inner = m.group(1)
+        if re.match(r"\s*(?:feat\.?|ft\.?|featuring)\s", inner, re.IGNORECASE):
+            return ""
+        if _is_utility(inner) or (m.group(0).lstrip().startswith("[")
+                                  and _is_label_aside(inner)):
+            return ""
+        return m.group(0)
+
+    cleaned = _ASIDE_RE.sub(drop, title).strip()
+    m = _DASH_TAG_RE.search(cleaned)
+    if m and _is_utility(m.group(1)):
+        cleaned = cleaned[:m.start()].strip()
+    return artist.strip(" -"), (cleaned or title).strip(" -")
+
+
+def search_query(artist: str, title: str) -> str:
+    """The one search string for a tracklist entry: "Artist - Title"."""
+    a, t = search_credit(artist, title)
+    return " - ".join(p for p in (a, t) if p)
+
+
 def split_artists(artist: str) -> list[str]:
     """'A & B, C x D feat. E' → ['A','B','C','D','E']. Empty input → []."""
     s = (artist or "").strip()
@@ -97,7 +214,7 @@ def parse_line(line: str) -> Optional[dict]:
         if _OVERLAY_RE.match(s) and not is_overlay:
             is_overlay = True; s = _OVERLAY_RE.sub("", s, count=1); continue
         break
-    s = s.strip()
+    s = strip_row_furniture(s)
     if not s or s.lower().startswith(_SKIP_PREFIXES):
         return None
 

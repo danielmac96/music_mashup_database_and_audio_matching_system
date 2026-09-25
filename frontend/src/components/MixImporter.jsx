@@ -53,7 +53,7 @@ function StageStepper({ status, error }) {
 // carries a link to the track's own 1001tracklists page, absolute or relative.
 // Mirrors _TRACK_LINK_RE in ingest/firecrawl_scrape.py.
 const CAPTURE_RE =
-  /\]\((?:https?:\/\/(?:www\.)?1001tracklists\.com)?\/track\//;
+  /\]\((?:https?:\/\/(?:www\.)?1001tracklists\.com)?\/track\/|\[no track page\]/i;
 
 function ResolveInput({ track, onResolved }) {
   const [url, setUrl] = useState("");

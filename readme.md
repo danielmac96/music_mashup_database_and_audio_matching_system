@@ -331,7 +331,8 @@ page you are looking at, shows you what it found (a count, and the rows), and
 you copy and paste it into the same box the plain text goes in — the app tells
 the two apart by the per-track link and routes accordingly. A capture keeps each
 track's 1001tracklists link (so **Scrape link** still works) and its cue time,
-which the scrape never captured. Fill in the URL field too: `source_url` is
+which the scrape never captured. Tracks the site has no page for (plain text,
+often a set's opener and closer) are captured too, marked `[no track page]`. Fill in the URL field too: `source_url` is
 UNIQUE, so it is what makes a re-capture replace the mix and keep the links you
 already resolved — and it caches the capture, which makes a later URL import of
 that page succeed offline.
@@ -688,9 +689,20 @@ composite (which clusters near 0.78).
   URL by `npm run bookmarklet`) emits **the markdown Firecrawl emitted** rather
   than a format of its own, so `parse_markdown_tracklist` serves the scrape and
   the capture alike and `POST /import-markdown` is `run_import` with the network
-  removed. It selects on `a[href*="/track/"]` only — 1001tracklists' class names
-  are obfuscated and change, while "every row links to its track page" is what
-  every page Firecrawl ever returned proves. Transport is the clipboard, not an
+  removed. It hard-codes no class names — 1001tracklists' change. Linked rows
+  are found from `a[href*="/track/"]` (the row is the highest ancestor holding
+  no *other* track's link); **unlinked rows** — tracks the site has no page for,
+  printed as plain text and very often a set's first and last — have no anchor,
+  so selecting on anchors alone dropped them. They are found by shape (the
+  linked rows' tag and the class tokens ≥80% of them share, inside the
+  tracklist) and emitted as `…Title[no track page]`, the one marker the parser
+  accepts without a link, so Firecrawl's page text still cannot pass for a
+  track. Linked rows off that shape (a "most liked" sidebar) are dropped. A
+  row's **name** is read from `meta[itemprop=name]`, else the smallest element
+  holding "Artist - Title" with label links removed — never the whole row, whose
+  text carries the label, votes, IDer and a "Save" button. Text is read node by
+  node, because `textContent` glues `01:58` onto `w/`. The generated URL is
+  `encodeURI` + `#`, which keeps it under the ~8KB browsers honour. Transport is the clipboard, not an
   HTTP POST from the page: CORS allows only the dev origins, and widening it to
   a third-party origin would open a hole into a server running on your machine.
   The capture is written to `tracklist_cache/` under the set URL, so a later
@@ -740,6 +752,24 @@ composite (which clusters near 0.78).
   `mix_tracks.song_id IS NOT NULL`, not a URL match: a track saved under
   yt-dlp's canonical URL rather than the tracklist's link would otherwise be
   re-upserted, and a re-upsert resets an analysed song to `queued`.
+- **The stored credit vs. the searched credit.** A mix row keeps what the
+  tracklist printed (`3 Nights (Acappella)`, `Whethan ft. Flux Pavilion & MAX`)
+  — it documents the cut the DJ played. A copied row's furniture (label in
+  capitals, vote count, `user (17.4k)`, `Save 18`) is never the record and is
+  stripped at parse (`tracklist_parse.strip_row_furniture`; the label only when
+  the rest of the furniture proves a row dump, so `HUMBLE.` survives). What is
+  **searched and scored** is the record (`search_credit` → `search_terms`, the
+  one query builder for auto-link and the candidates picker): featured artists
+  dropped from both sides (uploads place them inconsistently, and every missing
+  word costs artist/title coverage — the artist gate is 0.5); DJ-tool and
+  format asides dropped — Acappella/Instrumental, Extended/Original/Radio/Club
+  Mix or Edit, Intro/Outro/Clean/Dirty, bracketed `[LABEL]`s. Stems are
+  separated here anyway, the original is the full-length, full-quality upload
+  both platforms carry, the download gate rejects altered audio, and one song
+  row per record keeps the library free of near-duplicates. Somebody's rework
+  (`(Dzeko Remix)`, `[Disclosure Flip]`, `(VIP)`, `(Two Friends Intro Edit)`)
+  is a different record and is kept. The query used to be the raw line, cue and
+  furniture included.
 - **Auto-link** (`api/workers/mix_resolve_worker.py`): SoundCloud v2 search
   (frozen resolver), YouTube via yt-dlp, or SoundCloud-then-YouTube. Hits are
   scored by `ingest/match_score.py`:

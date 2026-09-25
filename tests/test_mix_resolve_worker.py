@@ -317,3 +317,15 @@ def test_relink_persists_artist_score(tmp_path, monkeypatch):
     conn.close()
     assert row["resolve_artist_score"] == 0.5
     assert row["resolve_score"] == 0.9
+
+
+def test_search_terms_come_from_the_credit_not_the_raw_line():
+    """raw_label keeps the cue and a copied row's furniture; the search used it."""
+    t = {"artist": "Whethan ft. Flux Pavilion & MAX", "title": "Savage (Instrumental)",
+         "raw_label": "w/ [01:58] Whethan ft. Flux Pavilion & MAX - Savage (Instrumental) "
+                      "BIG BEAT 240 trioxide (17.4k) Save 18"}
+    assert w.search_terms(t) == ("Whethan", "Savage", "Whethan - Savage")
+
+
+def test_search_terms_fall_back_to_the_raw_line():
+    assert w.search_terms({"artist": "", "title": "", "raw_label": "3. A - B"})[2] == "A - B"

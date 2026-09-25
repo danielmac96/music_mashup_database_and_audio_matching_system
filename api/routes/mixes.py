@@ -959,9 +959,7 @@ def track_candidates(track_id: int, platform: str = "soundcloud",
     artist, title = row["artist"] or "", row["title"] or ""
     if mix_resolve_worker._is_id_entry(artist, title):
         return {"query": "", "platform": platform, "candidates": [], "cached": False}
-    query = mix_resolve_worker.strip_label_prefix(row["raw_label"] or "") or \
-        mix_resolve_worker._clean_query(
-            " - ".join(p for p in (artist.strip(), title.strip()) if p))
+    artist, title, query = mix_resolve_worker.search_terms(dict(row))
 
     # The cache holds hits from whichever platform auto-link settled on; only
     # reuse it when that's the platform being asked about.

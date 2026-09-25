@@ -46,7 +46,48 @@ def test_the_row_walk_stops_before_the_next_track():
     code = _code(BM)
     walk = code[code.index("function rowFor"):]
     walk = walk[:walk.index("\n  }")]
-    assert "length > 1" in walk and "break" in walk
+    # "another track's link", not "more than one link": a row's artwork and
+    # title both link to the same track, and must not stop the walk early.
+    assert "trackId(b) !== id" in walk and "break" in walk
+
+
+def test_rows_without_a_track_page_are_found_by_their_shape():
+    """1001tracklists prints a track it has no page for as plain text — often
+    the opener and the closer of a set. Selecting on anchors alone dropped the
+    first and last tracks of Big Bootie Mix 020. Such rows are found by sharing
+    the linked rows' tag and class tokens, and emitted with an explicit marker."""
+    code = _code(BM)
+    assert "function fits" in code
+    assert "[no track page]" in code
+    assert "compareDocumentPosition" in code, "rows must come out in set order"
+
+
+def test_the_name_is_read_from_the_name_not_the_row():
+    """Row text carries the label, votes, the IDer and a "Save" button, all of
+    which went into the SoundCloud/YouTube search."""
+    code = _code(BM)
+    assert "meta[itemprop='name']" in code
+    assert "/label/" in code
+    assert "createTreeWalker" in code, \
+        "textContent glues '01:58' to 'w/' and loses the cue and the overlay"
+
+
+def test_an_unlinked_capture_row_round_trips_through_the_real_parser():
+    from ingest.firecrawl_scrape import parse_markdown_tracklist
+    url = "https://www.1001tracklists.com/track/aaa/index.html"
+    md = ("1. Skulkids \\- Never Heal[no track page]\n"
+          rf"w/ Dominic Fike \- 3 Nights (Acappella)[open track page]({url})")
+    rows = parse_markdown_tracklist(md)
+    assert [(r["artist"], r["title"], r["is_overlay"], r["tl_track_url"])
+            for r in rows] == [("Skulkids", "Never Heal", False, ""),
+                               ("Dominic Fike", "3 Nights (Acappella)", True, url)]
+
+
+def test_page_text_without_the_marker_is_still_not_a_track():
+    """The marker is what lets an unlinked row in; ordinary page text with a
+    dash in it (Firecrawl renders the whole page) must stay out."""
+    from ingest.firecrawl_scrape import parse_markdown_tracklist
+    assert parse_markdown_tracklist("1. Two Friends - Big Bootie Mix 020") == []
 
 
 # ── the markdown it emits ────────────────────────────────────────────────────
@@ -122,6 +163,7 @@ def test_the_paste_box_routes_a_capture_to_the_markdown_endpoint():
     # A JS regex literal escapes its slashes, so match the escaped form.
     pattern = code[code.index("const CAPTURE_RE"):][:300]
     assert r"\/track\/" in pattern, pattern[:120]
+    assert r"\[no track page\]" in pattern, "a capture of unlinked rows is a capture"
     assert "api.importMixMarkdown(paste" in code
     assert "api.importMixPaste(paste" in code, "plain text still has its route"
 

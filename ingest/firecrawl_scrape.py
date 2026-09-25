@@ -168,6 +168,8 @@ def _describe(data: dict) -> str:
 _TRACK_LINK_RE = re.compile(
     r"\[(?P<text>[^\]]*)\]\((?P<url>(?:https?://(?:www\.)?1001tracklists\.com)?"
     r"/track/[^\s)]+)(?:\s+\"[^\"]*\")?\)", re.I)
+# A browser-capture row with no track page: "2. Artist \- Title[no track page]".
+_UNLINKED_RE = re.compile(r"\[no track page\]\s*$", re.I)
 # A bare overlay marker line ("w/", "W/", "w/:").
 _OVERLAY_LINE_RE = re.compile(r"^w/\s*:?$", re.I)
 # Markdown cruft around the track text: artwork images, links (keep the text),
@@ -493,6 +495,25 @@ def parse_markdown_tracklist(md: str) -> list[dict]:
             continue
         m = _TRACK_LINK_RE.search(line)
         if not m:
+            unlinked = _UNLINKED_RE.search(line)
+            if not unlinked:
+                continue
+            # A capture row 1001tracklists has no track page for (they are
+            # printed as plain text — often the opener and the closer of a
+            # set). Only the bookmarklet writes the marker, so the rest of a
+            # Firecrawl page's text still cannot pass for a track.
+            body, inline_overlay, cue = _split_lead(
+                _clean_track_text(line[:unlinked.start()]))
+            overlay = pending_overlay or inline_overlay
+            pending_overlay = False
+            if body:
+                artist, _, title = body.partition(" - ") if " - " in body \
+                    else ("", "", body)
+                rows.append({"position": "w/" if overlay else "",
+                             "artist": artist.strip(" -"),
+                             "title": title.strip(" -"),
+                             "is_overlay": overlay, "tl_track_url": "",
+                             "cue": cue})
             continue
         body, inline_overlay, cue = _split_lead(_clean_track_text(line[:m.start()]))
         if not body:

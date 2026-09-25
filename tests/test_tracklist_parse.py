@@ -103,3 +103,51 @@ def test_no_network_imports():
     src = Path(tp.__file__).read_text(encoding="utf-8")
     for banned in ("urllib", "requests", "socket", "http.client", "fastapi"):
         assert banned not in src
+
+
+# ── row furniture and the search credit ──────────────────────────────────────
+
+from ingest.tracklist_parse import search_credit, search_query, strip_row_furniture
+
+_ROW_DUMP = "Dominic Fike - 3 Nights (Acappella) COLUMBIA (SONY) 240 trioxide (17.4k) Save 18"
+
+
+def test_row_furniture_is_stripped_from_a_copied_row():
+    """Label, votes, IDer and "Save" — copied off 1001tracklists — are not the record."""
+    assert strip_row_furniture(_ROW_DUMP) == "Dominic Fike - 3 Nights (Acappella)"
+    row = parse_line("w/ [01:58] " + _ROW_DUMP)
+    assert (row["artist"], row["title"], row["cue_secs"], row["is_overlay"]) == \
+        ("Dominic Fike", "3 Nights (Acappella)", 118, True)
+    assert row["raw_label"].endswith("Save 18"), "raw_label stays untouched"
+
+
+def test_a_capital_title_is_not_mistaken_for_a_label():
+    """The label is only removed when the rest of the furniture proves a row dump."""
+    assert strip_row_furniture("Kendrick Lamar - HUMBLE.") == "Kendrick Lamar - HUMBLE."
+    assert strip_row_furniture("Kendrick Lamar - HUMBLE. TDE 12 bob (1.2k) Save 3") \
+        == "Kendrick Lamar - HUMBLE."
+    assert strip_row_furniture("Queen - Song (2021)") == "Queen - Song (2021)"
+
+
+def test_search_credit_names_the_record_not_the_cut():
+    cases = {
+        ("Dominic Fike", "3 Nights (Acappella)"): "Dominic Fike - 3 Nights",
+        ("Whethan ft. Flux Pavilion & MAX", "Savage (Instrumental)"): "Whethan - Savage",
+        ("Eminem", "Without Me (Acapella) [INTERSCOPE]"): "Eminem - Without Me",
+        ("Avicii", "Levels (Extended Mix)"): "Avicii - Levels",
+        ("A", "Song - Radio Edit"): "A - Song",
+        ("A", "Wake Me Up ft. Aloe Blacc"): "A - Wake Me Up",
+        # somebody's rework is a different record — kept
+        ("Zedd & Grey", "The Middle (Dzeko Remix)"): "Zedd & Grey - The Middle (Dzeko Remix)",
+        ("Flume", "Never Be Like You [Disclosure Flip]"): "Flume - Never Be Like You [Disclosure Flip]",
+        ("Martin Garrix", "Animals (VIP) [SPINNIN]"): "Martin Garrix - Animals (VIP)",
+        ("A", "Song (feat. B) (Skrillex Remix)"): "A - Song (Skrillex Remix)",
+        ("A", "Song (Two Friends Intro Edit)"): "A - Song (Two Friends Intro Edit)",
+        ("", "Just A Title"): "Just A Title",
+    }
+    for (artist, title), want in cases.items():
+        assert search_query(artist, title) == want, (artist, title)
+
+
+def test_search_credit_never_empties_a_title():
+    assert search_credit("A", "(Instrumental)") == ("A", "(Instrumental)")
