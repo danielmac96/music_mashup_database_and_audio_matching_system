@@ -361,6 +361,34 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_grp ON analysis_runs(grp, at);
 CREATE INDEX IF NOT EXISTS idx_analysis_runs_song ON analysis_runs(song_id);
+
+-- ── Feature cache ────────────────────────────────────────────────────────────
+-- One row per (audio content, feature group): the group's output as it was
+-- last computed. Keyed by a hash of the file's BYTES, not its path or song, so
+-- re-analysing an unchanged file costs a lookup, a re-separated stem (new
+-- bytes) recomputes, and moving the library does not. A row is used only
+-- while its version and params_hash match the group's current declaration in
+-- analysis/registry.py — bumping one group's version recomputes that group and
+-- nothing else. Groups over several files (structure: mix + stems) key on a
+-- 'combo:' hash of their inputs' hashes.
+--   payload_json  the group's result, exactly as the analyser returned it
+--   arrays_path   frame-level arrays too large for a row (npz), when a group
+--                 stores any; NULL otherwise
+--   ms            what computing it cost, so a cache hit can report the saving
+-- Disposable: deleting a row (or the table) only costs a recompute.
+CREATE TABLE IF NOT EXISTS feature_cache (
+    content_hash  TEXT NOT NULL,
+    grp           TEXT NOT NULL,
+    version       INTEGER NOT NULL,
+    params_hash   TEXT NOT NULL,
+    analyzer      TEXT,
+    payload_json  TEXT NOT NULL,
+    arrays_path   TEXT,
+    ms            REAL,
+    computed_at   TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (content_hash, grp)
+);
+CREATE INDEX IF NOT EXISTS idx_feature_cache_grp ON feature_cache(grp, version);
 """
 
 
@@ -489,6 +517,9 @@ _STEMS_OPTIONAL_COLUMNS = (
     ("bleed", "REAL"),          # correlation with the complementary stem
     ("hf_loss", "REAL"),        # top-end lost vs the full mix (the MDX smear)
     ("noise_floor", "REAL"),    # residue where the stem should be silent
+    # Hash of the file's bytes when it was last analysed — the feature_cache
+    # key (analysis/cache.content_hash). NULL until then.
+    ("content_hash", "TEXT"),
 )
 
 
@@ -3199,6 +3230,79 @@ def record_analysis_run(grp: str, ms: float, song_id: Optional[int] = None,
         import logging
         logging.getLogger(__name__).warning(
             "could not record analysis timing %s for song %s", grp, song_id,
+            exc_info=True)
+
+
+def get_feature_cache(content_hash: str, grp: str,
+                      db_path: Optional[Path] = None) -> Optional[Dict]:
+    """The stored row for one (content, group), or None. The caller decides
+    whether its version and params still match (analysis/cache.py)."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        row = conn.execute(
+            """SELECT content_hash, grp, version, params_hash, analyzer,
+                      payload_json, arrays_path, ms, computed_at
+                 FROM feature_cache WHERE content_hash=? AND grp=?""",
+            (content_hash, grp)).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+def put_feature_cache(content_hash: str, grp: str, version: int,
+                      params_hash: str, payload_json: str,
+                      analyzer: Optional[str] = None,
+                      arrays_path: Optional[str] = None,
+                      ms: Optional[float] = None,
+                      db_path: Optional[Path] = None) -> None:
+    """Store (replace) one group's result for one content hash."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO feature_cache
+                   (content_hash, grp, version, params_hash, analyzer,
+                    payload_json, arrays_path, ms, computed_at)
+               VALUES (?,?,?,?,?,?,?,?, datetime('now'))
+               ON CONFLICT(content_hash, grp) DO UPDATE SET
+                   version=excluded.version, params_hash=excluded.params_hash,
+                   analyzer=excluded.analyzer, payload_json=excluded.payload_json,
+                   arrays_path=excluded.arrays_path, ms=excluded.ms,
+                   computed_at=excluded.computed_at""",
+            (content_hash, grp, int(version), params_hash, analyzer,
+             payload_json, arrays_path, ms))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def feature_cache_summary(db_path: Optional[Path] = None) -> List[Dict]:
+    """Rows and total compute-ms stored per (group, version)."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT grp, version, COUNT(*) AS rows, COALESCE(SUM(ms), 0) AS ms
+                 FROM feature_cache GROUP BY grp, version ORDER BY grp, version"""
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def set_stem_content_hash(song_id: int, stem_type: str, content_hash: str,
+                          db_path: Optional[Path] = None) -> None:
+    """Record which bytes a stems row points at (never fails the caller)."""
+    try:
+        conn = get_conn(db_path) if db_path else get_conn()
+        try:
+            conn.execute("UPDATE stems SET content_hash=? WHERE song_id=? AND stem_type=?",
+                         (content_hash, song_id, stem_type))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "could not record content hash for song %s/%s", song_id, stem_type,
             exc_info=True)
 
 

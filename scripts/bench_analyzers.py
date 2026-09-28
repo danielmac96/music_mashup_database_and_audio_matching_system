@@ -56,8 +56,10 @@ from analysis.compare import (  # noqa: E402  (path set above)
 
 log = logging.getLogger("bench")
 
-KEY_PROFILES = ("edma", "edmm", "bgate", "krumhansl", "temperley", "shaath",
-                "faraldo")
+# The profiles KeyExtractor accepts in essentia 2.1b6.dev1389 that are worth
+# comparing (faraldo, in older docs, is rejected by this build).
+KEY_PROFILES = ("edma", "edmm", "bgate", "braw", "krumhansl", "temperley",
+                "shaath")
 SR_FULL, SR_ANALYSIS, SR_TEMPOCNN = 44100, 22050, 11025
 FRAME, HOP = 2048, 512
 TEMPOCNN_MODEL = "deeptemp-k16-3.pb"
@@ -204,6 +206,7 @@ def probe_tags(path: Path) -> dict:
 
 def bench_librosa(timer: Timer, name: str, path: Path) -> dict:
     import librosa
+    from analysis import decode
     from analysis.analyze import analyze_file
     from analysis.structure import detect_sections
 
@@ -217,6 +220,10 @@ def bench_librosa(timer: Timer, name: str, path: Path) -> dict:
 
     def _analyze():
         steps.clear()
+        # Cold every time: analyze_file shares decodes and transforms through
+        # analysis/decode.py, which would otherwise make repeats 2..n (and the
+        # structure pass below) measure a cache instead of the analysis.
+        decode.clear()
         return analyze_file(path, timings=steps)
 
     feats = timer.run(name, "librosa", "analyze_file(total)", _analyze, audio_secs) or {}
@@ -233,6 +240,7 @@ def bench_librosa(timer: Timer, name: str, path: Path) -> dict:
 
     def _structure():
         sphases.clear()
+        decode.clear()
         return detect_sections(path, timings=sphases)
 
     sections = timer.run(name, "librosa", "detect_sections(mix)", _structure,

@@ -155,9 +155,10 @@ def beat_grid_confidence(beat_times, onset_env=None, beat_frames=None) -> float:
 
 def _step_tempo(y: np.ndarray, sr: int, hop_length: int) -> dict:
     import librosa
-    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=hop_length)
+    from analysis import frames
+    tempo, beats = frames.beat_track(y, sr, hop_length)
     beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=hop_length)
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop_length)
+    onset_env = frames.onset_env(y, sr, hop_length)
     return {
         "bpm": float(round(float(np.atleast_1d(tempo)[0]), 2)),
         "bpm_confidence": beat_grid_confidence(beat_times, onset_env, beats),
@@ -167,8 +168,8 @@ def _step_tempo(y: np.ndarray, sr: int, hop_length: int) -> dict:
 
 
 def _step_key(y: np.ndarray, sr: int, hop_length: int) -> dict:
-    import librosa
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=hop_length)
+    from analysis import frames
+    chroma = frames.chroma_cqt(y, sr, hop_length)
     return key_from_chroma(chroma.mean(axis=1))
 
 
@@ -225,18 +226,22 @@ def key_from_chroma(chroma_mean: np.ndarray) -> dict:
 
 
 def _step_dynamics(y: np.ndarray, sr: int, hop_length: int) -> dict:
-    import librosa
-    rms = librosa.feature.rms(y=y, hop_length=hop_length)
-    S = np.abs(librosa.stft(y, hop_length=hop_length))
+    from analysis import frames
+    from analysis.quality import BAND_EDGES, HF_BAND_HZ
+    rms = frames.rms(y, hop_length)
+    # The same 2048-point |STFT|² the quality pass reads for band occupancy and
+    # HF loss (analysis/frames.power_stats): computed once per signal.
+    power = frames.power_stats(y, sr, BAND_EDGES, HF_BAND_HZ, n_fft=2048, hop=hop_length)
     return {
         "loudness_rms": float(round(float(rms.mean()), 6)),
-        "energy": float(round(float((S ** 2).mean()), 6)),
+        "energy": float(round(power["mean"], 6)),
     }
 
 
 def _step_timbre(y: np.ndarray, sr: int, hop_length: int, n_mfcc: int) -> dict:
     import librosa
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=n_mfcc, hop_length=hop_length)
+    from analysis import frames
+    mfcc = frames.mfcc(y, sr, n_mfcc, hop_length)
     centroid = librosa.feature.spectral_centroid(y=y, sr=sr, hop_length=hop_length)
     rolloff  = librosa.feature.spectral_rolloff(y=y, sr=sr, hop_length=hop_length)
     zcr      = librosa.feature.zero_crossing_rate(y, hop_length=hop_length)
@@ -257,61 +262,94 @@ def _step_waveform(y: np.ndarray, n_points: int = 360) -> dict:
 
 def analyze_file(audio_path: Path, trim_secs: Optional[int] = None,
                   on_progress: ProgressCb = None,
-                  timings: Optional[dict] = None) -> dict:
+                  timings: Optional[dict] = None,
+                  cache=None) -> dict:
     """Run every metric step on one file.
 
     ``timings``, when given, is filled with wall milliseconds per step
     ("load", then each name in STEPS), "audio_secs" (the length of the signal
-    the steps ran on) and "failed_steps". The caller persists them; this module stays free
-    of the database.
+    the steps ran on), "failed_steps" and "cached_steps". The caller persists
+    them; this module stays free of the database.
+
+    ``cache``, when given, is asked for each step first (``cache.get(step)`` →
+    the step's dict or None) and told about each step computed
+    (``cache.put(step, result, ms)``); analysis/cache.StepCache binds it to the
+    file's content hash and the step's version. A failed step is never stored,
+    so it is retried next time. When every step is cached the audio is not even
+    decoded.
     """
     def _tick(msg: str) -> None:
         if on_progress:
             on_progress(None, msg)
 
     try:
-        import librosa
+        import librosa  # noqa: F401 — fail early and clearly without the stack
     except ImportError:
         log.error("librosa not installed. Run: pip install librosa")
         return {}
-
-    log.info(f"Analysing: {audio_path.name}"
-             + (f" (first {trim_secs}s)" if trim_secs else ""))
 
     try:
         from config import SAMPLE_RATE, HOP_LENGTH, N_MFCC
     except ImportError:
         SAMPLE_RATE, HOP_LENGTH, N_MFCC = 22050, 512, 13
 
+    features: dict = {}
+    failed_steps: list[str] = []
+    cached_steps: list[str] = []
+    if cache is not None:
+        for step_name in STEPS:
+            hit = cache.get(step_name)
+            if hit is not None:
+                features.update(hit)
+                cached_steps.append(step_name)
+    todo = [s for s in STEPS if s not in cached_steps]
+    if timings is not None:
+        timings["cached_steps"] = list(cached_steps)
+        timings["failed_steps"] = []
+
+    if not todo:
+        log.info(f"Analysing: {audio_path.name} — every step cached")
+        return features
+
+    log.info(f"Analysing: {audio_path.name}"
+             + (f" (first {trim_secs}s)" if trim_secs else "")
+             + (f" — cached: {', '.join(cached_steps)}" if cached_steps else ""))
+
+    from analysis.decode import load_mono
+
     _tick("Loading audio…")
     t0 = time.perf_counter()
-    y, sr = librosa.load(str(audio_path), sr=SAMPLE_RATE,
-                          duration=trim_secs, mono=True)
+    sr = SAMPLE_RATE
+    y = load_mono(audio_path, sr=sr, duration=trim_secs)
     if timings is not None:
         timings["load"] = (time.perf_counter() - t0) * 1000.0
         timings["audio_secs"] = len(y) / float(sr) if sr else None
 
-    features: dict = {}
-    failed_steps: list[str] = []
+    step_plan = {
+        "tempo":    ("Detecting BPM…",               lambda: _step_tempo(y, sr, HOP_LENGTH)),
+        "key":      ("Detecting key…",                lambda: _step_key(y, sr, HOP_LENGTH)),
+        "dynamics": ("Computing loudness + energy…",  lambda: _step_dynamics(y, sr, HOP_LENGTH)),
+        "timbre":   ("Computing MFCC + spectral shape…", lambda: _step_timbre(y, sr, HOP_LENGTH, N_MFCC)),
+        "waveform": ("Computing waveform envelope…",  lambda: _step_waveform(y)),
+    }
 
-    step_plan = (
-        ("tempo",    "Detecting BPM…",               lambda: _step_tempo(y, sr, HOP_LENGTH)),
-        ("key",      "Detecting key…",                lambda: _step_key(y, sr, HOP_LENGTH)),
-        ("dynamics", "Computing loudness + energy…",  lambda: _step_dynamics(y, sr, HOP_LENGTH)),
-        ("timbre",   "Computing MFCC + spectral shape…", lambda: _step_timbre(y, sr, HOP_LENGTH, N_MFCC)),
-        ("waveform", "Computing waveform envelope…",  lambda: _step_waveform(y)),
-    )
-
-    for step_name, msg, run_step in step_plan:
+    for step_name in todo:
+        msg, run_step = step_plan[step_name]
         _tick(msg)
         t0 = time.perf_counter()
         try:
-            features.update(run_step())
+            result = run_step()
         except Exception:  # noqa: BLE001
             log.exception("  step '%s' failed for %s", step_name, audio_path.name)
             failed_steps.append(step_name)
+            result = None
+        ms = (time.perf_counter() - t0) * 1000.0
+        if result is not None:
+            features.update(result)
+            if cache is not None:
+                cache.put(step_name, result, ms)
         if timings is not None:
-            timings[step_name] = (time.perf_counter() - t0) * 1000.0
+            timings[step_name] = ms
 
     if timings is not None:
         timings["failed_steps"] = list(failed_steps)

@@ -104,14 +104,41 @@ def _timed(grp: str, song_id: int, **kw) -> Iterator[dict]:
 def _record_steps(prefix: str, song_id: int, timings: dict,
                   stem_type: Optional[str] = None) -> None:
     """Persist a per-step ``timings`` dict as produced by analyze_file or
-    detect_sections: one row per step, named ``<prefix>.<step>``."""
+    detect_sections: one row per step, named ``<prefix>.<step>``. A step served
+    from the feature cache is filed as ``<prefix>.<step>.cached`` (0 ms), so the
+    real timings keep their medians and the hit count is still visible."""
     audio_secs = timings.get("audio_secs")
     failed = set(timings.get("failed_steps") or ())
     for step, ms in timings.items():
-        if step in ("audio_secs", "failed_steps") or not isinstance(ms, (int, float)):
+        if step in ("audio_secs", "failed_steps", "cached_steps") \
+                or not isinstance(ms, (int, float)):
             continue
         _record(f"{prefix}.{step}", ms, song_id, stem_type=stem_type,
                 audio_secs=audio_secs, ok=step not in failed, analyzer=ANALYZER)
+    for step in timings.get("cached_steps") or ():
+        _record(f"{prefix}.{step}.cached", 0.0, song_id, stem_type=stem_type,
+                analyzer=ANALYZER)
+
+
+def _hash_inputs(paths: dict[str, Optional[Path]]) -> dict[str, Optional[str]]:
+    """Content hash per role for the files that exist. A file that exists but
+    cannot be hashed maps to the marker '!', which no key accepts, so a group
+    reading it is simply not cached (rather than cached as if it were absent)."""
+    from analysis.cache import content_hash
+    out: dict[str, Optional[str]] = {}
+    for role, p in paths.items():
+        if p is None:
+            out[role] = None
+        else:
+            out[role] = content_hash(p) or "!"
+    return out
+
+
+def _combo_key(hashes: dict[str, Optional[str]], required: tuple) -> Optional[str]:
+    from analysis.cache import combo_hash
+    if "!" in hashes.values():
+        return None
+    return combo_hash(hashes, required=required)
 
 
 def _stem_paths(song_id: int) -> dict[str, str]:
@@ -317,7 +344,15 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
 # ── Feature analysis ──────────────────────────────────────────────────────────
 
 def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
+    """Analyse every stem on disk and write its ``features`` row.
+
+    Each step, band occupancy and the residual vocal ratio are feature groups
+    (analysis/registry.py) cached by the audio's content hash: a stem whose
+    bytes, group versions and parameters are unchanged is re-projected from the
+    cache without being decoded. The row written is the same either way."""
     from analysis.analyze import analyze_file
+    from analysis.cache import StepCache, cached, content_hash
+    from database.models import set_stem_content_hash
 
     conn = get_conn()
     row = conn.execute(
@@ -337,6 +372,7 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
 
     analysed: list[str] = []
     failed: list[str] = []
+    fully_cached = True
     with _STAGE_GATES["analysis"], _timed("analysis", song_id,
                                           analyzer=ANALYZER) as stage_info:
         for stem_type in _ANALYSIS_STEM_ORDER:
@@ -346,40 +382,61 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
                 continue
             if on_progress:
                 on_progress(None, f"Analysing {stem_type} stem…")
+            key = content_hash(path)
+            if key:
+                set_stem_content_hash(song_id, stem_type, key)
             timings: dict = {}
             try:
                 features = analyze_file(path, trim_secs=BEAT_TRIM_SECS,
-                                        on_progress=on_progress, timings=timings)
+                                        on_progress=on_progress, timings=timings,
+                                        cache=StepCache(key))
             except Exception:  # noqa: BLE001
                 log.exception("analyze_file raised for %s/%s", song_id, stem_type)
                 failed.append(stem_type)
+                fully_cached = False
                 continue
             finally:
                 _record_steps("analysis", song_id, timings, stem_type=stem_type)
             if not features:
                 failed.append(stem_type)
+                fully_cached = False
                 continue
+            fully_cached = fully_cached and "load" not in timings
             # Phase D: where this stem sits in the spectrum, and — on the
             # instrumental — how much of it is still voice. A bed that still
             # carries its own topline is not a usable bed, and nothing in the
             # four sub-scores can see that.
-            t_bands = time.perf_counter()
             try:
-                from analysis.quality import band_energy, residual_vocal_ratio
-                features["band_energy"] = band_energy(path)
+                from analysis.quality import N_BANDS, band_energy, residual_vocal_ratio
+
+                def _bands(p=path):
+                    # All zeros is band_energy's "could not measure": not cached.
+                    b = band_energy(p)
+                    return b if any(b) else None
+                bands, hit, ms = cached("librosa.bands", key, _bands)
+                features["band_energy"] = bands if bands is not None else [0.0] * N_BANDS
+                _record("analysis.bands.cached" if hit else "analysis.bands", ms,
+                        song_id, stem_type=stem_type, analyzer=ANALYZER,
+                        audio_secs=None if hit else timings.get("audio_secs"))
+                fully_cached = fully_cached and hit
                 if stem_type == "instrumental":
-                    features["residual_vocal_ratio"] = residual_vocal_ratio(
-                        Path(stem_paths["vocals"]) if stem_paths.get("vocals") else None,
-                        path)
+                    vocals = Path(stem_paths["vocals"]) if stem_paths.get("vocals") else None
+                    rkey = _combo_key(_hash_inputs({"vocals": vocals, "bed": path}),
+                                      required=("vocals", "bed"))
+                    ratio, hit, _ms = cached(
+                        "librosa.residual", rkey,
+                        lambda v=vocals, p=path: residual_vocal_ratio(v, p))
+                    features["residual_vocal_ratio"] = ratio
+                    fully_cached = fully_cached and (hit or ratio is None)
             except Exception:  # noqa: BLE001
                 log.exception("band/residual features failed for %s/%s",
                               song_id, stem_type)
-            _record("analysis.bands", (time.perf_counter() - t_bands) * 1000.0,
-                    song_id, stem_type=stem_type, analyzer=ANALYZER,
-                    audio_secs=timings.get("audio_secs"))
             upsert_features(song_id, stem_type, features.copy())
             analysed.append(stem_type)
         stage_info["failed"] = not analysed
+        if analysed and fully_cached:
+            # Nothing was decoded or computed: a projection, not an analysis.
+            stage_info["grp"] = "analysis.cached"
 
     if not analysed:
         update_song_error(song_id, "error_analysis", "Analysis failed for every stem")
@@ -433,18 +490,29 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
         fp = stem_paths.get(name, "")
         return Path(fp) if fp and Path(fp).exists() else None
 
+    # Cached as one group over all four inputs: a re-separated stem, a changed
+    # mix or a structure version bump recomputes; anything else re-projects.
+    inputs = {"full": Path(full_fp), "vocals": _stem("vocals"),
+              "instrumental": _stem("instrumental"), "bass": _stem("bass")}
+    key = _combo_key(_hash_inputs(inputs), required=("full",))
+
     timings: dict = {}
     try:
+        from analysis.cache import cached
         # Shares the analysis gate — structure is the same librosa-bound work.
         with _STAGE_GATES["analysis"], _timed("structure", song_id,
                                               analyzer=ANALYZER) as tinfo:
-            sections = detect_sections(
-                Path(full_fp), _stem("vocals"),
-                inst_path=_stem("instrumental"), bass_path=_stem("bass"),
+            # [] is detect_sections' "found nothing": never cached.
+            sections, hit, _ms = cached("librosa.structure", key, lambda: detect_sections(
+                inputs["full"], inputs["vocals"],
+                inst_path=inputs["instrumental"], bass_path=inputs["bass"],
                 on_progress=on_progress, timings=timings,
-            )
+            ) or None)
+            sections = sections or []
             tinfo["audio_secs"] = timings.get("audio_secs")
             tinfo["failed"] = not sections
+            if hit:
+                tinfo["grp"] = "structure.cached"
     except Exception as exc:  # noqa: BLE001
         log.exception("detect_sections raised")
         raise StageError(

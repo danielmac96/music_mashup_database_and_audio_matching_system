@@ -145,7 +145,7 @@ def test_analysis_records_each_step_per_stem_and_marks_failed_steps(env, monkeyp
     models.update_song_status(song, "stemmed", raw_path=str(raw))
     models.upsert_stem(song, "full", str(raw))
 
-    def _fake(path, trim_secs=None, on_progress=None, timings=None):
+    def _fake(path, trim_secs=None, on_progress=None, timings=None, cache=None):
         timings.update({"load": 5.0, "tempo": 10.0, "key": 20.0,
                         "audio_secs": 1.0, "failed_steps": ["key"]})
         return {"bpm": 120.0}

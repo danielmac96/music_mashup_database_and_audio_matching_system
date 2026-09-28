@@ -119,6 +119,7 @@ Resolution order: **environment variable > `settings.json` > default**.
 | Download / stem / analysis / enrich workers | `MASHUP_DOWNLOAD_WORKERS` … | `download_workers` … | `4` / pipeline / `2` / `5` |
 | Stem separator | `MASHUP_STEM_SEPARATOR` | `stem_separator` | `demucs` (`mdx` = fast) |
 | Stem mode | `MASHUP_STEM_MODE` | `stem_mode` | `two` (`four` = drums/bass/other/vocals, Demucs only) |
+| Feature cache | `MASHUP_ANALYSIS_CACHE` | `analysis_cache` | on (`0`/`false` recomputes every group; results are still stored) |
 | Firecrawl key (Mixes tab) | `FIRECRAWL_API_KEY` | `firecrawl_api_key` | — |
 | SoundCloud app (dormant OAuth) | `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` | `soundcloud_client_id` / `…_secret` | — |
 | Scoring knobs | `MASHUP_EFFORT_WEIGHT`, `MASHUP_BPM_MAX_DIFF`, `MASHUP_KEY_MIN_SCORE`, `MASHUP_SECTION_WEIGHT`, `MASHUP_STEM_QUALITY_MIN`, … | `effort_weight`, `match_weights`, `section_weights`, … | `config.py` (see §5.7) |
@@ -127,6 +128,7 @@ Resolution order: **environment variable > `settings.json` > default**.
 `config.DB_PATH` before assuming. Path constants bind at import, so path changes
 need a restart (the API returns `restart_required: true`). The separator, stem
 mode, scoring knobs, patterns and Firecrawl key are re-read live.
+The feature-cache switch is re-read live too.
 `config.save_settings` ignores empty values, so anything that must be
 *unsettable* (the connected SoundCloud profile, saved profiles) lives in the
 `app_prefs` table instead.
@@ -216,6 +218,19 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
   `error_*` status with `songs.last_error`. A semaphore keeps Demucs to one run
   at a time whoever asks. Structure is not status-bearing: matching works
   without sections.
+- **Each file is decoded once; each feature group is computed once.**
+  `analysis/decode.py` keeps the last `DECODE_CACHE_SIZE` (6) decoded signals,
+  so analysis on every stem, band occupancy, the residual vocal ratio, stem
+  quality and structure detection read one array per file (it was 15–18 decodes
+  of 3 files per track). `analysis/frames.py` remembers the expensive
+  transforms per signal (beat track, onset envelope, chroma, MFCC, RMS, the
+  |STFT|² sums), so structure reuses what analysis just computed. Above that,
+  every unit of analysis is a **feature group** (`analysis/registry.py`) whose
+  result is stored in `feature_cache` under the hash of the audio's bytes
+  (`analysis/cache.py`): re-analysing an unchanged file re-projects stored
+  results without decoding anything (`analysis.cached` in the timings), a
+  re-separated stem recomputes, and bumping one group's version recomputes that
+  group only.
 - **Heavy libraries import lazily**, so the API starts (and degrades with clear
   501/502 messages) without the audio stack.
 - **Frontend state lives once in `App.jsx`:** the library, ratings, groups and
@@ -853,7 +868,7 @@ caches responses, and opens a breaker after repeated failures.
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py` |
 | `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
 | `stems/separate.py` | Demucs / MDX-Net, two or four stems |
-| `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`, `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
+| `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`; `decode.py` (one decode per file + per-signal memo; ffprobe/FFmpeg decode for Essentia), `frames.py` (the shared transforms), `registry.py` (feature groups + versions), `cache.py` (content hash → cached group results); `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
 | `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py` |
 | `render/` | `dsp.py`, `mixdown.py`, `session.py` |
 | `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen` + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`; `public/soundtouch-processor.js` |
@@ -863,7 +878,7 @@ caches responses, and opens a breaker after repeated failures.
 **Tables.** `songs` (metadata, status, `last_error`, `variant_cluster`,
 `track_id`; `origin_url` / `origin_duration_secs` — the imported link and its
 length, write-once; `audio_provenance` — JSON, where the file came from;
-`metadata_partial` — 1 when the per-track metadata fetch never landed) · `stems` (path, separator tag, quality metrics) · `features` (per
+`metadata_partial` — 1 when the per-track metadata fetch never landed) · `stems` (path, separator tag, quality metrics, `content_hash` of the bytes last analysed) · `features` (per
 stem: tempo/grid/phase, key/confidence/Camelot, loudness, MFCC, spectral, bands,
 envelope, beats, hook window) · `sections` (see §5.5) · `mashup_candidates` (one
 row per section pair: sub-scores, effort, section terms, harmony, alignment,
@@ -872,7 +887,9 @@ feature snapshot) · `pair_hidden` · `track_excluded` · `mixes` · `mix_tracks
 (parse fields, link, resolve status/score/artist score/duration, cached
 candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
 `crate_items` (frozen canonical payload, optional `song_id`) · `app_prefs`
-(JSON key/value) · `analysis_runs` (append-only pipeline timings, §3).
+(JSON key/value) · `analysis_runs` (append-only pipeline timings, §3) ·
+`feature_cache` (per content hash and feature group: version, params hash,
+payload — disposable, §3).
 Existing databases migrate on start.
 
 ---
@@ -942,6 +959,21 @@ Existing databases migrate on start.
   shared with the staleness badge. Add the next section column to that tuple or
   bulk re-analysis silently skips structure. `bpm_source IS NOT NULL` is
   satisfied by `track_fallback`.
+- **Change what a feature group returns → bump its version** in
+  `analysis/registry.py`. The feature cache reuses a result while the audio's
+  bytes, the group's version and the config values it reads (`params()`) are
+  unchanged, so an edit to an analysis step, `analysis/quality.py`,
+  `analysis/structure.py` or `analysis/frames.py` that ships without a bump is
+  never seen by an already-analysed library — the one way the cache serves a
+  stale answer. A config value a group reads belongs in its `params()` (then no
+  bump is needed). A result that means "could not measure" (band energy all
+  zeros, no sections) is never stored.
+- **Shared audio is read-only, shared transforms are never mutated.**
+  `decode.load_mono` hands the same array to every caller (write-protected),
+  and `frames.*` return the same object to every caller of the same signal and
+  parameters. Copy before changing either. A `frames` function must be the
+  exact librosa call its callers made — `tests/test_analysis_cache.py` asserts
+  the whole per-track pass is bit-identical with sharing on and off.
 - **Migrations run after `SCHEMA`.** An index on a *migrated* column belongs in
   the migration (`idx_songs_track_id`); on an original column, in `SCHEMA`
   (`idx_crate_items_*`).
@@ -1105,7 +1137,10 @@ sidebar revamp.**
    SoundTouch); before stems exist, sections are provisional with vocal
    activity from an ML model on the mix.
    Phases: **0** measure + benchmark (done, below) → **1** one decode per file,
-   feature-group registry + cache, librosa wrapped as groups → **2** Essentia
+   feature-group registry + cache, librosa wrapped as groups (done, §3; on a
+   mix + two stems of 100 s each, analysis + structure went 25 s → 11–13 s and
+   18 decodes → 3, and a re-analysis of unchanged audio takes ~1 s, most of it
+   the uncached stem-quality pass) → **2** Essentia
    tier-1 groups, projection into the existing tables, `librosa | shadow |
    essentia` flag → **3** reorder into tiers (`analysed` = tier 1 done, stems
    tracked separately), priority queues, a process pool → **4** stem tier:
@@ -1123,9 +1158,11 @@ sidebar revamp.**
    (`/api/health/deps` reports it); `scipy.signal.resample_poly` resamples ~5×
    faster than `essentia.Resample` at default quality, so the decode layer uses
    it; `RhythmExtractor2013` degara costs ~¼ of multifeature; SBic at default
-   settings under-segments. **Next: run the benchmark on ~10 real tracks** and
-   read `GET /api/jobs/timings` after an import to get the real per-stage
-   numbers before Phase 1.
+   settings under-segments; `KeyExtractor` in this build rejects the `faraldo`
+   profile (the benchmark compares edma, edmm, bgate, braw, krumhansl,
+   temperley, shaath). **Still to do: run the benchmark on ~10 real tracks**
+   and read `GET /api/jobs/timings` after an import — the real per-stage
+   numbers, and the key-profile choice, feed Phase 2.
 2. **Judge candidates.** `pair_feedback` needs a few dozen verdicts before the
    learned scorer or supervised weight tuning mean anything; then re-measure the
    section weights with Spearman against stored verdicts.

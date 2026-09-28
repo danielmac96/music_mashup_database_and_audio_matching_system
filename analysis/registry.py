@@ -1,0 +1,112 @@
+"""
+analysis/registry.py — every cached feature group, and what invalidates it.
+
+A group is one unit of analysis whose output is stored in ``feature_cache``
+under the hash of the audio it read (analysis/cache.py). A stored result is
+reused while three things hold:
+
+  * the audio is byte-for-byte the same (the content hash),
+  * the group's ``version`` is the one declared here,
+  * its ``params()`` — the config values the code reads — hash the same.
+
+**Bump a group's version whenever its code changes what it returns.** That
+recomputes that group, on every track, on the next analysis, and nothing else.
+Changing a config value it reads needs no bump: params() picks it up. Forgetting
+a bump is the one way this cache serves a stale answer, so a change to any
+function a group calls (analysis/analyze.py step, analysis/quality.py,
+analysis/structure.py, analysis/frames.py) should come with one.
+
+Groups over one file are keyed by that file's hash; groups over several files
+(residual vocal ratio: vocals + mix; structure: mix + stems) by a combination
+of their inputs' hashes, so a re-separated stem recomputes both.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+from dataclasses import dataclass
+from typing import Callable, Dict, Optional
+
+
+@dataclass(frozen=True)
+class FeatureGroup:
+    name: str
+    version: int
+    analyzer: str
+    tier: int
+    params: Callable[[], dict]
+    description: str
+    # analyze_file step this group caches, when it is one.
+    step: Optional[str] = None
+
+    def params_hash(self) -> str:
+        blob = json.dumps(self.params(), sort_keys=True, default=str)
+        return hashlib.blake2b(blob.encode("utf-8"), digest_size=8).hexdigest()
+
+
+def _analysis_params(**extra) -> Callable[[], dict]:
+    def _p() -> dict:
+        from config import BEAT_TRIM_SECS, HOP_LENGTH, SAMPLE_RATE
+        return {"sr": SAMPLE_RATE, "hop": HOP_LENGTH, "trim_secs": BEAT_TRIM_SECS,
+                **{k: (v() if callable(v) else v) for k, v in extra.items()}}
+    return _p
+
+
+def _n_mfcc() -> int:
+    from config import N_MFCC
+    return N_MFCC
+
+
+def _quality_params() -> dict:
+    from analysis.quality import BAND_EDGES, MAX_SECS, QUALITY_SR
+    return {"sr": QUALITY_SR, "edges": list(BAND_EDGES), "max_secs": MAX_SECS}
+
+
+def _residual_params() -> dict:
+    from analysis.quality import MAX_SECS, QUALITY_SR
+    return {"sr": QUALITY_SR, "max_secs": MAX_SECS}
+
+
+def _structure_params() -> dict:
+    from config import (HOP_LENGTH, SAMPLE_RATE, SECTION_MAX_COUNT,
+                        SECTION_MIN_LEN_SECS, SECTION_SIM_THRESHOLD)
+    return {"sr": SAMPLE_RATE, "hop": HOP_LENGTH,
+            "min_len": SECTION_MIN_LEN_SECS, "max_count": SECTION_MAX_COUNT,
+            "sim": SECTION_SIM_THRESHOLD}
+
+
+_GROUPS = (
+    FeatureGroup("librosa.tempo", 1, "librosa", 1, _analysis_params(),
+                 "BPM, grid confidence, beat times, beat phase", step="tempo"),
+    FeatureGroup("librosa.key", 1, "librosa", 1, _analysis_params(),
+                 "Krumhansl key, mode, Camelot, key confidence", step="key"),
+    FeatureGroup("librosa.dynamics", 1, "librosa", 1, _analysis_params(),
+                 "mean RMS loudness, mean spectral energy", step="dynamics"),
+    FeatureGroup("librosa.timbre", 1, "librosa", 1, _analysis_params(n_mfcc=_n_mfcc),
+                 "mean MFCC, spectral centroid/rolloff, ZCR", step="timbre"),
+    FeatureGroup("librosa.waveform", 1, "librosa", 1, _analysis_params(),
+                 "360-point normalised RMS envelope", step="waveform"),
+    FeatureGroup("librosa.bands", 1, "librosa", 1, _quality_params,
+                 "8-band energy occupancy (analysis/quality.band_energy)"),
+    FeatureGroup("librosa.residual", 1, "librosa", 2, _residual_params,
+                 "residual vocal ratio of a bed (vocals + mix)"),
+    FeatureGroup("librosa.structure", 1, "librosa", 1, _structure_params,
+                 "sections: boundaries, labels, per-section measurements "
+                 "(mix + vocal/instrumental/bass stems)"),
+)
+
+GROUPS: Dict[str, FeatureGroup] = {g.name: g for g in _GROUPS}
+
+# analyze_file step name -> its group.
+STEP_GROUPS: Dict[str, FeatureGroup] = {g.step: g for g in _GROUPS if g.step}
+
+
+def group(name: str) -> FeatureGroup:
+    return GROUPS[name]
+
+
+def describe() -> list[dict]:
+    """The registry as data (for an API or a log line)."""
+    return [{"name": g.name, "version": g.version, "analyzer": g.analyzer,
+             "tier": g.tier, "params": g.params(), "params_hash": g.params_hash(),
+             "description": g.description} for g in _GROUPS]

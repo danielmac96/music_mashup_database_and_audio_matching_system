@@ -268,6 +268,28 @@ BEAT_TRIM_SECS   = None    # None = analyse the FULL track (best match quality �
                            # BPM/key from only the intro is unreliable).
                            # Set to e.g. 30 to trade accuracy for speed.
 
+# Decoded signals kept in memory (analysis/decode.py). One track touches 3-5
+# files (mix + stems) and the analysis pool runs 2 tracks at once; 6 keeps a
+# whole analysis → structure → quality pass decoding each file once. A 4-minute
+# file is ~21 MB at 22.05 kHz mono.
+DECODE_CACHE_SIZE = 6
+
+
+def current_analysis_cache() -> bool:
+    """Whether analysis reuses stored feature groups (analysis/cache.py).
+
+    On by default: a group is recomputed only when its audio, its version or
+    its parameters changed. Off (``MASHUP_ANALYSIS_CACHE=0`` or settings.json
+    ``"analysis_cache": false``) recomputes everything, which is only ever
+    worth it to rule the cache out while chasing a bug. Re-read live."""
+    env = os.environ.get("MASHUP_ANALYSIS_CACHE")
+    if env is not None and env.strip() != "":
+        return env.strip().lower() not in ("0", "false", "off", "no")
+    val = _load_settings().get("analysis_cache")
+    if isinstance(val, bool):
+        return val
+    return True
+
 # ── Structure detection (sections: intro/verse/chorus/drop/…) ─────────────────
 SECTION_MIN_LEN_SECS  = 12.0   # minimum section length
 SECTION_MAX_COUNT     = 14     # cap on sections per track

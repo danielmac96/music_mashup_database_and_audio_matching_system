@@ -232,8 +232,9 @@ def _novelty_boundaries(X: np.ndarray, min_beats: int, max_sections: int) -> Lis
 
 
 def _frame_rms(y: np.ndarray) -> np.ndarray:
-    import librosa
-    return librosa.feature.rms(y=y, hop_length=HOP_LENGTH)[0]
+    # Same call as analysis' dynamics step, so it is shared (analysis/frames.py).
+    from analysis import frames
+    return frames.rms(y, HOP_LENGTH)[0]
 
 
 # Bass region for the second chroma. Below ~40 Hz is mostly rumble; above
@@ -420,9 +421,17 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         log.error("librosa not installed. Run: pip install librosa")
         return []
 
+    # Every decode and transform below goes through the decode cache: the
+    # analysis pass that ran just before has usually decoded the mix and the
+    # stems and computed their beat track, chroma, MFCC and RMS with these very
+    # parameters, so structure reuses them instead of repeating them.
+    from analysis import frames
+    from analysis.decode import load_mono
+
     log.info(f"Detecting structure: {full_path.name}")
     _phase("load", "Loading full mix…")
-    y, sr = librosa.load(str(full_path), sr=SAMPLE_RATE, mono=True)
+    sr = SAMPLE_RATE
+    y = load_mono(full_path, sr=sr)
     duration = len(y) / sr
     _phase(None)
     if timings is not None:
@@ -436,7 +445,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         }]
 
     _phase("beats", "Beat tracking…")
-    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=HOP_LENGTH)
+    tempo, beats = frames.beat_track(y, sr, HOP_LENGTH)
     # librosa returns tempo as a 0-d array in some versions and a float in
     # others; a section's fallback has to be a plain number either way.
     track_bpm = float(np.atleast_1d(tempo)[0]) if tempo is not None else None
@@ -449,8 +458,8 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP_LENGTH)
 
     _phase("features", "Computing beat-synchronous features…")
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=HOP_LENGTH)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, hop_length=HOP_LENGTH)
+    chroma = frames.chroma_cqt(y, sr, HOP_LENGTH)
+    mfcc = frames.mfcc(y, sr, 13, HOP_LENGTH)
     rms = _frame_rms(y)
 
     # Per-stem chroma on the SAME beat grid. Demucs writes stems sample-aligned
@@ -459,13 +468,18 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         if not path or not Path(path).exists():
             return None
         try:
-            ys, _ = librosa.load(str(path), sr=SAMPLE_RATE, mono=True)
-            # Pad/trim to the mix so sync() cannot run off the end on a stem the
-            # separator emitted a few samples short.
-            if len(ys) < len(y):
-                ys = np.pad(ys, (0, len(y) - len(ys)))
-            c = librosa.feature.chroma_cqt(y=ys[:len(y)], sr=sr,
-                                           hop_length=HOP_LENGTH)
+            ys = load_mono(path, sr=SAMPLE_RATE)
+            if len(ys) == len(y):
+                # The usual case: the same signal the key step read, so its
+                # chroma is already computed.
+                c = frames.chroma_cqt(ys, sr, HOP_LENGTH)
+            else:
+                # Pad/trim to the mix so sync() cannot run off the end on a stem
+                # the separator emitted a few samples short.
+                if len(ys) < len(y):
+                    ys = np.pad(ys, (0, len(y) - len(ys)))
+                c = librosa.feature.chroma_cqt(y=ys[:len(y)], sr=sr,
+                                               hop_length=HOP_LENGTH)
             return librosa.util.sync(c, beats, aggregate=np.median)
         except Exception:  # noqa: BLE001
             log.warning("  %s chroma failed; falling back to the full mix", what,
@@ -514,7 +528,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     # trims the head of the file before beat-tracking (BEAT_TRIM_SECS), so the
     # stored beat_phase indexes a different grid from the one above.
     from analysis.analyze import _pick_beat_phase, beat_grid_confidence
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP_LENGTH)
+    onset_env = frames.onset_env(y, sr, HOP_LENGTH)
     phase = _pick_beat_phase(onset_env, beats)
     bounds, snapped = snap_boundaries_to_phrases(
         bounds, phase, len(beat_times), min_beats)
@@ -538,7 +552,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     if vocals_path and Path(vocals_path).exists():
         _phase("vocal", "Measuring vocal activity…")
         try:
-            yv, _ = librosa.load(str(vocals_path), sr=SAMPLE_RATE, mono=True)
+            yv = load_mono(vocals_path, sr=SAMPLE_RATE)
             vocal_rms = _frame_rms(yv)
         except Exception:
             log.warning("  Could not load vocal stem for vocal-presence scoring.")
