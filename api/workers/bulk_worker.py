@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from api import jobs, queue_runner
+from config import PRIORITY_BACKFILL
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ def run(job_id: str, action: str, song_ids: list[int]) -> None:
     for n, song_id in enumerate(song_ids, start=1):
         try:
             update_song_status(song_id, spec["status"])
-            queue_runner.enqueue_song(song_id)
+            queue_runner.enqueue_song(song_id, priority=PRIORITY_BACKFILL)
             queued += 1
         except Exception:  # noqa: BLE001 — one bad track must not stop the batch
             log.exception("bulk %s failed to queue song %s", action, song_id)
@@ -194,7 +195,7 @@ def _redownload_suspect(job_id: str, song_ids: list[int]) -> None:
                     Path(p).unlink(missing_ok=True)
                 except OSError:
                     pass
-            queue_runner.enqueue_song(row["id"])
+            queue_runner.enqueue_song(row["id"], priority=PRIORITY_BACKFILL)
             queued += 1
         except Exception as exc:  # noqa: BLE001 — one bad track must not stop the batch
             log.exception("re-download of suspect song %s failed", row["id"])
@@ -337,12 +338,21 @@ def _sections_stale_sql(song_ref: str) -> str:
     With no section rows at all every clause is true, so the expression reads
     "absent OR stale", which is exactly the set that wants do_structure.
     """
-    return "\n    OR ".join(
+    missing = [
         f"NOT EXISTS (SELECT 1 FROM sections sec\n"
         f"                   WHERE sec.song_id={song_ref} "
         f"AND sec.{col} IS NOT NULL)"
         for col in _SECTION_CURRENT_COLUMNS
-    )
+    ]
+    # Quick-tier sections were cut from the mix alone. Once a vocal stem exists
+    # they are stale: the full analysis re-cuts them with vocal presence and
+    # per-stem chroma (readme §9, phase 3).
+    provisional = (
+        f"(EXISTS (SELECT 1 FROM sections sec WHERE sec.song_id={song_ref} "
+        f"AND sec.provisional=1)\n"
+        f"        AND EXISTS (SELECT 1 FROM stems st WHERE st.song_id={song_ref} "
+        f"AND st.stem_type='vocals'))")
+    return "\n    OR ".join(missing + [provisional])
 
 
 # One definition of "this track predates a generation of feature we now need".

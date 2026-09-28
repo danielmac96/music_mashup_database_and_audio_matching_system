@@ -38,27 +38,46 @@ _RANK = {
     "analysed": 3,
 }
 
-# Queue stages in lifecycle order. "analysis" covers do_analyze + the non-fatal
-# do_structure pass (structure is not status-bearing, so it never gets its own
-# resumable stage).
-STAGES = ("download", "stems", "analysis")
+# Queue stages in lifecycle order. "quick" is the quick tier (readme §9, phase
+# 3): the downloaded mix analysed and cut into provisional sections before
+# Demucs, so a track has BPM, key and a structure within seconds of its
+# download instead of after its separation. "analysis" covers do_analyze + the
+# non-fatal do_structure pass (structure is not status-bearing, so it never gets
+# its own resumable stage).
+STAGES = ("download", "quick", "stems", "analysis")
 
 _STAGE_MIN_RANK = {"download": 1, "stems": 2, "analysis": 3}
 
+# Stages whose failure does not stop the track: the quick tier only ever gets
+# ahead of work the full analysis repeats with the stems.
+NON_FATAL = {"quick"}
+
+
+def _row(song_id: int):
+    conn = get_conn()
+    row = conn.execute("SELECT status, quick_state FROM songs WHERE id=?",
+                       (song_id,)).fetchone()
+    conn.close()
+    return row
+
 
 def _status(song_id: int) -> str:
-    conn = get_conn()
-    row = conn.execute("SELECT status FROM songs WHERE id=?", (song_id,)).fetchone()
-    conn.close()
+    row = _row(song_id)
     return row["status"] if row else "queued"
 
 
 def next_stage(song_id: int) -> Optional[str]:
     """Which pipeline stage this track needs next, or None when fully analysed.
     Status-derived, so it is restart-safe and retry-safe (an error_* status
-    re-enters at the stage that failed)."""
-    rank = _RANK.get(_status(song_id), 0)
-    for stage in STAGES:
+    re-enters at the stage that failed). The quick tier runs once per download
+    — between download and stems, while ``quick_state`` is unset."""
+    row = _row(song_id)
+    rank = _RANK.get(row["status"] if row else "queued", 0)
+    if rank < 1:
+        return "download"
+    if rank == 1 and not (row and row["quick_state"]):
+        return "quick"
+    for stage in ("stems", "analysis"):
         if rank < _STAGE_MIN_RANK[stage]:
             return stage
     return None
@@ -142,6 +161,9 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
         if stage == "download":
             stages.do_download(song_id, jobs.progress_updater(
                 job_id, "download", stage_key="download"))
+        elif stage == "quick":
+            stages.do_quick(song_id, jobs.progress_updater(
+                job_id, "quick", stage_key="quick"))
         elif stage == "stems":
             stages.do_stems(song_id, jobs.progress_updater(
                 job_id, "stems", stage_key="stems"))
@@ -150,8 +172,25 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
                 job_id, "analyze", stage_key="analysis"))
     except stages.StageError as exc:
         jobs.stage_finish(job_id, stage, "failed", error=str(exc))
+        if stage in NON_FATAL:
+            log.warning("%s stage failed for song %s (non-fatal): %s", stage, song_id, exc)
+            # Recorded here too, so next_stage cannot route the track back into
+            # the quick stage however do_quick failed.
+            from database.models import set_quick_state
+            set_quick_state(song_id, "failed")
+            return "next"
         jobs.fail(job_id, str(exc), exc.traceback_text)
         return "failed"
+    except Exception as exc:  # noqa: BLE001
+        if stage not in NON_FATAL:
+            raise
+        # do_quick records its own failure as quick_state; anything that escaped
+        # it must still not cost the track its stems.
+        log.exception("%s stage crashed for song %s (non-fatal)", stage, song_id)
+        from database.models import set_quick_state
+        set_quick_state(song_id, "failed")
+        jobs.stage_finish(job_id, stage, "failed", error=f"{type(exc).__name__}: {exc}")
+        return "next"
 
     jobs.stage_finish(job_id, stage, "done")
     if next_stage(song_id) is None:

@@ -16,6 +16,7 @@ from database.models import (
 from ingest.sources import classify_url, normalize_url
 
 from api import jobs, queue_runner
+from config import PRIORITY_USER
 from api.workers import (
     analysis_worker, download_worker, reverify_worker, stems_worker, structure_worker,
 )
@@ -207,7 +208,7 @@ def queue_process(song_id: int) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="song not found")
 
-    job_id = queue_runner.enqueue_song(song_id)
+    job_id = queue_runner.enqueue_song(song_id, priority=PRIORITY_USER)
     return {"job_id": job_id}
 
 
@@ -563,7 +564,7 @@ def change_url(song_id: int, body: UrlUpdate) -> dict:
             raise HTTPException(status_code=404, detail=msg)
         raise HTTPException(status_code=400, detail=msg)
     _unlink_files(result["files"])
-    job_id = queue_runner.enqueue_song(song_id)
+    job_id = queue_runner.enqueue_song(song_id, priority=PRIORITY_USER)
     return {"updated": True, "song_id": song_id, "source_url": new_url, "job_id": job_id}
 
 

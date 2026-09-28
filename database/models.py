@@ -440,6 +440,13 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 _SONGS_OPTIONAL_COLUMNS = (
+    # The quick tier (analysis overhaul phase 3): the full mix analysed and cut
+    # into provisional sections straight after download, before Demucs. Not
+    # part of `status` — status still means "fully processed" — so nothing that
+    # filters on status='analysed' changes. 'done' | 'failed' | NULL (not run
+    # for the current audio: do_download clears it).
+    ("quick_state", "TEXT"),
+    ("quick_at", "TEXT"),
     ("artist_id", "TEXT"),
     ("track_id", "TEXT"),
     ("duration_str", "TEXT"),
@@ -724,6 +731,11 @@ _SECTIONS_OPTIONAL_COLUMNS = (
     # vocal|instrumental|mixed|unknown. vocal_presence is a continuous 0-1 and
     # every caller re-invented its own threshold; this is the shared answer.
     ("section_class", "TEXT"),
+    # 1 = cut from the full mix before stems existed (the quick tier): no vocal
+    # presence, section_class 'unknown'. Such sections are stale as soon as a
+    # vocal stem exists (bulk_worker._sections_stale_sql), so the full analysis
+    # re-cuts them with the stems.
+    ("provisional", "INTEGER DEFAULT 0"),
 )
 
 
@@ -1088,6 +1100,21 @@ def upsert_song(
     song_id = row["id"] if row else cur.lastrowid
     conn.close()
     return song_id
+
+
+def set_quick_state(song_id: int, state: Optional[str],
+                    db_path: Path = DB_PATH) -> None:
+    """Record the quick tier's outcome ('done' | 'failed'), or clear it (None)
+    so the pipeline runs it again for new audio."""
+    conn = get_conn(db_path)
+    try:
+        conn.execute(
+            "UPDATE songs SET quick_state=?, quick_at="
+            "CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END WHERE id=?",
+            (state, state, song_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def update_song_status(song_id: int, status: str, raw_path: str = "",
@@ -1859,9 +1886,9 @@ def replace_sections(song_id: int, sections: List[Dict],
                 bpm, bpm_source, bpm_confidence,
                 energy_absolute, energy_slope, energy_trend,
                 beat_times_json, downbeats_json, beat_count, bar_count,
-                beats_per_bar, phrase_length_bars, section_class)
+                beats_per_bar, phrase_length_bars, section_class, provisional)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                   ?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   ?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 song_id, idx,
@@ -1882,7 +1909,7 @@ def replace_sections(song_id: int, sections: List[Dict],
                 json.dumps(s["downbeats"]) if s.get("downbeats") else None,
                 s.get("beat_count"), s.get("bar_count"),
                 s.get("beats_per_bar"), s.get("phrase_length_bars"),
-                s.get("section_class"),
+                s.get("section_class"), 1 if s.get("provisional") else 0,
             )
             for idx, s in enumerate(sections)
         ],

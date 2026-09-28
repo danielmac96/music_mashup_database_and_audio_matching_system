@@ -40,16 +40,19 @@ def stream_subprocess(
     on_line: Callable[[str], None],
     *,
     timeout: Optional[float] = None,
+    env: Optional[dict] = None,
 ) -> subprocess.CompletedProcess:
     """Run `cmd` and call `on_line(text)` for each line OR CR-terminated chunk.
 
     Returns a CompletedProcess with stdout/stderr fields populated (combined into
     stdout because we redirect stderr→stdout to interleave progress bars in order).
     Raises subprocess.TimeoutExpired on timeout, FileNotFoundError if the binary
-    is missing.
+    is missing. ``env`` is merged over the current environment.
     """
+    import os
     proc = subprocess.Popen(
         cmd,
+        env={**os.environ, **env} if env else None,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=0,

@@ -55,7 +55,8 @@ def test_queue_route_reports_each_tracks_place_in_line(env):
     assert resp.status_code == 200
     body = resp.json()
     assert body["stages"]["download"]["waiting"] == 3
-    assert body["stages"]["stems"]["waiting"] == 1
+    # A downloaded track whose quick tier has not run waits for it, not stems.
+    assert body["stages"]["quick"]["waiting"] == 1
     assert body["stages"]["download"]["workers"] >= 1
     assert [body["positions"][j]["position"] for j in job_ids] == [1, 2, 3]
     assert {body["positions"][j]["stage"] for j in job_ids} == {"download"}

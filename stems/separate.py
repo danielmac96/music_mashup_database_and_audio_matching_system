@@ -47,6 +47,19 @@ ProgressCb = Optional[Callable[[Optional[int], str], None]]
 MDX_MODEL_DIR = DATA_DIR / "uvr_models"
 
 
+def thread_env() -> Dict[str, str]:
+    """Cap the separator subprocess's thread pools at config.DEMUCS_THREADS.
+
+    torch (Demucs) and onnxruntime (MDX) default to every core, which leaves
+    nothing for the quick tier analysing the next downloads (readme §9, phase
+    3). The OpenMP/MKL variables are read at interpreter start, so they must be
+    in the child's environment rather than set from here."""
+    from config import DEMUCS_THREADS
+    n = str(max(1, int(DEMUCS_THREADS)))
+    return {"OMP_NUM_THREADS": n, "MKL_NUM_THREADS": n,
+            "OPENBLAS_NUM_THREADS": n, "NUMEXPR_NUM_THREADS": n}
+
+
 def separator_tag(separator: Optional[str] = None,
                   mode: Optional[str] = None) -> str:
     """Provenance tag for the given (or currently configured) engine and mode.
@@ -148,7 +161,7 @@ def _run_demucs(audio_path: Path, tmp_dir: Path,
             on_progress(None, line.strip()[:120])
 
     try:
-        result = stream_subprocess(cmd, _on_line, timeout=1800)
+        result = stream_subprocess(cmd, _on_line, timeout=1800, env=thread_env())
         if result.returncode != 0:
             log.error(f"Demucs failed: {result.stdout[-500:]}")
             return None
@@ -212,7 +225,7 @@ def _run_mdx(audio_path: Path, tmp_dir: Path,
             on_progress(None, line.strip()[:120])
 
     try:
-        result = stream_subprocess(cmd, _on_line, timeout=1800)
+        result = stream_subprocess(cmd, _on_line, timeout=1800, env=thread_env())
         if result.returncode != 0:
             log.error(f"audio-separator failed: {result.stdout[-500:]}")
             return None
@@ -273,7 +286,7 @@ def _run_demucs_four(audio_path: Path, tmp_dir: Path,
             on_progress(None, line.strip()[:120])
 
     try:
-        result = stream_subprocess(cmd, _on_line, timeout=3600)
+        result = stream_subprocess(cmd, _on_line, timeout=3600, env=thread_env())
         if result.returncode != 0:
             log.error(f"Demucs failed: {result.stdout[-500:]}")
             return None

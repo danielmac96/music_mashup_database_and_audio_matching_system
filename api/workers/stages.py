@@ -26,7 +26,8 @@ import traceback
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-from config import ANALYSIS_WORKERS, BEAT_TRIM_SECS, DOWNLOAD_WORKERS, STEM_WORKERS
+from config import (ANALYSIS_WORKERS, BEAT_TRIM_SECS, DOWNLOAD_WORKERS,
+                    QUICK_WORKERS, STEM_WORKERS)
 from database.models import (
     get_conn, replace_sections, update_song_duration, update_song_error,
     update_song_status, upsert_features, upsert_stem,
@@ -47,6 +48,7 @@ _STAGE_GATES = {
     "download": threading.Semaphore(DOWNLOAD_WORKERS),
     "stems": threading.Semaphore(STEM_WORKERS),
     "analysis": threading.Semaphore(ANALYSIS_WORKERS),
+    "quick": threading.Semaphore(QUICK_WORKERS),
 }
 
 
@@ -248,6 +250,10 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
 
     if result and result.path.exists():
         update_song_status(song_id, "downloaded", raw_path=str(result.path))
+        # New audio (or the same audio re-fetched): the quick tier runs for it
+        # again — a cache hit when the bytes did not change.
+        from database.models import set_quick_state
+        set_quick_state(song_id, None)
         if result.duration_secs is not None:
             update_song_duration(song_id, result.duration_secs)
         if result.source_url and result.source_url != row["source_url"]:
@@ -388,8 +394,11 @@ def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
     return out, bool(out) and "load" not in timings
 
 
-def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
-    """Analyse every stem on disk and write its ``features`` row.
+def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: ProgressCb,
+                   stage_grp: str = "analysis", gate: str = "analysis") -> tuple:
+    """Analyse the listed stems that exist on disk and write their features
+    rows. Returns (analysed, failed) stem-type lists. Shared by the quick tier
+    (the full mix only) and the full analysis (every stem).
 
     Each step, band occupancy and the residual vocal ratio are feature groups
     (analysis/registry.py) cached by the audio's content hash: a stem whose
@@ -401,31 +410,15 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
                                   extras_from_essentia)
     from database.models import set_stem_content_hash, update_features_extras
 
-    conn = get_conn()
-    row = conn.execute(
-        "SELECT id, raw_path FROM songs WHERE id=?", (song_id,)
-    ).fetchone()
-    conn.close()
-    if not row:
-        raise StageError(f"Song {song_id} not found")
-
-    stem_paths = _stem_paths(song_id)
-    if "full" not in stem_paths and row["raw_path"]:
-        stem_paths["full"] = row["raw_path"]
-    if not stem_paths:
-        msg = "No audio for this track. Download (and separate) it first."
-        update_song_error(song_id, "error_analysis", msg)
-        raise StageError(msg)
-
     configured, core_analyzer = effective_analyzer()
     run_essentia = configured in ("shadow", "essentia")
 
     analysed: list[str] = []
     failed: list[str] = []
     fully_cached = True
-    with _STAGE_GATES["analysis"], _timed("analysis", song_id,
-                                          analyzer=configured) as stage_info:
-        for stem_type in _ANALYSIS_STEM_ORDER:
+    with _STAGE_GATES[gate], _timed(stage_grp, song_id,
+                                    analyzer=configured) as stage_info:
+        for stem_type in stem_types:
             fp = stem_paths.get(stem_type, "")
             path = Path(fp) if fp else None
             if not path or not path.exists():
@@ -506,7 +499,31 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         stage_info["failed"] = not analysed
         if analysed and fully_cached:
             # Nothing was decoded or computed: a projection, not an analysis.
-            stage_info["grp"] = "analysis.cached"
+            stage_info["grp"] = f"{stage_grp}.cached"
+    return analysed, failed
+
+
+def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
+    """Analyse every stem on disk (_analyze_stems), mark the track analysed,
+    then measure stem quality and rebuild the variant clusters."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT id, raw_path FROM songs WHERE id=?", (song_id,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        raise StageError(f"Song {song_id} not found")
+
+    stem_paths = _stem_paths(song_id)
+    if "full" not in stem_paths and row["raw_path"]:
+        stem_paths["full"] = row["raw_path"]
+    if not stem_paths:
+        msg = "No audio for this track. Download (and separate) it first."
+        update_song_error(song_id, "error_analysis", msg)
+        raise StageError(msg)
+
+    analysed, failed = _analyze_stems(song_id, stem_paths, _ANALYSIS_STEM_ORDER,
+                                      on_progress)
 
     if not analysed:
         update_song_error(song_id, "error_analysis", "Analysis failed for every stem")
@@ -538,7 +555,47 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
 
 # ── Structure detection (non-status-bearing) ──────────────────────────────────
 
-def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
+def do_quick(song_id: int, on_progress: ProgressCb = None) -> dict:
+    """The quick tier: analyse the downloaded mix and cut provisional sections
+    from it, straight after download, instead of after Demucs (readme §9,
+    phase 3). BPM, key, the waveform and a first structure are in the library
+    within seconds; stems, the stem analysis and the final sections follow.
+
+    Not status-bearing — ``status`` still means fully processed, so matching and
+    everything that filters on 'analysed' are unchanged — but it records
+    ``songs.quick_state``. Raises StageError when nothing could be measured;
+    the pipeline treats that as non-fatal and carries on to stems.
+    """
+    from database.models import set_quick_state
+
+    conn = get_conn()
+    row = conn.execute("SELECT id, raw_path FROM songs WHERE id=?", (song_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise StageError(f"Song {song_id} not found")
+    raw = row["raw_path"]
+    if not raw or not Path(raw).exists():
+        set_quick_state(song_id, "failed")
+        raise StageError("No downloaded audio for the quick analysis.")
+
+    stem_paths = {**_stem_paths(song_id), "full": raw}
+    analysed, _failed = _analyze_stems(song_id, stem_paths, ("full",), on_progress,
+                                       stage_grp="quick", gate="quick")
+    if not analysed:
+        set_quick_state(song_id, "failed")
+        raise StageError("Quick analysis failed for the mix")
+    try:
+        result = do_structure(song_id, on_progress, gate="quick")
+    except StageError as exc:
+        # BPM and key landed; a track too short to segment is still useful.
+        log.info("quick structure for song %s: %s", song_id, exc)
+        result = {"section_count": 0}
+    set_quick_state(song_id, "done")
+    return {"analysed": analysed, "sections": result.get("section_count", 0)}
+
+
+def do_structure(song_id: int, on_progress: ProgressCb = None,
+                 gate: str = "analysis") -> dict:
     from analysis.structure import detect_sections
 
     conn = get_conn()
@@ -587,8 +644,9 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
     timings: dict = {}
     try:
         from analysis.cache import cached
-        # Shares the analysis gate — structure is the same librosa-bound work.
-        with _STAGE_GATES["analysis"], _timed("structure", song_id,
+        # Shares the analysis gate — structure is the same librosa-bound work —
+        # or the quick tier's, when it runs there.
+        with _STAGE_GATES[gate], _timed("structure", song_id,
                                               analyzer=analyzer) as tinfo:
             # [] is detect_sections' "found nothing": never cached.
             sections, hit, _ms = cached(group, key, lambda: detect_sections(
@@ -611,6 +669,10 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
     if not sections:
         raise StageError("Structure detection found no sections (track may be too short)")
 
+    # Without a vocal stem there is no vocal presence to label by: these are
+    # the quick tier's provisional sections, re-cut once the stems exist.
+    provisional = inputs["vocals"] is None
+    sections = [{**sec, "provisional": provisional} for sec in sections]
     replace_sections(song_id, sections)
     hooks = _persist_hooks(song_id, sections)
     # Cut the clips now so they are warm before the user reaches the ranked list

@@ -8,7 +8,7 @@ import {
 import { toast } from "../toast";
 
 // The pipeline in detail: every track's download → stems → analyse → structure,
-// the three worker pools, and whatever library-wide job is running.
+// the four worker pools, and whatever library-wide job is running.
 //
 // The Library's pill says "Processing 40 tracks"; this is where you see which
 // stage each of them is in, what is waiting behind Demucs, how long each stage
@@ -25,6 +25,7 @@ const FILTERS = [
 const PHASE_ORDER = { running: 0, waiting: 1, failed: 2, done: 3 };
 const POOLS = [
   ["download", "Download"],
+  ["quick", "Quick analysis"],
   ["stems", "Stems"],
   ["analysis", "Analyse + structure"],
 ];

@@ -505,6 +505,21 @@ DOWNLOAD_WORKERS = _resolve_int("MASHUP_DOWNLOAD_WORKERS", "download_workers", 4
 STEM_WORKERS     = _resolve_int("MASHUP_STEM_WORKERS", "stem_workers", PIPELINE_WORKERS)
 ANALYSIS_WORKERS = _resolve_int("MASHUP_ANALYSIS_WORKERS", "analysis_workers", 2)
 ENRICH_WORKERS   = _resolve_int("MASHUP_ENRICH_WORKERS", "enrich_workers", 5)
+# The quick tier (readme §9, phase 3): the full mix analysed and segmented right
+# after download, while the track waits for Demucs. Threads, not processes:
+# librosa/numpy release the GIL (3 analyses on 3 threads ran 2.2× faster than
+# in sequence on 4 cores, measured), so a process pool would buy little and
+# cost the shared decode cache.
+QUICK_WORKERS    = _resolve_int("MASHUP_QUICK_WORKERS", "quick_workers", 2)
+# Threads a Demucs / MDX run may use. Left alone, torch takes every core and the
+# quick tier stalls behind it; one core is kept back for it by default.
+DEMUCS_THREADS   = _resolve_int("MASHUP_DEMUCS_THREADS", "demucs_threads",
+                                max(1, (os.cpu_count() or 2) - 1))
+
+# Queue priorities (api/queue_runner.py): lower runs first, FIFO within one.
+PRIORITY_USER     = 0     # a button pressed on one track
+PRIORITY_INGEST   = 10    # tracks arriving from an import
+PRIORITY_BACKFILL = 30    # bulk re-processing of the library
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 

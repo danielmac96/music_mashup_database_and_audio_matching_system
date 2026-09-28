@@ -229,7 +229,7 @@ def _capture_job(monkeypatch):
     monkeypatch.setattr(jobs, "update", lambda *a, **k: None)
     monkeypatch.setattr(jobs, "fail", lambda job_id, msg, *a: done.update(failed=msg))
     monkeypatch.setattr(jobs, "done", lambda job_id, result: done.update(result))
-    monkeypatch.setattr(queue_runner, "enqueue_song", lambda sid: queued.append(sid) or "j")
+    monkeypatch.setattr(queue_runner, "enqueue_song", lambda sid, **_kw: queued.append(sid) or "j")
     return done, queued
 
 
@@ -286,7 +286,7 @@ def test_redownload_reports_a_track_whose_link_cannot_be_recovered(tmp_path, mon
 def _tracks(tmp_path, monkeypatch):
     m = _setup(tmp_path, monkeypatch)
     from api import queue_runner
-    monkeypatch.setattr(queue_runner, "enqueue_song", lambda sid: f"job-{sid}")
+    monkeypatch.setattr(queue_runner, "enqueue_song", lambda sid, **_kw: f"job-{sid}")
     from api.routes import tracks
     importlib.reload(tracks)
     return m, tracks

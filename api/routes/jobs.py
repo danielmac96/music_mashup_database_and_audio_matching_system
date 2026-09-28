@@ -9,7 +9,7 @@ router = APIRouter()
 
 # Which worker pool a running stage record occupies. Structure runs on the
 # analysis pool (it is the trailing pass of that stage), so it counts there.
-_POOL_OF = {"download": "download", "stems": "stems",
+_POOL_OF = {"download": "download", "quick": "quick", "stems": "stems",
             "analysis": "analysis", "structure": "analysis"}
 
 

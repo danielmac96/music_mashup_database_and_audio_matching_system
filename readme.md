@@ -117,6 +117,8 @@ Resolution order: **environment variable > `settings.json` > default**.
 | Settings folder | `MASHUP_SETTINGS_DIR` | — | `%APPDATA%\mashup-engine` · `~/Library/Application Support/mashup-engine` · `~/.config/mashup-engine` |
 | Pipeline workers | `MASHUP_PIPELINE_WORKERS` | `pipeline_workers` | `1` |
 | Download / stem / analysis / enrich workers | `MASHUP_DOWNLOAD_WORKERS` … | `download_workers` … | `4` / pipeline / `2` / `5` |
+| Quick-tier workers | `MASHUP_QUICK_WORKERS` | `quick_workers` | `2` |
+| Demucs / MDX threads | `MASHUP_DEMUCS_THREADS` | `demucs_threads` | cores − 1 (one kept for the quick tier) |
 | Stem separator | `MASHUP_STEM_SEPARATOR` | `stem_separator` | `demucs` (`mdx` = fast) |
 | Stem mode | `MASHUP_STEM_MODE` | `stem_mode` | `two` (`four` = drums/bass/other/vocals, Demucs only) |
 | Feature cache | `MASHUP_ANALYSIS_CACHE` | `analysis_cache` | on (`0`/`false` recomputes every group; results are still stored) |
@@ -163,7 +165,8 @@ browser reads `GET /api/settings`.
 ```
  1. COLLECT     Library paste bar ─┐   Discover search/browse ─┐   Mixes tracklist import ─┐
                                    └──────────► POST /api/playlists/ingest ◄───────────────┘
- 2. PROCESS     per track, on bounded queues:  download → stems → analyse → structure (+ hooks)
+ 2. PROCESS     per track, on bounded priority queues:
+                download → quick (mix: BPM, key, provisional sections) → stems → analyse → structure (+ hooks)
  3. SCORE       ⚙ "Score library" → every vocal × bed section pair → mashup_candidates
  4. JUDGE       pair dock: loop the moment, rate 1–5 (again to clear), hide, exclude
  5. BUILD       Studio: conformed lanes, timing pills, trim/loop/level → Export WAV or FL session
@@ -176,9 +179,12 @@ browser reads `GET /api/settings`.
    and a crate's frozen payloads go through the same `ingest_rows`. Each URL is
    normalised and deduplicated before a `songs` row is written at `queued`.
 2. **Process.** `queue_runner` routes each track to the queue for the stage its
-   status says it needs next. Downloads, a single Demucs run and a couple of
-   analyses run concurrently; restarts resume mid-pipeline tracks; an `error_*`
-   status waits for Retry.
+   status says it needs next. Straight after download the **quick tier**
+   analyses the mix and cuts provisional sections, so BPM, key, waveform and a
+   first structure land in seconds instead of after Demucs; stems, the stem
+   analysis and the final sections follow. Downloads, quick analyses, a single
+   Demucs run and a couple of full analyses run concurrently; restarts resume
+   mid-pipeline tracks; an `error_*` status waits for Retry.
 3. **Score.** A background job scores the whole library (heuristic, or the
    active learned model) and rewrites `mashup_candidates`.
 4. **Judge.** Pairs are auditioned as loops of their winning sections on the
@@ -216,12 +222,23 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
   reused files on disk is filed as `stems.reused`. `GET /api/jobs/timings`
   summarises it (median / p90 / total ms and real-time factor per unit, `since`
   for one batch). A timing write never fails the stage it timed.
-- **Stages are shared.** `api/workers/stages.py` `do_download/do_stems/do_analyze/do_structure`
+- **Stages are shared.** `api/workers/stages.py` `do_download/do_quick/do_stems/do_analyze/do_structure`
   are called both by the auto-chain and by the per-track buttons, and each sets
   the lifecycle status (`queued → downloaded → stemmed → analysed`) or an
   `error_*` status with `songs.last_error`. A semaphore keeps Demucs to one run
   at a time whoever asks. Structure is not status-bearing: matching works
-  without sections.
+  without sections. Nor is the **quick tier** (`do_quick`, between download and
+  stems): it records `songs.quick_state` (`done`/`failed`, cleared by a new
+  download), its failure never stops a track, and `status` still means "fully
+  processed" — pairs still need stems.
+- **Priority queues.** Every stage queue orders by `(priority, arrival)`:
+  `PRIORITY_USER` (a button on one track) before `PRIORITY_INGEST` (an import)
+  before `PRIORITY_BACKFILL` (bulk reprocessing); a job keeps its priority from
+  stage to stage. Worker pools are **threads**, deliberately: librosa/numpy
+  release the GIL (three analyses on three threads ran 2.2× faster than in
+  sequence on four cores), so a process pool would have bought little and cost
+  the shared decode cache. The separator subprocess is capped at
+  `DEMUCS_THREADS` (cores − 1) so the quick tier is never starved by torch.
 - **Each file is decoded once; each feature group is computed once.**
   `analysis/decode.py` keeps the last `DECODE_CACHE_SIZE` (6) decoded signals,
   so analysis on every stem, band occupancy, the residual vocal ratio, stem
@@ -297,8 +314,8 @@ reprocesses), add to a group, or delete the track and its files.
 The pipeline in detail. The rail counts active tracks; the Library's
 "Processing…" pill opens this screen.
 
-- **Pools**: download, stems and analyse + structure — busy slots out of
-  workers, and how many tracks wait.
+- **Pools**: download, quick analysis, stems and analyse + structure — busy
+  slots out of workers, and how many tracks wait.
 - **Other jobs**: library-wide work (Score library, bulk reprocess, dataset,
   training, exports) with progress, kept for ten minutes after it ends.
 - **One row per track** that has a job this server session or an `error_*`
@@ -308,8 +325,9 @@ The pipeline in detail. The rail counts active tracks; the Library's
   (structure skipped), ✕ failed with the reason. **Why?** expands the error and
   traceback; **Retry** (and **Retry all failed**) re-enters at the failed stage.
 - Filters in the rail: Active · Waiting · Failed · Done · All. Click a title for
-  the track detail. There is no cancel or reorder — a running Demucs cannot be
-  stopped mid-run, and the queue order is ingest order.
+  the track detail. There is no cancel or manual reorder — a running Demucs
+  cannot be stopped mid-run. The line is priority order: a track you pressed a
+  button on goes first, then imports in ingest order, then bulk reprocessing.
 
 ### Track detail
 
@@ -534,6 +552,9 @@ downloaded file with ffprobe and replaces a stale preview, then reprocesses.
   where the vocal stem should be silent, i.e. sections with no voice). Rolled
   into one 0–1 `quality`; unmeasurable parts are dropped, all-unmeasurable is
   0.5. Top stems below `STEM_QUALITY_MIN = 0.35` are not offered.
+- The separator runs with `OMP/MKL_NUM_THREADS = DEMUCS_THREADS`
+  (`stems/separate.thread_env`): torch takes every core otherwise, and the quick
+  tier on the next downloads stalls behind it.
 
 ### 5.4 Track analysis
 
@@ -604,6 +625,12 @@ which is why the core must not mix analysers within one library.
 6. **Per-stem chroma**: `chroma_vocal` from the vocal stem, `chroma_bed` from
    the instrumental, `bass_chroma` from the bass stem (four-stem) or a
    band-passed fallback. Full-mix chroma is kept for older rows.
+
+**Provisional sections.** The quick tier cuts sections from the mix before any
+stem exists: `provisional = 1`, no vocal presence, `section_class = unknown`
+(so the matcher does not pair them). They count as stale the moment a vocal
+stem exists (`bulk_worker._sections_stale_sql`), so the full analysis re-cuts
+them with the stems — the mix's own analysis is served from the feature cache.
 
 **Hooks** (`analysis/hooks.py`): per role, the **16 bars** worth previewing — the
 most confident chorus with real singing for a vocal, the drop (else chorus) for
@@ -909,7 +936,9 @@ caches responses, and opens a breaker after repeated failures.
 **Tables.** `songs` (metadata, status, `last_error`, `variant_cluster`,
 `track_id`; `origin_url` / `origin_duration_secs` — the imported link and its
 length, write-once; `audio_provenance` — JSON, where the file came from;
-`metadata_partial` — 1 when the per-track metadata fetch never landed) · `stems` (path, separator tag, quality metrics, `content_hash` of the bytes last analysed) · `features` (per
+`metadata_partial` — 1 when the per-track metadata fetch never landed;
+`quick_state` / `quick_at` — the quick tier's outcome for the current
+download) · `stems` (path, separator tag, quality metrics, `content_hash` of the bytes last analysed) · `features` (per
 stem: tempo/grid/phase, key/confidence/Camelot, loudness, MFCC, spectral, bands,
 envelope, beats, hook window; `analyzer`; the Essentia-only `lufs`, `lra`,
 `true_peak`, `replay_gain`, `tuning_hz`, `key_strength`, `dynamic_complexity`,
@@ -992,7 +1021,8 @@ Existing databases migrate on start.
   are *current* via `bulk_worker.sections_are_current` (`_SECTION_CURRENT_COLUMNS`),
   shared with the staleness badge. Add the next section column to that tuple or
   bulk re-analysis silently skips structure. `bpm_source IS NOT NULL` is
-  satisfied by `track_fallback`.
+  satisfied by `track_fallback`. Provisional sections (the quick tier's, cut
+  without stems) are stale whenever a vocal stem exists, in the same SQL.
 - **Change what a feature group returns → bump its version** in
   `analysis/registry.py`. The feature cache reuses a result while the audio's
   bytes, the group's version and the config values it reads (`params()`) are
@@ -1192,8 +1222,15 @@ sidebar revamp.**
    measurements, so not a speed win by itself; the key profile and rhythm
    method defaults, edma and degara, await the benchmark on real tracks; not
    yet built: TempoCNN and Essentia-feature segmentation, which move to phases
-   4–5) → **3** reorder into tiers (`analysed` = tier 1 done, stems
-   tracked separately), priority queues, a process pool → **4** stem tier:
+   4–5) → **3** quick tier between download and stems, priority queues,
+   Demucs thread cap (done, §3 — measured on three tracks with a stand-in
+   separator: each had BPM/key/provisional sections before its stems. Two
+   deviations from the plan: `status` keeps meaning "fully processed" instead
+   of "tier 1 done", because the matcher needs stem rows and changing what
+   `analysed` means would have rippled through every query; and no process
+   pool, because threads already parallelise (above). Pairs from quick-tier
+   tracks and ML vocal activity for provisional sections belong to phases 7
+   and 5) → **4** stem tier:
    persistent thread-capped Demucs, per-stem HPCP/bands/vocal activity/Melodia,
    re-segmentation with a section-index remap that protects `pair_feedback`,
    partner prefetch → **5** Discogs-EffNet embeddings + heads → **6** batch
