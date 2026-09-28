@@ -24,6 +24,7 @@ docstring).
 """
 from __future__ import annotations
 
+import heapq
 import itertools
 import logging
 import queue
@@ -66,6 +67,58 @@ def enqueue_song(song_id: int, priority: int = PRIORITY_INGEST) -> str:
     jobs.update(job_id, priority=int(priority))
     _dispatch(job_id, song_id)
     return job_id
+
+
+def active_job_for_song(song_id: int) -> Optional[dict]:
+    """The newest queued/running pipeline job for a track, if any."""
+    for job in jobs.list_jobs(active_only=True, kind="pipeline"):
+        if job.get("song_id") == song_id:
+            return job
+    return None
+
+
+def prioritise(song_id: int, priority: int) -> dict:
+    """Move a track up the line: raise its pipeline job to ``priority``
+    (never lower it), re-ordering whatever of it is waiting in a stage queue.
+    A track with no active job is enqueued at ``priority`` when it still has
+    stages to run; a finished or failed track is left alone (an error waits
+    for Retry, not for a click on the row).
+
+    Returns {"song_id", "job_id", "action"}: action is 'raised', 'kept' (the
+    job was already at least that urgent), 'enqueued' or 'none'."""
+    from database.models import get_conn
+    job = active_job_for_song(song_id)
+    if job is None:
+        conn = get_conn()
+        try:
+            row = conn.execute("SELECT status FROM songs WHERE id=?",
+                               (song_id,)).fetchone()
+        finally:
+            conn.close()
+        if row and row["status"] in ("queued", "downloaded", "stemmed"):
+            return {"song_id": song_id, "action": "enqueued",
+                    "job_id": enqueue_song(song_id, priority=priority)}
+        return {"song_id": song_id, "job_id": None, "action": "none"}
+
+    job_id = job["id"]
+    if int(job.get("priority", PRIORITY_INGEST)) <= priority:
+        return {"song_id": song_id, "job_id": job_id, "action": "kept"}
+    # The job's priority first: a worker that takes the item between here and
+    # the re-heap below re-queues its next stage at the new priority anyway.
+    jobs.update(job_id, priority=int(priority))
+    for q in _QUEUES.values():
+        with q.mutex:
+            items = q.queue
+            changed = False
+            for i, (prio, seq, jid, sid) in enumerate(items):
+                if jid == job_id and prio > priority:
+                    # Same arrival number: among equally urgent tracks the
+                    # original order holds.
+                    items[i] = (int(priority), seq, jid, sid)
+                    changed = True
+            if changed:
+                heapq.heapify(items)
+    return {"song_id": song_id, "job_id": job_id, "action": "raised"}
 
 
 def _put(stage: str, job_id: str, song_id: int) -> None:

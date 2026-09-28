@@ -71,6 +71,8 @@ def power_stats(y: np.ndarray, sr: int, band_edges: Sequence[float],
       mean        (S ** 2).mean()               — _step_dynamics "energy"
       bands       S2[mask].sum() per band        — quality._band_energy
       hf, total   S2[freqs >= hf_hz].sum(), S2.sum() — quality._hf_loss
+      band_frames the same per-band power per frame, (bands, frames) float32
+                  — a section's occupancy is a slice of it (structure.py)
     """
     def _run():
         import librosa
@@ -78,14 +80,19 @@ def power_stats(y: np.ndarray, sr: int, band_edges: Sequence[float],
         S2 = S ** 2
         freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
         bands = []
-        for lo, hi in zip(band_edges[:-1], band_edges[1:]):
+        band_frames = np.zeros((len(band_edges) - 1, S2.shape[1]), dtype=np.float32)
+        for i, (lo, hi) in enumerate(zip(band_edges[:-1], band_edges[1:])):
             mask = (freqs >= lo) & (freqs < hi)
             bands.append(float(S2[mask].sum()) if mask.any() else 0.0)
+            if mask.any():
+                band_frames[i] = S2[mask].sum(axis=0)
+        band_frames.setflags(write=False)
         hf_mask = freqs >= hf_hz
         return {
             "mean": float(S2.mean()),
             "bands": bands,
             "hf": float(S2[hf_mask].sum()),
             "total": float(S2.sum()),
+            "band_frames": band_frames,
         }
     return memo(y, ("power_stats", sr, n_fft, hop, tuple(band_edges), float(hf_hz)), _run)

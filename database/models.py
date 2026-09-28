@@ -527,6 +527,7 @@ _FEATURES_OPTIONAL_COLUMNS = (
     ("dissonance", "REAL"),
     ("bands3_json", "TEXT"),           # low <250 Hz / mid / high >4 kHz fractions
     ("descriptors_json", "TEXT"),      # everything else Essentia measured
+    ("melody_json", "TEXT"),           # vocal stem only: sung range + centre
 )
 
 
@@ -736,6 +737,16 @@ _SECTIONS_OPTIONAL_COLUMNS = (
     # vocal stem exists (bulk_worker._sections_stale_sql), so the full analysis
     # re-cuts them with the stems.
     ("provisional", "INTEGER DEFAULT 0"),
+    # Phase 4 — measured on the stems, per section. vocal_activity is the share
+    # of frames in which the vocal stem is singing (analysis/vocals.py), where
+    # vocal_presence is a mean level; the band vectors are 8-band occupancy of
+    # the vocal and the bed stems inside the section; f0_json is the sung range
+    # and centre from the vocal stem's melody (Essentia analyser only). NULL =
+    # not measured: no stem, no melody, or cut before this existed.
+    ("vocal_activity", "REAL"),
+    ("band_energy_vocal_json", "TEXT"),
+    ("band_energy_bed_json", "TEXT"),
+    ("f0_json", "TEXT"),
 )
 
 
@@ -803,6 +814,10 @@ _PAIR_FEEDBACK_UNIQUE_INDEX = (
 _PAIR_FEEDBACK_OPTIONAL_COLUMNS = (
     ("features_json", "TEXT"),
     ("rating", "INTEGER"),
+    # 1 = this judgement's section indexes could not be carried onto a re-cut
+    # structure (remap_feedback_sections): the row is kept exactly as it was,
+    # but its indexes may now point at different music.
+    ("sections_stale", "INTEGER DEFAULT 0"),
 )
 
 
@@ -1704,6 +1719,13 @@ def update_song_url(song_id: int, new_url: str, db_path: Path = DB_PATH,
     conn.execute(
         "DELETE FROM mashup_candidates WHERE vocal_song_id=? OR inst_song_id=?",
         (song_id, song_id))
+    # Different audio: the judgements stay (irreplaceable), but the section
+    # indexes they name belonged to the old file's structure.
+    conn.execute(
+        """UPDATE pair_feedback SET sections_stale=1
+           WHERE (vocal_song_id=? AND vocal_section IS NOT NULL)
+              OR (inst_song_id=? AND inst_section IS NOT NULL)""",
+        (song_id, song_id))
     # source follows the link: a track pointed back at SoundCloud must stop
     # claiming the YouTube source a fallback once gave it.
     from ingest.sources import classify_url
@@ -1868,13 +1890,129 @@ def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[D
 
 # ── Sections (song structure: intro/verse/chorus/drop/…) ─────────────────────
 
+# A judged section is carried to the new section it overlaps most, when that
+# overlap covers MORE than this much of the OLD section. At or below it the
+# music the verdict was about is no longer one section (an exact half-split has
+# two equal claims), and moving it would be a guess.
+SECTION_REMAP_MIN_OVERLAP = 0.5
+
+
+def section_index_map(old: List[Dict], new: List[Dict],
+                      min_overlap: float = SECTION_REMAP_MIN_OVERLAP) -> Dict[int, Optional[int]]:
+    """old section_index -> new section_index (or None when unmappable), by the
+    largest time overlap, measured as a fraction of the old section, which must
+    exceed ``min_overlap``."""
+    out: Dict[int, Optional[int]] = {}
+    for o in old:
+        o0, o1 = float(o["start_sec"]), float(o["end_sec"])
+        length = max(o1 - o0, 1e-9)
+        best, best_frac = None, 0.0
+        for n in new:
+            ov = min(o1, float(n["end_sec"])) - max(o0, float(n["start_sec"]))
+            frac = ov / length
+            if frac > best_frac:
+                best, best_frac = int(n["section_index"]), frac
+        out[int(o["section_index"])] = best if best_frac > min_overlap else None
+    return out
+
+
+def remap_feedback_sections(conn: sqlite3.Connection, song_id: int,
+                            old: List[Dict], new: List[Dict]) -> Dict[str, int]:
+    """Carry every pair_feedback row that names one of this song's sections onto
+    the re-cut structure, inside the caller's transaction.
+
+    ``pair_feedback`` is irreplaceable (readme §7): nothing here deletes a row.
+    A row whose section maps cleanly is re-pointed and cleared of
+    ``sections_stale``; a row with any side that does not map keeps its
+    indexes and is flagged ``sections_stale = 1``. If carrying the mappable
+    rows would make two rows share one key (two old sections collapsing into
+    one new one), nothing is moved and every affected row is flagged instead.
+    Raises RuntimeError on a row-count change, which the caller's rollback
+    turns into "nothing happened"."""
+    old_by_idx = {int(o["section_index"]): o for o in old}
+    new_by_idx = {int(n["section_index"]): n for n in new}
+    identical = (set(old_by_idx) == set(new_by_idx) and all(
+        abs(float(old_by_idx[i]["start_sec"]) - float(new_by_idx[i]["start_sec"])) < 1e-6
+        and abs(float(old_by_idx[i]["end_sec"]) - float(new_by_idx[i]["end_sec"])) < 1e-6
+        for i in old_by_idx))
+    if identical:
+        return {"moved": 0, "flagged": 0, "kept": 0}
+    mapping = section_index_map(old, new)
+
+    rows = conn.execute(
+        """SELECT id, vocal_song_id, inst_song_id, vocal_section, inst_section,
+                  COALESCE(sections_stale, 0) AS sections_stale
+             FROM pair_feedback WHERE vocal_song_id=? OR inst_song_id=?""",
+        (song_id, song_id)).fetchall()
+    if not rows:
+        return {"moved": 0, "flagged": 0, "kept": 0}
+    before = conn.execute("SELECT COUNT(*) FROM pair_feedback").fetchone()[0]
+
+    plan = []            # (id, new_vocal_section, new_inst_section, stale)
+    for r in rows:
+        if r["sections_stale"]:
+            # Its indexes name an OLDER structure than the one being replaced:
+            # mapping them through this one would move a guess.
+            plan.append((r["id"], r["vocal_section"], r["inst_section"], 1))
+            continue
+        vs, is_ = r["vocal_section"], r["inst_section"]
+        ok = True
+        if r["vocal_song_id"] == song_id and vs is not None:
+            vs = mapping.get(int(vs))
+            ok = ok and vs is not None
+        if r["inst_song_id"] == song_id and is_ is not None:
+            is_ = mapping.get(int(is_))
+            ok = ok and is_ is not None
+        if ok:
+            plan.append((r["id"], vs, is_, 0))
+        else:
+            plan.append((r["id"], r["vocal_section"], r["inst_section"], 1))
+
+    keys = {}
+    by_id = {r["id"]: r for r in rows}
+    collision = False
+    for rid, vs, is_, _stale in plan:
+        r = by_id[rid]
+        key = (r["vocal_song_id"], r["inst_song_id"],
+               -1 if vs is None else vs, -1 if is_ is None else is_)
+        if key in keys:
+            collision = True
+            break
+        keys[key] = rid
+    if collision:
+        plan = [(r["id"], r["vocal_section"], r["inst_section"], 1) for r in rows]
+
+    # Two passes, so a swap (1->2, 2->1) never meets itself on the unique index:
+    # park every moving row on an index no section can have, then land it.
+    moving = [p for p in plan if (p[1], p[2]) != (by_id[p[0]]["vocal_section"],
+                                                  by_id[p[0]]["inst_section"])]
+    for rid, _vs, _is, _st in moving:
+        conn.execute("UPDATE pair_feedback SET vocal_section=-1000000-id, "
+                     "inst_section=-1000000-id WHERE id=?", (rid,))
+    for rid, vs, is_, stale in plan:
+        conn.execute("UPDATE pair_feedback SET vocal_section=?, inst_section=?, "
+                     "sections_stale=? WHERE id=?", (vs, is_, stale, rid))
+
+    after = conn.execute("SELECT COUNT(*) FROM pair_feedback").fetchone()[0]
+    if after != before:
+        raise RuntimeError(f"pair_feedback remap changed the row count {before}->{after}")
+    flagged = sum(1 for p in plan if p[3])
+    return {"moved": len(moving) if not collision else 0, "flagged": flagged,
+            "kept": len(plan) - flagged - (len(moving) if not collision else 0)}
+
+
 def replace_sections(song_id: int, sections: List[Dict],
                      db_path: Path = DB_PATH) -> None:
-    """Replace all structure sections for a song with a fresh analysis result.
+    """Replace all structure sections for a song with a fresh analysis result,
+    carrying the user's judgements of the old sections onto the new ones
+    (remap_feedback_sections) in the same transaction.
 
     Each section dict: start_sec, end_sec, label, energy, vocal_presence,
     repetition, confidence."""
     conn = get_conn(db_path)
+    old = [dict(r) for r in conn.execute(
+        "SELECT section_index, start_sec, end_sec FROM sections WHERE song_id=?",
+        (song_id,)).fetchall()]
     conn.execute("DELETE FROM sections WHERE song_id=?", (song_id,))
     conn.executemany(
         """INSERT INTO sections
@@ -1886,9 +2024,11 @@ def replace_sections(song_id: int, sections: List[Dict],
                 bpm, bpm_source, bpm_confidence,
                 energy_absolute, energy_slope, energy_trend,
                 beat_times_json, downbeats_json, beat_count, bar_count,
-                beats_per_bar, phrase_length_bars, section_class, provisional)
+                beats_per_bar, phrase_length_bars, section_class, provisional,
+                vocal_activity, band_energy_vocal_json, band_energy_bed_json,
+                f0_json)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                   ?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 song_id, idx,
@@ -1910,12 +2050,30 @@ def replace_sections(song_id: int, sections: List[Dict],
                 s.get("beat_count"), s.get("bar_count"),
                 s.get("beats_per_bar"), s.get("phrase_length_bars"),
                 s.get("section_class"), 1 if s.get("provisional") else 0,
+                s.get("vocal_activity"),
+                json.dumps(s["band_energy_vocal"]) if s.get("band_energy_vocal") else None,
+                json.dumps(s["band_energy_bed"]) if s.get("band_energy_bed") else None,
+                json.dumps(s["f0"]) if s.get("f0") else None,
             )
             for idx, s in enumerate(sections)
         ],
     )
+    new = [{"section_index": idx, "start_sec": float(s["start_sec"]),
+            "end_sec": float(s["end_sec"])} for idx, s in enumerate(sections)]
+    try:
+        outcome = remap_feedback_sections(conn, song_id, old, new)
+    except Exception:
+        # Sections and judgements move together or not at all.
+        conn.rollback()
+        conn.close()
+        raise
     conn.commit()
     conn.close()
+    if outcome.get("moved") or outcome.get("flagged"):
+        import logging
+        logging.getLogger(__name__).info(
+            "song %s: re-cut sections carried %d judgement(s), flagged %d",
+            song_id, outcome["moved"], outcome["flagged"])
 
 
 def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
@@ -1935,7 +2093,10 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
                           ("chroma_vocal_json", "chroma_vocal"),
                           ("chroma_bed_json", "chroma_bed"),
                           ("beat_times_json", "beat_times"),
-                          ("downbeats_json", "downbeats")):
+                          ("downbeats_json", "downbeats"),
+                          ("band_energy_vocal_json", "band_energy_vocal"),
+                          ("band_energy_bed_json", "band_energy_bed"),
+                          ("f0_json", "f0")):
             if d.get(src):
                 d[dest] = json.loads(d.pop(src))
             else:

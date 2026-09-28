@@ -124,7 +124,9 @@ _GROUPS = (
                  "8-band energy occupancy (analysis/quality.band_energy)"),
     FeatureGroup("librosa.residual", 1, "librosa", 2, _residual_params,
                  "residual vocal ratio of a bed (vocals + mix)"),
-    FeatureGroup("librosa.structure", 1, "librosa", 1, _structure_params,
+    # v2 (phase 4): sections also carry vocal_activity, per-stem band
+    # occupancy and, given a melody, the sung range.
+    FeatureGroup("librosa.structure", 2, "librosa", 1, _structure_params,
                  "sections: boundaries, labels, per-section measurements "
                  "(mix + vocal/instrumental/bass stems)"),
     # ── Essentia (analysis/essentia_groups.py) ────────────────────────────────
@@ -145,7 +147,11 @@ _GROUPS = (
                  "MFCC, centroid/rolloff/ZCR, flux, flatness, HFC, contrast, "
                  "complexity, moments, dissonance, 8- and 3-band energy, envelope",
                  step="spectral"),
-    FeatureGroup("essentia.structure", 1, "essentia", 1, _structure_params,
+    FeatureGroup("essentia.melody", 1, "essentia", 2,
+                 _essentia_params(hop=128, frame=1024, step=0.05),
+                 "vocal stem only: sung pitch (PitchMelodia), 50 ms f0 curve, "
+                 "sung range and centre", step="melody"),
+    FeatureGroup("essentia.structure", 2, "essentia", 1, _structure_params,
                  "sections on the Essentia beat grid (the librosa segmenter fed "
                  "essentia.rhythm's beats and phase)"),
 )

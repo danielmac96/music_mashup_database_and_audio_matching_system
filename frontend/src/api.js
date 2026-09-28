@@ -56,6 +56,10 @@ export const api = {
   processTrack: (id) =>
     jsonFetch(`/api/tracks/${id}/process`, { method: "POST" }),
 
+  // Move a selected track and its likeliest partners ahead of the import queue.
+  prefetchTrack: (id) =>
+    jsonFetch(`/api/tracks/${id}/prefetch`, { method: "POST" }),
+
   // Re-check a track for a stale ~30s Go+ preview and re-download full if needed.
   reverifyTrack: (id) =>
     jsonFetch(`/api/tracks/${id}/reverify`, { method: "POST" }),

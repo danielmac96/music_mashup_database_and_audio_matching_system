@@ -373,6 +373,11 @@ def effective_analyzer() -> tuple[str, str]:
     return mode, ("essentia" if mode == "essentia" else "librosa")
 
 
+# Essentia groups beyond the core four, per stem: the sung pitch only means
+# something on an isolated vocal.
+_ESSENTIA_EXTRA_STEPS = {"vocals": ("melody",)}
+
+
 def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
                   on_progress: ProgressCb) -> tuple[dict, bool]:
     """Every Essentia group for one stem, cached. Returns (payloads, fully
@@ -384,7 +389,8 @@ def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
     timings: dict = {}
     try:
         out = analyze_file_essentia(path, cache=StepCache(key, ESSENTIA_STEP_GROUPS),
-                                    timings=timings, on_progress=on_progress)
+                                    timings=timings, on_progress=on_progress,
+                                    extra_steps=_ESSENTIA_EXTRA_STEPS.get(stem_type, ()))
     except Exception:  # noqa: BLE001
         log.exception("essentia analysis failed for %s/%s", song_id, stem_type)
         out = {}
@@ -639,6 +645,18 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
             group, analyzer = "essentia.structure", "essentia"
             hashes["grid"] = hashlib.blake2b(
                 json.dumps(grid, sort_keys=True).encode("utf-8"), digest_size=16).hexdigest()
+    # The vocal stem's sung pitch, when the Essentia analyser measured it (shadow
+    # or essentia mode): sections then carry their sung range. Part of the key,
+    # so sections cut before the melody existed are re-cut once it does.
+    melody = None
+    if _configured != "librosa" and hashes.get("vocals") not in (None, "!"):
+        from analysis.cache import lookup
+        from analysis.registry import GROUPS
+        mel_group = GROUPS["essentia.melody"]
+        mel = lookup(mel_group, hashes["vocals"])
+        if mel and mel.get("f0"):
+            melody = {"step": mel.get("step"), "f0": mel["f0"]}
+            hashes["melody"] = f"{mel_group.version}:{mel_group.params_hash()}"
     key = _combo_key(hashes, required=("full",))
 
     timings: dict = {}
@@ -652,7 +670,7 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
             sections, hit, _ms = cached(group, key, lambda: detect_sections(
                 inputs["full"], inputs["vocals"],
                 inst_path=inputs["instrumental"], bass_path=inputs["bass"],
-                on_progress=on_progress, timings=timings, grid=grid,
+                on_progress=on_progress, timings=timings, grid=grid, melody=melody,
             ) or None)
             sections = sections or []
             tinfo["audio_secs"] = timings.get("audio_secs")

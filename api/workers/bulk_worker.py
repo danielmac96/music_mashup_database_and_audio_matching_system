@@ -352,7 +352,15 @@ def _sections_stale_sql(song_ref: str) -> str:
         f"AND sec.provisional=1)\n"
         f"        AND EXISTS (SELECT 1 FROM stems st WHERE st.song_id={song_ref} "
         f"AND st.stem_type='vocals'))")
-    return "\n    OR ".join(missing + [provisional])
+    # Phase 4: with a vocal stem, sections carry stem measurements
+    # (vocal_activity, per-stem bands). Not in _SECTION_CURRENT_COLUMNS, because
+    # a track without stems can never have them and must not look stale forever.
+    stem_measures = (
+        f"(EXISTS (SELECT 1 FROM stems st WHERE st.song_id={song_ref} "
+        f"AND st.stem_type='vocals')\n"
+        f"        AND NOT EXISTS (SELECT 1 FROM sections sec "
+        f"WHERE sec.song_id={song_ref} AND sec.vocal_activity IS NOT NULL))")
+    return "\n    OR ".join(missing + [provisional, stem_measures])
 
 
 # One definition of "this track predates a generation of feature we now need".
@@ -454,6 +462,19 @@ def staleness(db_path=None) -> dict:
                    WHERE sec.song_id = s.id AND sec.bpm_source IS NOT NULL)"""
         ).fetchone()[0]
 
+        # Phase 4: a vocal stem exists, but no section carries the stem
+        # measurements (vocal activity, per-stem bands, sung range).
+        no_stem_measures = conn.execute(
+            """SELECT COUNT(DISTINCT s.id) FROM songs s
+               WHERE s.status='analysed'
+                 AND EXISTS (SELECT 1 FROM sections x WHERE x.song_id = s.id)
+                 AND EXISTS (SELECT 1 FROM stems st
+                             WHERE st.song_id = s.id AND st.stem_type='vocals')
+                 AND NOT EXISTS (
+                   SELECT 1 FROM sections sec
+                   WHERE sec.song_id = s.id AND sec.vocal_activity IS NOT NULL)"""
+        ).fetchone()[0]
+
         needs_analysis = conn.execute(
             f"""SELECT COUNT(*) FROM songs s
                 WHERE s.status='analysed' AND ({_STALE_ANALYSIS_SQL})"""
@@ -474,6 +495,7 @@ def staleness(db_path=None) -> dict:
             "missing_stem_quality": no_quality,
             "missing_section_chroma": no_chroma,
             "missing_section_grid": no_section_grid,
+            "missing_section_stem_measures": no_stem_measures,
             "missing_sections": no_sections,
             "missing_four_stems": wrong_stem_mode,
             "stem_mode": "four" if four else "two",

@@ -16,6 +16,13 @@ librosa groups (analysis/registry.py, analysis/cache.py):
                      flux, flatness, complexity, HFC, contrast, spread/skew/
                      kurtosis, 8-band and 3-band energy, the waveform envelope
 
+and one more, run on the vocal stem only (an ``extra_steps`` of
+analyze_file_essentia):
+
+  essentia.melody    the sung pitch (PitchMelodia on the isolated vocal),
+                     a 50 ms f0 curve and the sung range — what a section's
+                     ``f0`` is cut from (analysis/structure.py)
+
 Every payload uses the key names the ``features`` table already stores (bpm,
 key, mfcc, band_energy, waveform_rms, …) for the values that replace a librosa
 one, so analysis/project.py can project either analyser into the same row, plus
@@ -42,6 +49,15 @@ import numpy as np
 log = logging.getLogger(__name__)
 
 STEPS = ("rhythm", "tonal", "loudness", "spectral")
+# Steps a caller asks for by name, on the stems they make sense for.
+EXTRA_STEPS = ("melody",)
+
+# PitchMelodia on the 22.05 kHz signal: hop 128 is 5.8 ms, and the stored curve
+# is the median of each 50 ms of voiced frames — fine enough for a sung note,
+# ~2 k points for 100 s instead of 17 k. ~1.8 s per 100 s of audio (Phase 4).
+MELODY_HOP = 128
+MELODY_FRAME = 1024
+MELODY_STEP_SECS = 0.05
 
 SR_FULL = 44100
 SR_FRAMES = 22050
@@ -441,6 +457,37 @@ def group_spectral(sig: Signals, n_mfcc: int = 13, detail_every: int = 4) -> dic
     }
 
 
+def downsample_f0(pitch: np.ndarray, hop_secs: float,
+                  step_secs: float = MELODY_STEP_SECS) -> List[float]:
+    """Median voiced pitch per ``step_secs`` bin (0 when under half the bin is
+    voiced) — a note held through a bin survives, a stray frame does not."""
+    pitch = np.asarray(pitch, dtype=float)
+    per = max(1, int(round(step_secs / hop_secs)))
+    out: List[float] = []
+    for i in range(0, len(pitch), per):
+        chunk = pitch[i:i + per]
+        voiced = chunk[chunk > 0]
+        out.append(round(float(np.median(voiced)), 1)
+                   if voiced.size * 2 >= chunk.size and voiced.size else 0.0)
+    return out
+
+
+def group_melody(sig: Signals) -> dict:
+    """The vocal stem's sung pitch. An isolated vocal is monophonic enough for
+    PitchMelodia (the single-source variant); on a full mix the predominant-
+    melody version would be needed, at several times the cost, which is why
+    this runs on the stem only."""
+    import essentia.standard as es
+    from analysis.vocals import f0_summary
+    # No EqualLoudness pre-filter: it is only defined for 8/16/32/44.1/48 kHz,
+    # and on an isolated vocal there is no accompaniment for it to tilt away.
+    pitch, _conf = es.PitchMelodia(sampleRate=SR_FRAMES, hopSize=MELODY_HOP,
+                                   frameSize=MELODY_FRAME)(sig.mono22)
+    curve = downsample_f0(np.asarray(pitch), MELODY_HOP / SR_FRAMES)
+    return {"step": MELODY_STEP_SECS, "f0": curve,
+            "summary": f0_summary(curve, MELODY_STEP_SECS, 0.0, sig.secs)}
+
+
 # ── Run all groups for one file ───────────────────────────────────────────────
 
 def _runners() -> Dict[str, Callable[[Signals], dict]]:
@@ -451,12 +498,15 @@ def _runners() -> Dict[str, Callable[[Signals], dict]]:
         "tonal": lambda s: group_tonal(s, current_essentia_key_profile()),
         "loudness": group_loudness,
         "spectral": lambda s: group_spectral(s, N_MFCC),
+        "melody": group_melody,
     }
 
 
 def analyze_file_essentia(path: Path, cache=None, timings: Optional[dict] = None,
-                          on_progress: Optional[Callable] = None) -> Dict[str, dict]:
-    """Every Essentia group for one file: {step: payload}.
+                          on_progress: Optional[Callable] = None,
+                          extra_steps: tuple = ()) -> Dict[str, dict]:
+    """Every Essentia group for one file: {step: payload}, plus any of
+    EXTRA_STEPS named in ``extra_steps`` (the melody, for a vocal stem).
 
     ``cache`` is the same protocol analyze_file takes (analysis/cache.py
     StepCache, here bound to the essentia groups). A step that raises is logged,
@@ -467,13 +517,14 @@ def analyze_file_essentia(path: Path, cache=None, timings: Optional[dict] = None
         raise RuntimeError("essentia is not installed")
     out: Dict[str, dict] = {}
     cached_steps: List[str] = []
+    steps = STEPS + tuple(s for s in extra_steps if s in EXTRA_STEPS)
     if cache is not None:
-        for step in STEPS:
+        for step in steps:
             hit = cache.get(step)
             if hit is not None:
                 out[step] = hit
                 cached_steps.append(step)
-    todo = [s for s in STEPS if s not in out]
+    todo = [s for s in steps if s not in out]
     if timings is not None:
         timings["cached_steps"] = list(cached_steps)
         timings["failed_steps"] = []

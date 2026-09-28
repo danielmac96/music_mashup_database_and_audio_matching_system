@@ -471,8 +471,17 @@ def _feedback_pairs(conn) -> tuple[list[tuple], list[tuple]]:
     Returns (positives, negatives), each a list of
     (vocal_song_id, inst_song_id, vocal_section, inst_section).
     """
+    # A verdict whose sections could not be carried onto a re-cut structure
+    # (sections_stale, models.remap_feedback_sections) still judges the PAIR,
+    # but its indexes may name different music now: drop them, and the builder
+    # picks the section pair as it does for any pair without one.
     rows = conn.execute(
-        """SELECT vocal_song_id, inst_song_id, vocal_section, inst_section, verdict
+        """SELECT vocal_song_id, inst_song_id,
+                  CASE WHEN COALESCE(sections_stale, 0) = 1 THEN NULL
+                       ELSE vocal_section END AS vocal_section,
+                  CASE WHEN COALESCE(sections_stale, 0) = 1 THEN NULL
+                       ELSE inst_section END AS inst_section,
+                  verdict
            FROM pair_feedback
            WHERE vocal_song_id IS NOT NULL AND inst_song_id IS NOT NULL""").fetchall()
     positives: list[tuple] = []

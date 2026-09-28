@@ -374,12 +374,31 @@ def _phrase_length(bar_count: float) -> Optional[float]:
     return float(best) if bar_count <= candidates[-1] * 1.5 else round(bar_count, 2)
 
 
+def _section_bands(band_frames: Optional[np.ndarray], start: float, end: float,
+                   sr: int = SAMPLE_RATE, hop: int = HOP_LENGTH) -> Optional[list]:
+    """8-band occupancy (fractions summing to 1) of one stem inside [start, end),
+    from analysis/frames.power_stats' per-frame band power. None when the stem is
+    missing or silent there — unmeasured, not an empty spectrum."""
+    if band_frames is None:
+        return None
+    f0 = max(0, int(start * sr / hop))
+    f1 = min(band_frames.shape[1], int(end * sr / hop))
+    if f1 <= f0:
+        return None
+    per_band = band_frames[:, f0:f1].sum(axis=1).astype(float)
+    total = float(per_band.sum())
+    if not np.isfinite(total) or total <= 1e-12:
+        return None
+    return [round(float(v / total), 6) for v in per_band]
+
+
 def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
                     inst_path: Optional[Path] = None,
                     bass_path: Optional[Path] = None,
                     on_progress: ProgressCb = None,
                     timings: Optional[dict] = None,
-                    grid: Optional[dict] = None) -> List[dict]:
+                    grid: Optional[dict] = None,
+                    melody: Optional[dict] = None) -> List[dict]:
     """Analyse the full mix (and the stems when available) and return an
     ordered list of section dicts: start_sec, end_sec, label, energy,
     vocal_presence, repetition, confidence. Returns [] on failure.
@@ -404,6 +423,16 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     the librosa beat track with another analyser's (the Essentia analyser's
     essentia.rhythm), so sections, their downbeats and the track's stored beat
     grid all sit on the same beats. Everything else is unchanged.
+
+    ``melody`` — {"step": secs, "f0": [Hz, 0 = unvoiced]} — the vocal stem's
+    pitch curve (essentia.melody). Each section then carries ``f0``, the sung
+    range and centre inside it (analysis/vocals.f0_summary).
+
+    With the stems present each section also carries, measured on them:
+    ``vocal_activity`` (share of frames with a voice, analysis/vocals.py) and
+    ``band_energy_vocal`` / ``band_energy_bed`` (8-band occupancy of each stem
+    inside the section — where THIS vocal and THAT bed sit, section by section,
+    instead of one number per track).
     """
     def _tick(msg: str) -> None:
         if on_progress:
@@ -568,14 +597,37 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
 
     # Vocal stem RMS on the same clock (frame level, mapped by time).
     vocal_rms = None
+    vocal_active = None
     if vocals_path and Path(vocals_path).exists():
         _phase("vocal", "Measuring vocal activity…")
         try:
+            from analysis.vocals import active_frames
             yv = load_mono(vocals_path, sr=SAMPLE_RATE)
             vocal_rms = _frame_rms(yv)
+            vocal_active = active_frames(vocal_rms)
         except Exception:
             log.warning("  Could not load vocal stem for vocal-presence scoring.")
             vocal_rms = None
+
+    # Per-frame band power of each stem: the same |STFT|² the analysis pass took
+    # for its band occupancy (frames.power_stats), so it is usually a cache hit.
+    def _stem_band_frames(path: Optional[Path], what: str):
+        if not path or not Path(path).exists():
+            return None
+        try:
+            from analysis.quality import BAND_EDGES, HF_BAND_HZ
+            ys = load_mono(path, sr=SAMPLE_RATE)
+            if len(ys) < 2048:
+                return None
+            return frames.power_stats(ys, sr, BAND_EDGES, HF_BAND_HZ, n_fft=2048,
+                                      hop=HOP_LENGTH)["band_frames"]
+        except Exception:  # noqa: BLE001
+            log.warning("  %s band occupancy failed", what, exc_info=True)
+            return None
+
+    _phase("stem_bands", "Measuring per-stem band occupancy…")
+    vocal_bands_f = _stem_band_frames(vocals_path, "vocal")
+    bed_bands_f = _stem_band_frames(inst_path, "bed")
 
     frames_per_sec = sr / HOP_LENGTH
     rms_max = float(np.percentile(rms_b, 95)) or 1.0
@@ -657,6 +709,15 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
             seg["chroma_vocal"] = _norm_chroma(vocal_chroma_b[:, a:b].mean(axis=1))
         if bed_chroma_b is not None:
             seg["chroma_bed"] = _norm_chroma(bed_chroma_b[:, a:b].mean(axis=1))
+        if vocal_active is not None:
+            from analysis.vocals import span_fraction
+            seg["vocal_activity"] = span_fraction(vocal_active, sr, HOP_LENGTH,
+                                                  start_t, end_t)
+        seg["band_energy_vocal"] = _section_bands(vocal_bands_f, start_t, end_t)
+        seg["band_energy_bed"] = _section_bands(bed_bands_f, start_t, end_t)
+        if melody and melody.get("f0") and melody.get("step"):
+            from analysis.vocals import f0_summary
+            seg["f0"] = f0_summary(melody["f0"], float(melody["step"]), start_t, end_t)
         segs.append(seg)
     # Extend the last section to the true end of the audio.
     segs[-1]["end_sec"] = round(duration, 2)

@@ -516,8 +516,13 @@ QUICK_WORKERS    = _resolve_int("MASHUP_QUICK_WORKERS", "quick_workers", 2)
 DEMUCS_THREADS   = _resolve_int("MASHUP_DEMUCS_THREADS", "demucs_threads",
                                 max(1, (os.cpu_count() or 2) - 1))
 
+# Selecting a track moves it and this many of its likeliest unprocessed partners
+# (tempo + key against its quick-tier analysis) ahead of the import queue.
+PREFETCH_PARTNERS = _resolve_int("MASHUP_PREFETCH_PARTNERS", "prefetch_partners", 5)
+
 # Queue priorities (api/queue_runner.py): lower runs first, FIFO within one.
 PRIORITY_USER     = 0     # a button pressed on one track
+PRIORITY_PREFETCH = 5     # the track you are looking at and its best partners
 PRIORITY_INGEST   = 10    # tracks arriving from an import
 PRIORITY_BACKFILL = 30    # bulk re-processing of the library
 

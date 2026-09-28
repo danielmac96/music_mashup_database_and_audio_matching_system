@@ -174,7 +174,7 @@ def test_structure_records_the_stage_and_its_phases(env, monkeypatch):
     models.upsert_stem(song, "full", str(raw))
 
     def _fake(full, vocals=None, inst_path=None, bass_path=None,
-              on_progress=None, timings=None, grid=None):
+              on_progress=None, timings=None, grid=None, melody=None):
         timings.update({"load": 3.0, "beats": 7.0, "audio_secs": 1.0})
         return [{"start_sec": 0.0, "end_sec": 1.0, "label": "verse",
                  "energy": 1.0, "vocal_presence": None, "repetition": 1,
