@@ -591,9 +591,15 @@ in four-stem mode). Each step fails independently.
   `VOCAL_BEAT_CONFIDENCE_MIN`.
 
 **The Essentia analyser** (`analysis/essentia_groups.py`; Docker/WSL2 only).
-One decode per file (soundfile when it reads the file at 44.1 kHz, FFmpeg
-otherwise; mono by averaging, 22.05 kHz by polyphase resampling), four cached
-groups per file and a fifth on the vocal stem:
+One decode per file (FFmpeg for anything compressed; soundfile for a lossless
+file at 44.1 kHz; mono by averaging, 22.05 kHz by polyphase resampling), four
+cached groups per file and a fifth on the vocal stem. **MP3 never goes through
+libsndfile**, in either analyser: its MP3 decoder took 5–6 s for a 4-minute
+track that FFmpeg decodes in 0.5 s, the same samples to within 3e-6 (measured
+in the container, 2026-09-28). librosa's decode of a compressed file is FFmpeg
+at the native rate, averaged and resampled by librosa as `librosa.load` does
+(`decode._decode_mono`), so cached results stayed valid and no group version
+was bumped.
 
 | Group | Measures | Projects onto |
 |---|---|---|
@@ -655,7 +661,15 @@ stem exists: `provisional = 1`, no vocal presence, `section_class = unknown`
 stem exists (`bulk_worker._sections_stale_sql`), so the full analysis re-cuts
 them with the stems — the mix's own analysis is served from the feature cache.
 Sections with a vocal stem but no `vocal_activity` (cut before phase 4) are
-stale in the same SQL, and a new melody is part of the structure cache key.
+stale in the same SQL, and so are sections with no `f0` on a track whose vocal
+melody sings (`melody_json.voiced ≥ MELODY_VOICED_MIN`, 0.1 — cut under
+librosa, or before the melody existed); a new melody is part of the structure
+cache key. **The quick tier cuts from the mix only, even with stems on disk**
+(`do_structure(use_stems=False)`): before a re-separation or re-download those
+stems are the previous audio's and the melody is not measured yet. It used to
+use them, which wrote final-looking sections that the gate then called current
+— found on the first real run, where every section of a re-separated track
+had lost its sung range.
 
 **Re-cut sections keep your judgements** (`models.remap_feedback_sections`,
 inside `replace_sections`' transaction). `pair_feedback` names sections by
@@ -1066,9 +1080,10 @@ Existing databases migrate on start.
   bulk re-analysis silently skips structure. `bpm_source IS NOT NULL` is
   satisfied by `track_fallback`. Provisional sections (the quick tier's, cut
   without stems) are stale whenever a vocal stem exists, in the same SQL, and
-  so are sections without `vocal_activity` on a track with a vocal stem. Those
-  two are conditional on the stem, which is why they are not in the tuple: a
-  track without stems can never have them.
+  so are sections without `vocal_activity` on a track with a vocal stem, and
+  sections without `f0` on a track whose vocal melody sings. Those three are
+  conditional on the stem, which is why they are not in the tuple: a track
+  without stems can never have them.
 - **Change what a feature group returns → bump its version** in
   `analysis/registry.py`. The feature cache reuses a result while the audio's
   bytes, the group's version and the config values it reads (`params()`) are

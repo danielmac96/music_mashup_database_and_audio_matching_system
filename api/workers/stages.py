@@ -591,7 +591,11 @@ def do_quick(song_id: int, on_progress: ProgressCb = None) -> dict:
         set_quick_state(song_id, "failed")
         raise StageError("Quick analysis failed for the mix")
     try:
-        result = do_structure(song_id, on_progress, gate="quick")
+        # The mix only, even when stems are on disk: before a re-separation or
+        # a re-download they are the previous audio's, and the vocal melody the
+        # final cut reads does not exist yet. Provisional sections are stale as
+        # soon as a vocal stem exists, so the full analysis re-cuts them.
+        result = do_structure(song_id, on_progress, gate="quick", use_stems=False)
     except StageError as exc:
         # BPM and key landed; a track too short to segment is still useful.
         log.info("quick structure for song %s: %s", song_id, exc)
@@ -601,7 +605,7 @@ def do_quick(song_id: int, on_progress: ProgressCb = None) -> dict:
 
 
 def do_structure(song_id: int, on_progress: ProgressCb = None,
-                 gate: str = "analysis") -> dict:
+                 gate: str = "analysis", use_stems: bool = True) -> dict:
     from analysis.structure import detect_sections
 
     conn = get_conn()
@@ -620,6 +624,8 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
     # played under it, and the dedicated bass stem for root-clash detection when
     # four-stem separation ran. Each is optional and falls back to the full mix.
     def _stem(name: str) -> Optional[Path]:
+        if not use_stems:
+            return None
         fp = stem_paths.get(name, "")
         return Path(fp) if fp and Path(fp).exists() else None
 

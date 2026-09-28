@@ -112,8 +112,15 @@ class Signals:
 
 
 def load_signals(path: Path) -> Signals:
-    """soundfile when it can read the file at 44.1 kHz (MP3/WAV/FLAC: ~2×
-    faster than piping FFmpeg's output, measured), FFmpeg otherwise."""
+    """soundfile for a lossless file at 44.1 kHz (~2× faster than piping
+    FFmpeg's output, measured on WAV), FFmpeg for everything else — MP3 above
+    all, where libsndfile took 5-6 s per 4-minute track against FFmpeg's 0.5 s."""
+    from analysis.decode import decode_ffmpeg, prefers_ffmpeg
+    if prefers_ffmpeg(path):
+        try:
+            return Signals(decode_ffmpeg(path, sr=SR_FULL, channels=2))
+        except Exception:  # noqa: BLE001 — soundfile below is the fallback
+            pass
     try:
         import soundfile as sf
         data, sr = sf.read(str(path), dtype="float32", always_2d=True)
@@ -123,7 +130,6 @@ def load_signals(path: Path) -> Signals:
             return Signals(data)
     except Exception:  # noqa: BLE001 — anything soundfile cannot open
         pass
-    from analysis.decode import decode_ffmpeg
     return Signals(decode_ffmpeg(path, sr=SR_FULL, channels=2))
 
 

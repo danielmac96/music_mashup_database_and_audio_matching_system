@@ -360,7 +360,22 @@ def _sections_stale_sql(song_ref: str) -> str:
         f"AND st.stem_type='vocals')\n"
         f"        AND NOT EXISTS (SELECT 1 FROM sections sec "
         f"WHERE sec.song_id={song_ref} AND sec.vocal_activity IS NOT NULL))")
-    return "\n    OR ".join(missing + [provisional, stem_measures])
+    # The vocal stem's melody was measured (shadow/essentia) but no section
+    # carries a sung range: cut under librosa, or before the melody existed.
+    # Only a melody that really sings counts — f0_summary needs voiced points
+    # inside a section, and a track that can never get one must not stay stale.
+    sung_range = (
+        f"(EXISTS (SELECT 1 FROM features f WHERE f.song_id={song_ref} "
+        f"AND f.stem_type='vocals' AND f.melody_json IS NOT NULL\n"
+        f"              AND json_extract(f.melody_json, '$.voiced') >= {MELODY_VOICED_MIN})\n"
+        f"        AND NOT EXISTS (SELECT 1 FROM sections sec "
+        f"WHERE sec.song_id={song_ref} AND sec.f0_json IS NOT NULL))")
+    return "\n    OR ".join(missing + [provisional, stem_measures, sung_range])
+
+
+# The vocal stem's voiced share above which its sections are expected to carry
+# a sung range (see _sections_stale_sql).
+MELODY_VOICED_MIN = 0.1
 
 
 # One definition of "this track predates a generation of feature we now need".
