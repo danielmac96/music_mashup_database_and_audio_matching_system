@@ -1304,6 +1304,63 @@ sidebar revamp.**
    temperley, shaath). **Still to do: run the benchmark on ~10 real tracks**
    and read `GET /api/jobs/timings` after an import — the real per-stage
    numbers, and the key-profile choice, feed Phase 2.
+
+   **Where the overhaul stands (2026-09-28, branch
+   `claude/audio-pipeline-overhaul-plan-4hmitv`, no PR yet).** Phases 0–4 are
+   committed and pushed; the suite was 1398 passing and the frontend built at
+   the last commit (`fdacdce`). Phases 0–4 were built in a cloud sandbox with
+   **no torch, no Demucs weights, no real music and no route to
+   essentia.upf.edu / Hugging Face**, so nothing has been run on a real import
+   yet. First, on a local machine:
+   1. `git pull`, then `docker compose up -d --build` (or `npm run build` + restart).
+      Existing databases migrate on start (new columns only).
+   2. Import a small playlist with `analyzer=shadow` and check: BPM/key and
+      provisional sections appear before stems (Queue screen); after stems,
+      sections carry `vocal_activity`, `band_energy_*` and `f0` (database
+      browser); selecting a row moves its partners up the Queue.
+   3. Rate a pair, bulk re-analyse that track, and confirm the judgement moved
+      (or was flagged `sections_stale`) rather than pointing at other music.
+   4. `GET /api/jobs/timings` after the import: real per-stage numbers,
+      including Demucs model load vs. separation (decides persistent Demucs).
+   5. `scripts/bench_analyzers.py --auto 10` (§8): decides the key-profile and
+      rhythm-method defaults, and whether `analyzer=essentia` is worth the flip.
+
+   **Phase 5 (next) — not started; no code written.** Design worked out so far:
+   - `analysis/ml_models.py`: catalogue of the Essentia `.pb` + `.json` pairs
+     (`discogs-effnet-bs64-1` embedding; heads `voice_instrumental`,
+     `genre_discogs400`, `danceability`, `gender`, `tonal_atonal`,
+     `approachability_regression`, `engagement_regression`,
+     `mtg_jamendo_moodtheme`, `mtg_jamendo_instrument`) under
+     `<data_dir>/essentia_models`, fetched lazily on first use with a backoff
+     after a failure, plus `scripts/fetch_essentia_models.py`. **Take input and
+     output node names and class labels from each model's JSON metadata**
+     (`schema.inputs/outputs`, `output_purpose`, `classes`), not from memory —
+     the usual defaults are `TensorflowPredictEffnetDiscogs(output=
+     "PartitionedCall:1")` for embeddings and `TensorflowPredict2D` per head,
+     but verify against the downloaded JSON. Record each file's sha256 on first
+     download (no trusted hashes were available to pin in advance).
+   - An `essentia.effnet` group on the **full mix** (16 kHz mono, a lazily
+     resampled `Signals.mono16`; one patch ≈ 1 s): track-mean embedding and head
+     summaries in the JSON cache; per-patch embeddings as a float16 `.npz`
+     sidecar under `<data_dir>/features/`, treated as a cache miss when the
+     file is gone. Runs only where Essentia runs (`shadow`/`essentia`) and the
+     models exist; otherwise it is skipped, not failed.
+   - An `embeddings` table (track and section rows, float32 BLOB, model +
+     version + dim); section embeddings = mean of the patches inside each
+     section, computed in `do_structure`. `GET /api/tracks/{id}/similar` as a
+     brute-force numpy cosine (fine to ~100k vectors). Head summaries go into a
+     `features.tags_json` extra.
+   - Provisional sections: the `voice_instrumental` curve on the mix sets
+     `vocal_presence` with a new `vocal_presence_source = 'ml_mix'` (the stem
+     path writes `'stem'`), so quick-tier labels stop being energy-only;
+     `section_class` stays `unknown` until stems exist, so the matcher still
+     does not pair provisional sections (that is phase 7). Add the voice curve
+     to the structure cache key and bump `librosa.structure` /
+     `essentia.structure`.
+   - Tests: tiny stand-in `.pb` graphs with the real node names (built once
+     with `tensorflow-cpu` in a separate venv, committed as fixtures of a few
+     KB, no weights) exercise the plumbing through Essentia's own algorithms.
+     Real-model accuracy can only be checked on real music with the real models.
 2. **Judge candidates.** `pair_feedback` needs a few dozen verdicts before the
    learned scorer or supervised weight tuning mean anything; then re-measure the
    section weights with Spearman against stored verdicts.
