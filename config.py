@@ -157,6 +157,17 @@ def settings_provenance() -> dict:
         "stem_separator": {"value": current_stem_separator(),
                            "source": STEM_SEPARATOR_SOURCE},
         "stem_mode": {"value": current_stem_mode(), "source": STEM_MODE_SOURCE},
+        # Analyser (readme §9 overhaul) — live-read.
+        "analyzer": {"value": current_analyzer(),
+                     "source": "env" if os.environ.get("MASHUP_ANALYZER") else "settings"},
+        "essentia_key_profile": {
+            "value": current_essentia_key_profile(),
+            "source": "env" if os.environ.get("MASHUP_ESSENTIA_KEY_PROFILE") else "settings"},
+        "essentia_rhythm_method": {
+            "value": current_essentia_rhythm_method(),
+            "source": "env" if os.environ.get("MASHUP_ESSENTIA_RHYTHM") else "settings"},
+        "analysis_cache": {"value": current_analysis_cache(),
+                           "source": "env" if os.environ.get("MASHUP_ANALYSIS_CACHE") else "settings"},
         # Scoring knobs. `source` is "env" only when pinned by an environment
         # variable, in which case the UI must show the control as locked rather
         # than letting the user save a value that will be ignored.
@@ -288,7 +299,56 @@ def current_analysis_cache() -> bool:
     val = _load_settings().get("analysis_cache")
     if isinstance(val, bool):
         return val
+    if isinstance(val, str) and val.strip():
+        # POST /api/settings stores "off": save_settings drops falsy values.
+        return val.strip().lower() not in ("0", "false", "off", "no")
     return True
+
+
+# Which analyser fills the features table (readme §9, the analysis overhaul).
+#   librosa  — the analyser the library was built on (default; the only one on
+#              native Windows, where Essentia has no wheels)
+#   shadow   — librosa fills the core columns; Essentia runs alongside and fills
+#              only the columns librosa never measured (LUFS, tuning, chords,
+#              danceability…), and its answers are kept for comparison
+#              (GET /api/analysis/status)
+#   essentia — Essentia fills the core columns too. Flip only once every
+#              analysed track has Essentia groups: library-relative scores
+#              (timbre z-scores, confidence ranks) must not mix analysers.
+ANALYZERS = ("librosa", "shadow", "essentia")
+ESSENTIA_RHYTHM_METHODS = ("degara", "multifeature")
+ESSENTIA_KEY_PROFILES = ("edma", "edmm", "bgate", "braw", "krumhansl", "temperley",
+                         "shaath", "diatonic", "noland", "tonictriad",
+                         "temperley2005", "thpcp", "gomez", "weichai")
+
+
+def _live_choice(env_name: str, key: str, allowed: tuple, default: str) -> str:
+    env = (os.environ.get(env_name) or "").strip().lower()
+    if env in allowed:
+        return env
+    val = str(_load_settings().get(key) or "").strip().lower()
+    return val if val in allowed else default
+
+
+def current_analyzer() -> str:
+    """librosa | shadow | essentia, re-read live. Asking for Essentia where it
+    does not import is answered with librosa by the caller (stages.py), not
+    here — this reports what was configured."""
+    return _live_choice("MASHUP_ANALYZER", "analyzer", ANALYZERS, "librosa")
+
+
+def current_essentia_key_profile() -> str:
+    """The KeyExtractor profile whose answer is THE key (the others vote on
+    confidence). edma — trained on electronic dance music — until the Phase 0
+    benchmark on your own tracks says otherwise."""
+    return _live_choice("MASHUP_ESSENTIA_KEY_PROFILE", "essentia_key_profile",
+                        ESSENTIA_KEY_PROFILES, "edma")
+
+
+def current_essentia_rhythm_method() -> str:
+    """RhythmExtractor2013 method. degara costs ~¼ of multifeature (Phase 0)."""
+    return _live_choice("MASHUP_ESSENTIA_RHYTHM", "essentia_rhythm_method",
+                        ESSENTIA_RHYTHM_METHODS, "degara")
 
 # ── Structure detection (sections: intro/verse/chorus/drop/…) ─────────────────
 SECTION_MIN_LEN_SECS  = 12.0   # minimum section length

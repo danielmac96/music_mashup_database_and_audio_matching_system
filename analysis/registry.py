@@ -75,6 +75,40 @@ def _structure_params() -> dict:
             "sim": SECTION_SIM_THRESHOLD}
 
 
+def _essentia_params(**extra) -> Callable[[], dict]:
+    """Every Essentia group's params carry the Essentia version: an upgrade
+    can move any estimator, and must recompute rather than mix."""
+    def _p() -> dict:
+        try:
+            from analysis.essentia_groups import version
+            ver = version()
+        except Exception:  # noqa: BLE001
+            ver = None
+        return {"essentia": ver,
+                **{k: (v() if callable(v) else v) for k, v in extra.items()}}
+    return _p
+
+
+def _key_profile() -> str:
+    from config import current_essentia_key_profile
+    return current_essentia_key_profile()
+
+
+def _rhythm_method() -> str:
+    from config import current_essentia_rhythm_method
+    return current_essentia_rhythm_method()
+
+
+def _band_edges() -> list:
+    from analysis.quality import BAND_EDGES
+    return list(BAND_EDGES)
+
+
+def _key_voters() -> list:
+    from analysis.essentia_groups import KEY_PROFILES
+    return list(KEY_PROFILES)
+
+
 _GROUPS = (
     FeatureGroup("librosa.tempo", 1, "librosa", 1, _analysis_params(),
                  "BPM, grid confidence, beat times, beat phase", step="tempo"),
@@ -93,12 +127,37 @@ _GROUPS = (
     FeatureGroup("librosa.structure", 1, "librosa", 1, _structure_params,
                  "sections: boundaries, labels, per-section measurements "
                  "(mix + vocal/instrumental/bass stems)"),
+    # ── Essentia (analysis/essentia_groups.py) ────────────────────────────────
+    FeatureGroup("essentia.rhythm", 1, "essentia", 1,
+                 _essentia_params(method=_rhythm_method),
+                 "BPM + beat grid (RhythmExtractor2013), grid confidence, kick-band "
+                 "beat phase, Percival + histogram votes, onset rate, danceability",
+                 step="rhythm"),
+    FeatureGroup("essentia.tonal", 1, "essentia", 1,
+                 _essentia_params(profile=_key_profile, voters=_key_voters),
+                 "key per profile + cross-profile consensus, tuning, chords, "
+                 "12-bin HPCP", step="tonal"),
+    FeatureGroup("essentia.loudness", 1, "essentia", 1, _essentia_params(),
+                 "EBU R128 LUFS + LRA, true peak, ReplayGain, dynamic complexity, "
+                 "crest, stereo width, frame RMS", step="loudness"),
+    FeatureGroup("essentia.spectral", 1, "essentia", 1,
+                 _essentia_params(n_mfcc=_n_mfcc, edges=_band_edges),
+                 "MFCC, centroid/rolloff/ZCR, flux, flatness, HFC, contrast, "
+                 "complexity, moments, dissonance, 8- and 3-band energy, envelope",
+                 step="spectral"),
+    FeatureGroup("essentia.structure", 1, "essentia", 1, _structure_params,
+                 "sections on the Essentia beat grid (the librosa segmenter fed "
+                 "essentia.rhythm's beats and phase)"),
 )
 
 GROUPS: Dict[str, FeatureGroup] = {g.name: g for g in _GROUPS}
 
-# analyze_file step name -> its group.
-STEP_GROUPS: Dict[str, FeatureGroup] = {g.step: g for g in _GROUPS if g.step}
+# analyze_file step name -> its librosa group; analyze_file_essentia step -> its
+# Essentia group. The two share step names only by accident, so they are kept apart.
+STEP_GROUPS: Dict[str, FeatureGroup] = {
+    g.step: g for g in _GROUPS if g.step and g.analyzer == "librosa"}
+ESSENTIA_STEP_GROUPS: Dict[str, FeatureGroup] = {
+    g.step: g for g in _GROUPS if g.step and g.analyzer == "essentia"}
 
 
 def group(name: str) -> FeatureGroup:

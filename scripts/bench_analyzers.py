@@ -379,6 +379,14 @@ def bench_essentia(timer: Timer, name: str, path: Path,
 
     out: dict = {"audio_secs": audio_secs, "bpm": {}, "keys": {}}
 
+    # What the pipeline actually runs (analysis/essentia_groups.py), group by
+    # group, on the same decode — the numbers the Phase 2 analyser costs.
+    from analysis import essentia_groups as eg
+    sig = eg.Signals(stereo)
+    for step, run in eg._runners().items():
+        timer.run(name, "essentia", f"group.{step} (pipeline)",
+                  lambda r=run: r(sig), audio_secs, repeats=1)
+
     for method in ("degara", "multifeature"):
         r = timer.run(name, "essentia", f"RhythmExtractor2013({method})",
                       lambda m=method: es.RhythmExtractor2013(method=m)(mono44),

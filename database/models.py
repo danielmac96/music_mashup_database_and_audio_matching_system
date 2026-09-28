@@ -500,6 +500,26 @@ _FEATURES_OPTIONAL_COLUMNS = (
     ("hook_start", "REAL"),
     ("hook_end", "REAL"),
     ("hook_role", "TEXT"),
+    # Analysis overhaul, phase 2 (readme §9). `analyzer` names who filled the
+    # core columns above; the rest are what only Essentia measures, written by
+    # update_features_extras whenever it ran (analysis/project.py). NULL means
+    # unmeasured — the librosa analyser never fills them.
+    ("analyzer", "TEXT"),
+    ("key_strength", "REAL"),
+    ("key_candidates_json", "TEXT"),   # profile -> [key, mode, strength]
+    ("bpm_candidates_json", "TEXT"),   # estimator -> bpm (+ histogram peaks)
+    ("tuning_hz", "REAL"),
+    ("lufs", "REAL"),                  # EBU R128 integrated
+    ("lra", "REAL"),                   # EBU R128 loudness range, LU
+    ("true_peak", "REAL"),             # dBTP
+    ("replay_gain", "REAL"),           # dB
+    ("dynamic_complexity", "REAL"),
+    ("danceability", "REAL"),
+    ("onset_rate", "REAL"),            # onsets per second
+    ("chords_json", "TEXT"),           # key, scale, change/number rate, histogram
+    ("dissonance", "REAL"),
+    ("bands3_json", "TEXT"),           # low <250 Hz / mid / high >4 kHz fractions
+    ("descriptors_json", "TEXT"),      # everything else Essentia measured
 )
 
 
@@ -1239,6 +1259,28 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
     )
     conn.commit()
     conn.close()
+
+
+def update_features_extras(song_id: int, stem_type: str, extras: Dict,
+                           db_path: Path = DB_PATH) -> int:
+    """Write the analyser name and the Essentia-only columns of one features
+    row (analysis/project.EXTRA_COLUMNS). Separate from upsert_features for the
+    same reason update_hook is: that statement owns the core columns, and these
+    are filled by a different analyser on a different schedule."""
+    from analysis.project import EXTRA_COLUMNS
+    cols = [c for c in EXTRA_COLUMNS if c in extras]
+    if not cols:
+        return 0
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            f"UPDATE features SET {', '.join(f'{c}=?' for c in cols)} "
+            "WHERE song_id=? AND stem_type=?",
+            [extras[c] for c in cols] + [song_id, stem_type])
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
 
 
 def update_hook(song_id: int, stem_type: str, hook: Optional[Dict],
@@ -3286,6 +3328,42 @@ def feature_cache_summary(db_path: Optional[Path] = None) -> List[Dict]:
     finally:
         conn.close()
     return [dict(r) for r in rows]
+
+
+def feature_cache_for_stems(grps: Sequence[str], stem_type: Optional[str] = None,
+                            db_path: Optional[Path] = None) -> List[Dict]:
+    """Cached group rows joined to the stems whose current bytes they describe:
+    song_id, stem_type, content_hash, grp, version, params_hash, payload_json.
+    A cache row for bytes no stem points at any more is not returned."""
+    if not grps:
+        return []
+    marks = ",".join("?" * len(grps))
+    sql = (f"""SELECT st.song_id, st.stem_type, fc.content_hash, fc.grp,
+                      fc.version, fc.params_hash, fc.payload_json
+                 FROM stems st JOIN feature_cache fc
+                   ON fc.content_hash = st.content_hash
+                WHERE fc.grp IN ({marks})""")
+    args: list = list(grps)
+    if stem_type:
+        sql += " AND st.stem_type = ?"
+        args.append(stem_type)
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        return [dict(r) for r in conn.execute(sql, args).fetchall()]
+    finally:
+        conn.close()
+
+
+def analysed_stem_count(db_path: Optional[Path] = None) -> Dict[str, int]:
+    """Stems that have been hashed by an analysis, per stem type."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT stem_type, COUNT(*) AS n FROM stems
+                WHERE content_hash IS NOT NULL GROUP BY stem_type""").fetchall()
+    finally:
+        conn.close()
+    return {r["stem_type"]: r["n"] for r in rows}
 
 
 def set_stem_content_hash(song_id: int, stem_type: str, content_hash: str,

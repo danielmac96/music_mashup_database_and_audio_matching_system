@@ -102,7 +102,8 @@ def _timed(grp: str, song_id: int, **kw) -> Iterator[dict]:
 
 
 def _record_steps(prefix: str, song_id: int, timings: dict,
-                  stem_type: Optional[str] = None) -> None:
+                  stem_type: Optional[str] = None,
+                  analyzer: str = ANALYZER) -> None:
     """Persist a per-step ``timings`` dict as produced by analyze_file or
     detect_sections: one row per step, named ``<prefix>.<step>``. A step served
     from the feature cache is filed as ``<prefix>.<step>.cached`` (0 ms), so the
@@ -114,10 +115,10 @@ def _record_steps(prefix: str, song_id: int, timings: dict,
                 or not isinstance(ms, (int, float)):
             continue
         _record(f"{prefix}.{step}", ms, song_id, stem_type=stem_type,
-                audio_secs=audio_secs, ok=step not in failed, analyzer=ANALYZER)
+                audio_secs=audio_secs, ok=step not in failed, analyzer=analyzer)
     for step in timings.get("cached_steps") or ():
         _record(f"{prefix}.{step}.cached", 0.0, song_id, stem_type=stem_type,
-                analyzer=ANALYZER)
+                analyzer=analyzer)
 
 
 def _hash_inputs(paths: dict[str, Optional[Path]]) -> dict[str, Optional[str]]:
@@ -343,6 +344,50 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
 
 # ── Feature analysis ──────────────────────────────────────────────────────────
 
+_ESSENTIA_MISSING_WARNED = False
+
+
+def effective_analyzer() -> tuple[str, str]:
+    """(configured mode, analyser that owns the core columns).
+
+    The configured mode is config.current_analyzer(); where Essentia does not
+    import (native Windows) shadow and essentia both degrade to librosa, once
+    logged, rather than failing every analysis."""
+    global _ESSENTIA_MISSING_WARNED
+    from config import current_analyzer
+    mode = current_analyzer()
+    if mode != "librosa":
+        from analysis.essentia_groups import available
+        if not available():
+            if not _ESSENTIA_MISSING_WARNED:
+                log.warning("analyzer=%s but essentia is not installed here — "
+                            "using librosa", mode)
+                _ESSENTIA_MISSING_WARNED = True
+            return "librosa", "librosa"
+    return mode, ("essentia" if mode == "essentia" else "librosa")
+
+
+def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
+                  on_progress: ProgressCb) -> tuple[dict, bool]:
+    """Every Essentia group for one stem, cached. Returns (payloads, fully
+    cached). Never raises: a failure is an empty result, which leaves the
+    librosa analyser to fill the core."""
+    from analysis.cache import StepCache
+    from analysis.essentia_groups import analyze_file_essentia
+    from analysis.registry import ESSENTIA_STEP_GROUPS
+    timings: dict = {}
+    try:
+        out = analyze_file_essentia(path, cache=StepCache(key, ESSENTIA_STEP_GROUPS),
+                                    timings=timings, on_progress=on_progress)
+    except Exception:  # noqa: BLE001
+        log.exception("essentia analysis failed for %s/%s", song_id, stem_type)
+        out = {}
+    finally:
+        _record_steps("essentia", song_id, timings, stem_type=stem_type,
+                      analyzer="essentia")
+    return out, bool(out) and "load" not in timings
+
+
 def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
     """Analyse every stem on disk and write its ``features`` row.
 
@@ -352,7 +397,9 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
     cache without being decoded. The row written is the same either way."""
     from analysis.analyze import analyze_file
     from analysis.cache import StepCache, cached, content_hash
-    from database.models import set_stem_content_hash
+    from analysis.project import (core_from_essentia, essentia_core_complete,
+                                  extras_from_essentia)
+    from database.models import set_stem_content_hash, update_features_extras
 
     conn = get_conn()
     row = conn.execute(
@@ -370,11 +417,14 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         update_song_error(song_id, "error_analysis", msg)
         raise StageError(msg)
 
+    configured, core_analyzer = effective_analyzer()
+    run_essentia = configured in ("shadow", "essentia")
+
     analysed: list[str] = []
     failed: list[str] = []
     fully_cached = True
     with _STAGE_GATES["analysis"], _timed("analysis", song_id,
-                                          analyzer=ANALYZER) as stage_info:
+                                          analyzer=configured) as stage_info:
         for stem_type in _ANALYSIS_STEM_ORDER:
             fp = stem_paths.get(stem_type, "")
             path = Path(fp) if fp else None
@@ -385,23 +435,41 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
             key = content_hash(path)
             if key:
                 set_stem_content_hash(song_id, stem_type, key)
-            timings: dict = {}
-            try:
-                features = analyze_file(path, trim_secs=BEAT_TRIM_SECS,
-                                        on_progress=on_progress, timings=timings,
-                                        cache=StepCache(key))
-            except Exception:  # noqa: BLE001
-                log.exception("analyze_file raised for %s/%s", song_id, stem_type)
-                failed.append(stem_type)
-                fully_cached = False
-                continue
-            finally:
-                _record_steps("analysis", song_id, timings, stem_type=stem_type)
-            if not features:
-                failed.append(stem_type)
-                fully_cached = False
-                continue
-            fully_cached = fully_cached and "load" not in timings
+
+            # Essentia first when it runs at all: in essentia mode it owns the
+            # core columns, in shadow mode only the extras (analysis/project.py).
+            ess: dict = {}
+            if run_essentia:
+                ess, ess_cached = _run_essentia(song_id, stem_type, path, key, on_progress)
+                fully_cached = fully_cached and ess_cached
+
+            used = "librosa"
+            if core_analyzer == "essentia" and essentia_core_complete(ess):
+                features = core_from_essentia(ess)
+                used = "essentia"
+            else:
+                if core_analyzer == "essentia":
+                    # Never leave a row empty because the new analyser failed:
+                    # the old one fills it, and `analyzer` says so.
+                    log.warning("essentia core incomplete for %s/%s — librosa fills it",
+                                song_id, stem_type)
+                timings: dict = {}
+                try:
+                    features = analyze_file(path, trim_secs=BEAT_TRIM_SECS,
+                                            on_progress=on_progress, timings=timings,
+                                            cache=StepCache(key))
+                except Exception:  # noqa: BLE001
+                    log.exception("analyze_file raised for %s/%s", song_id, stem_type)
+                    failed.append(stem_type)
+                    fully_cached = False
+                    continue
+                finally:
+                    _record_steps("analysis", song_id, timings, stem_type=stem_type)
+                if not features:
+                    failed.append(stem_type)
+                    fully_cached = False
+                    continue
+                fully_cached = fully_cached and "load" not in timings
             # Phase D: where this stem sits in the spectrum, and — on the
             # instrumental — how much of it is still voice. A bed that still
             # carries its own topline is not a usable bed, and nothing in the
@@ -409,16 +477,17 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
             try:
                 from analysis.quality import N_BANDS, band_energy, residual_vocal_ratio
 
-                def _bands(p=path):
-                    # All zeros is band_energy's "could not measure": not cached.
-                    b = band_energy(p)
-                    return b if any(b) else None
-                bands, hit, ms = cached("librosa.bands", key, _bands)
-                features["band_energy"] = bands if bands is not None else [0.0] * N_BANDS
-                _record("analysis.bands.cached" if hit else "analysis.bands", ms,
-                        song_id, stem_type=stem_type, analyzer=ANALYZER,
-                        audio_secs=None if hit else timings.get("audio_secs"))
-                fully_cached = fully_cached and hit
+                if used == "librosa":
+                    def _bands(p=path):
+                        # All zeros is band_energy's "could not measure": not cached.
+                        b = band_energy(p)
+                        return b if any(b) else None
+                    bands, hit, ms = cached("librosa.bands", key, _bands)
+                    features["band_energy"] = bands if bands is not None else [0.0] * N_BANDS
+                    _record("analysis.bands.cached" if hit else "analysis.bands", ms,
+                            song_id, stem_type=stem_type, analyzer="librosa",
+                            audio_secs=None if hit else timings.get("audio_secs"))
+                    fully_cached = fully_cached and hit
                 if stem_type == "instrumental":
                     vocals = Path(stem_paths["vocals"]) if stem_paths.get("vocals") else None
                     rkey = _combo_key(_hash_inputs({"vocals": vocals, "bed": path}),
@@ -432,6 +501,7 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
                 log.exception("band/residual features failed for %s/%s",
                               song_id, stem_type)
             upsert_features(song_id, stem_type, features.copy())
+            update_features_extras(song_id, stem_type, extras_from_essentia(ess, used))
             analysed.append(stem_type)
         stage_info["failed"] = not analysed
         if analysed and fully_cached:
@@ -494,19 +564,37 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
     # mix or a structure version bump recomputes; anything else re-projects.
     inputs = {"full": Path(full_fp), "vocals": _stem("vocals"),
               "instrumental": _stem("instrumental"), "bass": _stem("bass")}
-    key = _combo_key(_hash_inputs(inputs), required=("full",))
+    hashes = _hash_inputs(inputs)
+
+    # In essentia mode, sections sit on the Essentia beat grid — the one the
+    # track's features row now carries — rather than a second, librosa one.
+    group, grid, analyzer = "librosa.structure", None, "librosa"
+    _configured, core = effective_analyzer()
+    if core == "essentia" and hashes.get("full") not in (None, "!"):
+        import hashlib
+        import json
+        from analysis.cache import lookup
+        from analysis.registry import GROUPS
+        rh = lookup(GROUPS["essentia.rhythm"], hashes["full"])
+        if rh and rh.get("beat_times"):
+            grid = {"beat_times": rh["beat_times"], "bpm": rh.get("bpm"),
+                    "beat_phase": rh.get("beat_phase")}
+            group, analyzer = "essentia.structure", "essentia"
+            hashes["grid"] = hashlib.blake2b(
+                json.dumps(grid, sort_keys=True).encode("utf-8"), digest_size=16).hexdigest()
+    key = _combo_key(hashes, required=("full",))
 
     timings: dict = {}
     try:
         from analysis.cache import cached
         # Shares the analysis gate — structure is the same librosa-bound work.
         with _STAGE_GATES["analysis"], _timed("structure", song_id,
-                                              analyzer=ANALYZER) as tinfo:
+                                              analyzer=analyzer) as tinfo:
             # [] is detect_sections' "found nothing": never cached.
-            sections, hit, _ms = cached("librosa.structure", key, lambda: detect_sections(
+            sections, hit, _ms = cached(group, key, lambda: detect_sections(
                 inputs["full"], inputs["vocals"],
                 inst_path=inputs["instrumental"], bass_path=inputs["bass"],
-                on_progress=on_progress, timings=timings,
+                on_progress=on_progress, timings=timings, grid=grid,
             ) or None)
             sections = sections or []
             tinfo["audio_secs"] = timings.get("audio_secs")
@@ -518,7 +606,7 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
         raise StageError(
             f"Structure detection error: {type(exc).__name__}: {exc}", _tb(exc))
     finally:
-        _record_steps("structure", song_id, timings)
+        _record_steps("structure", song_id, timings, analyzer=analyzer)
 
     if not sections:
         raise StageError("Structure detection found no sections (track may be too short)")

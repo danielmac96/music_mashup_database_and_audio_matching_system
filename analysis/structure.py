@@ -378,7 +378,8 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
                     inst_path: Optional[Path] = None,
                     bass_path: Optional[Path] = None,
                     on_progress: ProgressCb = None,
-                    timings: Optional[dict] = None) -> List[dict]:
+                    timings: Optional[dict] = None,
+                    grid: Optional[dict] = None) -> List[dict]:
     """Analyse the full mix (and the stems when available) and return an
     ordered list of section dicts: start_sec, end_sec, label, energy,
     vocal_presence, repetition, confidence. Returns [] on failure.
@@ -398,6 +399,11 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     ``timings``, when given, is filled with wall milliseconds per phase (load,
     beats, features, stem_chroma, boundaries, vocal, sections) and "audio_secs".
     A phase that never ran is absent.
+
+    ``grid`` — {"beat_times": [...], "bpm": float, "beat_phase": int} — replaces
+    the librosa beat track with another analyser's (the Essentia analyser's
+    essentia.rhythm), so sections, their downbeats and the track's stored beat
+    grid all sit on the same beats. Everything else is unchanged.
     """
     def _tick(msg: str) -> None:
         if on_progress:
@@ -445,7 +451,15 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         }]
 
     _phase("beats", "Beat tracking…")
-    tempo, beats = frames.beat_track(y, sr, HOP_LENGTH)
+    if grid and grid.get("beat_times"):
+        # Seconds → this signal's frame indices; beats past the end are dropped.
+        n_frames = 1 + len(y) // HOP_LENGTH
+        beats = librosa.time_to_frames(np.asarray(grid["beat_times"], dtype=float),
+                                       sr=sr, hop_length=HOP_LENGTH)
+        beats = beats[(beats >= 0) & (beats < n_frames)]
+        tempo = grid.get("bpm")
+    else:
+        tempo, beats = frames.beat_track(y, sr, HOP_LENGTH)
     # librosa returns tempo as a 0-d array in some versions and a float in
     # others; a section's fallback has to be a plain number either way.
     track_bpm = float(np.atleast_1d(tempo)[0]) if tempo is not None else None
@@ -529,7 +543,12 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     # stored beat_phase indexes a different grid from the one above.
     from analysis.analyze import _pick_beat_phase, beat_grid_confidence
     onset_env = frames.onset_env(y, sr, HOP_LENGTH)
-    phase = _pick_beat_phase(onset_env, beats)
+    if grid and grid.get("beat_times") and grid.get("beat_phase") is not None:
+        # The grid's own bar phase (the kick band, for Essentia) — so a bar line
+        # drawn from the stored grid and a section's downbeats agree.
+        phase = int(grid["beat_phase"]) % BEATS_PER_BAR
+    else:
+        phase = _pick_beat_phase(onset_env, beats)
     bounds, snapped = snap_boundaries_to_phrases(
         bounds, phase, len(beat_times), min_beats)
 

@@ -19,6 +19,7 @@ if str(ROOT) not in sys.path:
 
 from database.models import init_db  # noqa: E402
 
+from api.routes import analysis as analysis_routes  # noqa: E402
 from api.routes import crates as crate_routes  # noqa: E402
 from api.routes import database as database_routes  # noqa: E402
 from api.routes import datasets as dataset_routes  # noqa: E402
@@ -58,6 +59,7 @@ app.add_middleware(
 app.include_router(playlist_routes.router, prefix="/api/playlists", tags=["playlists"])
 app.include_router(track_routes.router, prefix="/api/tracks", tags=["tracks"])
 app.include_router(jobs_routes.router, prefix="/api/jobs", tags=["jobs"])
+app.include_router(analysis_routes.router, prefix="/api/analysis", tags=["analysis"])
 app.include_router(mashup_routes.router, prefix="/api/mashups", tags=["mashups"])
 app.include_router(database_routes.router, prefix="/api/db", tags=["database"])
 app.include_router(settings_routes.router, prefix="/api/settings", tags=["settings"])

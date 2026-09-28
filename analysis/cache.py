@@ -142,20 +142,24 @@ def cached(group_name: str, key: Optional[str],
 
 
 class StepCache:
-    """analyze_file's view of the cache for one file: ``get(step)`` /
-    ``put(step, result, ms)`` over the step's registry group."""
+    """An analyser's view of the cache for one file: ``get(step)`` /
+    ``put(step, result, ms)`` over the step's registry group. ``groups`` maps
+    step names to groups — the librosa steps (analyze_file) by default, or
+    ESSENTIA_STEP_GROUPS for analyze_file_essentia."""
 
-    def __init__(self, key: Optional[str]):
+    def __init__(self, key: Optional[str],
+                 groups: Optional[Dict[str, FeatureGroup]] = None):
         self.key = key
+        self.groups = STEP_GROUPS if groups is None else groups
 
     def get(self, step: str) -> Optional[dict]:
-        group = STEP_GROUPS.get(step)
+        group = self.groups.get(step)
         if group is None:
             return None
         hit = lookup(group, self.key)
         return hit if isinstance(hit, dict) else None
 
     def put(self, step: str, result: dict, ms: float) -> None:
-        group = STEP_GROUPS.get(step)
+        group = self.groups.get(step)
         if group is not None:
             store(group, self.key, result, ms)

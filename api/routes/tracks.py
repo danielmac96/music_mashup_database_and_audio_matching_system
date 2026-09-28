@@ -40,7 +40,12 @@ _AUDIO_MEDIA = {
 _FEATURE_FIELDS = ("bpm", "key", "mode", "camelot", "energy", "loudness_rms",
                    "bpm_confidence", "key_confidence", "beat_phase",
                    "spectral_centroid", "spectral_rolloff",
-                   "zero_crossing_rate")
+                   "zero_crossing_rate",
+                   # Analysis overhaul phase 2: who filled the row, and the
+                   # Essentia-only scalars (NULL under the librosa analyser).
+                   "analyzer", "key_strength", "tuning_hz", "lufs", "lra",
+                   "true_peak", "replay_gain", "dynamic_complexity",
+                   "danceability", "onset_rate", "dissonance")
 
 # Analysis is organised into independent metric steps (analysis/analyze.py
 # runs each in isolation so one failing measurement doesn't blank out the

@@ -53,6 +53,12 @@ jobs:
           # audio-separator is deliberately absent from requirements.txt: no
           # release resolves against its numpy<2 pins. It is the optional "Fast"
           # separator, not something the suite needs, so CI does not install it.
+          # The Essentia analyser (readme §9) only has Linux/macOS wheels: the
+          # Ubuntu leg installs it and runs tests/test_essentia_*, the Windows
+          # leg skips them — which is also how native Windows users run.
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            pip install -r requirements-essentia.txt
+          fi
           python -c "import numpy; assert numpy.__version__.startswith('1.'), numpy.__version__"
 
       - name: Run the whole suite
