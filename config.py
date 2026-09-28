@@ -157,6 +157,17 @@ def settings_provenance() -> dict:
         "stem_separator": {"value": current_stem_separator(),
                            "source": STEM_SEPARATOR_SOURCE},
         "stem_mode": {"value": current_stem_mode(), "source": STEM_MODE_SOURCE},
+        # Analyser (readme §9 overhaul) — live-read.
+        "analyzer": {"value": current_analyzer(),
+                     "source": "env" if os.environ.get("MASHUP_ANALYZER") else "settings"},
+        "essentia_key_profile": {
+            "value": current_essentia_key_profile(),
+            "source": "env" if os.environ.get("MASHUP_ESSENTIA_KEY_PROFILE") else "settings"},
+        "essentia_rhythm_method": {
+            "value": current_essentia_rhythm_method(),
+            "source": "env" if os.environ.get("MASHUP_ESSENTIA_RHYTHM") else "settings"},
+        "analysis_cache": {"value": current_analysis_cache(),
+                           "source": "env" if os.environ.get("MASHUP_ANALYSIS_CACHE") else "settings"},
         # Scoring knobs. `source` is "env" only when pinned by an environment
         # variable, in which case the UI must show the control as locked rather
         # than letting the user save a value that will be ignored.
@@ -267,6 +278,77 @@ N_MFCC           = 13      # MFCC coefficients stored per track
 BEAT_TRIM_SECS   = None    # None = analyse the FULL track (best match quality —
                            # BPM/key from only the intro is unreliable).
                            # Set to e.g. 30 to trade accuracy for speed.
+
+# Decoded signals kept in memory (analysis/decode.py). One track touches 3-5
+# files (mix + stems) and the analysis pool runs 2 tracks at once; 6 keeps a
+# whole analysis → structure → quality pass decoding each file once. A 4-minute
+# file is ~21 MB at 22.05 kHz mono.
+DECODE_CACHE_SIZE = 6
+
+
+def current_analysis_cache() -> bool:
+    """Whether analysis reuses stored feature groups (analysis/cache.py).
+
+    On by default: a group is recomputed only when its audio, its version or
+    its parameters changed. Off (``MASHUP_ANALYSIS_CACHE=0`` or settings.json
+    ``"analysis_cache": false``) recomputes everything, which is only ever
+    worth it to rule the cache out while chasing a bug. Re-read live."""
+    env = os.environ.get("MASHUP_ANALYSIS_CACHE")
+    if env is not None and env.strip() != "":
+        return env.strip().lower() not in ("0", "false", "off", "no")
+    val = _load_settings().get("analysis_cache")
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str) and val.strip():
+        # POST /api/settings stores "off": save_settings drops falsy values.
+        return val.strip().lower() not in ("0", "false", "off", "no")
+    return True
+
+
+# Which analyser fills the features table (readme §9, the analysis overhaul).
+#   librosa  — the analyser the library was built on (default; the only one on
+#              native Windows, where Essentia has no wheels)
+#   shadow   — librosa fills the core columns; Essentia runs alongside and fills
+#              only the columns librosa never measured (LUFS, tuning, chords,
+#              danceability…), and its answers are kept for comparison
+#              (GET /api/analysis/status)
+#   essentia — Essentia fills the core columns too. Flip only once every
+#              analysed track has Essentia groups: library-relative scores
+#              (timbre z-scores, confidence ranks) must not mix analysers.
+ANALYZERS = ("librosa", "shadow", "essentia")
+ESSENTIA_RHYTHM_METHODS = ("degara", "multifeature")
+ESSENTIA_KEY_PROFILES = ("edma", "edmm", "bgate", "braw", "krumhansl", "temperley",
+                         "shaath", "diatonic", "noland", "tonictriad",
+                         "temperley2005", "thpcp", "gomez", "weichai")
+
+
+def _live_choice(env_name: str, key: str, allowed: tuple, default: str) -> str:
+    env = (os.environ.get(env_name) or "").strip().lower()
+    if env in allowed:
+        return env
+    val = str(_load_settings().get(key) or "").strip().lower()
+    return val if val in allowed else default
+
+
+def current_analyzer() -> str:
+    """librosa | shadow | essentia, re-read live. Asking for Essentia where it
+    does not import is answered with librosa by the caller (stages.py), not
+    here — this reports what was configured."""
+    return _live_choice("MASHUP_ANALYZER", "analyzer", ANALYZERS, "librosa")
+
+
+def current_essentia_key_profile() -> str:
+    """The KeyExtractor profile whose answer is THE key (the others vote on
+    confidence). edma — trained on electronic dance music — until the Phase 0
+    benchmark on your own tracks says otherwise."""
+    return _live_choice("MASHUP_ESSENTIA_KEY_PROFILE", "essentia_key_profile",
+                        ESSENTIA_KEY_PROFILES, "edma")
+
+
+def current_essentia_rhythm_method() -> str:
+    """RhythmExtractor2013 method. degara costs ~¼ of multifeature (Phase 0)."""
+    return _live_choice("MASHUP_ESSENTIA_RHYTHM", "essentia_rhythm_method",
+                        ESSENTIA_RHYTHM_METHODS, "degara")
 
 # ── Structure detection (sections: intro/verse/chorus/drop/…) ─────────────────
 SECTION_MIN_LEN_SECS  = 12.0   # minimum section length
@@ -423,6 +505,26 @@ DOWNLOAD_WORKERS = _resolve_int("MASHUP_DOWNLOAD_WORKERS", "download_workers", 4
 STEM_WORKERS     = _resolve_int("MASHUP_STEM_WORKERS", "stem_workers", PIPELINE_WORKERS)
 ANALYSIS_WORKERS = _resolve_int("MASHUP_ANALYSIS_WORKERS", "analysis_workers", 2)
 ENRICH_WORKERS   = _resolve_int("MASHUP_ENRICH_WORKERS", "enrich_workers", 5)
+# The quick tier (readme §9, phase 3): the full mix analysed and segmented right
+# after download, while the track waits for Demucs. Threads, not processes:
+# librosa/numpy release the GIL (3 analyses on 3 threads ran 2.2× faster than
+# in sequence on 4 cores, measured), so a process pool would buy little and
+# cost the shared decode cache.
+QUICK_WORKERS    = _resolve_int("MASHUP_QUICK_WORKERS", "quick_workers", 2)
+# Threads a Demucs / MDX run may use. Left alone, torch takes every core and the
+# quick tier stalls behind it; one core is kept back for it by default.
+DEMUCS_THREADS   = _resolve_int("MASHUP_DEMUCS_THREADS", "demucs_threads",
+                                max(1, (os.cpu_count() or 2) - 1))
+
+# Selecting a track moves it and this many of its likeliest unprocessed partners
+# (tempo + key against its quick-tier analysis) ahead of the import queue.
+PREFETCH_PARTNERS = _resolve_int("MASHUP_PREFETCH_PARTNERS", "prefetch_partners", 5)
+
+# Queue priorities (api/queue_runner.py): lower runs first, FIFO within one.
+PRIORITY_USER     = 0     # a button pressed on one track
+PRIORITY_PREFETCH = 5     # the track you are looking at and its best partners
+PRIORITY_INGEST   = 10    # tracks arriving from an import
+PRIORITY_BACKFILL = 30    # bulk re-processing of the library
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 

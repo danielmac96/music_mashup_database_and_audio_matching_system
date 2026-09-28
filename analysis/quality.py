@@ -43,10 +43,17 @@ N_BANDS = len(BAND_EDGES) - 1
 HF_BAND_HZ = 6000.0
 
 
-def _load(path: Path, sr: int = QUALITY_SR, max_secs: float = 240.0):
-    import librosa
-    y, _ = librosa.load(str(path), sr=sr, mono=True, duration=max_secs)
-    return y
+# Only the first four minutes are read: long enough for any separation artefact
+# to show, short enough that an extended mix does not cost double.
+MAX_SECS = 240.0
+
+
+def _load(path: Path, sr: int = QUALITY_SR, max_secs: float = MAX_SECS):
+    # Through the decode cache: the analysis pass has usually just decoded this
+    # exact file, and a track under MAX_SECS is then the very same array, so the
+    # power spectrum below is shared with it too (analysis/frames.py).
+    from analysis.decode import load_mono
+    return load_mono(Path(path), sr=sr, duration=max_secs)
 
 
 def _band_energy(y: np.ndarray, sr: int = QUALITY_SR) -> List[float]:
@@ -56,15 +63,11 @@ def _band_energy(y: np.ndarray, sr: int = QUALITY_SR) -> List[float]:
     sits, not how loud it was mastered, and two records at different loudness
     can occupy exactly the same space.
     """
-    import librosa
+    from analysis import frames
     if y is None or len(y) < 2048:
         return [0.0] * N_BANDS
-    S = np.abs(librosa.stft(y, n_fft=2048, hop_length=512)) ** 2
-    freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
-    per_band = []
-    for lo, hi in zip(BAND_EDGES[:-1], BAND_EDGES[1:]):
-        mask = (freqs >= lo) & (freqs < hi)
-        per_band.append(float(S[mask].sum()) if mask.any() else 0.0)
+    per_band = list(frames.power_stats(y, sr, BAND_EDGES, HF_BAND_HZ,
+                                       n_fft=2048, hop=512)["bands"])
     total = sum(per_band)
     if total <= 0:
         return [0.0] * N_BANDS
@@ -175,14 +178,12 @@ def _hf_loss(stem: np.ndarray, full: np.ndarray, sr: int = QUALITY_SR) -> Option
     against the full mix so a genuinely dark record is not mistaken for a
     damaged stem.
     """
-    import librosa
+    from analysis import frames
     if len(stem) < 2048 or len(full) < 2048:
         return None
     def hf(y):
-        S = np.abs(librosa.stft(y, n_fft=2048, hop_length=512)) ** 2
-        freqs = librosa.fft_frequencies(sr=sr, n_fft=2048)
-        mask = freqs >= HF_BAND_HZ
-        return float(S[mask].sum()), float(S.sum())
+        p = frames.power_stats(y, sr, BAND_EDGES, HF_BAND_HZ, n_fft=2048, hop=512)
+        return p["hf"], p["total"]
     s_hf, s_tot = hf(stem)
     f_hf, f_tot = hf(full)
     if s_tot <= 0 or f_tot <= 0 or f_hf <= 0:

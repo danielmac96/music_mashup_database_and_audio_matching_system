@@ -18,6 +18,7 @@ suggestions ("lay vocal chorus of A over the drop of B").
 """
 from typing import Callable, List, Optional
 import logging
+import time
 
 import numpy as np
 from pathlib import Path
@@ -231,8 +232,9 @@ def _novelty_boundaries(X: np.ndarray, min_beats: int, max_sections: int) -> Lis
 
 
 def _frame_rms(y: np.ndarray) -> np.ndarray:
-    import librosa
-    return librosa.feature.rms(y=y, hop_length=HOP_LENGTH)[0]
+    # Same call as analysis' dynamics step, so it is shared (analysis/frames.py).
+    from analysis import frames
+    return frames.rms(y, HOP_LENGTH)[0]
 
 
 # Bass region for the second chroma. Below ~40 Hz is mostly rumble; above
@@ -372,10 +374,31 @@ def _phrase_length(bar_count: float) -> Optional[float]:
     return float(best) if bar_count <= candidates[-1] * 1.5 else round(bar_count, 2)
 
 
+def _section_bands(band_frames: Optional[np.ndarray], start: float, end: float,
+                   sr: int = SAMPLE_RATE, hop: int = HOP_LENGTH) -> Optional[list]:
+    """8-band occupancy (fractions summing to 1) of one stem inside [start, end),
+    from analysis/frames.power_stats' per-frame band power. None when the stem is
+    missing or silent there — unmeasured, not an empty spectrum."""
+    if band_frames is None:
+        return None
+    f0 = max(0, int(start * sr / hop))
+    f1 = min(band_frames.shape[1], int(end * sr / hop))
+    if f1 <= f0:
+        return None
+    per_band = band_frames[:, f0:f1].sum(axis=1).astype(float)
+    total = float(per_band.sum())
+    if not np.isfinite(total) or total <= 1e-12:
+        return None
+    return [round(float(v / total), 6) for v in per_band]
+
+
 def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
                     inst_path: Optional[Path] = None,
                     bass_path: Optional[Path] = None,
-                    on_progress: ProgressCb = None) -> List[dict]:
+                    on_progress: ProgressCb = None,
+                    timings: Optional[dict] = None,
+                    grid: Optional[dict] = None,
+                    melody: Optional[dict] = None) -> List[dict]:
     """Analyse the full mix (and the stems when available) and return an
     ordered list of section dicts: start_sec, end_sec, label, energy,
     vocal_presence, repetition, confidence. Returns [] on failure.
@@ -391,10 +414,41 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     measured transposition and the bass-clash tonic describe a record that will
     never be heard. `chroma` (full mix) is still stored so a library analysed
     before this change keeps working.
+
+    ``timings``, when given, is filled with wall milliseconds per phase (load,
+    beats, features, stem_chroma, boundaries, vocal, sections) and "audio_secs".
+    A phase that never ran is absent.
+
+    ``grid`` — {"beat_times": [...], "bpm": float, "beat_phase": int} — replaces
+    the librosa beat track with another analyser's (the Essentia analyser's
+    essentia.rhythm), so sections, their downbeats and the track's stored beat
+    grid all sit on the same beats. Everything else is unchanged.
+
+    ``melody`` — {"step": secs, "f0": [Hz, 0 = unvoiced]} — the vocal stem's
+    pitch curve (essentia.melody). Each section then carries ``f0``, the sung
+    range and centre inside it (analysis/vocals.f0_summary).
+
+    With the stems present each section also carries, measured on them:
+    ``vocal_activity`` (share of frames with a voice, analysis/vocals.py) and
+    ``band_energy_vocal`` / ``band_energy_bed`` (8-band occupancy of each stem
+    inside the section — where THIS vocal and THAT bed sit, section by section,
+    instead of one number per track).
     """
     def _tick(msg: str) -> None:
         if on_progress:
             on_progress(None, msg)
+
+    # Lap timer: each _phase call closes the one before it.
+    lap = {"name": None, "t": time.perf_counter()}
+
+    def _phase(name: Optional[str], msg: Optional[str] = None) -> None:
+        now = time.perf_counter()
+        if timings is not None and lap["name"]:
+            timings[lap["name"]] = timings.get(lap["name"], 0.0) \
+                + (now - lap["t"]) * 1000.0
+        lap["name"], lap["t"] = name, now
+        if msg:
+            _tick(msg)
 
     try:
         import librosa
@@ -402,10 +456,21 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         log.error("librosa not installed. Run: pip install librosa")
         return []
 
+    # Every decode and transform below goes through the decode cache: the
+    # analysis pass that ran just before has usually decoded the mix and the
+    # stems and computed their beat track, chroma, MFCC and RMS with these very
+    # parameters, so structure reuses them instead of repeating them.
+    from analysis import frames
+    from analysis.decode import load_mono
+
     log.info(f"Detecting structure: {full_path.name}")
-    _tick("Loading full mix…")
-    y, sr = librosa.load(str(full_path), sr=SAMPLE_RATE, mono=True)
+    _phase("load", "Loading full mix…")
+    sr = SAMPLE_RATE
+    y = load_mono(full_path, sr=sr)
     duration = len(y) / sr
+    _phase(None)
+    if timings is not None:
+        timings["audio_secs"] = duration
     if duration < 4 * SECTION_MIN_LEN_SECS:
         log.info("  Track too short for structural segmentation, single section.")
         return [{
@@ -414,21 +479,30 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
             "confidence": 0.3,
         }]
 
-    _tick("Beat tracking…")
-    tempo, beats = librosa.beat.beat_track(y=y, sr=sr, hop_length=HOP_LENGTH)
+    _phase("beats", "Beat tracking…")
+    if grid and grid.get("beat_times"):
+        # Seconds → this signal's frame indices; beats past the end are dropped.
+        n_frames = 1 + len(y) // HOP_LENGTH
+        beats = librosa.time_to_frames(np.asarray(grid["beat_times"], dtype=float),
+                                       sr=sr, hop_length=HOP_LENGTH)
+        beats = beats[(beats >= 0) & (beats < n_frames)]
+        tempo = grid.get("bpm")
+    else:
+        tempo, beats = frames.beat_track(y, sr, HOP_LENGTH)
     # librosa returns tempo as a 0-d array in some versions and a float in
     # others; a section's fallback has to be a plain number either way.
     track_bpm = float(np.atleast_1d(tempo)[0]) if tempo is not None else None
     if track_bpm is not None and not np.isfinite(track_bpm):
         track_bpm = None
     if len(beats) < 16:
+        _phase(None)
         log.warning("  Too few beats detected — skipping structure analysis.")
         return []
     beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP_LENGTH)
 
-    _tick("Computing beat-synchronous features…")
-    chroma = librosa.feature.chroma_cqt(y=y, sr=sr, hop_length=HOP_LENGTH)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13, hop_length=HOP_LENGTH)
+    _phase("features", "Computing beat-synchronous features…")
+    chroma = frames.chroma_cqt(y, sr, HOP_LENGTH)
+    mfcc = frames.mfcc(y, sr, 13, HOP_LENGTH)
     rms = _frame_rms(y)
 
     # Per-stem chroma on the SAME beat grid. Demucs writes stems sample-aligned
@@ -437,20 +511,25 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         if not path or not Path(path).exists():
             return None
         try:
-            ys, _ = librosa.load(str(path), sr=SAMPLE_RATE, mono=True)
-            # Pad/trim to the mix so sync() cannot run off the end on a stem the
-            # separator emitted a few samples short.
-            if len(ys) < len(y):
-                ys = np.pad(ys, (0, len(y) - len(ys)))
-            c = librosa.feature.chroma_cqt(y=ys[:len(y)], sr=sr,
-                                           hop_length=HOP_LENGTH)
+            ys = load_mono(path, sr=SAMPLE_RATE)
+            if len(ys) == len(y):
+                # The usual case: the same signal the key step read, so its
+                # chroma is already computed.
+                c = frames.chroma_cqt(ys, sr, HOP_LENGTH)
+            else:
+                # Pad/trim to the mix so sync() cannot run off the end on a stem
+                # the separator emitted a few samples short.
+                if len(ys) < len(y):
+                    ys = np.pad(ys, (0, len(y) - len(ys)))
+                c = librosa.feature.chroma_cqt(y=ys[:len(y)], sr=sr,
+                                               hop_length=HOP_LENGTH)
             return librosa.util.sync(c, beats, aggregate=np.median)
         except Exception:  # noqa: BLE001
             log.warning("  %s chroma failed; falling back to the full mix", what,
                         exc_info=True)
             return None
 
-    _tick("Measuring per-stem harmony…")
+    _phase("stem_chroma", "Measuring per-stem harmony…")
     vocal_chroma_b = _stem_chroma(vocals_path, "vocal")
     bed_chroma_b = _stem_chroma(inst_path, "bed")
 
@@ -470,6 +549,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
             log.warning("  bass chroma failed; sections keep the full-mix chroma only",
                         exc_info=True)
 
+    _phase("features")
     chroma_b = librosa.util.sync(chroma, beats, aggregate=np.median)
     mfcc_b = librosa.util.sync(mfcc, beats, aggregate=np.mean)
     rms_b = librosa.util.sync(rms[np.newaxis, :], beats, aggregate=np.mean)[0]
@@ -482,7 +562,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     beat_dur = float(np.median(np.diff(beat_times))) if len(beat_times) > 1 else 0.5
     min_beats = max(8, int(round(SECTION_MIN_LEN_SECS / max(beat_dur, 1e-3))))
 
-    _tick("Finding section boundaries…")
+    _phase("boundaries", "Finding section boundaries…")
     bounds = _novelty_boundaries(X, min_beats=min_beats,
                                  max_sections=SECTION_MAX_COUNT)
 
@@ -491,8 +571,13 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     # trims the head of the file before beat-tracking (BEAT_TRIM_SECS), so the
     # stored beat_phase indexes a different grid from the one above.
     from analysis.analyze import _pick_beat_phase, beat_grid_confidence
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP_LENGTH)
-    phase = _pick_beat_phase(onset_env, beats)
+    onset_env = frames.onset_env(y, sr, HOP_LENGTH)
+    if grid and grid.get("beat_times") and grid.get("beat_phase") is not None:
+        # The grid's own bar phase (the kick band, for Essentia) — so a bar line
+        # drawn from the stored grid and a section's downbeats agree.
+        phase = int(grid["beat_phase"]) % BEATS_PER_BAR
+    else:
+        phase = _pick_beat_phase(onset_env, beats)
     bounds, snapped = snap_boundaries_to_phrases(
         bounds, phase, len(beat_times), min_beats)
 
@@ -507,24 +592,48 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
             continue
         seg_ranges.append((a, b, aligned[idx]))
     if not seg_ranges:
+        _phase(None)
         return []
 
     # Vocal stem RMS on the same clock (frame level, mapped by time).
     vocal_rms = None
+    vocal_active = None
     if vocals_path and Path(vocals_path).exists():
-        _tick("Measuring vocal activity…")
+        _phase("vocal", "Measuring vocal activity…")
         try:
-            yv, _ = librosa.load(str(vocals_path), sr=SAMPLE_RATE, mono=True)
+            from analysis.vocals import active_frames
+            yv = load_mono(vocals_path, sr=SAMPLE_RATE)
             vocal_rms = _frame_rms(yv)
+            vocal_active = active_frames(vocal_rms)
         except Exception:
             log.warning("  Could not load vocal stem for vocal-presence scoring.")
             vocal_rms = None
+
+    # Per-frame band power of each stem: the same |STFT|² the analysis pass took
+    # for its band occupancy (frames.power_stats), so it is usually a cache hit.
+    def _stem_band_frames(path: Optional[Path], what: str):
+        if not path or not Path(path).exists():
+            return None
+        try:
+            from analysis.quality import BAND_EDGES, HF_BAND_HZ
+            ys = load_mono(path, sr=SAMPLE_RATE)
+            if len(ys) < 2048:
+                return None
+            return frames.power_stats(ys, sr, BAND_EDGES, HF_BAND_HZ, n_fft=2048,
+                                      hop=HOP_LENGTH)["band_frames"]
+        except Exception:  # noqa: BLE001
+            log.warning("  %s band occupancy failed", what, exc_info=True)
+            return None
+
+    _phase("stem_bands", "Measuring per-stem band occupancy…")
+    vocal_bands_f = _stem_band_frames(vocals_path, "vocal")
+    bed_bands_f = _stem_band_frames(inst_path, "bed")
 
     frames_per_sec = sr / HOP_LENGTH
     rms_max = float(np.percentile(rms_b, 95)) or 1.0
     v_scale = float(np.percentile(vocal_rms, 95)) if vocal_rms is not None else 1.0
 
-    _tick("Scoring + labelling sections…")
+    _phase("sections", "Scoring + labelling sections…")
     segs = []
     chroma_means = []
     for a, b, phrase_aligned in seg_ranges:
@@ -600,6 +709,15 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
             seg["chroma_vocal"] = _norm_chroma(vocal_chroma_b[:, a:b].mean(axis=1))
         if bed_chroma_b is not None:
             seg["chroma_bed"] = _norm_chroma(bed_chroma_b[:, a:b].mean(axis=1))
+        if vocal_active is not None:
+            from analysis.vocals import span_fraction
+            seg["vocal_activity"] = span_fraction(vocal_active, sr, HOP_LENGTH,
+                                                  start_t, end_t)
+        seg["band_energy_vocal"] = _section_bands(vocal_bands_f, start_t, end_t)
+        seg["band_energy_bed"] = _section_bands(bed_bands_f, start_t, end_t)
+        if melody and melody.get("f0") and melody.get("step"):
+            from analysis.vocals import f0_summary
+            seg["f0"] = f0_summary(melody["f0"], float(melody["step"]), start_t, end_t)
         segs.append(seg)
     # Extend the last section to the true end of the audio.
     segs[-1]["end_sec"] = round(duration, 2)
@@ -613,6 +731,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
 
     label_segments(segs, has_vocals=vocal_rms is not None)
     apply_phrase_alignment(segs)
+    _phase(None)
 
     log.info("  → " + ", ".join(
         f"{s['label']} {s['start_sec']:.0f}-{s['end_sec']:.0f}s" for s in segs))

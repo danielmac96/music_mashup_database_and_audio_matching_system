@@ -13,6 +13,7 @@ from database.models import get_conn, update_song_duration, update_song_status
 from downloader.download import reverify_track
 
 from api import jobs, queue_runner
+from config import PRIORITY_USER
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def run(job_id: str, song_id: int) -> None:
     if res.replaced:
         # New full audio replaced a preview: reset status so stems/analysis rerun.
         update_song_status(song_id, "downloaded")
-        reprocess_job = queue_runner.enqueue_song(song_id)
+        reprocess_job = queue_runner.enqueue_song(song_id, priority=PRIORITY_USER)
 
     jobs.done(job_id, {
         "replaced": res.replaced,

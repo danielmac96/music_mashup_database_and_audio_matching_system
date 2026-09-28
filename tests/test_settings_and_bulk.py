@@ -50,12 +50,16 @@ def client(tmp_path, monkeypatch):
 
 
 def _add(db_path, k, *, analysed=True, bands=False, quality=False,
-         chroma=False, grid=False, sections=True, drums=False):
+         chroma=False, grid=False, sections=True, drums=False,
+         stem_measures=None):
     """A song with selectable generations of feature data present.
 
     Each flag is one generation the staleness check knows about, so a test can
     say precisely which era a track was analysed in. `grid` is P2.1's per-section
-    tempo and beat grid."""
+    tempo and beat grid; `stem_measures` (default: same as grid) phase 4's
+    per-section vocal activity and stem bands."""
+    if stem_measures is None:
+        stem_measures = grid
     from database.models import (
         get_conn, replace_sections, upsert_features, upsert_song, upsert_stem,
         update_stem_quality,
@@ -84,6 +88,9 @@ def _add(db_path, k, *, analysed=True, bands=False, quality=False,
             sec.update(bpm=120.0, bpm_source="section_estimate", bpm_confidence=0.8,
                        beat_count=64, bar_count=16.0, beats_per_bar=4,
                        section_class="vocal")
+        if stem_measures:
+            sec.update(vocal_activity=0.7, band_energy_vocal=[0.125] * 8,
+                       band_energy_bed=[0.125] * 8)
         replace_sections(sid, [sec], db_path=db_path)
     return sid
 
@@ -262,6 +269,26 @@ def test_badge_and_structure_gate_share_one_definition(client, grid, chroma,
     from api.workers.bulk_worker import sections_are_current
     assert sections_are_current(sid, db_path=db) is current
     assert (c.get("/api/tracks/staleness").json()["needs_analysis"] == 0) is current
+
+
+def test_sections_without_stem_measures_are_stale_only_with_a_vocal_stem(client):
+    """Phase 4 measures sections on the stems. A track with a vocal stem whose
+    sections predate that is stale; the same sections on a track that has no
+    stems (nothing to measure them with) are not."""
+    c, db = client
+    sid = _add(db, 1, bands=True, quality=True, chroma=True, grid=True,
+               stem_measures=False)
+    from api.workers.bulk_worker import sections_are_current
+    assert sections_are_current(sid, db_path=db) is False
+    assert c.get("/api/tracks/staleness").json()["missing_section_stem_measures"] == 1
+
+    from database.models import get_conn
+    conn = get_conn(db)
+    conn.execute("DELETE FROM stems WHERE song_id=? AND stem_type='vocals'", (sid,))
+    conn.commit()
+    conn.close()
+    assert sections_are_current(sid, db_path=db) is True
+    assert c.get("/api/tracks/staleness").json()["missing_section_stem_measures"] == 0
 
 
 def test_a_track_with_no_sections_at_all_is_not_current(client):

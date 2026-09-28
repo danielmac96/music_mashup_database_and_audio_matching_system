@@ -65,13 +65,18 @@ def _mock_stages(monkeypatch, *, fail_stems_for=None, fail_structure_for=None,
     import api.workers.stages as stages
     import database.models as models
 
-    calls = {"download": 0, "stems": 0, "analyze": 0, "structure": 0}
+    calls = {"download": 0, "quick": 0, "stems": 0, "analyze": 0, "structure": 0}
     row = _CURRENT_SECTION if section is None else section
 
     def dl(sid, on_progress=None):
         calls["download"] += 1
         models.update_song_status(sid, "downloaded", raw_path=f"/f/{sid}.mp3")
         return {"path": f"/f/{sid}.mp3"}
+
+    def qk(sid, on_progress=None):
+        calls["quick"] += 1
+        models.set_quick_state(sid, "done")
+        return {}
 
     def st(sid, on_progress=None):
         calls["stems"] += 1
@@ -94,6 +99,7 @@ def _mock_stages(monkeypatch, *, fail_stems_for=None, fail_structure_for=None,
         return {"section_count": 1}
 
     monkeypatch.setattr(stages, "do_download", dl)
+    monkeypatch.setattr(stages, "do_quick", qk)
     monkeypatch.setattr(stages, "do_stems", st)
     monkeypatch.setattr(stages, "do_analyze", an)
     monkeypatch.setattr(stages, "do_structure", sc)
@@ -222,8 +228,8 @@ def test_stage_queues_route_track_through_pipeline(env, monkeypatch):
     jid = queue_runner.enqueue_song(sid)
     assert jobs.get(jid)["stages"]["download"]["state"] == "waiting"
 
-    for expected in ("download", "stems", "analysis"):
-        job_id, song_id = queue_runner._QUEUES[expected].get_nowait()
+    for expected in ("download", "quick", "stems", "analysis"):
+        job_id, song_id = queue_runner.take(expected, block=False)
         assert song_id == sid
         outcome = pw.run_stage(job_id, song_id, expected)
         if outcome == "next":
@@ -248,6 +254,13 @@ def test_dispatch_resumes_mid_pipeline_track_at_right_stage(env, monkeypatch):
                              status="downloaded")
     queue_runner.enqueue_song(sid)
     assert queue_runner._QUEUES["download"].qsize() == 0
+    # The quick tier never ran for this download: it goes first.
+    assert queue_runner._QUEUES["quick"].qsize() == 1
+
+    done = models.upsert_song(title="U", artist="A", source_url="http://x/3",
+                              status="downloaded")
+    models.set_quick_state(done, "done")
+    queue_runner.enqueue_song(done)
     assert queue_runner._QUEUES["stems"].qsize() == 1
 
 
@@ -269,7 +282,7 @@ def test_job_timeline_records_every_stage(env, monkeypatch):
     pw.run(jid, sid)
 
     stages = _stages(jid)
-    assert list(stages) == ["download", "stems", "analysis", "structure"]
+    assert list(stages) == ["download", "quick", "stems", "analysis", "structure"]
     for name, rec in stages.items():
         assert rec["state"] == "done", name
         assert rec["started_at"] <= rec["finished_at"], name

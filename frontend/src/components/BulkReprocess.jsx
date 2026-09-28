@@ -28,6 +28,7 @@ import { toast } from "../toast";
 const WHAT_IS_MISSING = [
   ["missing_section_chroma", "measured harmony", "the ♪ shift and bass-clash chips"],
   ["missing_section_grid", "section tempo + grid", "bar counts, downbeats and phrase alignment"],
+  ["missing_section_stem_measures", "section stem measures", "vocal activity, per-stem bands and sung range per section"],
   ["missing_band_energy", "band occupancy", "spectral collision scoring"],
   ["missing_stem_quality", "stem quality", "filtering out unusable acapellas"],
   ["missing_sections", "structure", "section-level pairing at all"],

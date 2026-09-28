@@ -175,6 +175,11 @@ class SaveSettingsRequest(BaseModel):
     # Live-read (config.current_firecrawl_api_key). Written by the Mixes tab when
     # a 1001tracklists import 501s; GET reports presence only, never the value.
     firecrawl_api_key: Optional[str] = None
+    # The analyser (readme §9). All live-read.
+    analyzer: Optional[str] = None               # librosa | shadow | essentia
+    essentia_key_profile: Optional[str] = None
+    essentia_rhythm_method: Optional[str] = None
+    analysis_cache: Optional[bool] = None
 
 
 def _checked_weights(raw: dict, keys, name: str) -> dict:
@@ -239,6 +244,27 @@ def save_settings(req: SaveSettingsRequest) -> dict:
         new["stem_separator"] = req.stem_separator
     if req.stem_mode is not None:
         new["stem_mode"] = req.stem_mode
+
+    for name, allowed in (("analyzer", config.ANALYZERS),
+                          ("essentia_key_profile", config.ESSENTIA_KEY_PROFILES),
+                          ("essentia_rhythm_method", config.ESSENTIA_RHYTHM_METHODS)):
+        value = getattr(req, name)
+        if value is not None:
+            if value not in allowed:
+                raise HTTPException(status_code=400,
+                                    detail=f"{name} must be one of {', '.join(allowed)}")
+            new[name] = value
+    if req.analyzer in ("shadow", "essentia"):
+        from analysis.essentia_groups import available
+        if not available():
+            raise HTTPException(
+                status_code=400,
+                detail="Essentia is not installed here (it has no Windows wheels) — "
+                       "run the Docker image or WSL2, or keep the librosa analyser.")
+    if req.analysis_cache is not None:
+        # save_settings drops falsy values, so False is stored as the string
+        # the reader understands.
+        new["analysis_cache"] = True if req.analysis_cache else "off"
 
     for name in ("effort_weight", "section_weight", "stem_quality_min",
                  "bpm_max_diff", "key_min_score", "bpm_max_diff_model"):

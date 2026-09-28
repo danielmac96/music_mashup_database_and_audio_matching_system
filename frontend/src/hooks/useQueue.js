@@ -4,14 +4,17 @@ import { isAnalysed } from "../theme";
 
 // The pipeline, per track and per stage.
 //
-// A pipeline job carries a `stages` timeline ({download, stems, analysis,
-// structure} → {state, enqueued_at, started_at, finished_at, progress, message,
+// A pipeline job carries a `stages` timeline ({download, quick, stems,
+// analysis, structure} → {state, enqueued_at, started_at, finished_at, progress, message,
 // error}). Jobs only live for this server session, so a stage the track passed
 // before this job existed is filled in from the track row — the same truths
 // theme.pipelineDots reads — and marked `earlier`.
 
 export const STAGES = [
   ["download", "Download"],
+  // The quick tier: the mix analysed and cut into provisional sections right
+  // after download, before Demucs (readme §9, phase 3).
+  ["quick", "Quick"],
   ["stems", "Stems"],
   ["analysis", "Analyse"],
   ["structure", "Structure"],
@@ -63,9 +66,13 @@ const ERROR_STAGE = {
 };
 const DONE_ON_TRACK = {
   download: (t) => !!t.stems?.full || (STATUS_RANK[t.status] ?? 0) >= 1,
+  quick: (t) => t.quick_state === "done" || (STATUS_RANK[t.status] ?? 0) >= 2,
   stems: (t) => (!!t.stems?.vocals && !!t.stems?.instrumental)
     || (STATUS_RANK[t.status] ?? 0) >= 2,
-  analysis: (t) => isAnalysed(t) || t.status === "analysed",
+  // The quick tier fills features.full too, so a BPM alone no longer means the
+  // full analysis ran — only a track analysed before the quick tier existed
+  // (no quick_state) is taken on its BPM.
+  analysis: (t) => t.status === "analysed" || (isAnalysed(t) && !t.quick_state),
   structure: (t) => (t.section_count || 0) > 0,
 };
 
@@ -110,7 +117,7 @@ function resolveCell(key, track, rec, job, positions, pending) {
   return { state: pending ? "pending" : "todo" };
 }
 
-// The four cells for one track, from the newest job that touched each stage.
+// One cell per stage for a track, from the newest job that touched each stage.
 export function stageCells(track, songJobs = [], positions = {}) {
   const t = track || {};
   const pending = isActiveJob(songJobs[0]);

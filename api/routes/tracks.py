@@ -16,6 +16,7 @@ from database.models import (
 from ingest.sources import classify_url, normalize_url
 
 from api import jobs, queue_runner
+from config import PRIORITY_USER
 from api.workers import (
     analysis_worker, download_worker, reverify_worker, stems_worker, structure_worker,
 )
@@ -40,7 +41,12 @@ _AUDIO_MEDIA = {
 _FEATURE_FIELDS = ("bpm", "key", "mode", "camelot", "energy", "loudness_rms",
                    "bpm_confidence", "key_confidence", "beat_phase",
                    "spectral_centroid", "spectral_rolloff",
-                   "zero_crossing_rate")
+                   "zero_crossing_rate",
+                   # Analysis overhaul phase 2: who filled the row, and the
+                   # Essentia-only scalars (NULL under the librosa analyser).
+                   "analyzer", "key_strength", "tuning_hz", "lufs", "lra",
+                   "true_peak", "replay_gain", "dynamic_complexity",
+                   "danceability", "onset_rate", "dissonance")
 
 # Analysis is organised into independent metric steps (analysis/analyze.py
 # runs each in isolation so one failing measurement doesn't blank out the
@@ -202,8 +208,61 @@ def queue_process(song_id: int) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="song not found")
 
-    job_id = queue_runner.enqueue_song(song_id)
+    job_id = queue_runner.enqueue_song(song_id, priority=PRIORITY_USER)
     return {"job_id": job_id}
+
+
+def prefetch_partners(song_id: int, k: int) -> list[int]:
+    """The ``k`` unfinished tracks likeliest to pair with this one, best first.
+
+    Unfinished = still waiting on stems or the full analysis (an error waits for
+    Retry and is not offered). Ranked on what the quick tier already measured on
+    each mix — tempo (half/double aware) times Camelot compatibility, the same
+    functions the matcher's gate starts from — so the partners you will be shown
+    once everything is processed are the ones processed first. A track the quick
+    tier has not reached ranks last, by arrival."""
+    from matcher.match import bpm_score, camelot_score
+    conn = get_conn()
+    try:
+        me = conn.execute(
+            "SELECT bpm, camelot FROM features WHERE song_id=? AND stem_type='full'",
+            (song_id,)).fetchone()
+        rows = conn.execute(
+            """SELECT s.id, f.bpm, f.camelot FROM songs s
+               LEFT JOIN features f ON f.song_id = s.id AND f.stem_type = 'full'
+               WHERE s.id != ? AND s.status IN ('queued', 'downloaded', 'stemmed')
+               ORDER BY s.id""", (song_id,)).fetchall()
+    finally:
+        conn.close()
+    if k <= 0 or not rows:
+        return []
+
+    def _fit(r) -> float:
+        if not me or not me["bpm"] or not r["bpm"]:
+            return -1.0
+        return bpm_score(me["bpm"], r["bpm"]) * camelot_score(me["camelot"], r["camelot"])
+
+    ranked = sorted(rows, key=lambda r: -_fit(r))      # stable: arrival breaks ties
+    return [int(r["id"]) for r in ranked[:k]]
+
+
+@router.post("/{song_id}/prefetch")
+def prefetch(song_id: int) -> dict:
+    """Selecting a track (a Library row, the track detail screen): move it and
+    its likeliest partners ahead of the import queue at PRIORITY_PREFETCH, so
+    the pairs you are about to look at are the ones separated next. Cheap and
+    idempotent — the UI calls it on every selection; a job already at least as
+    urgent is left alone, and nothing is ever lowered."""
+    from config import PREFETCH_PARTNERS, PRIORITY_PREFETCH
+    conn = get_conn()
+    row = conn.execute("SELECT id FROM songs WHERE id=?", (song_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="song not found")
+    out = [queue_runner.prioritise(song_id, PRIORITY_PREFETCH)]
+    for pid in prefetch_partners(song_id, PREFETCH_PARTNERS):
+        out.append(queue_runner.prioritise(pid, PRIORITY_PREFETCH))
+    return {"tracks": out}
 
 
 @router.post("/{song_id}/reverify")
@@ -558,7 +617,7 @@ def change_url(song_id: int, body: UrlUpdate) -> dict:
             raise HTTPException(status_code=404, detail=msg)
         raise HTTPException(status_code=400, detail=msg)
     _unlink_files(result["files"])
-    job_id = queue_runner.enqueue_song(song_id)
+    job_id = queue_runner.enqueue_song(song_id, priority=PRIORITY_USER)
     return {"updated": True, "song_id": song_id, "source_url": new_url, "job_id": job_id}
 
 

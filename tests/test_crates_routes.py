@@ -29,7 +29,7 @@ def app(tmp_path, monkeypatch):
     import api.server as server
     importlib.reload(server)
 
-    monkeypatch.setattr(pl.queue_runner, "enqueue_song", lambda sid: f"job-{sid}")
+    monkeypatch.setattr(pl.queue_runner, "enqueue_song", lambda sid, **_kw: f"job-{sid}")
     return TestClient(server.app), crates, models
 
 

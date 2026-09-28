@@ -331,6 +331,64 @@ CREATE TABLE IF NOT EXISTS models (
     created_at         TEXT DEFAULT (datetime('now')),
     UNIQUE(name, version)
 );
+
+-- ── Analysis timings ─────────────────────────────────────────────────────────
+-- One row per timed unit of pipeline work: a whole stage ('stems'), or one step
+-- inside it ('analysis.tempo' on the vocal stem). The job timeline in api/jobs.py
+-- holds the same start/finish times but only in memory, so a restart lost every
+-- measurement and "which part of the pipeline is slow" had no answer. Append-only
+-- and disposable: nothing reads it for correctness, so a failed write is logged
+-- and never fails the stage it was timing.
+--   grp          'download' | 'stems' | 'analysis' | 'analysis.<step>' |
+--                'structure' | 'structure.<step>' | 'quality' | …
+--   audio_secs   length of the audio the unit worked on, so a timing can be
+--                read as a real-time factor (ms / 1000 / audio_secs)
+--   content_hash the audio file's hash once the feature cache exists; NULL
+--                before then
+CREATE TABLE IF NOT EXISTS analysis_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    song_id       INTEGER,
+    stem_type     TEXT,
+    grp           TEXT NOT NULL,
+    tier          INTEGER,
+    analyzer      TEXT,
+    ms            REAL NOT NULL,
+    audio_secs    REAL,
+    ok            INTEGER NOT NULL DEFAULT 1,
+    error         TEXT,
+    content_hash  TEXT,
+    at            TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_grp ON analysis_runs(grp, at);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_song ON analysis_runs(song_id);
+
+-- ── Feature cache ────────────────────────────────────────────────────────────
+-- One row per (audio content, feature group): the group's output as it was
+-- last computed. Keyed by a hash of the file's BYTES, not its path or song, so
+-- re-analysing an unchanged file costs a lookup, a re-separated stem (new
+-- bytes) recomputes, and moving the library does not. A row is used only
+-- while its version and params_hash match the group's current declaration in
+-- analysis/registry.py — bumping one group's version recomputes that group and
+-- nothing else. Groups over several files (structure: mix + stems) key on a
+-- 'combo:' hash of their inputs' hashes.
+--   payload_json  the group's result, exactly as the analyser returned it
+--   arrays_path   frame-level arrays too large for a row (npz), when a group
+--                 stores any; NULL otherwise
+--   ms            what computing it cost, so a cache hit can report the saving
+-- Disposable: deleting a row (or the table) only costs a recompute.
+CREATE TABLE IF NOT EXISTS feature_cache (
+    content_hash  TEXT NOT NULL,
+    grp           TEXT NOT NULL,
+    version       INTEGER NOT NULL,
+    params_hash   TEXT NOT NULL,
+    analyzer      TEXT,
+    payload_json  TEXT NOT NULL,
+    arrays_path   TEXT,
+    ms            REAL,
+    computed_at   TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (content_hash, grp)
+);
+CREATE INDEX IF NOT EXISTS idx_feature_cache_grp ON feature_cache(grp, version);
 """
 
 
@@ -382,6 +440,13 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 _SONGS_OPTIONAL_COLUMNS = (
+    # The quick tier (analysis overhaul phase 3): the full mix analysed and cut
+    # into provisional sections straight after download, before Demucs. Not
+    # part of `status` — status still means "fully processed" — so nothing that
+    # filters on status='analysed' changes. 'done' | 'failed' | NULL (not run
+    # for the current audio: do_download clears it).
+    ("quick_state", "TEXT"),
+    ("quick_at", "TEXT"),
     ("artist_id", "TEXT"),
     ("track_id", "TEXT"),
     ("duration_str", "TEXT"),
@@ -442,6 +507,27 @@ _FEATURES_OPTIONAL_COLUMNS = (
     ("hook_start", "REAL"),
     ("hook_end", "REAL"),
     ("hook_role", "TEXT"),
+    # Analysis overhaul, phase 2 (readme §9). `analyzer` names who filled the
+    # core columns above; the rest are what only Essentia measures, written by
+    # update_features_extras whenever it ran (analysis/project.py). NULL means
+    # unmeasured — the librosa analyser never fills them.
+    ("analyzer", "TEXT"),
+    ("key_strength", "REAL"),
+    ("key_candidates_json", "TEXT"),   # profile -> [key, mode, strength]
+    ("bpm_candidates_json", "TEXT"),   # estimator -> bpm (+ histogram peaks)
+    ("tuning_hz", "REAL"),
+    ("lufs", "REAL"),                  # EBU R128 integrated
+    ("lra", "REAL"),                   # EBU R128 loudness range, LU
+    ("true_peak", "REAL"),             # dBTP
+    ("replay_gain", "REAL"),           # dB
+    ("dynamic_complexity", "REAL"),
+    ("danceability", "REAL"),
+    ("onset_rate", "REAL"),            # onsets per second
+    ("chords_json", "TEXT"),           # key, scale, change/number rate, histogram
+    ("dissonance", "REAL"),
+    ("bands3_json", "TEXT"),           # low <250 Hz / mid / high >4 kHz fractions
+    ("descriptors_json", "TEXT"),      # everything else Essentia measured
+    ("melody_json", "TEXT"),           # vocal stem only: sung range + centre
 )
 
 
@@ -459,6 +545,9 @@ _STEMS_OPTIONAL_COLUMNS = (
     ("bleed", "REAL"),          # correlation with the complementary stem
     ("hf_loss", "REAL"),        # top-end lost vs the full mix (the MDX smear)
     ("noise_floor", "REAL"),    # residue where the stem should be silent
+    # Hash of the file's bytes when it was last analysed — the feature_cache
+    # key (analysis/cache.content_hash). NULL until then.
+    ("content_hash", "TEXT"),
 )
 
 
@@ -643,6 +732,21 @@ _SECTIONS_OPTIONAL_COLUMNS = (
     # vocal|instrumental|mixed|unknown. vocal_presence is a continuous 0-1 and
     # every caller re-invented its own threshold; this is the shared answer.
     ("section_class", "TEXT"),
+    # 1 = cut from the full mix before stems existed (the quick tier): no vocal
+    # presence, section_class 'unknown'. Such sections are stale as soon as a
+    # vocal stem exists (bulk_worker._sections_stale_sql), so the full analysis
+    # re-cuts them with the stems.
+    ("provisional", "INTEGER DEFAULT 0"),
+    # Phase 4 — measured on the stems, per section. vocal_activity is the share
+    # of frames in which the vocal stem is singing (analysis/vocals.py), where
+    # vocal_presence is a mean level; the band vectors are 8-band occupancy of
+    # the vocal and the bed stems inside the section; f0_json is the sung range
+    # and centre from the vocal stem's melody (Essentia analyser only). NULL =
+    # not measured: no stem, no melody, or cut before this existed.
+    ("vocal_activity", "REAL"),
+    ("band_energy_vocal_json", "TEXT"),
+    ("band_energy_bed_json", "TEXT"),
+    ("f0_json", "TEXT"),
 )
 
 
@@ -710,6 +814,10 @@ _PAIR_FEEDBACK_UNIQUE_INDEX = (
 _PAIR_FEEDBACK_OPTIONAL_COLUMNS = (
     ("features_json", "TEXT"),
     ("rating", "INTEGER"),
+    # 1 = this judgement's section indexes could not be carried onto a re-cut
+    # structure (remap_feedback_sections): the row is kept exactly as it was,
+    # but its indexes may now point at different music.
+    ("sections_stale", "INTEGER DEFAULT 0"),
 )
 
 
@@ -1009,6 +1117,21 @@ def upsert_song(
     return song_id
 
 
+def set_quick_state(song_id: int, state: Optional[str],
+                    db_path: Path = DB_PATH) -> None:
+    """Record the quick tier's outcome ('done' | 'failed'), or clear it (None)
+    so the pipeline runs it again for new audio."""
+    conn = get_conn(db_path)
+    try:
+        conn.execute(
+            "UPDATE songs SET quick_state=?, quick_at="
+            "CASE WHEN ? IS NULL THEN NULL ELSE datetime('now') END WHERE id=?",
+            (state, state, song_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def update_song_status(song_id: int, status: str, raw_path: str = "",
                        db_path: Path = DB_PATH):
     # A non-error status means the track advanced (or was retried) — clear any
@@ -1178,6 +1301,28 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
     )
     conn.commit()
     conn.close()
+
+
+def update_features_extras(song_id: int, stem_type: str, extras: Dict,
+                           db_path: Path = DB_PATH) -> int:
+    """Write the analyser name and the Essentia-only columns of one features
+    row (analysis/project.EXTRA_COLUMNS). Separate from upsert_features for the
+    same reason update_hook is: that statement owns the core columns, and these
+    are filled by a different analyser on a different schedule."""
+    from analysis.project import EXTRA_COLUMNS
+    cols = [c for c in EXTRA_COLUMNS if c in extras]
+    if not cols:
+        return 0
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            f"UPDATE features SET {', '.join(f'{c}=?' for c in cols)} "
+            "WHERE song_id=? AND stem_type=?",
+            [extras[c] for c in cols] + [song_id, stem_type])
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
 
 
 def update_hook(song_id: int, stem_type: str, hook: Optional[Dict],
@@ -1574,6 +1719,13 @@ def update_song_url(song_id: int, new_url: str, db_path: Path = DB_PATH,
     conn.execute(
         "DELETE FROM mashup_candidates WHERE vocal_song_id=? OR inst_song_id=?",
         (song_id, song_id))
+    # Different audio: the judgements stay (irreplaceable), but the section
+    # indexes they name belonged to the old file's structure.
+    conn.execute(
+        """UPDATE pair_feedback SET sections_stale=1
+           WHERE (vocal_song_id=? AND vocal_section IS NOT NULL)
+              OR (inst_song_id=? AND inst_section IS NOT NULL)""",
+        (song_id, song_id))
     # source follows the link: a track pointed back at SoundCloud must stop
     # claiming the YouTube source a fallback once gave it.
     from ingest.sources import classify_url
@@ -1738,13 +1890,129 @@ def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[D
 
 # ── Sections (song structure: intro/verse/chorus/drop/…) ─────────────────────
 
+# A judged section is carried to the new section it overlaps most, when that
+# overlap covers MORE than this much of the OLD section. At or below it the
+# music the verdict was about is no longer one section (an exact half-split has
+# two equal claims), and moving it would be a guess.
+SECTION_REMAP_MIN_OVERLAP = 0.5
+
+
+def section_index_map(old: List[Dict], new: List[Dict],
+                      min_overlap: float = SECTION_REMAP_MIN_OVERLAP) -> Dict[int, Optional[int]]:
+    """old section_index -> new section_index (or None when unmappable), by the
+    largest time overlap, measured as a fraction of the old section, which must
+    exceed ``min_overlap``."""
+    out: Dict[int, Optional[int]] = {}
+    for o in old:
+        o0, o1 = float(o["start_sec"]), float(o["end_sec"])
+        length = max(o1 - o0, 1e-9)
+        best, best_frac = None, 0.0
+        for n in new:
+            ov = min(o1, float(n["end_sec"])) - max(o0, float(n["start_sec"]))
+            frac = ov / length
+            if frac > best_frac:
+                best, best_frac = int(n["section_index"]), frac
+        out[int(o["section_index"])] = best if best_frac > min_overlap else None
+    return out
+
+
+def remap_feedback_sections(conn: sqlite3.Connection, song_id: int,
+                            old: List[Dict], new: List[Dict]) -> Dict[str, int]:
+    """Carry every pair_feedback row that names one of this song's sections onto
+    the re-cut structure, inside the caller's transaction.
+
+    ``pair_feedback`` is irreplaceable (readme §7): nothing here deletes a row.
+    A row whose section maps cleanly is re-pointed and cleared of
+    ``sections_stale``; a row with any side that does not map keeps its
+    indexes and is flagged ``sections_stale = 1``. If carrying the mappable
+    rows would make two rows share one key (two old sections collapsing into
+    one new one), nothing is moved and every affected row is flagged instead.
+    Raises RuntimeError on a row-count change, which the caller's rollback
+    turns into "nothing happened"."""
+    old_by_idx = {int(o["section_index"]): o for o in old}
+    new_by_idx = {int(n["section_index"]): n for n in new}
+    identical = (set(old_by_idx) == set(new_by_idx) and all(
+        abs(float(old_by_idx[i]["start_sec"]) - float(new_by_idx[i]["start_sec"])) < 1e-6
+        and abs(float(old_by_idx[i]["end_sec"]) - float(new_by_idx[i]["end_sec"])) < 1e-6
+        for i in old_by_idx))
+    if identical:
+        return {"moved": 0, "flagged": 0, "kept": 0}
+    mapping = section_index_map(old, new)
+
+    rows = conn.execute(
+        """SELECT id, vocal_song_id, inst_song_id, vocal_section, inst_section,
+                  COALESCE(sections_stale, 0) AS sections_stale
+             FROM pair_feedback WHERE vocal_song_id=? OR inst_song_id=?""",
+        (song_id, song_id)).fetchall()
+    if not rows:
+        return {"moved": 0, "flagged": 0, "kept": 0}
+    before = conn.execute("SELECT COUNT(*) FROM pair_feedback").fetchone()[0]
+
+    plan = []            # (id, new_vocal_section, new_inst_section, stale)
+    for r in rows:
+        if r["sections_stale"]:
+            # Its indexes name an OLDER structure than the one being replaced:
+            # mapping them through this one would move a guess.
+            plan.append((r["id"], r["vocal_section"], r["inst_section"], 1))
+            continue
+        vs, is_ = r["vocal_section"], r["inst_section"]
+        ok = True
+        if r["vocal_song_id"] == song_id and vs is not None:
+            vs = mapping.get(int(vs))
+            ok = ok and vs is not None
+        if r["inst_song_id"] == song_id and is_ is not None:
+            is_ = mapping.get(int(is_))
+            ok = ok and is_ is not None
+        if ok:
+            plan.append((r["id"], vs, is_, 0))
+        else:
+            plan.append((r["id"], r["vocal_section"], r["inst_section"], 1))
+
+    keys = {}
+    by_id = {r["id"]: r for r in rows}
+    collision = False
+    for rid, vs, is_, _stale in plan:
+        r = by_id[rid]
+        key = (r["vocal_song_id"], r["inst_song_id"],
+               -1 if vs is None else vs, -1 if is_ is None else is_)
+        if key in keys:
+            collision = True
+            break
+        keys[key] = rid
+    if collision:
+        plan = [(r["id"], r["vocal_section"], r["inst_section"], 1) for r in rows]
+
+    # Two passes, so a swap (1->2, 2->1) never meets itself on the unique index:
+    # park every moving row on an index no section can have, then land it.
+    moving = [p for p in plan if (p[1], p[2]) != (by_id[p[0]]["vocal_section"],
+                                                  by_id[p[0]]["inst_section"])]
+    for rid, _vs, _is, _st in moving:
+        conn.execute("UPDATE pair_feedback SET vocal_section=-1000000-id, "
+                     "inst_section=-1000000-id WHERE id=?", (rid,))
+    for rid, vs, is_, stale in plan:
+        conn.execute("UPDATE pair_feedback SET vocal_section=?, inst_section=?, "
+                     "sections_stale=? WHERE id=?", (vs, is_, stale, rid))
+
+    after = conn.execute("SELECT COUNT(*) FROM pair_feedback").fetchone()[0]
+    if after != before:
+        raise RuntimeError(f"pair_feedback remap changed the row count {before}->{after}")
+    flagged = sum(1 for p in plan if p[3])
+    return {"moved": len(moving) if not collision else 0, "flagged": flagged,
+            "kept": len(plan) - flagged - (len(moving) if not collision else 0)}
+
+
 def replace_sections(song_id: int, sections: List[Dict],
                      db_path: Path = DB_PATH) -> None:
-    """Replace all structure sections for a song with a fresh analysis result.
+    """Replace all structure sections for a song with a fresh analysis result,
+    carrying the user's judgements of the old sections onto the new ones
+    (remap_feedback_sections) in the same transaction.
 
     Each section dict: start_sec, end_sec, label, energy, vocal_presence,
     repetition, confidence."""
     conn = get_conn(db_path)
+    old = [dict(r) for r in conn.execute(
+        "SELECT section_index, start_sec, end_sec FROM sections WHERE song_id=?",
+        (song_id,)).fetchall()]
     conn.execute("DELETE FROM sections WHERE song_id=?", (song_id,))
     conn.executemany(
         """INSERT INTO sections
@@ -1756,9 +2024,11 @@ def replace_sections(song_id: int, sections: List[Dict],
                 bpm, bpm_source, bpm_confidence,
                 energy_absolute, energy_slope, energy_trend,
                 beat_times_json, downbeats_json, beat_count, bar_count,
-                beats_per_bar, phrase_length_bars, section_class)
+                beats_per_bar, phrase_length_bars, section_class, provisional,
+                vocal_activity, band_energy_vocal_json, band_energy_bed_json,
+                f0_json)
            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                   ?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         [
             (
                 song_id, idx,
@@ -1779,13 +2049,31 @@ def replace_sections(song_id: int, sections: List[Dict],
                 json.dumps(s["downbeats"]) if s.get("downbeats") else None,
                 s.get("beat_count"), s.get("bar_count"),
                 s.get("beats_per_bar"), s.get("phrase_length_bars"),
-                s.get("section_class"),
+                s.get("section_class"), 1 if s.get("provisional") else 0,
+                s.get("vocal_activity"),
+                json.dumps(s["band_energy_vocal"]) if s.get("band_energy_vocal") else None,
+                json.dumps(s["band_energy_bed"]) if s.get("band_energy_bed") else None,
+                json.dumps(s["f0"]) if s.get("f0") else None,
             )
             for idx, s in enumerate(sections)
         ],
     )
+    new = [{"section_index": idx, "start_sec": float(s["start_sec"]),
+            "end_sec": float(s["end_sec"])} for idx, s in enumerate(sections)]
+    try:
+        outcome = remap_feedback_sections(conn, song_id, old, new)
+    except Exception:
+        # Sections and judgements move together or not at all.
+        conn.rollback()
+        conn.close()
+        raise
     conn.commit()
     conn.close()
+    if outcome.get("moved") or outcome.get("flagged"):
+        import logging
+        logging.getLogger(__name__).info(
+            "song %s: re-cut sections carried %d judgement(s), flagged %d",
+            song_id, outcome["moved"], outcome["flagged"])
 
 
 def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
@@ -1805,7 +2093,10 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
                           ("chroma_vocal_json", "chroma_vocal"),
                           ("chroma_bed_json", "chroma_bed"),
                           ("beat_times_json", "beat_times"),
-                          ("downbeats_json", "downbeats")):
+                          ("downbeats_json", "downbeats"),
+                          ("band_energy_vocal_json", "band_energy_vocal"),
+                          ("band_energy_bed_json", "band_energy_bed"),
+                          ("f0_json", "f0")):
             if d.get(src):
                 d[dest] = json.loads(d.pop(src))
             else:
@@ -3137,3 +3428,194 @@ def remove_songs_from_crate(crate_id: int, song_ids: Sequence[int],
     finally:
         conn.close()
     return remove_crate_items(crate_id, [r["id"] for r in rows], db_path=db_path)
+
+
+# ── Analysis timings ──────────────────────────────────────────────────────────
+
+def record_analysis_run(grp: str, ms: float, song_id: Optional[int] = None,
+                        stem_type: Optional[str] = None, ok: bool = True,
+                        error: Optional[str] = None,
+                        audio_secs: Optional[float] = None,
+                        analyzer: Optional[str] = None,
+                        tier: Optional[int] = None,
+                        content_hash: Optional[str] = None,
+                        db_path: Optional[Path] = None) -> None:
+    """Append one timing row. Never raises: timings are diagnostics, and a
+    locked or missing database must not fail the stage being timed."""
+    try:
+        conn = get_conn(db_path) if db_path else get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO analysis_runs
+                   (song_id, stem_type, grp, tier, analyzer, ms, audio_secs, ok,
+                    error, content_hash)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (song_id, stem_type, grp, tier, analyzer, float(ms),
+                 audio_secs, 1 if ok else 0,
+                 (error or None) and str(error)[:500], content_hash))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "could not record analysis timing %s for song %s", grp, song_id,
+            exc_info=True)
+
+
+def get_feature_cache(content_hash: str, grp: str,
+                      db_path: Optional[Path] = None) -> Optional[Dict]:
+    """The stored row for one (content, group), or None. The caller decides
+    whether its version and params still match (analysis/cache.py)."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        row = conn.execute(
+            """SELECT content_hash, grp, version, params_hash, analyzer,
+                      payload_json, arrays_path, ms, computed_at
+                 FROM feature_cache WHERE content_hash=? AND grp=?""",
+            (content_hash, grp)).fetchone()
+    finally:
+        conn.close()
+    return dict(row) if row else None
+
+
+def put_feature_cache(content_hash: str, grp: str, version: int,
+                      params_hash: str, payload_json: str,
+                      analyzer: Optional[str] = None,
+                      arrays_path: Optional[str] = None,
+                      ms: Optional[float] = None,
+                      db_path: Optional[Path] = None) -> None:
+    """Store (replace) one group's result for one content hash."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        conn.execute(
+            """INSERT INTO feature_cache
+                   (content_hash, grp, version, params_hash, analyzer,
+                    payload_json, arrays_path, ms, computed_at)
+               VALUES (?,?,?,?,?,?,?,?, datetime('now'))
+               ON CONFLICT(content_hash, grp) DO UPDATE SET
+                   version=excluded.version, params_hash=excluded.params_hash,
+                   analyzer=excluded.analyzer, payload_json=excluded.payload_json,
+                   arrays_path=excluded.arrays_path, ms=excluded.ms,
+                   computed_at=excluded.computed_at""",
+            (content_hash, grp, int(version), params_hash, analyzer,
+             payload_json, arrays_path, ms))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def feature_cache_summary(db_path: Optional[Path] = None) -> List[Dict]:
+    """Rows and total compute-ms stored per (group, version)."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT grp, version, COUNT(*) AS rows, COALESCE(SUM(ms), 0) AS ms
+                 FROM feature_cache GROUP BY grp, version ORDER BY grp, version"""
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]
+
+
+def feature_cache_for_stems(grps: Sequence[str], stem_type: Optional[str] = None,
+                            db_path: Optional[Path] = None) -> List[Dict]:
+    """Cached group rows joined to the stems whose current bytes they describe:
+    song_id, stem_type, content_hash, grp, version, params_hash, payload_json.
+    A cache row for bytes no stem points at any more is not returned."""
+    if not grps:
+        return []
+    marks = ",".join("?" * len(grps))
+    sql = (f"""SELECT st.song_id, st.stem_type, fc.content_hash, fc.grp,
+                      fc.version, fc.params_hash, fc.payload_json
+                 FROM stems st JOIN feature_cache fc
+                   ON fc.content_hash = st.content_hash
+                WHERE fc.grp IN ({marks})""")
+    args: list = list(grps)
+    if stem_type:
+        sql += " AND st.stem_type = ?"
+        args.append(stem_type)
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        return [dict(r) for r in conn.execute(sql, args).fetchall()]
+    finally:
+        conn.close()
+
+
+def analysed_stem_count(db_path: Optional[Path] = None) -> Dict[str, int]:
+    """Stems that have been hashed by an analysis, per stem type."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT stem_type, COUNT(*) AS n FROM stems
+                WHERE content_hash IS NOT NULL GROUP BY stem_type""").fetchall()
+    finally:
+        conn.close()
+    return {r["stem_type"]: r["n"] for r in rows}
+
+
+def set_stem_content_hash(song_id: int, stem_type: str, content_hash: str,
+                          db_path: Optional[Path] = None) -> None:
+    """Record which bytes a stems row points at (never fails the caller)."""
+    try:
+        conn = get_conn(db_path) if db_path else get_conn()
+        try:
+            conn.execute("UPDATE stems SET content_hash=? WHERE song_id=? AND stem_type=?",
+                         (content_hash, song_id, stem_type))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "could not record content hash for song %s/%s", song_id, stem_type,
+            exc_info=True)
+
+
+def analysis_timing_summary(since: Optional[str] = None,
+                            db_path: Optional[Path] = None) -> List[Dict]:
+    """Per (grp, stem_type): run count, failures, median/p90/total ms and the
+    median real-time factor. Medians are computed here rather than in SQL
+    because SQLite has no percentile function."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        sql = "SELECT grp, stem_type, ms, audio_secs, ok FROM analysis_runs"
+        args: list = []
+        if since:
+            sql += " WHERE at >= ?"
+            args.append(since)
+        rows = conn.execute(sql, args).fetchall()
+    finally:
+        conn.close()
+
+    def _pct(values: list, q: float) -> Optional[float]:
+        if not values:
+            return None
+        values = sorted(values)
+        idx = min(len(values) - 1, max(0, int(round(q * (len(values) - 1)))))
+        return values[idx]
+
+    groups: Dict[tuple, Dict] = {}
+    for r in rows:
+        key = (r["grp"], r["stem_type"])
+        g = groups.setdefault(key, {"ms": [], "rtf": [], "failed": 0})
+        if not r["ok"]:
+            g["failed"] += 1
+            continue
+        g["ms"].append(r["ms"])
+        if r["audio_secs"]:
+            g["rtf"].append(r["ms"] / 1000.0 / r["audio_secs"])
+
+    out = []
+    for (grp, stem), g in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")):
+        rtf = _pct(g["rtf"], 0.5)
+        med, p90 = _pct(g["ms"], 0.5), _pct(g["ms"], 0.9)
+        out.append({
+            "grp": grp, "stem_type": stem, "runs": len(g["ms"]),
+            "failed": g["failed"],
+            "median_ms": round(med, 1) if med is not None else None,
+            "p90_ms": round(p90, 1) if p90 is not None else None,
+            "total_ms": round(sum(g["ms"]), 1),
+            "median_rtf": round(rtf, 4) if rtf is not None else None,
+        })
+    return out

@@ -1,0 +1,15 @@
+# Mashup Engine — the Essentia analyser (optional; Linux x86_64 / Docker / WSL2).
+#
+# Installed on top of requirements.txt, never instead of it. Essentia publishes
+# no Windows wheels, so native Windows keeps the librosa analyser (readme §9).
+#
+# essentia-tensorflow bundles essentia itself plus libtensorflow for the
+# pre-trained models (TempoCNN, Discogs-EffNet heads) — do not also install
+# plain `essentia`, the two packages ship the same module.
+#
+# Verified 2026-09-28 against this repo's pins: 2.1b6.dev1389 declares
+# numpy>=1.25 and imports and runs on numpy 1.26.4 (the numpy<2 pin Demucs,
+# librosa 0.10 and torch 2.5.1 need), cp311 and cp312 wheels. The wheel is
+# ~290 MB. Licence: AGPL-3.0 (models: CC BY-NC-SA) — fine for this personal,
+# non-commercial app, not for redistribution.
+essentia-tensorflow==2.1b6.dev1389 ; sys_platform == "linux" and platform_machine == "x86_64"

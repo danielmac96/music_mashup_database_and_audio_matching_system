@@ -13,6 +13,8 @@ services:
       - ./data:/data
     environment:
       MASHUP_PIPELINE_WORKERS: ${MASHUP_PIPELINE_WORKERS:-1}
+      # librosa | shadow | essentia (readme §9). Empty = the saved setting.
+      MASHUP_ANALYZER: ${MASHUP_ANALYZER:-}
       # Secrets come from a .env next to this file (template: .env.example),
       # which is gitignored and dockerignored. Empty = unset, so a blank entry
       # never overrides a key saved in the app's Settings.

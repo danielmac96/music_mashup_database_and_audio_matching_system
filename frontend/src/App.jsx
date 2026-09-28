@@ -23,6 +23,9 @@ import { isActiveJob } from "./hooks/useQueue";
 import { api } from "./api";
 import { onToast } from "./toast";
 
+// Statuses still waiting on a stage that prefetch can move up the line.
+const PREFETCH_STATUSES = new Set(["queued", "downloaded", "stemmed"]);
+
 // The four tabs became a sidebar. Not cosmetics: with navigation down the left,
 // the Library screen has room for a permanent pair dock on the right, so
 // judging a pair and browsing the library stop being two places you switch
@@ -205,6 +208,19 @@ export default function App() {
     () => library.tracks.find((t) => t.id === selectedTrackId) || null,
     [library.tracks, selectedTrackId],
   );
+
+  // Selecting a track (row or detail screen) while anything is still waiting
+  // on stems moves it and its likeliest partners to the front of the line.
+  // Debounced so arrowing through rows sends one request, not one per row.
+  const unfinished = useMemo(
+    () => library.tracks.some((t) => PREFETCH_STATUSES.has(t.status)),
+    [library.tracks],
+  );
+  useEffect(() => {
+    if (selectedTrackId == null || !unfinished) return undefined;
+    const t = setTimeout(() => { api.prefetchTrack(selectedTrackId).catch(() => {}); }, 600);
+    return () => clearTimeout(t);
+  }, [selectedTrackId, unfinished]);
 
   if (configured === false) {
     return (

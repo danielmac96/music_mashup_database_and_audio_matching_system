@@ -34,7 +34,7 @@ def app(tmp_path, monkeypatch):
     importlib.reload(server)
 
     # Never let a test enqueue real pipeline work.
-    monkeypatch.setattr(pl.queue_runner, "enqueue_song", lambda sid: f"job-{sid}")
+    monkeypatch.setattr(pl.queue_runner, "enqueue_song", lambda sid, **_kw: f"job-{sid}")
     return TestClient(server.app), disc, models
 
 

@@ -1693,7 +1693,7 @@ input, select { font-family: inherit; }
 .q-screen { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .q-body { flex: 1; min-height: 0; overflow: auto; padding: 14px 16px 24px; }
 
-.q-pools { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.q-pools { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .q-pool {
   display: flex; flex-direction: column; gap: 7px; padding: 10px 12px;
   background: var(--inset); border: 1px solid var(--border); border-radius: 9px;
@@ -1721,7 +1721,7 @@ input, select { font-family: inherit; }
 .q-table { margin-top: 14px; border: 1px solid var(--border); border-radius: 9px; overflow: hidden; }
 .q-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.5fr) repeat(4, minmax(0, 1fr)) 64px 110px;
+  grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(0, 1fr)) 64px 110px;
   gap: 10px; align-items: center; padding: 8px 12px;
 }
 .q-head {

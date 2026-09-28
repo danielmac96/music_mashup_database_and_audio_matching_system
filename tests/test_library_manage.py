@@ -100,7 +100,7 @@ def test_update_song_url_rejects_collision_and_empty(tmp_path, monkeypatch):
 def _tracks_module(tmp_path, monkeypatch):
     _setup(tmp_path, monkeypatch)
     from api import queue_runner
-    monkeypatch.setattr(queue_runner, "enqueue_song", lambda sid: f"job-{sid}")
+    monkeypatch.setattr(queue_runner, "enqueue_song", lambda sid, **_kw: f"job-{sid}")
     from api.routes import tracks
     importlib.reload(tracks)
     return tracks

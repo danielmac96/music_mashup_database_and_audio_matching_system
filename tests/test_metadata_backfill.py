@@ -354,7 +354,7 @@ def test_backfill_does_not_requeue_anything(tmp_path, monkeypatch):
     bulk_worker, jobs = _bulk(monkeypatch)
 
     enqueued = []
-    monkeypatch.setattr(bulk_worker.queue_runner, "enqueue_song", enqueued.append)
+    monkeypatch.setattr(bulk_worker.queue_runner, "enqueue_song", lambda sid, **_kw: enqueued.append(sid))
     monkeypatch.setattr("ingest.soundcloud.enrich_track", lambda url: FETCHED)
 
     bulk_worker.run(jobs.new_job(kind="bulk", message=""), "metadata", [sid])

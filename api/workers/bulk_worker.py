@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 
 from api import jobs, queue_runner
+from config import PRIORITY_BACKFILL
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ def run(job_id: str, action: str, song_ids: list[int]) -> None:
     for n, song_id in enumerate(song_ids, start=1):
         try:
             update_song_status(song_id, spec["status"])
-            queue_runner.enqueue_song(song_id)
+            queue_runner.enqueue_song(song_id, priority=PRIORITY_BACKFILL)
             queued += 1
         except Exception:  # noqa: BLE001 — one bad track must not stop the batch
             log.exception("bulk %s failed to queue song %s", action, song_id)
@@ -194,7 +195,7 @@ def _redownload_suspect(job_id: str, song_ids: list[int]) -> None:
                     Path(p).unlink(missing_ok=True)
                 except OSError:
                     pass
-            queue_runner.enqueue_song(row["id"])
+            queue_runner.enqueue_song(row["id"], priority=PRIORITY_BACKFILL)
             queued += 1
         except Exception as exc:  # noqa: BLE001 — one bad track must not stop the batch
             log.exception("re-download of suspect song %s failed", row["id"])
@@ -337,12 +338,29 @@ def _sections_stale_sql(song_ref: str) -> str:
     With no section rows at all every clause is true, so the expression reads
     "absent OR stale", which is exactly the set that wants do_structure.
     """
-    return "\n    OR ".join(
+    missing = [
         f"NOT EXISTS (SELECT 1 FROM sections sec\n"
         f"                   WHERE sec.song_id={song_ref} "
         f"AND sec.{col} IS NOT NULL)"
         for col in _SECTION_CURRENT_COLUMNS
-    )
+    ]
+    # Quick-tier sections were cut from the mix alone. Once a vocal stem exists
+    # they are stale: the full analysis re-cuts them with vocal presence and
+    # per-stem chroma (readme §9, phase 3).
+    provisional = (
+        f"(EXISTS (SELECT 1 FROM sections sec WHERE sec.song_id={song_ref} "
+        f"AND sec.provisional=1)\n"
+        f"        AND EXISTS (SELECT 1 FROM stems st WHERE st.song_id={song_ref} "
+        f"AND st.stem_type='vocals'))")
+    # Phase 4: with a vocal stem, sections carry stem measurements
+    # (vocal_activity, per-stem bands). Not in _SECTION_CURRENT_COLUMNS, because
+    # a track without stems can never have them and must not look stale forever.
+    stem_measures = (
+        f"(EXISTS (SELECT 1 FROM stems st WHERE st.song_id={song_ref} "
+        f"AND st.stem_type='vocals')\n"
+        f"        AND NOT EXISTS (SELECT 1 FROM sections sec "
+        f"WHERE sec.song_id={song_ref} AND sec.vocal_activity IS NOT NULL))")
+    return "\n    OR ".join(missing + [provisional, stem_measures])
 
 
 # One definition of "this track predates a generation of feature we now need".
@@ -444,6 +462,19 @@ def staleness(db_path=None) -> dict:
                    WHERE sec.song_id = s.id AND sec.bpm_source IS NOT NULL)"""
         ).fetchone()[0]
 
+        # Phase 4: a vocal stem exists, but no section carries the stem
+        # measurements (vocal activity, per-stem bands, sung range).
+        no_stem_measures = conn.execute(
+            """SELECT COUNT(DISTINCT s.id) FROM songs s
+               WHERE s.status='analysed'
+                 AND EXISTS (SELECT 1 FROM sections x WHERE x.song_id = s.id)
+                 AND EXISTS (SELECT 1 FROM stems st
+                             WHERE st.song_id = s.id AND st.stem_type='vocals')
+                 AND NOT EXISTS (
+                   SELECT 1 FROM sections sec
+                   WHERE sec.song_id = s.id AND sec.vocal_activity IS NOT NULL)"""
+        ).fetchone()[0]
+
         needs_analysis = conn.execute(
             f"""SELECT COUNT(*) FROM songs s
                 WHERE s.status='analysed' AND ({_STALE_ANALYSIS_SQL})"""
@@ -464,6 +495,7 @@ def staleness(db_path=None) -> dict:
             "missing_stem_quality": no_quality,
             "missing_section_chroma": no_chroma,
             "missing_section_grid": no_section_grid,
+            "missing_section_stem_measures": no_stem_measures,
             "missing_sections": no_sections,
             "missing_four_stems": wrong_stem_mode,
             "stem_mode": "four" if four else "two",
