@@ -331,6 +331,36 @@ CREATE TABLE IF NOT EXISTS models (
     created_at         TEXT DEFAULT (datetime('now')),
     UNIQUE(name, version)
 );
+
+-- ── Analysis timings ─────────────────────────────────────────────────────────
+-- One row per timed unit of pipeline work: a whole stage ('stems'), or one step
+-- inside it ('analysis.tempo' on the vocal stem). The job timeline in api/jobs.py
+-- holds the same start/finish times but only in memory, so a restart lost every
+-- measurement and "which part of the pipeline is slow" had no answer. Append-only
+-- and disposable: nothing reads it for correctness, so a failed write is logged
+-- and never fails the stage it was timing.
+--   grp          'download' | 'stems' | 'analysis' | 'analysis.<step>' |
+--                'structure' | 'structure.<step>' | 'quality' | …
+--   audio_secs   length of the audio the unit worked on, so a timing can be
+--                read as a real-time factor (ms / 1000 / audio_secs)
+--   content_hash the audio file's hash once the feature cache exists; NULL
+--                before then
+CREATE TABLE IF NOT EXISTS analysis_runs (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    song_id       INTEGER,
+    stem_type     TEXT,
+    grp           TEXT NOT NULL,
+    tier          INTEGER,
+    analyzer      TEXT,
+    ms            REAL NOT NULL,
+    audio_secs    REAL,
+    ok            INTEGER NOT NULL DEFAULT 1,
+    error         TEXT,
+    content_hash  TEXT,
+    at            TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_grp ON analysis_runs(grp, at);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_song ON analysis_runs(song_id);
 """
 
 
@@ -3137,3 +3167,85 @@ def remove_songs_from_crate(crate_id: int, song_ids: Sequence[int],
     finally:
         conn.close()
     return remove_crate_items(crate_id, [r["id"] for r in rows], db_path=db_path)
+
+
+# ── Analysis timings ──────────────────────────────────────────────────────────
+
+def record_analysis_run(grp: str, ms: float, song_id: Optional[int] = None,
+                        stem_type: Optional[str] = None, ok: bool = True,
+                        error: Optional[str] = None,
+                        audio_secs: Optional[float] = None,
+                        analyzer: Optional[str] = None,
+                        tier: Optional[int] = None,
+                        content_hash: Optional[str] = None,
+                        db_path: Optional[Path] = None) -> None:
+    """Append one timing row. Never raises: timings are diagnostics, and a
+    locked or missing database must not fail the stage being timed."""
+    try:
+        conn = get_conn(db_path) if db_path else get_conn()
+        try:
+            conn.execute(
+                """INSERT INTO analysis_runs
+                   (song_id, stem_type, grp, tier, analyzer, ms, audio_secs, ok,
+                    error, content_hash)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (song_id, stem_type, grp, tier, analyzer, float(ms),
+                 audio_secs, 1 if ok else 0,
+                 (error or None) and str(error)[:500], content_hash))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "could not record analysis timing %s for song %s", grp, song_id,
+            exc_info=True)
+
+
+def analysis_timing_summary(since: Optional[str] = None,
+                            db_path: Optional[Path] = None) -> List[Dict]:
+    """Per (grp, stem_type): run count, failures, median/p90/total ms and the
+    median real-time factor. Medians are computed here rather than in SQL
+    because SQLite has no percentile function."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        sql = "SELECT grp, stem_type, ms, audio_secs, ok FROM analysis_runs"
+        args: list = []
+        if since:
+            sql += " WHERE at >= ?"
+            args.append(since)
+        rows = conn.execute(sql, args).fetchall()
+    finally:
+        conn.close()
+
+    def _pct(values: list, q: float) -> Optional[float]:
+        if not values:
+            return None
+        values = sorted(values)
+        idx = min(len(values) - 1, max(0, int(round(q * (len(values) - 1)))))
+        return values[idx]
+
+    groups: Dict[tuple, Dict] = {}
+    for r in rows:
+        key = (r["grp"], r["stem_type"])
+        g = groups.setdefault(key, {"ms": [], "rtf": [], "failed": 0})
+        if not r["ok"]:
+            g["failed"] += 1
+            continue
+        g["ms"].append(r["ms"])
+        if r["audio_secs"]:
+            g["rtf"].append(r["ms"] / 1000.0 / r["audio_secs"])
+
+    out = []
+    for (grp, stem), g in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1] or "")):
+        rtf = _pct(g["rtf"], 0.5)
+        med, p90 = _pct(g["ms"], 0.5), _pct(g["ms"], 0.9)
+        out.append({
+            "grp": grp, "stem_type": stem, "runs": len(g["ms"]),
+            "failed": g["failed"],
+            "median_ms": round(med, 1) if med is not None else None,
+            "p90_ms": round(p90, 1) if p90 is not None else None,
+            "total_ms": round(sum(g["ms"]), 1),
+            "median_rtf": round(rtf, 4) if rtf is not None else None,
+        })
+    return out

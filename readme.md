@@ -42,7 +42,8 @@ docker compose logs -f          # follow pipeline logs
 docker compose down             # stop (./data is preserved)
 ```
 
-The image builds the frontend, installs CPU-only PyTorch + Demucs + librosa and
+The image builds the frontend, installs CPU-only PyTorch + Demucs + librosa (and
+the optional Essentia analyser, `requirements-essentia.txt`) and
 serves UI and API from one process. Everything the app writes — songs, stems,
 the SQLite DB, Demucs weights, settings — persists in `./data`. Docker sets the
 path env vars, so the first-run folder step is skipped.
@@ -61,6 +62,8 @@ Prerequisites: **ffmpeg + ffprobe on PATH**, **Python 3.11/3.12**, **Node 18+**.
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe -m pip install audio-separator==0.30.0 --no-deps   # optional "Fast" separator
 cd frontend; npm install; npm run build; cd ..
+# Linux/WSL2 only, optional: the Essentia analyser being benchmarked (§9)
+#   pip install -r requirements-essentia.txt
 
 # serve UI + API on :8000
 .\.venv\Scripts\python.exe -m uvicorn api.server:app
@@ -70,7 +73,10 @@ On macOS/Linux activate the venv and use plain `pip` / `uvicorn`.
 
 The dependency stack is pinned to **numpy < 2** (Demucs / librosa 0.10 / torch
 2.5.1). `audio-separator` has no release that resolves against those pins, which
-is why it is installed with `--no-deps` on top.
+is why it is installed with `--no-deps` on top. `essentia-tensorflow`
+(`requirements-essentia.txt`, baked into the Docker image) does resolve against
+them — 2.1b6.dev1389 declares `numpy>=1.25` and runs on 1.26.4 — but ships no
+Windows wheels, so native Windows goes without it.
 
 **After every `git pull`, rebuild the frontend** (`cd frontend && npm run build`).
 `frontend/dist/` is gitignored, so a pull updates the source and not the bundle.
@@ -197,6 +203,13 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
   state, enqueued/started/finished, progress, message, error), and
   `GET /api/jobs/queue` snapshots each stage pool (workers, busy, waiting) and
   every waiting job's place in line.
+- **Timings persist; jobs do not.** Every stage, and every step inside analysis
+  and structure (per stem), appends a row to `analysis_runs` — wall ms, the
+  audio length it worked on, ok/error. Measured inside the concurrency gate, so
+  waiting for the Demucs slot is not billed to Demucs, and a stems run that
+  reused files on disk is filed as `stems.reused`. `GET /api/jobs/timings`
+  summarises it (median / p90 / total ms and real-time factor per unit, `since`
+  for one batch). A timing write never fails the stage it timed.
 - **Stages are shared.** `api/workers/stages.py` `do_download/do_stems/do_analyze/do_structure`
   are called both by the auto-chain and by the per-track buttons, and each sets
   the lifecycle status (`queued → downloaded → stemmed → analysed`) or an
@@ -840,10 +853,11 @@ caches responses, and opens a breaker after repeated failures.
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py` |
 | `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
 | `stems/separate.py` | Demucs / MDX-Net, two or four stems |
-| `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py` |
+| `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`, `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
 | `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py` |
 | `render/` | `dsp.py`, `mixdown.py`, `session.py` |
 | `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen` + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`; `public/soundtouch-processor.js` |
+| `scripts/` | `bench_analyzers.py` — librosa vs Essentia timing + agreement on library tracks (§8) |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS |
 
 **Tables.** `songs` (metadata, status, `last_error`, `variant_cluster`,
@@ -858,7 +872,8 @@ feature snapshot) · `pair_hidden` · `track_excluded` · `mixes` · `mix_tracks
 (parse fields, link, resolve status/score/artist score/duration, cached
 candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
 `crate_items` (frozen canonical payload, optional `song_id`) · `app_prefs`
-(JSON key/value). Existing databases migrate on start.
+(JSON key/value) · `analysis_runs` (append-only pipeline timings, §3).
+Existing databases migrate on start.
 
 ---
 
@@ -1055,6 +1070,25 @@ is no JS test runner. CI (`.github/workflows/ci.yml`) runs the whole suite on
 Ubuntu and Windows (Python 3.12, CPU torch, numpy 1.x asserted) and builds the
 frontend.
 
+**Analyser benchmark** (not part of the suite — it runs on your audio):
+
+```bash
+docker compose exec app python scripts/bench_analyzers.py --auto 10
+python scripts/bench_analyzers.py --songs 12,40 --truth truth.csv --models-dir data/essentia_models
+```
+
+Picks library tracks spread over BPM band and genre (or `--songs` / `--files`),
+times every unit of work for librosa and Essentia (median of `--repeats`, and
+the real-time factor), and reports agreement: BPM (same / ×2 / ×½ / ×3/2 / ×2/3),
+key per Essentia profile (same / relative / fifth / parallel, MIREX-weighted),
+section boundaries (F at ±0.5 s and ±3 s) and downbeats. Ground truth comes from
+BPM/key tags embedded in the files and an optional `--truth` CSV (`song_id` or
+`file`, `bpm`, `key`, `mode`, `boundaries` as `;`-separated seconds) — manual
+BPM/key edits are not flagged in the database, so they cannot be found
+automatically. TempoCNN needs `deeptemp-k16-3.pb` in `--models-dir`. Without
+Essentia the librosa half still runs. Output: `<data_dir>/bench/<timestamp>/`
+(`summary.md`, `results.csv`, `timings.csv`).
+
 Walked in a browser against the container: Library, track detail, the pair
 dock, Discover. **Mixes and Studio have not been walked by eye since the
 sidebar revamp.**
@@ -1063,20 +1097,49 @@ sidebar revamp.**
 
 ## 9. Open work
 
-1. **Judge candidates.** `pair_feedback` needs a few dozen verdicts before the
+1. **Analysis pipeline overhaul** — FFmpeg decode + Essentia features in a fast
+   tier that never waits on Demucs, a content-hash feature cache versioned per
+   feature group, and a background stem tier. Decided: Essentia runs in
+   Docker/WSL2 only (native Windows keeps librosa behind an `analyzer` flag);
+   Demucs stays on CPU; Rubber Band goes into server renders only (Studio keeps
+   SoundTouch); before stems exist, sections are provisional with vocal
+   activity from an ML model on the mix.
+   Phases: **0** measure + benchmark (done, below) → **1** one decode per file,
+   feature-group registry + cache, librosa wrapped as groups → **2** Essentia
+   tier-1 groups, projection into the existing tables, `librosa | shadow |
+   essentia` flag → **3** reorder into tiers (`analysed` = tier 1 done, stems
+   tracked separately), priority queues, a process pool → **4** stem tier:
+   persistent thread-capped Demucs, per-stem HPCP/bands/vocal activity/Melodia,
+   re-segmentation with a section-index remap that protects `pair_feedback`,
+   partner prefetch → **5** Discogs-EffNet embeddings + heads → **6** batch
+   peaks endpoint, analysis panel, provisional chip → **7** new section terms
+   (weight 0 until measured), `pair_tags`, a weight-fitting job → **8** Rubber
+   Band → **9** backfill, flip only at 100% coverage (library z-scores must not
+   mix analysers), re-score.
+   Phase 0 findings (2026-09-28, sandbox, synthetic audio): the pipeline runs
+   stems *before* analysis, and analysis + structure decode each file 3–7 times;
+   essentia-tensorflow resolves against the numpy<2 pins (no separate venv
+   needed); Debian/Ubuntu ffmpeg carries the `rubberband` filter
+   (`/api/health/deps` reports it); `scipy.signal.resample_poly` resamples ~5×
+   faster than `essentia.Resample` at default quality, so the decode layer uses
+   it; `RhythmExtractor2013` degara costs ~¼ of multifeature; SBic at default
+   settings under-segments. **Next: run the benchmark on ~10 real tracks** and
+   read `GET /api/jobs/timings` after an import to get the real per-stage
+   numbers before Phase 1.
+2. **Judge candidates.** `pair_feedback` needs a few dozen verdicts before the
    learned scorer or supervised weight tuning mean anything; then re-measure the
    section weights with Spearman against stored verdicts.
-2. **Import the documented Big Bootie mixes** (~17) to build training positives.
+3. **Import the documented Big Bootie mixes** (~17) to build training positives.
    The two things that blocked this are fixed (§5.9): the ingest deadlock that
    saved one track of 206, and the Firecrawl failures that threw away scrapes
    the dashboard had already billed.
-3. **Studio:** per-clip fades → multiple clips per lane → per-lane low/high-cut
+4. **Studio:** per-clip fades → multiple clips per lane → per-lane low/high-cut
    (bass swap) → auto-arrange → stereo mixdown + limiter/meters → undo/redo.
-4. **Engine:** match 8/16/32-bar **phrases** instead of whole sections (the
+5. **Engine:** match 8/16/32-bar **phrases** instead of whole sections (the
    biggest engine win left — plan it first), per-bar chroma for progressions,
    vocal melody features (f0 range, note histogram), onset-accurate
    micro-alignment.
-5. **Foundations as they hurt:** server-side Studio projects, multi-resolution
+6. **Foundations as they hurt:** server-side Studio projects, multi-resolution
    waveform peaks, job persistence across restarts.
 
 Not worth doing: raising `rhythm` or `structure` weights; a "score" sort on the

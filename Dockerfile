@@ -33,6 +33,12 @@ RUN pip install --no-cache-dir --upgrade pip \
     # the note above `onnxruntime` in requirements.txt.
     && pip install --no-cache-dir audio-separator==0.30.0 --no-deps
 
+# The Essentia analyser (optional, benchmarked by scripts/bench_analyzers.py):
+# its own layer so changing requirements.txt does not re-download ~290 MB.
+COPY requirements-essentia.txt ./
+RUN pip install --no-cache-dir -r requirements-essentia.txt \
+    && python -c "import numpy; assert numpy.__version__.startswith('1.'), numpy.__version__"
+
 COPY . .
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 # BuildKit stamps context files with the time their COPY ran, not the host
@@ -44,11 +50,14 @@ RUN find frontend/dist -exec touch {} +
 
 # Docker always sets these, so the Setup Wizard's folder step is skipped
 # (readme.md "Settings & configuration"). ./data is the compose volume mount.
+# TF_CPP_MIN_LOG_LEVEL: essentia-tensorflow logs CUDA probing on import, and
+# this is a CPU image.
 ENV MASHUP_AUDIO_ROOT=/data/audio \
     MASHUP_DB_PATH=/data/mashup.db \
     MASHUP_DATA_DIR=/data \
     MASHUP_SETTINGS_DIR=/data/settings \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TF_CPP_MIN_LOG_LEVEL=2
 
 EXPOSE 8000
 CMD ["uvicorn", "api.server:app", "--host", "0.0.0.0", "--port", "8000"]

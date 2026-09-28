@@ -17,12 +17,14 @@ raises ``StageError`` on failure so callers can decide whether that is fatal
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import sqlite3
 import threading
+import time
 import traceback
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Iterator, Optional
 
 from config import ANALYSIS_WORKERS, BEAT_TRIM_SECS, DOWNLOAD_WORKERS, STEM_WORKERS
 from database.models import (
@@ -59,6 +61,57 @@ class StageError(RuntimeError):
 
 def _tb(exc: BaseException) -> str:
     return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+# ── Timing ────────────────────────────────────────────────────────────────────
+# Every stage records how long its own work took (inside the concurrency gate,
+# so time spent waiting for a free Demucs slot is not billed to Demucs) into
+# analysis_runs. Diagnostics only: record_analysis_run never raises.
+
+ANALYZER = "librosa"
+
+
+def _record(grp: str, ms: float, song_id: int, **kw) -> None:
+    # Imported per call: tests reload database.models, and a module-scope
+    # binding would write to whichever database was configured first.
+    from database.models import record_analysis_run
+    record_analysis_run(grp, ms, song_id=song_id, **kw)
+
+
+@contextlib.contextmanager
+def _timed(grp: str, song_id: int, **kw) -> Iterator[dict]:
+    """Time the block and record it under ``grp``. The yielded dict may be
+    given ``audio_secs`` / ``stem_type`` once the block knows them, ``failed``
+    for a block that returned without an exception but did not succeed, and
+    ``grp`` to re-file the run (reused stems are not a Demucs timing). An
+    exception is recorded as a failed run and re-raised."""
+    info: dict = {}
+    t0 = time.perf_counter()
+    try:
+        yield info
+    except BaseException as exc:
+        info.pop("failed", None)
+        grp = info.pop("grp", grp)
+        _record(grp, (time.perf_counter() - t0) * 1000.0, song_id, ok=False,
+                error=f"{type(exc).__name__}: {exc}", **{**kw, **info})
+        raise
+    failed = bool(info.pop("failed", False))
+    grp = info.pop("grp", grp)
+    _record(grp, (time.perf_counter() - t0) * 1000.0, song_id, ok=not failed,
+            **{**kw, **info})
+
+
+def _record_steps(prefix: str, song_id: int, timings: dict,
+                  stem_type: Optional[str] = None) -> None:
+    """Persist a per-step ``timings`` dict as produced by analyze_file or
+    detect_sections: one row per step, named ``<prefix>.<step>``."""
+    audio_secs = timings.get("audio_secs")
+    failed = set(timings.get("failed_steps") or ())
+    for step, ms in timings.items():
+        if step in ("audio_secs", "failed_steps") or not isinstance(ms, (int, float)):
+            continue
+        _record(f"{prefix}.{step}", ms, song_id, stem_type=stem_type,
+                audio_secs=audio_secs, ok=step not in failed, analyzer=ANALYZER)
 
 
 def _stem_paths(song_id: int) -> dict[str, str]:
@@ -144,7 +197,7 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
         raise StageError(f"Song {song_id} not found")
 
     try:
-        with _STAGE_GATES["download"]:
+        with _STAGE_GATES["download"], _timed("download", song_id):
             result = download_track(
                 song_id=row["id"], title=row["title"], source_url=row["source_url"],
                 artist=row["artist"] or "", on_progress=on_progress,
@@ -181,6 +234,16 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
 
 # ── Stem separation ───────────────────────────────────────────────────────────
 
+def _audio_secs(path: Path) -> Optional[float]:
+    """Length of an audio file from its header, or None. soundfile reads the
+    header only; an MP3 it cannot open is simply left unmeasured."""
+    try:
+        import soundfile as sf
+        return float(sf.info(str(path)).duration)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
     from config import current_stem_mode, current_stem_separator
     from stems.separate import separate, separator_tag
@@ -215,12 +278,17 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
     force = bool(prior_tag) and str(prior_tag) != wanted_tag
 
     try:
-        with _STAGE_GATES["stems"]:
+        with _STAGE_GATES["stems"], _timed("stems", song_id,
+                                           analyzer=wanted_tag) as tinfo:
+            tinfo["audio_secs"] = _audio_secs(raw_path)
             stems = separate(
                 song_id=row["id"], title=row["title"], audio_path=raw_path,
                 artist=row["artist"] or "", on_progress=on_progress,
                 separator=requested, force=force, mode=mode,
             )
+            tinfo["failed"] = not stems
+            if stems and stems.get("separator") is None:
+                tinfo["grp"] = "stems.reused"
     except Exception as exc:  # noqa: BLE001
         log.exception("separate raised")
         msg = f"Separation error: {type(exc).__name__}: {exc}"
@@ -269,7 +337,8 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
 
     analysed: list[str] = []
     failed: list[str] = []
-    with _STAGE_GATES["analysis"]:
+    with _STAGE_GATES["analysis"], _timed("analysis", song_id,
+                                          analyzer=ANALYZER) as stage_info:
         for stem_type in _ANALYSIS_STEM_ORDER:
             fp = stem_paths.get(stem_type, "")
             path = Path(fp) if fp else None
@@ -277,13 +346,16 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
                 continue
             if on_progress:
                 on_progress(None, f"Analysing {stem_type} stem…")
+            timings: dict = {}
             try:
                 features = analyze_file(path, trim_secs=BEAT_TRIM_SECS,
-                                        on_progress=on_progress)
+                                        on_progress=on_progress, timings=timings)
             except Exception:  # noqa: BLE001
                 log.exception("analyze_file raised for %s/%s", song_id, stem_type)
                 failed.append(stem_type)
                 continue
+            finally:
+                _record_steps("analysis", song_id, timings, stem_type=stem_type)
             if not features:
                 failed.append(stem_type)
                 continue
@@ -291,6 +363,7 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
             # instrumental — how much of it is still voice. A bed that still
             # carries its own topline is not a usable bed, and nothing in the
             # four sub-scores can see that.
+            t_bands = time.perf_counter()
             try:
                 from analysis.quality import band_energy, residual_vocal_ratio
                 features["band_energy"] = band_energy(path)
@@ -301,8 +374,12 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
             except Exception:  # noqa: BLE001
                 log.exception("band/residual features failed for %s/%s",
                               song_id, stem_type)
+            _record("analysis.bands", (time.perf_counter() - t_bands) * 1000.0,
+                    song_id, stem_type=stem_type, analyzer=ANALYZER,
+                    audio_secs=timings.get("audio_secs"))
             upsert_features(song_id, stem_type, features.copy())
             analysed.append(stem_type)
+        stage_info["failed"] = not analysed
 
     if not analysed:
         update_song_error(song_id, "error_analysis", "Analysis failed for every stem")
@@ -314,7 +391,8 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
     # every stem path is known, and after sections exist where they do (the
     # noise floor is measured in the parts with no voice in them).
     try:
-        _measure_stem_quality(song_id, stem_paths, on_progress)
+        with _timed("quality", song_id, analyzer=ANALYZER):
+            _measure_stem_quality(song_id, stem_paths, on_progress)
     except Exception:  # noqa: BLE001
         log.exception("stem quality failed for %s", song_id)
 
@@ -323,7 +401,8 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
     # cluster is one that might pair with its own Extended Mix, not a failure.
     try:
         from matcher.dedup import rebuild_variant_clusters
-        rebuild_variant_clusters()
+        with _timed("dedup", song_id):
+            rebuild_variant_clusters()
     except Exception:  # noqa: BLE001
         log.exception("variant clustering failed for %s", song_id)
 
@@ -354,18 +433,24 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
         fp = stem_paths.get(name, "")
         return Path(fp) if fp and Path(fp).exists() else None
 
+    timings: dict = {}
     try:
         # Shares the analysis gate — structure is the same librosa-bound work.
-        with _STAGE_GATES["analysis"]:
+        with _STAGE_GATES["analysis"], _timed("structure", song_id,
+                                              analyzer=ANALYZER) as tinfo:
             sections = detect_sections(
                 Path(full_fp), _stem("vocals"),
                 inst_path=_stem("instrumental"), bass_path=_stem("bass"),
-                on_progress=on_progress,
+                on_progress=on_progress, timings=timings,
             )
+            tinfo["audio_secs"] = timings.get("audio_secs")
+            tinfo["failed"] = not sections
     except Exception as exc:  # noqa: BLE001
         log.exception("detect_sections raised")
         raise StageError(
             f"Structure detection error: {type(exc).__name__}: {exc}", _tb(exc))
+    finally:
+        _record_steps("structure", song_id, timings)
 
     if not sections:
         raise StageError("Structure detection found no sections (track may be too short)")
@@ -377,7 +462,8 @@ def do_structure(song_id: int, on_progress: ProgressCb = None) -> dict:
     # force: _persist_hooks has just moved the hook window, and the clip cache is
     # keyed by (song, stem), so without it a re-run keeps the previous 16 bars.
     from api.workers.hook_worker import warm_hooks
-    clips = warm_hooks(song_id, force=True)
+    with _timed("hooks", song_id):
+        clips = warm_hooks(song_id, force=True)
     return {"section_count": len(sections), "hooks": hooks, "clips": clips}
 
 

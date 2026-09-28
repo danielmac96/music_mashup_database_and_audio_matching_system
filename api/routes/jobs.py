@@ -47,6 +47,18 @@ def queue_snapshot() -> dict:
     return {"stages": stages_out, "positions": positions}
 
 
+# Declared before /{job_id}, like /queue.
+@router.get("/timings")
+def timing_summary(since: str = "") -> dict:
+    """Where pipeline time goes: per stage and per analysis step (and stem),
+    run count, failures, median / p90 / total milliseconds and the median
+    real-time factor, from the persisted analysis_runs table. ``since`` is an
+    SQLite datetime ('2026-09-28 12:00:00') to look at one batch only."""
+    from database.models import analysis_timing_summary
+    rows = analysis_timing_summary(since=since or None)
+    return {"count": len(rows), "timings": rows}
+
+
 @router.get("/{job_id}")
 def get_job(job_id: str) -> dict:
     job = jobs.get(job_id)

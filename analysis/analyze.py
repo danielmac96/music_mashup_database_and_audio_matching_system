@@ -11,6 +11,7 @@ comes back with BPM, loudness and timbre filled in.
 """
 from typing import Callable, Optional
 import logging
+import time
 import numpy as np
 from pathlib import Path
 
@@ -255,7 +256,15 @@ def _step_waveform(y: np.ndarray, n_points: int = 360) -> dict:
 
 
 def analyze_file(audio_path: Path, trim_secs: Optional[int] = None,
-                  on_progress: ProgressCb = None) -> dict:
+                  on_progress: ProgressCb = None,
+                  timings: Optional[dict] = None) -> dict:
+    """Run every metric step on one file.
+
+    ``timings``, when given, is filled with wall milliseconds per step
+    ("load", then each name in STEPS), "audio_secs" (the length of the signal
+    the steps ran on) and "failed_steps". The caller persists them; this module stays free
+    of the database.
+    """
     def _tick(msg: str) -> None:
         if on_progress:
             on_progress(None, msg)
@@ -275,8 +284,12 @@ def analyze_file(audio_path: Path, trim_secs: Optional[int] = None,
         SAMPLE_RATE, HOP_LENGTH, N_MFCC = 22050, 512, 13
 
     _tick("Loading audio…")
+    t0 = time.perf_counter()
     y, sr = librosa.load(str(audio_path), sr=SAMPLE_RATE,
                           duration=trim_secs, mono=True)
+    if timings is not None:
+        timings["load"] = (time.perf_counter() - t0) * 1000.0
+        timings["audio_secs"] = len(y) / float(sr) if sr else None
 
     features: dict = {}
     failed_steps: list[str] = []
@@ -291,12 +304,17 @@ def analyze_file(audio_path: Path, trim_secs: Optional[int] = None,
 
     for step_name, msg, run_step in step_plan:
         _tick(msg)
+        t0 = time.perf_counter()
         try:
             features.update(run_step())
         except Exception:  # noqa: BLE001
             log.exception("  step '%s' failed for %s", step_name, audio_path.name)
             failed_steps.append(step_name)
+        if timings is not None:
+            timings[step_name] = (time.perf_counter() - t0) * 1000.0
 
+    if timings is not None:
+        timings["failed_steps"] = list(failed_steps)
     if failed_steps:
         log.warning(f"  → steps failed: {', '.join(failed_steps)}")
     if "bpm" in features:

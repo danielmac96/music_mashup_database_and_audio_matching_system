@@ -93,6 +93,22 @@ def _ytdlp_version_info() -> tuple[str | None, bool]:
         return ver, False
 
 
+def _ffmpeg_has_filter(name: str) -> bool:
+    """Whether the ffmpeg on PATH was built with filter ``name``. False when
+    ffmpeg is missing or does not answer — this only reports, never fails."""
+    import shutil
+    import subprocess
+    if not shutil.which("ffmpeg"):
+        return False
+    try:
+        out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:  # noqa: BLE001
+        return False
+    return any(len(parts) > 1 and parts[1] == name
+               for parts in (line.split() for line in out.splitlines()))
+
+
 @app.get("/api/health/deps")
 def health_deps() -> dict:
     """Report whether the external tools the pipeline needs are available, so a
@@ -124,6 +140,14 @@ def health_deps() -> dict:
          "detail": "stem separation (required to split vocals/instrumental)", "required": True},
         {"name": "librosa", "ok": _importable("librosa"),
          "detail": "audio feature analysis (required for BPM/key/structure)", "required": True},
+        # Optional until the Essentia analyser ships (readme §9): Linux/macOS
+        # wheels only, so native Windows is expected to show it missing.
+        {"name": "essentia", "ok": _importable("essentia"),
+         "detail": "fast analyser + ML tags (optional; Docker/WSL2 — requirements-essentia.txt)",
+         "required": False},
+        {"name": "rubberband", "ok": _ffmpeg_has_filter("rubberband"),
+         "detail": "ffmpeg's Rubber Band filter for export time-stretch (optional)",
+         "required": False},
     ]
     missing = [d["name"] for d in deps if d["required"] and not d["ok"]]
     stale = [d["name"] for d in deps if d.get("stale")]
