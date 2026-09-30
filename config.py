@@ -306,15 +306,15 @@ def current_analysis_cache() -> bool:
 
 
 # Which analyser fills the features table (readme §9, the analysis overhaul).
-#   librosa  — the analyser the library was built on (default; the only one on
-#              native Windows, where Essentia has no wheels)
-#   shadow   — librosa fills the core columns; Essentia runs alongside and fills
-#              only the columns librosa never measured (LUFS, tuning, chords,
-#              danceability…), and its answers are kept for comparison
-#              (GET /api/analysis/status)
-#   essentia — Essentia fills the core columns too. Flip only once every
-#              analysed track has Essentia groups: library-relative scores
-#              (timbre z-scores, confidence ranks) must not mix analysers.
+#   essentia — the analyser (default, decided 2026-09-30): Essentia fills the
+#              core columns and the extras. Docker/WSL2 only — Essentia has no
+#              Windows wheels, and where it does not import analysis is
+#              refused (stages.require_analyzer), never degraded to librosa:
+#              library-relative scores (timbre z-scores, confidence ranks)
+#              must not mix analysers.
+#   shadow   — comparison only: librosa fills the core columns, Essentia the
+#              columns librosa never measured (GET /api/analysis/status).
+#   librosa  — tests and comparison only (the suite pins it, tests/conftest.py).
 ANALYZERS = ("librosa", "shadow", "essentia")
 ESSENTIA_RHYTHM_METHODS = ("degara", "multifeature")
 ESSENTIA_KEY_PROFILES = ("edma", "edmm", "bgate", "braw", "krumhansl", "temperley",
@@ -331,10 +331,11 @@ def _live_choice(env_name: str, key: str, allowed: tuple, default: str) -> str:
 
 
 def current_analyzer() -> str:
-    """librosa | shadow | essentia, re-read live. Asking for Essentia where it
-    does not import is answered with librosa by the caller (stages.py), not
-    here — this reports what was configured."""
-    return _live_choice("MASHUP_ANALYZER", "analyzer", ANALYZERS, "librosa")
+    """essentia | shadow | librosa, re-read live. Essentia is the analyser;
+    librosa and shadow remain for the test suite and for comparison. Asking
+    for Essentia where it does not import is refused by the pipeline
+    (stages.require_analyzer), not answered here."""
+    return _live_choice("MASHUP_ANALYZER", "analyzer", ANALYZERS, "essentia")
 
 
 def current_essentia_key_profile() -> str:

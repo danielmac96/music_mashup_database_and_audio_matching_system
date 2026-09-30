@@ -176,11 +176,12 @@ def _full_row(models, song):
 
 def test_config_reads_the_analyzer_live(env, monkeypatch):
     import config
-    assert config.current_analyzer() == "librosa"
+    monkeypatch.delenv("MASHUP_ANALYZER", raising=False)
+    assert config.current_analyzer() == "essentia"        # the default
     monkeypatch.setenv("MASHUP_ANALYZER", "Shadow")
     assert config.current_analyzer() == "shadow"
     monkeypatch.setenv("MASHUP_ANALYZER", "nonsense")
-    assert config.current_analyzer() == "librosa"
+    assert config.current_analyzer() == "essentia"
     assert config.current_essentia_key_profile() == "edma"
     assert config.current_essentia_rhythm_method() == "degara"
 
