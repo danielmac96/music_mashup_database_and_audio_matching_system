@@ -528,6 +528,7 @@ _FEATURES_OPTIONAL_COLUMNS = (
     ("bands3_json", "TEXT"),           # low <250 Hz / mid / high >4 kHz fractions
     ("descriptors_json", "TEXT"),      # everything else Essentia measured
     ("melody_json", "TEXT"),           # vocal stem only: sung range + centre
+    ("tags_json", "TEXT"),             # full mix: Discogs-EffNet genre + tags
 )
 
 

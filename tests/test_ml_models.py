@@ -30,6 +30,7 @@ def mm(tmp_path, monkeypatch):
                 "classes": ["a", "b"]}
         dest.write_bytes(json.dumps(meta).encode() if url.endswith(".json") else b"pb:" + url.encode())
     monkeypatch.setattr(mod, "_fetch", fake_fetch)
+    monkeypatch.setenv("MASHUP_ESSENTIA_MODEL_FETCH", "1")   # the suite turns it off
     return mod, fetched
 
 
@@ -133,3 +134,23 @@ def test_tags_summarise_every_head_over_the_track():
 def test_gender_is_not_claimed_for_an_instrumental():
     from analysis.essentia_groups import summarise_heads
     assert summarise_heads(_preds(voice=0.2), _labels())["female"] is None
+
+
+def test_the_suite_never_downloads_models(mm, monkeypatch):
+    """tests/conftest.py switches fetching off: an analysis test must never
+    pull 30 MB of models from the network (or into a real data folder)."""
+    mod, fetched = mm
+    monkeypatch.setenv("MASHUP_ESSENTIA_MODEL_FETCH", "0")
+    assert mod.ensure_models() is False and fetched == []
+
+
+def test_without_models_the_tag_step_is_dropped_before_deciding_to_decode(mm, monkeypatch):
+    """Otherwise every re-analysis of unchanged audio decodes the file again
+    just to find the models still missing — a projection became a decode."""
+    mod, _ = mm
+    monkeypatch.setenv("MASHUP_ESSENTIA_MODEL_FETCH", "0")
+    from analysis.essentia_groups import runnable_steps
+    assert runnable_steps(("rhythm", "effnet", "melody")) == ("rhythm", "melody")
+    monkeypatch.setenv("MASHUP_ESSENTIA_MODEL_FETCH", "1")
+    mod.ensure_models()
+    assert runnable_steps(("rhythm", "effnet")) == ("rhythm", "effnet")

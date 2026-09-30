@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 import urllib.request
@@ -99,12 +100,18 @@ def _missing() -> list:
             if not (d / f"{m}{ext}").exists()]
 
 
+def fetch_enabled() -> bool:
+    """MASHUP_ESSENTIA_MODEL_FETCH=0 forbids downloading (the test suite sets
+    it: an analysis test must never pull models over the network)."""
+    return os.environ.get("MASHUP_ESSENTIA_MODEL_FETCH", "1").strip() != "0"
+
+
 def ensure_models(download: bool = True) -> bool:
     """True when every catalogued model is on disk, downloading what is
     missing unless ``download`` is False or a recent attempt failed."""
     if not _missing():
         return True
-    if not download or time.time() - _STATE["failed_at"] < RETRY_AFTER_SECS:
+    if not download or not fetch_enabled()             or time.time() - _STATE["failed_at"] < RETRY_AFTER_SECS:
         return False
     with _LOCK:
         todo = _missing()

@@ -5,6 +5,7 @@ Tests that need Essentia itself skip where it is not installed (native Windows,
 and the Windows CI leg); the projection, key/chroma conventions and the
 switch's fallback are pure and run everywhere."""
 import importlib
+import json
 import sys
 from pathlib import Path
 
@@ -314,3 +315,45 @@ def test_an_incomplete_essentia_result_fails_the_stem(env, monkeypatch):
         stages.do_analyze(song)
     assert _full_row(models, song) is None
     assert models.get_song(song)["status"] == "error_analysis"
+
+
+def test_tags_are_an_extra_column_and_only_on_the_mix():
+    from analysis.project import EXTRA_COLUMNS, extras_from_essentia
+    assert "tags_json" in EXTRA_COLUMNS
+    tags = {"genre": [{"label": "Electronic---House", "p": 0.4}], "genre_parent": "Electronic"}
+    assert json.loads(extras_from_essentia({"effnet": {"tags": tags}}, "essentia")["tags_json"]) == tags
+    assert extras_from_essentia({"rhythm": {}}, "essentia")["tags_json"] is None
+
+
+@needs_essentia
+def test_the_analysis_stage_tags_the_mix_but_the_quick_tier_does_not(env, monkeypatch):
+    models, stages, _client, tmp = env
+    import analysis.essentia_groups as eg
+    import analysis.ml_models as ml
+    monkeypatch.setattr(ml, "ensure_models", lambda download=True: True)   # models present
+    calls = []
+    monkeypatch.setattr(eg, "group_effnet",
+                        lambda sig: calls.append(1) or {"tags": {"genre_parent": "Electronic"},
+                                                         "embedding_mean": [0.0]})
+    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
+    song = _song(models, tmp)
+    models.update_song_status(song, "downloaded")
+    stages.do_quick(song)
+    assert calls == [] and _full_row(models, song).get("tags_json") is None
+    models.update_song_status(song, "stemmed")
+    stages.do_analyze(song)
+    assert calls == [1]
+    assert json.loads(_full_row(models, song)["tags_json"])["genre_parent"] == "Electronic"
+
+
+@needs_essentia
+def test_missing_models_skip_the_tags_without_failing(env, monkeypatch):
+    models, stages, _client, tmp = env
+    import analysis.essentia_groups as eg
+    monkeypatch.setattr(eg, "group_effnet", lambda sig: None)
+    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
+    song = _song(models, tmp)
+    stages.do_analyze(song)
+    row = _full_row(models, song)
+    assert row["analyzer"] == "essentia" and row.get("tags_json") is None
+    assert models.get_song(song)["status"] == "analysed"

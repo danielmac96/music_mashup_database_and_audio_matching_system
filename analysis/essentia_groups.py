@@ -570,6 +570,17 @@ def _runners() -> Dict[str, Callable[[Signals], dict]]:
     }
 
 
+def runnable_steps(steps: tuple) -> tuple:
+    """``steps`` without the tag step when its models are not on disk (and
+    cannot be fetched now): dropped before the cache is consulted, so a
+    re-analysis of unchanged audio stays a projection instead of decoding the
+    file to learn the models are still missing."""
+    if "effnet" not in steps:
+        return steps
+    from analysis import ml_models
+    return steps if ml_models.ensure_models() else tuple(s for s in steps if s != "effnet")
+
+
 def analyze_file_essentia(path: Path, cache=None, timings: Optional[dict] = None,
                           on_progress: Optional[Callable] = None,
                           extra_steps: tuple = ()) -> Dict[str, dict]:
@@ -585,7 +596,7 @@ def analyze_file_essentia(path: Path, cache=None, timings: Optional[dict] = None
         raise RuntimeError("essentia is not installed")
     out: Dict[str, dict] = {}
     cached_steps: List[str] = []
-    steps = STEPS + tuple(s for s in extra_steps if s in EXTRA_STEPS)
+    steps = runnable_steps(STEPS + tuple(s for s in extra_steps if s in EXTRA_STEPS))
     if cache is not None:
         for step in steps:
             hit = cache.get(step)

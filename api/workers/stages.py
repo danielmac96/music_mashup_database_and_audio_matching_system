@@ -374,11 +374,11 @@ def require_analyzer() -> None:
 
 # Essentia groups beyond the core four, per stem: the sung pitch only means
 # something on an isolated vocal.
-_ESSENTIA_EXTRA_STEPS = {"vocals": ("melody",)}
+_ESSENTIA_EXTRA_STEPS = {"vocals": ("melody",), "full": ("effnet",)}
 
 
 def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
-                  on_progress: ProgressCb) -> tuple[dict, bool]:
+                  on_progress: ProgressCb, extra_steps: tuple = ()) -> tuple[dict, bool]:
     """Every Essentia group for one stem, cached. Returns (payloads, fully
     cached). Never raises: a failure is an empty result, which leaves the
     librosa analyser to fill the core."""
@@ -389,7 +389,7 @@ def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
     try:
         out = analyze_file_essentia(path, cache=StepCache(key, ESSENTIA_STEP_GROUPS),
                                     timings=timings, on_progress=on_progress,
-                                    extra_steps=_ESSENTIA_EXTRA_STEPS.get(stem_type, ()))
+                                    extra_steps=extra_steps)
     except Exception:  # noqa: BLE001
         log.exception("essentia analysis failed for %s/%s", song_id, stem_type)
         out = {}
@@ -439,7 +439,11 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
             # core columns, in shadow mode only the extras (analysis/project.py).
             ess: dict = {}
             if run_essentia:
-                ess, ess_cached = _run_essentia(song_id, stem_type, path, key, on_progress)
+                # The quick tier skips the extras (the melody, the tags): it
+                # exists to put BPM and key in the library in seconds.
+                extra = () if gate == "quick" else _ESSENTIA_EXTRA_STEPS.get(stem_type, ())
+                ess, ess_cached = _run_essentia(song_id, stem_type, path, key,
+                                                on_progress, extra)
                 fully_cached = fully_cached and ess_cached
 
             used = "librosa"
