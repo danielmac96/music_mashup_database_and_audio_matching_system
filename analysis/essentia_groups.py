@@ -50,7 +50,7 @@ log = logging.getLogger(__name__)
 
 STEPS = ("rhythm", "tonal", "loudness", "spectral")
 # Steps a caller asks for by name, on the stems they make sense for.
-EXTRA_STEPS = ("melody",)
+EXTRA_STEPS = ("melody", "effnet")
 
 # PitchMelodia on the 22.05 kHz signal: hop 128 is 5.8 ms, and the stored curve
 # is the median of each 50 ms of voiced frames — fine enough for a sung note,
@@ -494,6 +494,67 @@ def group_melody(sig: Signals) -> dict:
             "summary": f0_summary(curve, MELODY_STEP_SECS, 0.0, sig.secs)}
 
 
+SR_EFFNET = 16000
+TOP_N = 5
+# Gender is only meaningful for a track that sings.
+VOICE_FOR_GENDER = 0.5
+
+
+def _top(labels: list, probs: np.ndarray, n: int = TOP_N) -> list:
+    order = np.argsort(probs)[::-1][:n]
+    return [{"label": labels[i], "p": round(float(probs[i]), 4)} for i in order]
+
+
+def summarise_heads(preds: dict, labels: dict) -> dict:
+    """Per-patch head outputs -> the track's tags: each head averaged over the
+    track; binary heads keep their positive class, multi-label heads and the
+    Discogs styles their top labels. The parent genre sums its styles'
+    probability (a track split between House and Tropical House is Electronic
+    even when a single Hip Hop style scores highest)."""
+    from analysis.ml_models import HEADS
+    tags: dict = {"mood": {}}
+    for h in HEADS:
+        p = np.asarray(preds[h.model], dtype=float)
+        mean = p.mean(axis=0) if p.ndim == 2 else p
+        lab = labels[h.model]
+        if h.kind == "genre":
+            tags["genre"] = _top(lab, mean)
+            parents: dict = {}
+            for name, prob in zip(lab, mean):
+                parent = name.split("---", 1)[0]
+                parents[parent] = parents.get(parent, 0.0) + float(prob)
+            tags["genre_parent"] = max(parents, key=parents.get) if parents else None
+        elif h.kind == "multi":
+            tags[h.key] = _top(lab, mean)
+        else:
+            val = round(float(mean[lab.index(h.positive)]), 4)
+            if h.model.startswith("mood_"):
+                tags["mood"][h.key] = val
+            else:
+                tags[h.key] = val
+    if (tags.get("voice") or 0.0) < VOICE_FOR_GENDER:
+        tags["female"] = None
+    return tags
+
+
+def group_effnet(sig: Signals) -> Optional[dict]:
+    """Discogs-EffNet genre and tags for the full mix; None (skipped, not
+    failed) when the models are not on disk and cannot be fetched."""
+    from scipy.signal import resample_poly
+    from analysis import ml_models
+    if not ml_models.ensure_models():
+        return None
+    audio16 = resample_poly(sig.mono44, SR_EFFNET // 100, SR_FULL // 100).astype(np.float32)
+    try:
+        preds = ml_models.predict(audio16)
+    except ml_models.ModelsUnavailable:
+        return None
+    labels = {h.model: ml_models.classes(h.model) for h in ml_models.HEADS}
+    emb = np.asarray(preds["embeddings"], dtype=float)
+    return {"tags": summarise_heads(preds, labels),
+            "embedding_mean": [round(float(v), 5) for v in emb.mean(axis=0)]}
+
+
 # ── Run all groups for one file ───────────────────────────────────────────────
 
 def _runners() -> Dict[str, Callable[[Signals], dict]]:
@@ -505,6 +566,7 @@ def _runners() -> Dict[str, Callable[[Signals], dict]]:
         "loudness": group_loudness,
         "spectral": lambda s: group_spectral(s, N_MFCC),
         "melody": group_melody,
+        "effnet": group_effnet,
     }
 
 

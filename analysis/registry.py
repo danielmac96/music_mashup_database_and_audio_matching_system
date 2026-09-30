@@ -104,6 +104,11 @@ def _band_edges() -> list:
     return list(BAND_EDGES)
 
 
+def _ml_models() -> list:
+    from analysis.ml_models import catalogue_ids
+    return catalogue_ids()
+
+
 def _key_voters() -> list:
     from analysis.essentia_groups import KEY_PROFILES
     return list(KEY_PROFILES)
@@ -153,6 +158,11 @@ _GROUPS = (
                  _essentia_params(hop=128, frame=1024, step=0.05),
                  "vocal stem only: sung pitch (PitchMelodia), 50 ms f0 curve, "
                  "sung range and centre", step="melody"),
+    FeatureGroup("essentia.effnet", 1, "essentia", 2,
+                 _essentia_params(models=_ml_models),
+                 "full mix only: Discogs-EffNet genre (400 styles) and tags — "
+                 "voice, gender, danceable, tonal, bright, seven moods, "
+                 "mood/theme and instrument top-5", step="effnet"),
     # v3: section BPM fitted through the beats.
     FeatureGroup("essentia.structure", 3, "essentia", 1, _structure_params,
                  "sections on the Essentia beat grid (the librosa segmenter fed "
