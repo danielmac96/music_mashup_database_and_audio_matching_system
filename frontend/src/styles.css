@@ -2869,3 +2869,23 @@ input, select { font-family: inherit; }
 .asp-meta { font-size: 10.5px; color: var(--faint); }
 .asp-verdict { font-size: 10.5px; color: var(--faint); max-width: 200px; text-align: right; }
 .asp-verdict.ok { color: var(--green, #4ade80); }
+
+/* ── Analysis panel (readme §9, C) ─────────────────────────────────────── */
+.an-screen { padding: 16px 20px; overflow: auto; height: 100%; }
+.an-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.an-head h2 { margin: 0; }
+.an-refresh { margin-left: auto; }
+.an-cat { margin-bottom: 18px; }
+.an-cat h3 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; opacity: .7; margin: 0 0 6px; }
+.an-row { display: grid; grid-template-columns: minmax(180px, 1.2fr) 130px minmax(160px, 1.5fr) 80px 80px;
+          align-items: center; gap: 12px; padding: 4px 0; border-bottom: 1px solid var(--hair); }
+.an-name { display: flex; flex-direction: column; min-width: 0; }
+.an-src { font-size: 10px; opacity: .55; }
+.an-cov { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.an-cov-bar { flex: 1; height: 6px; border-radius: 3px; background: var(--faint-2); overflow: hidden; }
+.an-cov-bar span { display: block; height: 100%; background: var(--accent); }
+.an-dist { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 11px; min-width: 0; }
+.an-hist { display: flex; align-items: flex-end; gap: 1px; height: 22px; width: 96px; }
+.an-hist span { flex: 1; background: var(--accent); opacity: .75; min-height: 1px; }
+.an-chip { padding: 1px 6px; border-radius: 8px; background: var(--faint-2); white-space: nowrap; }
+.an-toggle { font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer; }
