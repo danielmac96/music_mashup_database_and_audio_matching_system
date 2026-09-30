@@ -110,7 +110,8 @@ def _key_voters() -> list:
 
 
 _GROUPS = (
-    FeatureGroup("librosa.tempo", 1, "librosa", 1, _analysis_params(),
+    # v2: BPM fitted through the beats, not librosa's tempogram bin.
+    FeatureGroup("librosa.tempo", 2, "librosa", 1, _analysis_params(),
                  "BPM, grid confidence, beat times, beat phase", step="tempo"),
     FeatureGroup("librosa.key", 1, "librosa", 1, _analysis_params(),
                  "Krumhansl key, mode, Camelot, key confidence", step="key"),
@@ -125,8 +126,9 @@ _GROUPS = (
     FeatureGroup("librosa.residual", 1, "librosa", 2, _residual_params,
                  "residual vocal ratio of a bed (vocals + mix)"),
     # v2 (phase 4): sections also carry vocal_activity, per-stem band
-    # occupancy and, given a melody, the sung range.
-    FeatureGroup("librosa.structure", 2, "librosa", 1, _structure_params,
+    # occupancy and, given a melody, the sung range. v3: track and section
+    # BPM fitted through the beats.
+    FeatureGroup("librosa.structure", 3, "librosa", 1, _structure_params,
                  "sections: boundaries, labels, per-section measurements "
                  "(mix + vocal/instrumental/bass stems)"),
     # ── Essentia (analysis/essentia_groups.py) ────────────────────────────────
@@ -151,7 +153,8 @@ _GROUPS = (
                  _essentia_params(hop=128, frame=1024, step=0.05),
                  "vocal stem only: sung pitch (PitchMelodia), 50 ms f0 curve, "
                  "sung range and centre", step="melody"),
-    FeatureGroup("essentia.structure", 2, "essentia", 1, _structure_params,
+    # v3: section BPM fitted through the beats.
+    FeatureGroup("essentia.structure", 3, "essentia", 1, _structure_params,
                  "sections on the Essentia beat grid (the librosa segmenter fed "
                  "essentia.rhythm's beats and phase)"),
 )
