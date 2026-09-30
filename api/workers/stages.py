@@ -443,15 +443,17 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
                 fully_cached = fully_cached and ess_cached
 
             used = "librosa"
-            if core_analyzer == "essentia" and essentia_core_complete(ess):
+            if core_analyzer == "essentia":
+                if not essentia_core_complete(ess):
+                    # Never a librosa-filled row in an Essentia library: the core
+                    # columns would mix analysers (readme §7). Retry re-runs it.
+                    log.warning("essentia core incomplete for %s/%s", song_id, stem_type)
+                    failed.append(stem_type)
+                    fully_cached = False
+                    continue
                 features = core_from_essentia(ess)
                 used = "essentia"
             else:
-                if core_analyzer == "essentia":
-                    # Never leave a row empty because the new analyser failed:
-                    # the old one fills it, and `analyzer` says so.
-                    log.warning("essentia core incomplete for %s/%s — librosa fills it",
-                                song_id, stem_type)
                 timings: dict = {}
                 try:
                     features = analyze_file(path, trim_secs=BEAT_TRIM_SECS,
