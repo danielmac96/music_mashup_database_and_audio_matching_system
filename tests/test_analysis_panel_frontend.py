@@ -67,3 +67,14 @@ def test_track_detail_shows_the_detail_attributes():
     css = _read("styles.css")
     for cls in set(re.findall(r'className="(attr-[^"\s]+)', td)):
         assert f".{cls}" in css, cls
+
+
+def test_table_cells_are_compact_and_small_numbers_stay_readable():
+    """Seen in the browser: '-10.4 LU…' (the unit repeated in every cell, the
+    header already says LUFS), 'Hands…' (a style name in a 64px column) and
+    Energy as 0.000 (values around 2e-4 at three decimals)."""
+    js = _read("attributes.js")
+    assert "withUnit" in js and "toPrecision(" in js
+    assert '"96px"' in js                                  # text columns are wider
+    tt = _read("components/TrackTable.jsx")
+    assert "fmtAttr(c.attr, t.attrs?.[c.attr.id], false)" in tt

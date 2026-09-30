@@ -286,7 +286,7 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
 
 ## 4. Using the app
 
-The shell is a left **rail** (Library · Queue · Discover · Mixes · Studio, plus
+The shell is a left **rail** (Library · Queue · Analysis · Discover · Mixes · Studio, plus
 library groups and ⚙ Settings) and one **player bar** at the bottom that every screen
 shares.
 
@@ -345,6 +345,21 @@ The pipeline in detail. The rail counts active tracks; the Library's
   cannot be stopped mid-run. The line is priority order: a track you pressed a
   button on goes first, then the track you have selected and its likeliest
   partners (§3), then imports in ingest order, then bulk reprocessing.
+
+### Analysis
+
+Every attribute the analysis captures, grouped (tempo & grid, key & harmony,
+loudness, timbre, genre & tags, mood, vocals & stems), one row each: what it is
+(hover the name), which group measures it, how many analysed tracks have it,
+and what its values look like — a histogram with the median, or the most
+common values for a category (STYLE, parent genre, key). Two switches per row:
+**Library** adds it as a column (before RATING; sortable, resizable, unmeasured
+sorts last) and **Detail** adds it to the Attributes card on Track detail. The
+choice is saved on the server, so every browser sees the same columns. Nothing
+here recomputes anything — it is for deciding which attributes are worth
+keeping. A histogram piled into one bar is an attribute that does not tell
+tracks apart (on this library: dissonance, and — suspiciously — `tonal`, whose
+median says nearly every track is atonal; §9).
 
 ### Track detail
 
@@ -989,7 +1004,7 @@ caches responses, and opens a breaker after repeated failures.
 | `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`; `essentia_groups.py` (the Essentia analyser), `ml_models.py` (the EffNet models: catalogue, download, predictors), `project.py` (payloads → `features` columns); `decode.py` (one decode per file + per-signal memo; ffprobe/FFmpeg decode for Essentia), `frames.py` (the shared transforms), `registry.py` (feature groups + versions), `cache.py` (content hash → cached group results); `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
 | `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py` |
 | `render/` | `dsp.py`, `mixdown.py`, `session.py` |
-| `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen` + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`; `public/soundtouch-processor.js` |
+| `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen`, `AnalysisScreen` + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`, `attributes.js` (attribute formatting + `attr:` columns); `public/soundtouch-processor.js` |
 | `scripts/` | `bench_analyzers.py` — librosa vs Essentia timing + agreement on library tracks (§8) |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS |
 
@@ -1194,6 +1209,13 @@ Existing databases migrate on start.
   (`hooks/useColumnWidths.js`). An index re-points every stored width the first
   time a column moves, and the symptom looks nothing like the cause. Each
   `HEADS` entry stays on one line — a test parses the block line-by-line.
+- **Attributes are defined once**, in `analysis/attributes.py`: the Analysis
+  panel, the Library's `attr:<id>` columns and Track detail's card all read
+  that catalogue and the `attrs` each track carries, so a label, unit or source
+  cannot differ between them. Add an attribute there, never in the JSX. Toggled
+  columns are spliced in before RATING at render time — `HEADS` is unchanged —
+  and table cells drop the unit (the header names it). Visibility lives in
+  `app_prefs` (`attribute_visibility`) and is fetched once in `App.jsx`.
 - **Library, judgements and groups are fetched once, in `App.jsx`.** The Queue
   screen reads that library and polls only `/api/jobs` + `/api/jobs/queue`.
 - **"Running" is a stage record, not job status.** A pipeline job stays
@@ -1413,18 +1435,16 @@ sidebar revamp.**
      `scripts/` on Windows' case-insensitive paths; new scripts need
      `git add -f`.
 
-   *C. Analysis panel (show/hide only).* `analysis/attributes.py` is the one
-   catalogue of attributes (id, label, short header, category, source, kind,
-   unit, format, extractor) that the panel, the Library columns and Track
-   detail all read. `GET /api/analysis/attributes` adds coverage and a
-   distribution (12-bin histogram, or top categories) per attribute;
-   `PUT /api/analysis/attributes/visibility` stores `{library, detail}` in
-   `app_prefs`; `GET /api/tracks` carries each track's `attrs`. A rail screen
-   lists attributes by category with a coverage bar, histogram and Library /
-   Detail toggles; toggled attributes become extra Library columns (`attr:`
-   ids, before RATING — `HEADS` itself is unchanged) and an Attributes card on
-   Track detail. The Essentia style column is **STYLE**, never GENRE.
-   Visibility is fetched once in `App.jsx`. Nothing is recomputed from here.
+   *C. Analysis panel* — done (§4 Analysis, §7). 45 attributes in
+   `analysis/attributes.py`; walked in the browser against the container:
+   coverage 204/204 (gender 188 — only written when the track sings),
+   histograms and category chips render, Library columns and the Detail card
+   work and survive a rebuild (server-side). What the panel already shows:
+   **dissonance** is near-constant (one histogram bar), **`tonal`** has a median
+   of 0.03 (nearly every track "atonal" — the head or its label order is
+   suspect), **tuning** a median of 434 Hz (most records sit near 440), and
+   spectral rolloff sits below the centroid. Check these before any of them
+   feeds the matcher (phase 7).
 
 2. **Judge candidates.** `pair_feedback` needs a few dozen verdicts before the
    learned scorer or supervised weight tuning mean anything; then re-measure the

@@ -220,7 +220,7 @@ function TrackRow({ t, cols, extra = [], selected, playing, running, menuOpen, o
       {extra.map((c) => (
         <div key={c.id} className={c.numeric ? "tt-num mono" : "tt-cell"}
           title={c.attr.label}>
-          <span className="tt-attr mono">{fmtAttr(c.attr, t.attrs?.[c.attr.id])}</span>
+          <span className="tt-attr mono">{fmtAttr(c.attr, t.attrs?.[c.attr.id], false)}</span>
         </div>
       ))}
 
