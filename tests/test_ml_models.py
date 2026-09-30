@@ -154,3 +154,12 @@ def test_without_models_the_tag_step_is_dropped_before_deciding_to_decode(mm, mo
     monkeypatch.setenv("MASHUP_ESSENTIA_MODEL_FETCH", "1")
     mod.ensure_models()
     assert runnable_steps(("rhythm", "effnet")) == ("rhythm", "effnet")
+
+
+def test_status_reports_the_models(mm):
+    mod, _ = mm
+    s = mod.status()
+    assert s["available"] is False and len(s["missing"]) == 2 * len(mod.catalogue_ids())
+    mod.ensure_models()
+    assert mod.status() == {"available": True, "dir": str(mod.models_dir()),
+                            "missing": [], "error": None}

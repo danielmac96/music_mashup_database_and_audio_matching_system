@@ -61,7 +61,7 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
     of the current library at the current version, and librosa ↔ Essentia
     agreement on the full mix (``stem_type`` to compare another stem)."""
     import config
-    from analysis import essentia_groups
+    from analysis import essentia_groups, ml_models
     from analysis.registry import GROUPS, describe
     from api.workers.stages import effective_analyzer
     from database.models import analysed_stem_count, feature_cache_for_stems
@@ -82,6 +82,8 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
                      "version": essentia_groups.version(),
                      "key_profile": config.current_essentia_key_profile(),
                      "rhythm_method": config.current_essentia_rhythm_method()},
+        # The genre/tag models (phase 5): on disk, or why not.
+        "models": ml_models.status(),
         "cache_enabled": config.current_analysis_cache(),
         "analysed_stems": analysed_stem_count(),
         "coverage": coverage,

@@ -199,7 +199,9 @@ def test_without_essentia_analysis_is_refused_not_degraded(env, monkeypatch):
     row = models.get_song(song)
     assert row["status"] == "error_analysis" and "Docker or WSL2" in row["last_error"]
     assert _full_row(models, song) is None                 # no librosa row slipped in
-    assert client.get("/api/analysis/status").json()["analyzer"]["blocked"] is True
+    status = client.get("/api/analysis/status").json()
+    assert status["analyzer"]["blocked"] is True
+    assert status["models"]["available"] is False       # and says why tags are missing
 
     monkeypatch.setenv("MASHUP_ANALYZER", "librosa")       # comparison mode still works
     stages.do_analyze(song)
