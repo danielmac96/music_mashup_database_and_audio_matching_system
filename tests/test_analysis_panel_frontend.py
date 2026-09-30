@@ -46,3 +46,24 @@ def test_the_panel_toggles_library_and_detail_and_never_recomputes():
     jsx = _read("components/AnalysisScreen.jsx")
     assert 'toggle("library"' in jsx and 'toggle("detail"' in jsx
     assert "bulk" not in jsx and "reanalys" not in jsx.lower()
+
+
+def test_attribute_columns_sit_before_rating_and_heads_is_untouched():
+    tt = _read("components/TrackTable.jsx")
+    assert "attrColumns(" in tt
+    heads = tt[tt.index("const HEADS = ["):tt.index("];", tt.index("const HEADS = ["))]
+    assert "attr:" not in heads                     # HEADS itself is unchanged
+    assert "useColumnWidths(columns)" in tt          # widths keyed over every column
+
+
+def test_attribute_sort_keys_are_understood():
+    js = _read("hooks/useLibraryFilters.js")
+    assert 'startsWith("attr:")' in js
+
+
+def test_track_detail_shows_the_detail_attributes():
+    td = _read("components/TrackDetail.jsx")
+    assert "visibility.detail" in td and "fmtAttr(" in td
+    css = _read("styles.css")
+    for cls in set(re.findall(r'className="(attr-[^"\s]+)', td)):
+        assert f".{cls}" in css, cls

@@ -32,7 +32,7 @@ function loadSavedViews() {
   }
 }
 
-export function LibraryScreen({ library, ratings, groups, player, selectedId,
+export function LibraryScreen({ library, attributes, ratings, groups, player, selectedId,
                                 onSelect, onOpen, onRailSlot, onStatus,
                                 onOpenQueue }) {
   const { tracks, pipeJobs, loading, error, refresh } = library;
@@ -228,6 +228,7 @@ export function LibraryScreen({ library, ratings, groups, player, selectedId,
 
       <TrackTable
         tracks={rows}
+        attributes={attributes}
         selectedId={selectedId}
         sort={sort} onSort={setSort}
         playingId={playingId}

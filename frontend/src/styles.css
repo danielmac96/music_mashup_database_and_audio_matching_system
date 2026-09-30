@@ -2889,3 +2889,16 @@ input, select { font-family: inherit; }
 .an-hist span { flex: 1; background: var(--accent); opacity: .75; min-height: 1px; }
 .an-chip { padding: 1px 6px; border-radius: 8px; background: var(--faint-2); white-space: nowrap; }
 .an-toggle { font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+/* Attribute columns in the Library and the Track detail card (readme §9, C) */
+.tt-attr { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
+.attr-card { margin-top: 14px; padding: 10px 12px; background: var(--panel);
+             border: 1px solid var(--border); border-radius: 8px; }
+.attr-card h4 { margin: 0 0 8px; font-size: 12px; letter-spacing: .08em;
+                text-transform: uppercase; color: var(--muted); }
+.attr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px 14px; }
+.attr-item { display: flex; flex-direction: column; min-width: 0; }
+.attr-label { font-size: 11px; color: var(--muted); }
+.attr-val { font-size: 13px; color: var(--text); }
+.attr-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.attr-chip { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: var(--accent-tint); color: var(--accent-light); }

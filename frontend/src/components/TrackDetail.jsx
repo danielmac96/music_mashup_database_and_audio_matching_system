@@ -4,6 +4,7 @@ import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
 import { StructureStrip } from "./StructureStrip";
 import { SectionTable } from "./SectionTable";
+import { fmtAttr } from "../attributes";
 import { PartnersRail } from "./PartnersRail";
 import { AudioSource, AudioSourcePicker } from "./AudioSourcePicker";
 import { keyOf } from "./pairs/pairModel";
@@ -24,7 +25,7 @@ const STEM_LABEL = Object.fromEntries(STEMS);
 // song against a 30-track library is on the order of a hundred rows.
 const PAIR_LIMIT = 500;
 
-export function TrackDetail({ track, tracks, ratings, groups, player, role,
+export function TrackDetail({ track, tracks, attributes = null, ratings, groups, player, role,
                               onRole, onBack, onStudio, onOpenTrack, onStatus,
                               onChanged }) {
   const [sections, setSections] = useState([]);
@@ -337,6 +338,26 @@ export function TrackDetail({ track, tracks, ratings, groups, player, role,
 
           <SectionTable sections={sections} pairsBySection={pairsBySection}
             playingIndex={sectionPlaying} onPlay={playSection} />
+
+          {/* The attributes toggled on for Detail in the Analysis panel. */}
+          {attributes && attributes.visibility.detail.length > 0 && (
+            <section className="attr-card">
+              <h4>Attributes</h4>
+              <div className="attr-grid">
+                {attributes.visibility.detail.map((id) => attributes.byId[id])
+                  .filter(Boolean).map((a) => (
+                    <div key={a.id} className="attr-item" title={a.description}>
+                      <span className="attr-label">{a.label}</span>
+                      {a.kind === "top" && Array.isArray(track.attrs?.[a.id])
+                        ? <span className="attr-chips">{track.attrs[a.id].map((x) => (
+                            <span key={x.label} className="attr-chip mono">
+                              {x.label} {Math.round(x.p * 100)}%</span>))}</span>
+                        : <span className="attr-val mono">{fmtAttr(a, track.attrs?.[a.id])}</span>}
+                    </div>
+                  ))}
+              </div>
+            </section>
+          )}
         </div>
 
         <PartnersRail candidates={candidates} role={role} ratings={ratings}
