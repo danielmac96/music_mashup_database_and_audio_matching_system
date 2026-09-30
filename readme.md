@@ -76,7 +76,10 @@ The dependency stack is pinned to **numpy < 2** (Demucs / librosa 0.10 / torch
 is why it is installed with `--no-deps` on top. `essentia-tensorflow`
 (`requirements-essentia.txt`, baked into the Docker image) does resolve against
 them — 2.1b6.dev1389 declares `numpy>=1.25` and runs on 1.26.4 — but ships no
-Windows wheels, so native Windows goes without it.
+Windows wheels. **Essentia is the analyser**, so native Windows can run the app
+but not analyse: every analysis there fails with "needs Docker or WSL2", and
+the Library's missing-dependency banner names Essentia. Use Docker (or WSL2)
+for anything that imports or reprocesses tracks.
 
 **After every `git pull`, rebuild the frontend** (`cd frontend && npm run build`).
 `frontend/dist/` is gitignored, so a pull updates the source and not the bundle.
@@ -123,7 +126,8 @@ Resolution order: **environment variable > `settings.json` > default**.
 | Stem separator | `MASHUP_STEM_SEPARATOR` | `stem_separator` | `demucs` (`mdx` = fast) |
 | Stem mode | `MASHUP_STEM_MODE` | `stem_mode` | `two` (`four` = drums/bass/other/vocals, Demucs only) |
 | Feature cache | `MASHUP_ANALYSIS_CACHE` | `analysis_cache` | on (`0`/`false` recomputes every group; results are still stored) |
-| Analyser | `MASHUP_ANALYZER` | `analyzer` | `librosa` (`shadow` = librosa core + Essentia extras, `essentia` = Essentia core; §5.4) |
+| Analyser | `MASHUP_ANALYZER` | `analyzer` | `essentia` (`librosa` / `shadow` = librosa core ± Essentia extras, for tests and comparison only; §5.4) |
+| Essentia model downloads | `MASHUP_ESSENTIA_MODEL_FETCH` | — | on (`0` never downloads; the test suite sets it) |
 | Essentia key profile / rhythm method | `MASHUP_ESSENTIA_KEY_PROFILE` / `MASHUP_ESSENTIA_RHYTHM` | `essentia_key_profile` / `essentia_rhythm_method` | `edma` / `degara` |
 | Firecrawl key (Mixes tab) | `FIRECRAWL_API_KEY` | `firecrawl_api_key` | — |
 | SoundCloud app (dormant OAuth) | `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` | `soundcloud_client_id` / `…_secret` | — |
@@ -135,7 +139,9 @@ need a restart (the API returns `restart_required: true`). The separator, stem
 mode, scoring knobs, patterns and Firecrawl key are re-read live.
 The feature-cache switch and the analyser settings are re-read live too; asking
 for `shadow`/`essentia` where Essentia does not import is refused by the API
-and, if set some other way, runs as `librosa` (logged once).
+and, if set some other way, makes every analysis fail with the Docker/WSL2
+message (`GET /api/analysis/status` → `analyzer.blocked`) — never a silent
+librosa substitute.
 `config.save_settings` ignores empty values, so anything that must be
 *unsettable* (the connected SoundCloud profile, saved profiles) lives in the
 `app_prefs` table instead.
@@ -261,14 +267,15 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
   results without decoding anything (`analysis.cached` in the timings), a
   re-separated stem recomputes, and bumping one group's version recomputes that
   group only.
-- **Two analysers, one row.** `config.current_analyzer()` picks who fills a
-  stem's `features` row: `librosa` (default), `shadow` (librosa fills it, and
-  Essentia runs alongside to fill only the columns librosa never measured —
-  LUFS, true peak, tuning, chords, danceability…), or `essentia` (Essentia
-  fills the core too, and sections are cut on its beat grid). The row's
-  `analyzer` column says which. `GET /api/analysis/status` reports the setting,
-  per-group coverage of the library and librosa ↔ Essentia agreement on the
-  full mix — what the switch is decided on (§9).
+- **Essentia is the analyser.** `config.current_analyzer()` is `essentia`:
+  Essentia fills every stem's `features` row — the core columns, the extras
+  (LUFS, true peak, tuning, chords, danceability…) and, on the full mix, the
+  genre and tags — and sections are cut on its beat grid. `librosa` and
+  `shadow` (librosa core + Essentia extras) remain for the test suite and for
+  comparison; the row's `analyzer` column says which ran. librosa still
+  supplies the segmenter's chroma, the FFT helpers (bands, stem quality, vocal
+  activity) and renders. `GET /api/analysis/status` reports the setting, the
+  models, per-group coverage and librosa ↔ Essentia agreement.
 - **Heavy libraries import lazily**, so the API starts (and degrades with clear
   501/502 messages) without the audio stack.
 - **Frontend state lives once in `App.jsx`:** the library, ratings, groups and
@@ -608,6 +615,7 @@ was bumped.
 | `essentia.loudness` | EBU R128 integrated + LRA, true peak (4× oversampling only around the loudest samples — `TruePeakDetector` costs ~5 s per 100 s), ReplayGain, dynamic complexity, crest, stereo width, frame RMS | loudness_rms · extras |
 | `essentia.spectral` | Essentia window + FFT + MFCC per frame; centroid, rolloff, ZCR, flux, flatness, HFC and 8/3-band energy in numpy over those spectra; contrast, complexity, moments, dissonance on every 4th frame | mfcc, spectral_*, zero_crossing_rate, energy, band_energy, waveform_rms · extras |
 | `essentia.melody` | **vocal stem only**: `PitchMelodia` at 22.05 kHz, hop 128, median-downsampled to a 50 ms f0 curve (a bin is voiced when half its frames are); ~1.8 s per 100 s | `melody_json` (sung range + centre) · the curve stays in the cache, where structure reads it (§5.5) |
+| `essentia.effnet` | **full mix, analysis stage only** (not the quick tier): Discogs-EffNet (`discogs-effnet-bs64-1`) at 16 kHz → one 1280-d embedding per ~1 s patch → 15 heads (`analysis/ml_models.py`), each averaged over the track; ~3.2 s median per track (p90 5.1 s) on the library. Models are fetched on first use into `<data_dir>/essentia_models` (sha256 manifest; node names and classes from each model's JSON); without them the step is dropped before the cache is read — skipped, never failed | `tags_json`: top-5 Discogs styles + parent genre (by summed probability), voice, gender (only when voiced), danceable, tonal, bright, seven moods, top-5 mood/themes and instruments · the mean embedding stays in the cache |
 
 Measured (sandbox, 100 s file, warm): the four groups cost ~4.9 s + ~0.35 s
 decode, librosa's `analyze_file` ~4.2 s — **Essentia is not the speed win on
@@ -978,7 +986,7 @@ caches responses, and opens a breaker after repeated failures.
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py` |
 | `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
 | `stems/separate.py` | Demucs / MDX-Net, two or four stems |
-| `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`; `essentia_groups.py` (the Essentia analyser), `project.py` (payloads → `features` columns); `decode.py` (one decode per file + per-signal memo; ffprobe/FFmpeg decode for Essentia), `frames.py` (the shared transforms), `registry.py` (feature groups + versions), `cache.py` (content hash → cached group results); `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
+| `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`; `essentia_groups.py` (the Essentia analyser), `ml_models.py` (the EffNet models: catalogue, download, predictors), `project.py` (payloads → `features` columns); `decode.py` (one decode per file + per-signal memo; ffprobe/FFmpeg decode for Essentia), `frames.py` (the shared transforms), `registry.py` (feature groups + versions), `cache.py` (content hash → cached group results); `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
 | `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py` |
 | `render/` | `dsp.py`, `mixdown.py`, `session.py` |
 | `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen` + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`; `public/soundtouch-processor.js` |
@@ -995,7 +1003,7 @@ stem: tempo/grid/phase, key/confidence/Camelot, loudness, MFCC, spectral, bands,
 envelope, beats, hook window; `analyzer`; the Essentia-only `lufs`, `lra`,
 `true_peak`, `replay_gain`, `tuning_hz`, `key_strength`, `dynamic_complexity`,
 `danceability`, `onset_rate`, `dissonance`, `*_candidates_json`, `chords_json`,
-`bands3_json`, `descriptors_json`, `melody_json`) · `sections` (see §5.5; `provisional`,
+`bands3_json`, `descriptors_json`, `melody_json`; `tags_json` — full mix only: genre + tags) · `sections` (see §5.5; `provisional`,
 `vocal_activity`, `band_energy_vocal_json`, `band_energy_bed_json`, `f0_json`)
 · `mashup_candidates` (one
 row per section pair: sub-scores, effort, section terms, harmony, alignment,
@@ -1096,13 +1104,13 @@ Existing databases migrate on start.
 - **The core columns of `features` belong to one analyser per library.** The
   matcher ranks several of them against the library (MFCC z-scores, confidence
   percentiles) and `matcher/dedup.py` compares MFCC cosines against an absolute
-  threshold tuned on librosa's scale — so `analyzer=essentia` goes on for every
-  track at once, after `GET /api/analysis/status` shows full coverage, followed
-  by a re-score and a check of the dedup threshold. Extras (`analysis/project.py`
-  `EXTRA_COLUMNS`) are always written by `update_features_extras`, never by
-  `upsert_features`, and are NULL for a run in which Essentia did not run.
-  In essentia mode an incomplete Essentia result falls back to librosa for that
-  row (`analyzer` says so) rather than leaving it empty.
+  threshold — so the library moved to `analyzer=essentia` all at once
+  (2026-09-30, all 612 rows), and nothing may put a librosa row back: where
+  Essentia does not import, analysis is refused (`stages.require_analyzer`),
+  and an incomplete Essentia result fails that stem (Retry) instead of being
+  filled from librosa. Extras (`analysis/project.py` `EXTRA_COLUMNS`) are
+  always written by `update_features_extras`, never by `upsert_features`, and
+  are NULL for a run in which Essentia did not run.
 - **Shared audio is read-only, shared transforms are never mutated.**
   `decode.load_mono` hands the same array to every caller (write-protected),
   and `frames.*` return the same object to every caller of the same signal and
@@ -1237,7 +1245,12 @@ is no JS test runner. CI (`.github/workflows/ci.yml`) runs the whole suite on
 Ubuntu and Windows (Python 3.12, CPU torch, numpy 1.x asserted) and builds the
 frontend. The Ubuntu leg also installs `requirements-essentia.txt`; the
 Essentia tests in `tests/test_essentia_analyzer.py` skip where it does not
-import, which is the Windows leg (and native Windows).
+import, which is the Windows leg (and native Windows). `tests/conftest.py` pins
+`analyzer=librosa` for every test (Essentia-mode tests opt in) and switches
+model downloads off (`MASHUP_ESSENTIA_MODEL_FETCH=0`): an analysis test must
+never fetch 30 MB over the network. Running the Essentia tests inside the
+container, unset its `MASHUP_*` path variables first, or they read the live
+`/data`.
 
 **Analyser benchmark** (not part of the suite — it runs on your audio):
 
@@ -1353,44 +1366,52 @@ sidebar revamp.**
    - The host sleeping suspends Docker Desktop's VM and the pipeline with it —
      a long backfill needs the machine kept awake.
 
-   **Decided next (2026-09-30): Essentia becomes the analyser, then genre and
-   tags, then an Analysis panel** — in that order.
+   **Essentia is the analyser, and tracks carry genre and tags (2026-09-30,
+   A and B done).**
 
-   *A. Essentia is the analyser.* `analyzer` defaults to `essentia`; where
-   Essentia does not import (native Windows) analysis fails with "needs Docker
-   or WSL2" instead of degrading to librosa, and an incomplete Essentia result
-   is an `error_analysis` rather than a librosa-filled row — so the core
-   columns never mix analysers. `librosa`/`shadow` stay selectable for tests
-   and comparison only. Then: bulk re-analyse (Essentia core is already cached
-   from the shadow backfill), re-measure `dedup.AUDIO_CONFIRM_MIN` on
-   Essentia's MFCC scale (known variants vs random pairs), re-score and
-   compare the ranking. librosa stays where Essentia has no drop-in: section
-   chroma for the segmenter and per-stem harmony (Essentia HPCP is a later,
-   verified change — its boundaries agree only loosely), the FFT helpers
-   (bands, stem quality, vocal activity), and renders (until Rubber Band).
+   *A. Essentia is the analyser* — done (§3, §7). `analyzer` defaults to
+   `essentia`; where Essentia does not import, analysis is refused with the
+   Docker/WSL2 message instead of degrading to librosa, and an incomplete
+   Essentia result fails the stem. The library moved over in one bulk pass:
+   all 612 feature rows (204 tracks × mix/vocals/instrumental) are Essentia,
+   28 min for the pass (Essentia's core was already cached from the shadow
+   backfill), no failures. librosa stays for the segmenter's chroma, the FFT
+   helpers and renders; moving the segmenter onto Essentia HPCP is a later,
+   ear-checked change (its boundaries agree only loosely, above).
 
-   *B. Phase 5, slice 1 — genre and tags.* `analysis/ml_models.py` catalogues
-   `discogs-effnet-bs64-1` and the heads `genre_discogs400`,
-   `voice_instrumental`, `gender`, `danceability`, `tonal_atonal`, `timbre`,
-   `mood_{happy,sad,aggressive,relaxed,party,acoustic,electronic}`,
-   `mtg_jamendo_moodtheme`, `mtg_jamendo_instrument` (checked 2026-09-30: all
-   exist; `approachability_regression` / `engagement_regression` do not).
-   Fetched lazily into `<data_dir>/essentia_models` (sha256 recorded on first
-   download, backoff after a failure; `scripts/fetch_essentia_models.py`);
-   node names and classes from each JSON — they differ by head (EffNet
-   `PartitionedCall:1` = embeddings; `genre_discogs400` reads
-   `serving_default_model_Placeholder`; the others `model/Placeholder` →
-   `model/Softmax` or `model/Sigmoid`). An `essentia.effnet` group on the full
-   mix (16 kHz, analysis stage, not the quick tier) writes `features.tags_json`:
-   top-5 Discogs styles + parent genre, voice, gender (only when voiced),
-   danceable, tonal, bright, the seven moods, top-5 mood/themes and
-   instruments. Kept apart from `songs.genre` (SoundCloud's). Skipped, not
-   failed, without models; the mean embedding stays in the cache for slice 2.
-   Checked on the library: time per track, parent-genre agreement with
-   SoundCloud's genre where one exists, and ~10 tracks' styles by eye.
-   *Slice 2* (later): the `embeddings` table, `GET /api/tracks/{id}/similar`,
-   and `voice_instrumental` setting provisional sections' `vocal_presence`
-   (`vocal_presence_source = 'ml_mix'`), as designed before.
+   *B. Phase 5, slice 1 — genre and tags* — done (§5.4 `essentia.effnet`).
+   `analysis/ml_models.py` (EffNet + 15 heads; `approachability_regression` /
+   `engagement_regression` do not exist) → `features.tags_json` on the full
+   mix. All 204 tracks tagged; EffNet 3.2 s median per track (p90 5.1 s). The
+   parent genre agrees with SoundCloud's genre on 98/141 tracks (70%); the
+   largest disagreement, SoundCloud "Pop" → Discogs "Electronic" (17), is
+   largely Discogs' taxonomy (Europop and Synth-pop are Electronic styles).
+   Eyeballed: Bon Jovi → Hard Rock / Arena Rock, "Unwritten" → RnB/Swing,
+   "DtMF" → Trap / Reggaeton, a techno track → Tech Trance / Techno; misses
+   include a "Cruel Summer" remix → Ambient / Field Recording.
+   *Slice 2* (next in phase 5): the `embeddings` table,
+   `GET /api/tracks/{id}/similar`, `voice_instrumental` setting provisional
+   sections' `vocal_presence` (`vocal_presence_source = 'ml_mix'`), and the
+   EffNet embedding as `matcher/dedup.py`'s audio check (below).
+
+   *Found on the way (open):*
+   - **The dedup audio check barely discriminates** — 93% of random pairs
+     clear `AUDIO_CONFIRM_MIN = 0.80` on the track-mean MFCC, under librosa
+     (92.7%) as under Essentia (93.7%), so it was never a real gate; z-scoring
+     rejects random pairs but also the known variants. Not a regression of
+     the flip. Fix with the EffNet embedding (slice 2).
+   - **Score library is slow at 204 tracks and silent while it is.** The
+     section-pair emit (`matcher/match.py` `_emit(..., with_sections=True)`)
+     is a single-threaded Python loop with no progress updates: the job sits
+     at 55% for over an hour of CPU. Needs progress reporting and a faster
+     section search before the library grows further (§7 predicted this).
+   - **A restart between analysis and structure strands a track**: `status`
+     is `analysed` before structure runs, so the resume skips it and only the
+     staleness badge / a bulk re-analyse repairs it (seen once, after a
+     rebuild mid-backfill).
+   - `.gitignore`'s `/Scripts/` (a Windows venv folder) also matches
+     `scripts/` on Windows' case-insensitive paths; new scripts need
+     `git add -f`.
 
    *C. Analysis panel (show/hide only).* `analysis/attributes.py` is the one
    catalogue of attributes (id, label, short header, category, source, kind,
