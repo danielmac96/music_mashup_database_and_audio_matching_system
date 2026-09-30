@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 router = APIRouter()
 
@@ -91,3 +92,45 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
                                  if not stem_type or r["stem_type"] == stem_type]),
         "groups": describe(),
     }
+
+
+# ── The Analysis panel (readme §9, C) ────────────────────────────────────────
+
+class VisibilityRequest(BaseModel):
+    library: list[str] = []
+    detail: list[str] = []
+
+
+@router.get("/attributes")
+def attributes_catalogue() -> dict:
+    """Every attribute with its library coverage and distribution, and which
+    are shown in the Library and on Track detail. Reads stored rows only."""
+    from analysis import attributes as A
+    from database.models import get_all_features, get_pref
+    rows = {st: {r["song_id"]: r for r in get_all_features(stem_type=st)}
+            for st in ("full", "vocals", "instrumental")}
+    per_track = [A.extract(f, rows["vocals"].get(sid), rows["instrumental"].get(sid))
+                 for sid, f in rows["full"].items()]
+    total = len(per_track)
+    out = []
+    for d in A.describe():
+        vals = [t[d["id"]] for t in per_track if d["id"] in t]
+        out.append({**d, "coverage": {"n": len(vals), "total": total},
+                    "dist": A.distribution(A.BY_ID[d["id"]], vals)})
+    vis = get_pref("attribute_visibility")
+    return {"attributes": out, "categories": list(A.CATEGORIES),
+            "visibility": A.clean_visibility(vis) if vis else A.DEFAULT_VISIBILITY}
+
+
+@router.put("/attributes/visibility")
+def save_attribute_visibility(req: VisibilityRequest) -> dict:
+    """Which attributes the Library shows as columns and Track detail as a card."""
+    from analysis import attributes as A
+    from database.models import set_pref
+    unknown = sorted({i for i in req.library + req.detail if i not in A.BY_ID})
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown attribute(s): {unknown}")
+    vis = {"library": list(dict.fromkeys(req.library)),
+           "detail": list(dict.fromkeys(req.detail))}
+    set_pref("attribute_visibility", vis)
+    return vis
