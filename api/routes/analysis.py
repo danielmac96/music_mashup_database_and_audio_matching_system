@@ -75,7 +75,9 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
 
     return {
         "analyzer": {"configured": config.current_analyzer(), "effective": configured,
-                     "core": core},
+                     "core": core,
+                     # The analyser cannot run here: every analysis is refused.
+                     "blocked": configured != "librosa" and not essentia_groups.available()},
         "essentia": {"available": essentia_groups.available(),
                      "version": essentia_groups.version(),
                      "key_profile": config.current_essentia_key_profile(),

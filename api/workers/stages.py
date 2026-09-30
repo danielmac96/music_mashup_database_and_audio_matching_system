@@ -350,27 +350,26 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
 
 # ── Feature analysis ──────────────────────────────────────────────────────────
 
-_ESSENTIA_MISSING_WARNED = False
+ESSENTIA_MISSING = ("The Essentia analyser needs Docker or WSL2 — it has no Windows "
+                    "build. Set analyzer=librosa only for tests or comparison.")
 
 
 def effective_analyzer() -> tuple[str, str]:
-    """(configured mode, analyser that owns the core columns).
-
-    The configured mode is config.current_analyzer(); where Essentia does not
-    import (native Windows) shadow and essentia both degrade to librosa, once
-    logged, rather than failing every analysis."""
-    global _ESSENTIA_MISSING_WARNED
+    """(configured mode, analyser that owns the core columns). Never
+    substitutes librosa for a missing Essentia: the core columns of a library
+    belong to one analyser (readme §7), so require_analyzer refuses instead."""
     from config import current_analyzer
     mode = current_analyzer()
+    return mode, ("essentia" if mode == "essentia" else "librosa")
+
+
+def require_analyzer() -> None:
+    """StageError when the configured analyser cannot run here."""
+    mode, _core = effective_analyzer()
     if mode != "librosa":
         from analysis.essentia_groups import available
         if not available():
-            if not _ESSENTIA_MISSING_WARNED:
-                log.warning("analyzer=%s but essentia is not installed here — "
-                            "using librosa", mode)
-                _ESSENTIA_MISSING_WARNED = True
-            return "librosa", "librosa"
-    return mode, ("essentia" if mode == "essentia" else "librosa")
+            raise StageError(ESSENTIA_MISSING)
 
 
 # Essentia groups beyond the core four, per stem: the sung pitch only means
@@ -416,6 +415,7 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
                                   extras_from_essentia)
     from database.models import set_stem_content_hash, update_features_extras
 
+    require_analyzer()
     configured, core_analyzer = effective_analyzer()
     run_essentia = configured in ("shadow", "essentia")
 
@@ -528,8 +528,12 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         update_song_error(song_id, "error_analysis", msg)
         raise StageError(msg)
 
-    analysed, failed = _analyze_stems(song_id, stem_paths, _ANALYSIS_STEM_ORDER,
-                                      on_progress)
+    try:
+        analysed, failed = _analyze_stems(song_id, stem_paths, _ANALYSIS_STEM_ORDER,
+                                          on_progress)
+    except StageError as exc:
+        update_song_error(song_id, "error_analysis", str(exc))
+        raise
 
     if not analysed:
         update_song_error(song_id, "error_analysis", "Analysis failed for every stem")

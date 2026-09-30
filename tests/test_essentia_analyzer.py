@@ -186,12 +186,24 @@ def test_config_reads_the_analyzer_live(env, monkeypatch):
     assert config.current_essentia_rhythm_method() == "degara"
 
 
-def test_without_essentia_every_mode_is_librosa(env, monkeypatch):
-    models, stages, client, _tmp = env
+def test_without_essentia_analysis_is_refused_not_degraded(env, monkeypatch):
+    models, stages, client, tmp = env
     import analysis.essentia_groups as eg
     monkeypatch.setattr(eg, "available", lambda: False)
     monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
-    assert stages.effective_analyzer() == ("librosa", "librosa")
+    assert stages.effective_analyzer() == ("essentia", "essentia")
+    song = _song(models, tmp)
+    with pytest.raises(stages.StageError, match="Docker or WSL2"):
+        stages.do_analyze(song)
+    row = models.get_song(song)
+    assert row["status"] == "error_analysis" and "Docker or WSL2" in row["last_error"]
+    assert _full_row(models, song) is None                 # no librosa row slipped in
+    assert client.get("/api/analysis/status").json()["analyzer"]["blocked"] is True
+
+    monkeypatch.setenv("MASHUP_ANALYZER", "librosa")       # comparison mode still works
+    stages.do_analyze(song)
+    assert _full_row(models, song)["analyzer"] == "librosa"
+
     monkeypatch.delenv("MASHUP_ANALYZER")
     r = client.post("/api/settings", json={"analyzer": "shadow"})
     assert r.status_code == 400 and "Essentia" in r.json()["detail"]
@@ -288,3 +300,17 @@ def test_a_second_shadow_run_is_served_from_the_cache(env, monkeypatch):
     conn.close()
     assert "analysis.cached" in grps
     assert "essentia.rhythm.cached" in grps and "essentia.rhythm" not in grps
+
+
+@needs_essentia
+def test_an_incomplete_essentia_result_fails_the_stem(env, monkeypatch):
+    """An Essentia library never gets a librosa-filled row: the core columns
+    would mix analysers (readme §7). The stem fails and Retry re-runs it."""
+    models, stages, _client, tmp = env
+    song = _song(models, tmp)
+    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
+    monkeypatch.setattr(stages, "_run_essentia", lambda *a, **k: ({}, False))
+    with pytest.raises(stages.StageError):
+        stages.do_analyze(song)
+    assert _full_row(models, song) is None
+    assert models.get_song(song)["status"] == "error_analysis"
