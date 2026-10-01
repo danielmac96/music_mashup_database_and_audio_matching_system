@@ -11,9 +11,10 @@ detect_sections the mix plus every stem again. Each decode of a 4-minute MP3 at
 Two layers:
 
   * ``load_mono(path, sr, duration)`` — a small LRU of decoded signals, keyed
-    by the file's identity (path, size, mtime) and the rate. The decode itself
-    is still ``librosa.load``, so every number downstream is bit-for-bit what it
-    was. A ``duration`` shorter than the file is served as a slice of the full
+    by the file's identity (path, size, mtime) and the rate. A lossless file
+    is decoded by ``librosa.load``; a compressed one by FFmpeg, then averaged
+    and resampled the way librosa.load does, which matches it to the MP3
+    decoders' float rounding (``_decode_mono``). A ``duration`` shorter than the file is served as a slice of the full
     decode instead of a second decode. The returned array is read-only: it is
     shared, and nothing may change it under another caller.
 
@@ -25,8 +26,8 @@ Two layers:
     analyze_file already computed on the same mix.
 
 ``ffprobe`` and a single-pass FFmpeg decode (``probe`` / ``decode_ffmpeg``) are
-here for the Essentia analyser (readme §9, phase 2); the librosa analyser does
-not use them.
+shared by both analysers: Essentia decodes through them, and librosa's decode of
+a compressed file does too.
 """
 from __future__ import annotations
 
@@ -122,8 +123,7 @@ def _get_full(key: tuple, path: Path, sr: int) -> np.ndarray:
             if entry is not None:
                 _STATS["hits"] += 1
                 return entry.y
-        import librosa
-        y, _sr = librosa.load(str(path), sr=sr, mono=True)
+        y = _decode_mono(path, sr)
         y = np.ascontiguousarray(y)
         y.setflags(write=False)
         with _LOCK:
@@ -132,6 +132,39 @@ def _get_full(key: tuple, path: Path, sr: int) -> np.ndarray:
                 _register(key, _Entry(y, sr))
             _INFLIGHT.pop(key, None)
         return y
+
+
+# What libsndfile decodes quickly. Everything else — MP3 above all — goes to
+# FFmpeg: libsndfile's MP3 decoder took 5-6 s for a 4-minute track that FFmpeg
+# decodes in 0.5 s (measured in the container, 2026-09-28).
+_LOSSLESS = frozenset({".wav", ".flac", ".aif", ".aiff"})
+
+
+def prefers_ffmpeg(path: Path) -> bool:
+    return Path(path).suffix.lower() not in _LOSSLESS
+
+
+def _decode_mono(path: Path, sr: int) -> np.ndarray:
+    """What ``librosa.load(path, sr=sr, mono=True)`` returns, with FFmpeg doing
+    the decode of compressed files: the native rate and channels are decoded,
+    averaged to mono and resampled by librosa exactly as librosa.load does, so
+    the result differs only by the two MP3 decoders' float rounding (~3e-6)."""
+    import librosa
+    if prefers_ffmpeg(path):
+        try:
+            stream = next((s for s in probe(path).get("streams", [])
+                           if s.get("codec_type") == "audio"), None)
+            if stream:
+                native, channels = int(stream["sample_rate"]), int(stream["channels"])
+                y = decode_ffmpeg(path, sr=native, channels=channels)
+                y = y.mean(axis=1) if y.ndim == 2 else y
+                if native != sr:
+                    y = librosa.resample(y, orig_sr=native, target_sr=sr)
+                return y.astype(np.float32, copy=False)
+        except Exception:  # noqa: BLE001 — librosa.load is the fallback
+            log.info("FFmpeg decode failed for %s; using librosa.load", path)
+    y, _sr = librosa.load(str(path), sr=sr, mono=True)
+    return y
 
 
 def memo(y: Any, key: tuple, compute: Callable[[], Any]) -> Any:

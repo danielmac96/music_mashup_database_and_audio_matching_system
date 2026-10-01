@@ -5,6 +5,7 @@ Tests that need Essentia itself skip where it is not installed (native Windows,
 and the Windows CI leg); the projection, key/chroma conventions and the
 switch's fallback are pure and run everywhere."""
 import importlib
+import json
 import sys
 from pathlib import Path
 
@@ -176,21 +177,36 @@ def _full_row(models, song):
 
 def test_config_reads_the_analyzer_live(env, monkeypatch):
     import config
-    assert config.current_analyzer() == "librosa"
+    monkeypatch.delenv("MASHUP_ANALYZER", raising=False)
+    assert config.current_analyzer() == "essentia"        # the default
     monkeypatch.setenv("MASHUP_ANALYZER", "Shadow")
     assert config.current_analyzer() == "shadow"
     monkeypatch.setenv("MASHUP_ANALYZER", "nonsense")
-    assert config.current_analyzer() == "librosa"
+    assert config.current_analyzer() == "essentia"
     assert config.current_essentia_key_profile() == "edma"
     assert config.current_essentia_rhythm_method() == "degara"
 
 
-def test_without_essentia_every_mode_is_librosa(env, monkeypatch):
-    models, stages, client, _tmp = env
+def test_without_essentia_analysis_is_refused_not_degraded(env, monkeypatch):
+    models, stages, client, tmp = env
     import analysis.essentia_groups as eg
     monkeypatch.setattr(eg, "available", lambda: False)
     monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
-    assert stages.effective_analyzer() == ("librosa", "librosa")
+    assert stages.effective_analyzer() == ("essentia", "essentia")
+    song = _song(models, tmp)
+    with pytest.raises(stages.StageError, match="Docker or WSL2"):
+        stages.do_analyze(song)
+    row = models.get_song(song)
+    assert row["status"] == "error_analysis" and "Docker or WSL2" in row["last_error"]
+    assert _full_row(models, song) is None                 # no librosa row slipped in
+    status = client.get("/api/analysis/status").json()
+    assert status["analyzer"]["blocked"] is True
+    assert status["models"]["available"] is False       # and says why tags are missing
+
+    monkeypatch.setenv("MASHUP_ANALYZER", "librosa")       # comparison mode still works
+    stages.do_analyze(song)
+    assert _full_row(models, song)["analyzer"] == "librosa"
+
     monkeypatch.delenv("MASHUP_ANALYZER")
     r = client.post("/api/settings", json={"analyzer": "shadow"})
     assert r.status_code == 400 and "Essentia" in r.json()["detail"]
@@ -287,3 +303,59 @@ def test_a_second_shadow_run_is_served_from_the_cache(env, monkeypatch):
     conn.close()
     assert "analysis.cached" in grps
     assert "essentia.rhythm.cached" in grps and "essentia.rhythm" not in grps
+
+
+@needs_essentia
+def test_an_incomplete_essentia_result_fails_the_stem(env, monkeypatch):
+    """An Essentia library never gets a librosa-filled row: the core columns
+    would mix analysers (readme §7). The stem fails and Retry re-runs it."""
+    models, stages, _client, tmp = env
+    song = _song(models, tmp)
+    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
+    monkeypatch.setattr(stages, "_run_essentia", lambda *a, **k: ({}, False))
+    with pytest.raises(stages.StageError):
+        stages.do_analyze(song)
+    assert _full_row(models, song) is None
+    assert models.get_song(song)["status"] == "error_analysis"
+
+
+def test_tags_are_an_extra_column_and_only_on_the_mix():
+    from analysis.project import EXTRA_COLUMNS, extras_from_essentia
+    assert "tags_json" in EXTRA_COLUMNS
+    tags = {"genre": [{"label": "Electronic---House", "p": 0.4}], "genre_parent": "Electronic"}
+    assert json.loads(extras_from_essentia({"effnet": {"tags": tags}}, "essentia")["tags_json"]) == tags
+    assert extras_from_essentia({"rhythm": {}}, "essentia")["tags_json"] is None
+
+
+@needs_essentia
+def test_the_analysis_stage_tags_the_mix_but_the_quick_tier_does_not(env, monkeypatch):
+    models, stages, _client, tmp = env
+    import analysis.essentia_groups as eg
+    import analysis.ml_models as ml
+    monkeypatch.setattr(ml, "ensure_models", lambda download=True: True)   # models present
+    calls = []
+    monkeypatch.setattr(eg, "group_effnet",
+                        lambda sig: calls.append(1) or {"tags": {"genre_parent": "Electronic"},
+                                                         "embedding_mean": [0.0]})
+    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
+    song = _song(models, tmp)
+    models.update_song_status(song, "downloaded")
+    stages.do_quick(song)
+    assert calls == [] and _full_row(models, song).get("tags_json") is None
+    models.update_song_status(song, "stemmed")
+    stages.do_analyze(song)
+    assert calls == [1]
+    assert json.loads(_full_row(models, song)["tags_json"])["genre_parent"] == "Electronic"
+
+
+@needs_essentia
+def test_missing_models_skip_the_tags_without_failing(env, monkeypatch):
+    models, stages, _client, tmp = env
+    import analysis.essentia_groups as eg
+    monkeypatch.setattr(eg, "group_effnet", lambda sig: None)
+    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
+    song = _song(models, tmp)
+    stages.do_analyze(song)
+    row = _full_row(models, song)
+    assert row["analyzer"] == "essentia" and row.get("tags_json") is None
+    assert models.get_song(song)["status"] == "analysed"

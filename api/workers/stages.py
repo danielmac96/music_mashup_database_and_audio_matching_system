@@ -350,36 +350,35 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
 
 # ── Feature analysis ──────────────────────────────────────────────────────────
 
-_ESSENTIA_MISSING_WARNED = False
+ESSENTIA_MISSING = ("The Essentia analyser needs Docker or WSL2 — it has no Windows "
+                    "build. Set analyzer=librosa only for tests or comparison.")
 
 
 def effective_analyzer() -> tuple[str, str]:
-    """(configured mode, analyser that owns the core columns).
-
-    The configured mode is config.current_analyzer(); where Essentia does not
-    import (native Windows) shadow and essentia both degrade to librosa, once
-    logged, rather than failing every analysis."""
-    global _ESSENTIA_MISSING_WARNED
+    """(configured mode, analyser that owns the core columns). Never
+    substitutes librosa for a missing Essentia: the core columns of a library
+    belong to one analyser (readme §7), so require_analyzer refuses instead."""
     from config import current_analyzer
     mode = current_analyzer()
+    return mode, ("essentia" if mode == "essentia" else "librosa")
+
+
+def require_analyzer() -> None:
+    """StageError when the configured analyser cannot run here."""
+    mode, _core = effective_analyzer()
     if mode != "librosa":
         from analysis.essentia_groups import available
         if not available():
-            if not _ESSENTIA_MISSING_WARNED:
-                log.warning("analyzer=%s but essentia is not installed here — "
-                            "using librosa", mode)
-                _ESSENTIA_MISSING_WARNED = True
-            return "librosa", "librosa"
-    return mode, ("essentia" if mode == "essentia" else "librosa")
+            raise StageError(ESSENTIA_MISSING)
 
 
 # Essentia groups beyond the core four, per stem: the sung pitch only means
 # something on an isolated vocal.
-_ESSENTIA_EXTRA_STEPS = {"vocals": ("melody",)}
+_ESSENTIA_EXTRA_STEPS = {"vocals": ("melody",), "full": ("effnet",)}
 
 
 def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
-                  on_progress: ProgressCb) -> tuple[dict, bool]:
+                  on_progress: ProgressCb, extra_steps: tuple = ()) -> tuple[dict, bool]:
     """Every Essentia group for one stem, cached. Returns (payloads, fully
     cached). Never raises: a failure is an empty result, which leaves the
     librosa analyser to fill the core."""
@@ -390,7 +389,7 @@ def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
     try:
         out = analyze_file_essentia(path, cache=StepCache(key, ESSENTIA_STEP_GROUPS),
                                     timings=timings, on_progress=on_progress,
-                                    extra_steps=_ESSENTIA_EXTRA_STEPS.get(stem_type, ()))
+                                    extra_steps=extra_steps)
     except Exception:  # noqa: BLE001
         log.exception("essentia analysis failed for %s/%s", song_id, stem_type)
         out = {}
@@ -416,6 +415,7 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
                                   extras_from_essentia)
     from database.models import set_stem_content_hash, update_features_extras
 
+    require_analyzer()
     configured, core_analyzer = effective_analyzer()
     run_essentia = configured in ("shadow", "essentia")
 
@@ -439,19 +439,25 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
             # core columns, in shadow mode only the extras (analysis/project.py).
             ess: dict = {}
             if run_essentia:
-                ess, ess_cached = _run_essentia(song_id, stem_type, path, key, on_progress)
+                # The quick tier skips the extras (the melody, the tags): it
+                # exists to put BPM and key in the library in seconds.
+                extra = () if gate == "quick" else _ESSENTIA_EXTRA_STEPS.get(stem_type, ())
+                ess, ess_cached = _run_essentia(song_id, stem_type, path, key,
+                                                on_progress, extra)
                 fully_cached = fully_cached and ess_cached
 
             used = "librosa"
-            if core_analyzer == "essentia" and essentia_core_complete(ess):
+            if core_analyzer == "essentia":
+                if not essentia_core_complete(ess):
+                    # Never a librosa-filled row in an Essentia library: the core
+                    # columns would mix analysers (readme §7). Retry re-runs it.
+                    log.warning("essentia core incomplete for %s/%s", song_id, stem_type)
+                    failed.append(stem_type)
+                    fully_cached = False
+                    continue
                 features = core_from_essentia(ess)
                 used = "essentia"
             else:
-                if core_analyzer == "essentia":
-                    # Never leave a row empty because the new analyser failed:
-                    # the old one fills it, and `analyzer` says so.
-                    log.warning("essentia core incomplete for %s/%s — librosa fills it",
-                                song_id, stem_type)
                 timings: dict = {}
                 try:
                     features = analyze_file(path, trim_secs=BEAT_TRIM_SECS,
@@ -528,8 +534,12 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         update_song_error(song_id, "error_analysis", msg)
         raise StageError(msg)
 
-    analysed, failed = _analyze_stems(song_id, stem_paths, _ANALYSIS_STEM_ORDER,
-                                      on_progress)
+    try:
+        analysed, failed = _analyze_stems(song_id, stem_paths, _ANALYSIS_STEM_ORDER,
+                                          on_progress)
+    except StageError as exc:
+        update_song_error(song_id, "error_analysis", str(exc))
+        raise
 
     if not analysed:
         update_song_error(song_id, "error_analysis", "Analysis failed for every stem")
@@ -591,7 +601,11 @@ def do_quick(song_id: int, on_progress: ProgressCb = None) -> dict:
         set_quick_state(song_id, "failed")
         raise StageError("Quick analysis failed for the mix")
     try:
-        result = do_structure(song_id, on_progress, gate="quick")
+        # The mix only, even when stems are on disk: before a re-separation or
+        # a re-download they are the previous audio's, and the vocal melody the
+        # final cut reads does not exist yet. Provisional sections are stale as
+        # soon as a vocal stem exists, so the full analysis re-cuts them.
+        result = do_structure(song_id, on_progress, gate="quick", use_stems=False)
     except StageError as exc:
         # BPM and key landed; a track too short to segment is still useful.
         log.info("quick structure for song %s: %s", song_id, exc)
@@ -601,7 +615,7 @@ def do_quick(song_id: int, on_progress: ProgressCb = None) -> dict:
 
 
 def do_structure(song_id: int, on_progress: ProgressCb = None,
-                 gate: str = "analysis") -> dict:
+                 gate: str = "analysis", use_stems: bool = True) -> dict:
     from analysis.structure import detect_sections
 
     conn = get_conn()
@@ -620,6 +634,8 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
     # played under it, and the dedicated bass stem for root-clash detection when
     # four-stem separation ran. Each is optional and falls back to the full mix.
     def _stem(name: str) -> Optional[Path]:
+        if not use_stems:
+            return None
         fp = stem_paths.get(name, "")
         return Path(fp) if fp and Path(fp).exists() else None
 

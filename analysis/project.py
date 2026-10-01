@@ -26,7 +26,7 @@ EXTRA_COLUMNS = (
     "analyzer", "key_strength", "key_candidates_json", "bpm_candidates_json",
     "tuning_hz", "lufs", "lra", "true_peak", "replay_gain", "dynamic_complexity",
     "danceability", "onset_rate", "chords_json", "dissonance", "bands3_json",
-    "descriptors_json", "melody_json",
+    "descriptors_json", "melody_json", "tags_json",
 )
 
 
@@ -99,4 +99,7 @@ def extras_from_essentia(payloads: Dict[str, dict], analyzer: str) -> dict:
         # The summary only; the curve stays in the feature cache, where
         # do_structure reads it.
         "melody_json": _dumps((payloads.get("melody") or {}).get("summary")),
+        # The full mix only: the Discogs-EffNet genre and tags (phase 5). The
+        # mean embedding stays in the feature cache.
+        "tags_json": _dumps((payloads.get("effnet") or {}).get("tags")),
     }

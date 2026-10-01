@@ -210,3 +210,53 @@ def test_sections_analysed_before_this_still_load(db):
     assert got["bpm"] is None
     assert got["section_class"] is None
     assert "beat_times" not in got
+
+
+# ── Tempo from the beats, not from librosa's tempo bins ──────────────────────
+# librosa reports tempo from a tempogram with discrete bins (…123.05, 126.05,
+# 129.2…), and its beat frames sit on a 23 ms hop grid, so neither the tempo nor
+# a median beat interval can say 128.0. A line fitted through every beat can:
+# measured on the library, it matched Essentia's continuous BPM to ~0.1 on every
+# track where the two agreed on the octave (librosa had been up to 3 BPM off).
+
+def _quantised(bpm: float, n: int, hop_secs: float = 512 / 22050,
+               start: float = 0.37) -> np.ndarray:
+    return np.round((start + np.arange(n) * 60.0 / bpm) / hop_secs) * hop_secs
+
+
+def test_a_fitted_tempo_sees_through_the_frame_grid():
+    from analysis.analyze import bpm_from_beats
+    beats = _quantised(128.0, 400)
+    assert 60.0 / np.median(np.diff(beats)) == pytest.approx(129.2, abs=0.05)  # the old answer
+    assert bpm_from_beats(beats) == pytest.approx(128.0, abs=0.05)
+
+
+def test_a_fitted_tempo_survives_dropped_beats_and_a_stray_one():
+    from analysis.analyze import bpm_from_beats
+    beats = list(_quantised(126.0, 300))
+    del beats[100:103]                              # the tracker lost three beats
+    beats.insert(200, beats[199] + 0.21)            # and put one between two
+    assert bpm_from_beats(beats) == pytest.approx(126.0, abs=0.1)
+
+
+def test_too_few_beats_give_no_fitted_tempo():
+    from analysis.analyze import bpm_from_beats
+    assert bpm_from_beats(_quantised(128.0, 7)) is None
+    assert bpm_from_beats([]) is None
+
+
+def test_the_track_tempo_is_fitted_from_its_beats():
+    from analysis.analyze import _step_tempo
+    sr, bpm, secs = 22050, 128.0, 60.0
+    y = np.zeros(int(secs * sr), dtype=np.float32)
+    for t in np.arange(0.5, secs, 60.0 / bpm):
+        s = int(t * sr)
+        tt = np.arange(int(0.05 * sr)) / sr
+        y[s:s + tt.size] += np.sin(2 * np.pi * 90 * tt) * np.exp(-tt * 40)
+    assert _step_tempo(y, sr, 512)["bpm"] == pytest.approx(128.0, abs=0.3)
+
+
+def test_a_section_tempo_is_fitted_too():
+    bpm, source = _section_bpm(_quantised(128.0, 32), track_bpm=120.0, confidence=0.9)
+    assert source == "section_estimate"
+    assert bpm == pytest.approx(128.0, abs=0.1)

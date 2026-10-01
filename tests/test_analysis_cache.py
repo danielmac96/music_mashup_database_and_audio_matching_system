@@ -44,6 +44,55 @@ def decode():
 
 # ── Decode cache ──────────────────────────────────────────────────────────────
 
+def _mp3(tmp_path: Path, secs: float = 4.0, sr: int = 44100) -> Path:
+    import shutil
+    import subprocess
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg not on PATH")
+    wav = _wav(tmp_path / "src.wav", secs, sr=sr)
+    out = tmp_path / "a.mp3"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(wav), "-ac", "2",
+                    "-b:a", "192k", str(out)], check=True)
+    return out
+
+
+def test_a_compressed_file_is_decoded_by_ffmpeg_to_what_librosa_load_gives(
+        decode, tmp_path, monkeypatch):
+    """libsndfile's MP3 decoder took 5-6 s per 4-minute track (FFmpeg: 0.5 s),
+    measured in the container. The signal must stay what librosa.load returned,
+    or every cached feature would silently change meaning."""
+    import librosa
+    mp3 = _mp3(tmp_path)
+    ref, _sr = librosa.load(str(mp3), sr=22050, mono=True)
+
+    calls = []
+    real = decode.decode_ffmpeg
+    monkeypatch.setattr(decode, "decode_ffmpeg",
+                        lambda *a, **k: calls.append(a) or real(*a, **k))
+    y = decode.load_mono(mp3, sr=22050)
+    assert calls, "an MP3 must go through FFmpeg"
+    assert len(y) == len(ref)
+    assert np.max(np.abs(y - ref)) < 1e-4
+
+
+def test_lossless_files_keep_the_librosa_decode(decode, tmp_path, monkeypatch):
+    monkeypatch.setattr(decode, "decode_ffmpeg",
+                        lambda *a, **k: pytest.fail("WAV/FLAC need no FFmpeg"))
+    decode.load_mono(_wav(tmp_path / "a.wav", 2.0), sr=22050)
+    assert decode.prefers_ffmpeg(Path("x.mp3")) and decode.prefers_ffmpeg(Path("x.M4A"))
+    assert not decode.prefers_ffmpeg(Path("x.flac")) and not decode.prefers_ffmpeg(Path("x.wav"))
+
+
+def test_a_file_ffmpeg_cannot_read_falls_back_to_librosa(decode, tmp_path, monkeypatch):
+    import subprocess
+    mp3 = _mp3(tmp_path)
+
+    def boom(*_a, **_k):
+        raise subprocess.CalledProcessError(1, "ffmpeg")
+    monkeypatch.setattr(decode, "decode_ffmpeg", boom)
+    assert len(decode.load_mono(mp3, sr=22050)) > 0
+
+
 def test_a_file_is_decoded_once_and_shared_read_only(decode, tmp_path):
     p = _wav(tmp_path / "a.wav", 3.0)
     y1 = decode.load_mono(p, sr=22050)

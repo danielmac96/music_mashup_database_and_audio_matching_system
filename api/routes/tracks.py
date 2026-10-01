@@ -84,12 +84,15 @@ def _stems_by_song() -> dict[int, dict[str, str]]:
     return out
 
 
-def _features_by_song(stem_type: str) -> dict[int, dict]:
+def _raw_features_by_song(stem_type: str) -> dict[int, dict]:
+    """Every column of each song's features row for one stem, by song id."""
+    return {f["song_id"]: f for f in get_all_features(stem_type=stem_type)
+            if f.get("song_id") is not None}
+
+
+def _features_by_song(stem_type: str, raw: Optional[dict] = None) -> dict[int, dict]:
     out: dict[int, dict] = {}
-    for f in get_all_features(stem_type=stem_type):
-        sid = f.get("song_id")
-        if sid is None:
-            continue
+    for sid, f in (raw if raw is not None else _raw_features_by_song(stem_type)).items():
         feats = {k: f.get(k) for k in _FEATURE_FIELDS}
         feats["metrics"] = _step_availability(f)
         out[sid] = feats
@@ -136,11 +139,14 @@ def _dominant_class(classes: dict) -> Optional[str]:
 
 @router.get("")
 def list_tracks() -> dict:
+    from analysis import attributes
     songs = get_all_songs()
     stems = _stems_by_song()
-    features_full   = _features_by_song("full")
-    features_vocals = _features_by_song("vocals")
-    features_inst   = _features_by_song("instrumental")
+    raw_full, raw_vocals, raw_inst = (_raw_features_by_song(st)
+                                      for st in ("full", "vocals", "instrumental"))
+    features_full   = _features_by_song("full", raw_full)
+    features_vocals = _features_by_song("vocals", raw_vocals)
+    features_inst   = _features_by_song("instrumental", raw_inst)
     section_counts  = _section_counts_by_song()
 
     # How many uploads of the same work each track has (A.2). Sent as a count
@@ -183,6 +189,11 @@ def list_tracks() -> dict:
             "track_class": _dominant_class(section_counts.get(sid, {}).get("classes")),
             "variant_count": variant_sizes.get(s.get("variant_cluster"), 0),
             "audio_provenance": _provenance(s.get("audio_provenance")),
+            # Every captured attribute, from the one catalogue the Analysis
+            # panel reads (analysis/attributes.py): the Library shows the ones
+            # toggled on as columns without a request per track.
+            "attrs": attributes.extract(raw_full.get(sid), raw_vocals.get(sid),
+                                        raw_inst.get(sid)),
         })
     return {"count": len(rows), "tracks": rows}
 

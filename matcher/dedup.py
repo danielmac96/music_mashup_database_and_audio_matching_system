@@ -37,10 +37,14 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-# Cosine over z-scored MFCC c1-12 above which two same-titled uploads by
-# different-looking artists are accepted as the same recording. Deliberately
-# permissive: the title already agreed, and this only has to separate "the same
-# record" from "a different song that shares a name".
+# Cosine over the mean MFCC c1-12 (L2-normalised, not z-scored) above which two
+# same-titled uploads by different-looking artists are accepted as the same
+# recording. Deliberately permissive: the title already agreed. Measured on the
+# 204-track library (2026-09-30), it barely discriminates: 93% of *random*
+# pairs clear 0.80, under librosa (92.7%) and Essentia (93.7%) alike, because a
+# track-mean MFCC has nearly the same shape for all music; z-scoring rejects
+# random pairs but also the known variants. The fix is a real fingerprint — the
+# EffNet embedding (readme §9, phase 5 slice 2) — not a new threshold.
 AUDIO_CONFIRM_MIN = 0.80
 
 # Titles too generic to key on by themselves — "Intro" by two different artists

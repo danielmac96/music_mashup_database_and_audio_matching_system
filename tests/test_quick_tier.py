@@ -210,3 +210,53 @@ def test_subprocess_env_is_merged_not_replaced(tmp_path):
         [_sys.executable, "-c", "import os;print(os.environ.get('X_T'), bool(os.environ.get('PATH')))"],
         lines.append, env={"X_T": "7"})
     assert out.returncode == 0 and "7 True" in out.stdout
+
+
+def test_the_quick_tier_never_cuts_with_stems_already_on_disk(env):
+    """A re-separated or re-downloaded track still has its previous stems when
+    the quick tier runs. Cutting with them gave final-looking sections from audio
+    that may no longer match, before the vocal melody existed — and the gate then
+    called them current, so the full analysis never re-cut them."""
+    from api.workers.bulk_worker import sections_are_current
+    models, stages, _pw, _q, tmp = env
+    song = _downloaded(models, tmp)
+    models.upsert_stem(song, "full", str(tmp / "mix.wav"))
+    models.upsert_stem(song, "vocals", str(_wav(tmp / "voc.wav", seed_hz=330.0)))
+    models.upsert_stem(song, "instrumental", str(_wav(tmp / "bed.wav", seed_hz=110.0)))
+
+    stages.do_quick(song)
+    sections = models.get_sections(song)
+    assert sections and all(s["provisional"] == 1 for s in sections)
+    assert all(s["vocal_activity"] is None for s in sections)
+    assert not sections_are_current(song)     # the full analysis re-cuts them
+
+
+def test_sections_without_a_sung_range_are_stale_once_a_melody_exists(env):
+    """Sections cut under the librosa analyser have vocal activity but no f0;
+    switching to shadow measures the melody, and the sections must then be
+    re-cut to carry it."""
+    from api.workers.bulk_worker import sections_are_current
+    models, stages, _pw, _q, tmp = env
+    song = _downloaded(models, tmp)
+    models.upsert_stem(song, "full", str(tmp / "mix.wav"))
+    models.upsert_stem(song, "vocals", str(_wav(tmp / "voc.wav", seed_hz=330.0)))
+    models.upsert_stem(song, "instrumental", str(_wav(tmp / "bed.wav", seed_hz=110.0)))
+    stages.do_structure(song)
+    assert sections_are_current(song)
+
+    conn = models.get_conn()
+    conn.execute("INSERT INTO features (song_id, stem_type, melody_json) VALUES (?, 'vocals', ?)",
+                 (song, '{"median_midi": 64.0, "p10_midi": 60.0, "p90_midi": 70.0, '
+                        '"range_st": 10.0, "voiced": 0.6}'))
+    conn.commit()
+    conn.close()
+    assert not sections_are_current(song)
+
+    # A melody that barely sings is not a reason to re-cut forever.
+    conn = models.get_conn()
+    conn.execute("UPDATE features SET melody_json=? WHERE song_id=? AND stem_type='vocals'",
+                 ('{"median_midi": 64.0, "p10_midi": 60.0, "p90_midi": 70.0, '
+                  '"range_st": 10.0, "voiced": 0.01}', song))
+    conn.commit()
+    conn.close()
+    assert sections_are_current(song)

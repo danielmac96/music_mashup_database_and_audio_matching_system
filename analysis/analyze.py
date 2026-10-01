@@ -153,6 +153,67 @@ def beat_grid_confidence(beat_times, onset_env=None, beat_frames=None) -> float:
     return float(np.clip(steadiness * salience, 0.0, 1.0))
 
 
+# ── Tempo from the beats ─────────────────────────────────────────────────────
+#
+# librosa's tempo comes from a tempogram with discrete bins (…123.05, 126.05,
+# 129.2…), and its beats sit on the 23 ms hop grid, so neither the tempo nor a
+# median beat interval can say 128.0: a 128 BPM record was stored as 129.2, a
+# 1% error that drifts a full beat over 32 bars once Studio syncs to it. A line
+# fitted through every beat — time against beat number — averages the grid
+# away. Measured on the library (2026-09-30), it matched Essentia's continuous
+# BPM to ~0.1 on every track where the two agreed on the octave; librosa had
+# been up to 3 BPM off. The octave is still librosa's: the beats already follow
+# its tempo, and the fit only refines it.
+
+# Beats further than this fraction of a period off the fitted line are the
+# tracker slipping (a stray onset, half a beat of phase), not the tempo.
+BEAT_FIT_TOLERANCE = 0.25
+# The share of beats that must sit on the line for the fit to speak for the track.
+BEAT_FIT_MIN_INLIERS = 0.3
+
+
+def bpm_from_beats(beat_times) -> Optional[float]:
+    """The tempo of a least-squares line through the beats, or None when there
+    are too few beats or too few of them agree on one line."""
+    t = np.asarray(beat_times, dtype=float)
+    t = t[np.isfinite(t)]
+    if t.size < BEAT_MIN_COUNT:
+        return None
+    ibi = np.diff(t)
+    positive = ibi[ibi > 0]
+    if positive.size < 2:
+        return None
+    period = float(np.median(positive))
+    # Beat numbers from the local gaps: a dropped beat skips a number, a stray
+    # beat between two shares its neighbour's and falls out as an outlier.
+    idx = np.concatenate([[0.0], np.cumsum(np.round(ibi / period))])
+    keep = np.ones(t.size, dtype=bool)
+    slope = period
+    for _ in range(3):
+        if keep.sum() < BEAT_MIN_COUNT or np.ptp(idx[keep]) <= 0:
+            return None
+        slope, icpt = np.polyfit(idx[keep], t[keep], 1)
+        if slope <= 0:
+            return None
+        idx = np.round((t - icpt) / slope)
+        keep = np.abs(t - (slope * idx + icpt)) <= BEAT_FIT_TOLERANCE * slope
+    if keep.mean() < BEAT_FIT_MIN_INLIERS or keep.sum() < BEAT_MIN_COUNT:
+        return None
+    slope, _icpt = np.polyfit(idx[keep], t[keep], 1)
+    return float(60.0 / slope) if slope > 0 else None
+
+
+def fitted_bpm(beat_times, estimate: Optional[float]) -> Optional[float]:
+    """``bpm_from_beats``, kept only when it refines ``estimate`` within its own
+    octave (±6%); otherwise the estimate. Rounded to 2 decimals."""
+    fit = bpm_from_beats(beat_times)
+    if fit is not None and estimate and abs(fit - estimate) / estimate <= 0.06:
+        return round(fit, 2)
+    if fit is not None and not estimate:
+        return round(fit, 2)
+    return round(float(estimate), 2) if estimate else None
+
+
 def _step_tempo(y: np.ndarray, sr: int, hop_length: int) -> dict:
     import librosa
     from analysis import frames
@@ -160,7 +221,7 @@ def _step_tempo(y: np.ndarray, sr: int, hop_length: int) -> dict:
     beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=hop_length)
     onset_env = frames.onset_env(y, sr, hop_length)
     return {
-        "bpm": float(round(float(np.atleast_1d(tempo)[0]), 2)),
+        "bpm": fitted_bpm(beat_times, float(np.atleast_1d(tempo)[0])),
         "bpm_confidence": beat_grid_confidence(beat_times, onset_env, beats),
         "beat_times": [round(float(t), 4) for t in beat_times],
         "beat_phase": _pick_beat_phase(onset_env, beats),

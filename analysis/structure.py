@@ -305,7 +305,10 @@ def _section_bpm(section_beats: np.ndarray, track_bpm: Optional[float],
     if len(intervals) < 2:
         return (float(track_bpm), "track_fallback") if track_bpm else (None, None)
 
-    bpm = 60.0 / float(np.median(intervals))
+    # A line through the beats, not their median gap: the gaps sit on the 23 ms
+    # frame grid, and a median of them cannot say 128.0 (analyze.bpm_from_beats).
+    from analysis.analyze import bpm_from_beats
+    bpm = bpm_from_beats(section_beats) or 60.0 / float(np.median(intervals))
     if not np.isfinite(bpm) or bpm <= 0:
         return (float(track_bpm), "track_fallback") if track_bpm else (None, None)
 
@@ -488,7 +491,11 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         beats = beats[(beats >= 0) & (beats < n_frames)]
         tempo = grid.get("bpm")
     else:
+        from analysis.analyze import fitted_bpm
         tempo, beats = frames.beat_track(y, sr, HOP_LENGTH)
+        # The same fitted tempo the track's features carry, not librosa's bin.
+        tempo = fitted_bpm(librosa.frames_to_time(beats, sr=sr, hop_length=HOP_LENGTH),
+                           float(np.atleast_1d(tempo)[0]))
     # librosa returns tempo as a 0-d array in some versions and a float in
     # others; a section's fallback has to be a plain number either way.
     track_bpm = float(np.atleast_1d(tempo)[0]) if tempo is not None else None

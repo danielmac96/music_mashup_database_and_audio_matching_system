@@ -1,8 +1,10 @@
+import { useMemo } from "react";
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
 import { SortHead } from "./SortHead";
 import { useColumnWidths } from "../hooks/useColumnWidths";
 import { audioSubstitution } from "../sources";
+import { attrColumns, fmtAttr } from "../attributes";
 import {
   camelotColor, fmtDur, fmtPlays, fmtYear, pipelineDots, playsColor, yearColor,
 } from "../theme";
@@ -50,7 +52,7 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
                              runningKind = () => null, playingId = null,
                              sort = null, onSort = null,
                              menuId = null, onMenu = () => {},
-                             renderMenu = () => null }) {
+                             renderMenu = () => null, attributes = null }) {
   // A header click sets the PRIMARY key. The filter bar's two-level sort keeps
   // its secondary, which is what makes "artist, then year" reachable there and
   // still one click away here.
@@ -59,7 +61,17 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
   const dir = sort?.primaryDir ?? "desc";
   const setKey = (p) => onSort?.({ ...(sort || {}), primary: p.sort,
                                    primaryDir: p.dir });
-  const { template, setWidth, resetColumn } = useColumnWidths(HEADS);
+  // The attributes toggled on in the Analysis panel, as extra columns before
+  // RATING. HEADS itself stays as it is (a test parses it line by line), and
+  // the extra columns' ids are "attr:<id>", so a dragged width follows its
+  // column rather than a position.
+  const extra = useMemo(() => (attributes
+    ? attrColumns(attributes.byId, attributes.visibility.library) : []), [attributes]);
+  const columns = useMemo(() => {
+    const at = HEADS.findIndex((h) => h.id === "rating");
+    return [...HEADS.slice(0, at), ...extra, ...HEADS.slice(at)];
+  }, [extra]);
+  const { template, setWidth, resetColumn } = useColumnWidths(columns);
 
   // Dragging measures the header cell rather than reading the stored width,
   // because a column still on its default has no stored width to read — and a
@@ -82,7 +94,7 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
   return (
     <div className="track-table">
       <div className="tt-head" style={{ gridTemplateColumns: template }}>
-        {HEADS.map((h, i) => (
+        {columns.map((h, i) => (
           <div key={h.id} className={`tt-h${h.right ? " right" : ""}`}>
             <SortHead label={h.label} sortKey={sortable ? h.key : null}
               sort={key} dir={dir} onSort={setKey} numeric={h.numeric} />
@@ -103,7 +115,7 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
       </div>
       <div className="tt-body">
         {tracks.map((t) => (
-          <TrackRow key={t.id} t={t} cols={template}
+          <TrackRow key={t.id} t={t} cols={template} extra={extra}
             selected={selectedId === t.id}
             playing={playingId === t.id}
             running={runningKind(t)}
@@ -122,7 +134,7 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
   );
 }
 
-function TrackRow({ t, cols, selected, playing, running, menuOpen, onMenu,
+function TrackRow({ t, cols, extra = [], selected, playing, running, menuOpen, onMenu,
                     renderMenu, onSelect, onOpen, onPlay }) {
   const f = t.features?.full || {};
   const dots = pipelineDots(t, running);
@@ -204,6 +216,13 @@ function TrackRow({ t, cols, selected, playing, running, menuOpen, onMenu,
         </button>
         {menuOpen && renderMenu(t)}
       </div>
+
+      {extra.map((c) => (
+        <div key={c.id} className={c.numeric ? "tt-num mono" : "tt-cell"}
+          title={c.attr.label}>
+          <span className="tt-attr mono">{fmtAttr(c.attr, t.attrs?.[c.attr.id], false)}</span>
+        </div>
+      ))}
 
       <div className="tt-cell">
         <StarRating value={t.rating} />

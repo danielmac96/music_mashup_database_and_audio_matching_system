@@ -441,6 +441,13 @@ export const api = {
 
   getScorerStatus: () => jsonFetch("/api/mashups/scorer-status"),
 
+  // The Analysis panel (readme §9, C): every attribute with its coverage, and
+  // which ones the Library and Track detail show.
+  getAttributes: () => jsonFetch("/api/analysis/attributes"),
+  setAttributeVisibility: (vis) => jsonFetch("/api/analysis/attributes/visibility", {
+    method: "PUT", body: JSON.stringify(vis),
+  }),
+
   // ── Discovery (SoundCloud search/browse) + crates ──────────────────────────
   // Every track row comes back with `in_library` already resolved server-side,
   // so the browser never has to reconcile results against the library itself.

@@ -243,6 +243,19 @@ function compare(rows, key, dir, ctx) {
       return x.localeCompare(y) * sign;
     };
   }
+  // A Library column added from the Analysis panel (readme §9, C). A top-5
+  // list sorts by its first label; unmeasured sorts last, both directions.
+  if (key && key.startsWith("attr:")) {
+    const id = key.slice(5);
+    const val = (t) => { const v = t.attrs?.[id]; return Array.isArray(v) ? v[0]?.label : v; };
+    return (a, b) => {
+      const x = val(a), y = val(b);
+      if (x == null && y == null) return 0;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * sign;
+    };
+  }
   return null;
 }
 

@@ -119,6 +119,8 @@ def health_deps() -> dict:
     import shutil
     import importlib.util
 
+    import config
+
     def _on_path(binary: str) -> bool:
         return shutil.which(binary) is not None
 
@@ -142,11 +144,12 @@ def health_deps() -> dict:
          "detail": "stem separation (required to split vocals/instrumental)", "required": True},
         {"name": "librosa", "ok": _importable("librosa"),
          "detail": "audio feature analysis (required for BPM/key/structure)", "required": True},
-        # Optional until the Essentia analyser ships (readme §9): Linux/macOS
-        # wheels only, so native Windows is expected to show it missing.
+        # The analyser (readme §9). Linux/macOS wheels only: on native Windows it
+        # is missing, and required unless analyzer=librosa (tests/comparison).
         {"name": "essentia", "ok": _importable("essentia"),
-         "detail": "fast analyser + ML tags (optional; Docker/WSL2 — requirements-essentia.txt)",
-         "required": False},
+         "detail": "the analyser: BPM/key/loudness/timbre + ML tags "
+                   "(Docker/WSL2 — requirements-essentia.txt)",
+         "required": config.current_analyzer() != "librosa"},
         {"name": "rubberband", "ok": _ffmpeg_has_filter("rubberband"),
          "detail": "ffmpeg's Rubber Band filter for export time-stretch (optional)",
          "required": False},

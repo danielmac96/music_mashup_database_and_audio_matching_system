@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { MixImporter } from "./components/MixImporter";
 import { LibraryScreen } from "./components/LibraryScreen";
 import { QueueScreen } from "./components/QueueScreen";
+import { AnalysisScreen } from "./components/AnalysisScreen";
 import { PairDock } from "./components/PairDock";
 import { scoredOptionOf } from "./components/pairs/pairModel";
 import { PlayerBar } from "./components/PlayerBar";
@@ -17,6 +18,7 @@ import { Sidebar } from "./shell/Sidebar";
 import { useLibrary } from "./hooks/useLibrary";
 import { useLibraryGroups } from "./hooks/useLibraryGroups";
 import { useRatings } from "./hooks/useRatings";
+import { useAttributes } from "./hooks/useAttributes";
 import { usePairDock } from "./hooks/usePairDock";
 import { usePlayer } from "./hooks/usePlayer";
 import { isActiveJob } from "./hooks/useQueue";
@@ -88,6 +90,7 @@ export default function App() {
   // and the track screen's partners rail all read the same map, and three
   // copies of it would disagree the moment one of them posted a rating.
   const ratings = useRatings();
+  const attributes = useAttributes();
   // Groups (crates, seen from the library side) are fetched once here for the
   // same reason: the rail counts them, the filter bar names them, the table is
   // narrowed by one and the row menu writes to them. A second copy would still
@@ -263,6 +266,7 @@ export default function App() {
             <main className="lib-main">
               <LibraryScreen
                 library={library}
+                attributes={attributes}
                 ratings={ratings}
                 groups={groups}
                 player={player}
@@ -286,9 +290,13 @@ export default function App() {
             onRailSlot={setRailSlot}
           />
         )}
+        {route === "analysis" && (
+          <AnalysisScreen attributes={attributes} onRailSlot={setRailSlot} />
+        )}
         {route === "track" && (
           <TrackDetail
             track={selectedTrack}
+            attributes={attributes}
             tracks={library.tracks}
             ratings={ratings}
             groups={groups}

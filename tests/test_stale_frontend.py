@@ -80,3 +80,15 @@ def test_health_carries_the_build_state(served):
     got = TestClient(server.app).get("/api/health").json()
     assert got["ok"] is True
     assert got["frontend"]["stale"] is True
+
+
+def test_essentia_is_required_when_it_is_the_analyser(monkeypatch):
+    """Essentia is the analyser (readme §9): where it is missing — native
+    Windows — the Library's "Missing on the server" banner must name it."""
+    import api.server as server
+    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
+    dep = next(d for d in server.health_deps()["deps"] if d["name"] == "essentia")
+    assert dep["required"] is True
+    monkeypatch.setenv("MASHUP_ANALYZER", "librosa")
+    dep = next(d for d in server.health_deps()["deps"] if d["name"] == "essentia")
+    assert dep["required"] is False
