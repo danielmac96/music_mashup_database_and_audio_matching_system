@@ -147,6 +147,14 @@ export const api = {
 
   getJob: (jobId) => jsonFetch(`/api/jobs/${jobId}`),
 
+  // Median / p90 wall time per pipeline stage (analysis_runs), for an ETA.
+  getJobTimings: (since = "") =>
+    jsonFetch(`/api/jobs/timings${since ? `?since=${encodeURIComponent(since)}` : ""}`),
+
+  // Which analyser is configured and effective, model coverage, per-group
+  // cache coverage and librosa ↔ Essentia agreement.
+  getAnalysisStatus: () => jsonFetch("/api/analysis/status"),
+
   // Whether ffmpeg/ffprobe/yt-dlp/demucs/librosa are available on the server.
   getDeps: () => jsonFetch("/api/health/deps"),
 
@@ -231,8 +239,13 @@ export const api = {
     // Phase F — 0 = safest fit first, 1 = most adventurous. Only reorders pairs
     // that already cleared every technical gate; it never surfaces a bad fit.
     adventure = 0,
+    // Title/artist substring on either side, and paging past the first page —
+    // both in SQL, so they search and page the library rather than the page.
+    search = "", offset = 0,
   } = {}) => {
     const params = new URLSearchParams();
+    if (search) params.set("search", search);
+    if (offset > 0) params.set("offset", String(offset));
     if (comboType) params.set("combo_type", comboType);
     if (minScore) params.set("min_score", String(minScore));
     params.set("limit", String(limit));
@@ -249,6 +262,29 @@ export const api = {
     if (vocalForward) params.set("vocal_forward", "true");
     return jsonFetch(`/api/mashups?${params}`);
   },
+
+  // Which genre / era / BPM / energy values the scored pairs actually contain,
+  // so the dock's filter menus only offer what will match something.
+  getMashupFilters: () => jsonFetch("/api/mashups/filters"),
+
+  // "Best bed for each of my vocals": every acapella gets one row, ordered by
+  // how good its best option is.
+  getBestBedPerVocal: ({ limit = 40, perVocal = 1, minScore = 0 } = {}) =>
+    jsonFetch(`/api/mashups/by-vocal?limit=${limit}&per_vocal=${perVocal}`
+      + `&min_score=${minScore}`),
+
+  // Render one candidate's two sections, conformed, to a WAV server-side —
+  // the same maths the FL export uses, as a file you can keep or send.
+  startCandidatePreview: (candidateId) =>
+    jsonFetch(`/api/mashups/${candidateId}/preview`, { method: "POST" }),
+
+  // Export the top N pairs (under the given filters) as one zip of FL session
+  // folders. Body keys are the list route's: top_n, min_score, max_effort, …
+  startSessionBatch: (body) =>
+    jsonFetch("/api/mashups/session/batch", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   // ── Hidden pairs / excluded tracks (T3.4) ─────────────────────────────────
   // Display preferences, not judgments: they survive "Score library" but are
@@ -588,6 +624,14 @@ export const api = {
   ingestCrate: (id) => jsonFetch(`/api/crates/${id}/ingest`, { method: "POST" }),
 
   // A plain link, not a fetch: the response is a file download.
+  // A new crate from a pasted list of links (one per line) — resolved
+  // server-side into the same frozen rows Discover adds.
+  importCrateUrls: (name, urls) =>
+    jsonFetch("/api/crates/import", {
+      method: "POST",
+      body: JSON.stringify({ name, urls }),
+    }),
+
   crateExportUrl: (id, format = "urls") =>
     `/api/crates/${id}/export?format=${format}`,
 

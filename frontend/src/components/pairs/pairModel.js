@@ -114,3 +114,31 @@ export function nudgeLabel(offsetSec) {
   const ms = Math.round(offsetSec * 1000);
   return ms === 0 ? "on the grid" : `nudge ${ms > 0 ? "+" : ""}${ms} ms`;
 }
+
+// The MEASURED harmony of a pair (matcher/harmony.py), as the card and Studio
+// show it. harmonic_shift is NULL when either section had no stored chroma —
+// then the Camelot tag is all there is, and this says so rather than drawing
+// a made-up fit. score_key IS the measured fit once the section pair is known.
+// The clash advice is the one matcher/harmony.bass_clash writes into the plan
+// and the FL README.
+export const HARMONY_CLASH_FIT = 0.55;
+export const BASS_CLASH_ADVICE =
+  "The bed's bass root fights the vocal's tonic (a semitone or tritone apart). "
+  + "High-pass the bed around 120 Hz, or mute bed_bass.wav in a four-stem export.";
+
+export function harmonyOf(c) {
+  if (!c || c.harmonic_shift == null) return { known: false };
+  const fit = c.score_key != null ? Number(c.score_key) : null;
+  const conf = c.harmonic_confidence != null ? Number(c.harmonic_confidence) : null;
+  return {
+    known: true,
+    shift: Number(c.harmonic_shift),
+    fitPct: fit != null ? Math.round(fit * 100) : null,
+    // Peak vs runner-up: near zero means two transpositions fit about as well,
+    // so the suggested shift is a coin flip.
+    sure: conf != null && conf >= 0.15,
+    confidence: conf,
+    clash: fit != null && fit < HARMONY_CLASH_FIT,
+    bassClash: !!c.bass_clash,
+  };
+}

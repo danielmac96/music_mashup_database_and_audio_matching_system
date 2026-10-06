@@ -29,6 +29,33 @@ const POOLS = [
   ["stems", "Stems"],
   ["analysis", "Analyse + structure"],
 ];
+// Which analysis_runs groups make up each pool's work (api/workers/stages.py
+// _timed). The analysis pool runs analysis then structure on the same slot.
+// ".cached" / ".reused" runs are left out on purpose: they are what an
+// unchanged file costs, not what the next new track will.
+const POOL_TIMING = {
+  download: ["download"], quick: ["quick"], stems: ["stems"],
+  analysis: ["analysis", "structure"],
+};
+
+// Typical seconds per track for a pool, from the persisted stage timings.
+// null when this library has never run that stage.
+export function poolMedianSecs(timings, pool) {
+  let total = 0, seen = false;
+  for (const grp of POOL_TIMING[pool] || []) {
+    const rows = (timings || []).filter((t) => t.grp === grp && t.median_ms != null);
+    if (!rows.length) continue;
+    // A stage-level row has no stem; prefer it over any per-stem step.
+    const row = rows.find((t) => !t.stem_type) || rows[0];
+    total += row.median_ms / 1000;
+    seen = true;
+  }
+  return seen ? total : null;
+}
+
+const fmtSecs = (s) => (s >= 3600 ? `${(s / 3600).toFixed(1)} h`
+  : s >= 90 ? `${Math.round(s / 60)} min` : `${Math.round(s)} s`);
+
 const KIND_LABEL = {
   match: "Score library", bulk: "Bulk reprocess", dataset: "Build dataset",
   train: "Train model", session: "FL session export", mixdown: "Render",
@@ -70,6 +97,18 @@ const matches = (filter, phase) => filter === "all"
 export function QueueScreen({ library, onOpen, onRailSlot }) {
   const { tracks, refresh: refreshLibrary } = library;
   const q = useQueue();
+  // Stage timings for the "typical" and ETA readouts on each pool. Persisted
+  // (analysis_runs), so a fresh server already knows what a track costs here.
+  const [timings, setTimings] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => api.getJobTimings()
+      .then((d) => { if (!cancelled) setTimings(d.timings || []); })
+      .catch(() => {});
+    load();
+    const id = setInterval(load, 60000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
   const [filter, setFilter] = useState("active");
   const [openId, setOpenId] = useState(null);
   const [retrying, setRetrying] = useState(false);
@@ -182,6 +221,7 @@ export function QueueScreen({ library, onOpen, onRailSlot }) {
                 <span className="q-pool-nums mono">
                   {p ? `${p.running}/${p.workers} busy · ${p.waiting} waiting` : "…"}
                 </span>
+                <PoolEta pool={p} median={poolMedianSecs(timings, key)} />
               </div>
             );
           })}
@@ -331,4 +371,19 @@ function StageCell({ cell, now }) {
     default:
       return <div className="q-cell todo"><span className="q-state">—</span></div>;
   }
+}
+
+// "~40 s per track · clears in ~6 min": the median from this library's own
+// stage timings, and the waiting line divided across the pool's workers. An
+// estimate, and labelled as one; nothing when the stage has never run here.
+function PoolEta({ pool, median }) {
+  if (median == null) return null;
+  const queued = (pool?.waiting || 0) + (pool?.running || 0);
+  const eta = queued && pool?.workers ? (queued * median) / pool.workers : null;
+  return (
+    <span className="q-pool-eta mono"
+      title="Median time per track for this stage on your library (from the persisted stage timings), and roughly how long the current line takes to clear">
+      ~{fmtSecs(median)} per track{eta ? ` · clears in ~${fmtSecs(eta)}` : ""}
+    </span>
+  );
 }

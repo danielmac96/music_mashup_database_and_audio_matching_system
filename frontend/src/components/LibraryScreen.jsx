@@ -210,6 +210,7 @@ export function LibraryScreen({ library, attributes, ratings, groups, player, se
         filters={filters} patch={patch} reset={() => { reset(); setSearch(""); }}
         active={active} facets={facets}
         shown={rows.length} total={total} groups={groups.groups}
+        catalogue={attributes?.catalogue || []}
         sort={sort} setSort={setSort}
         savedViews={savedViews} onSaveView={saveView} onDropView={dropView} />
 

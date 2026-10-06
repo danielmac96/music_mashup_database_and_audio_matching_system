@@ -303,6 +303,12 @@ reprocesses), add to a group, or delete the track and its files.
 - The table filters and sorts **in memory** (`GET /api/tracks` is unpaginated).
   Column headers sort in three states: unsorted → one direction → the other →
   unsorted, because import order is a meaningful order.
+- **Attribute** filters on anything the analysis measured — mood, Discogs
+  style, danceability, LUFS, voice… — picked from the catalogue (§4 Analysis):
+  a range for a number, a value for a category, and for a top-N list (styles,
+  moods/themes) a value among the track's top 3. A track without that
+  measurement is left out, like the BPM and year filters. Each condition shows
+  as a pill; click it to remove it.
 - **Columns drag to resize** by the handle on a header's right edge;
   double-click it to restore the default. Widths persist per column id in
   `localStorage`. Title/artist and genre both flex, so a wide window gives
@@ -316,8 +322,21 @@ reprocesses), add to a group, or delete the track and its files.
   LBL / DUR / VOI / PHR. Every order but Effort is the server's, so it ranks
   the library; Effort re-sorts the page already fetched and says so. An
   unmeasured term sorts last, never as zero.
+- **Find and filter the dock.** The search box matches either side's title or
+  artist across every scored pair. **Filters** narrow by min match
+  (percentile), build effort (free / free or light), genre and era (either
+  side), BPM band (the vocal's), bed energy, vocal-forward, and **adventure**
+  (under Score, pulls cross-genre/era contrast forward among pairs that already
+  fit). All of it runs in SQL, so it searches the library, not the 40 rows on
+  screen; **Load more pairs** pages the same list (offset applied after the
+  per-song cap). **Best bed per vocal** swaps the list for one row per acapella.
+  **⤓ FL sessions** exports the top 5/10/16 under the current filters as one
+  zip of FL session folders (§5.11).
 - Each pair card gives one line per song — title, section span and bars, key,
   BPM — then the adjustments (key relation + semitones, tempo change, nudge),
+  the **measured harmony** (`♪ 92% · +2 st` — the two sections' notes
+  cross-correlated, §5.7; `?` when another transposition fits almost as well;
+  red below 55%), a red **bass clash** tag with the high-pass advice,
   the four section-fit bars and the rating. **LBL** label priority, **DUR**
   bars covered (looping allowed), **VOI** vocal presence, **PHR** phrase-length
   agreement (§5.7); hover a label for its meaning. A **hatched** bar is not
@@ -331,7 +350,9 @@ The pipeline in detail. The rail counts active tracks; the Library's
 "Processing…" pill opens this screen.
 
 - **Pools**: download, quick analysis, stems and analyse + structure — busy
-  slots out of workers, and how many tracks wait.
+  slots out of workers, how many tracks wait, the **typical time per track**
+  for that stage on this library (median from `GET /api/jobs/timings`, so it
+  survives a restart) and roughly when the line clears.
 - **Other jobs**: library-wide work (Score library, bulk reprocess, dataset,
   training, exports) with progress, kept for ten minutes after it ends.
 - **One row per track** that has a job this server session or an `error_*`
@@ -347,6 +368,12 @@ The pipeline in detail. The rail counts active tracks; the Library's
   partners (§3), then imports in ingest order, then bulk reprocessing.
 
 ### Analysis
+
+A status strip on top says which analyser is running (and warns when Essentia
+does not import, so every analysis would fail), whether the genre/mood models
+are installed, whether the feature cache is on, how many stems are analysed,
+and — where librosa and Essentia both measured a mix — how often their tempo
+and key agree (`GET /api/analysis/status`).
 
 Every attribute the analysis captures, grouped (tempo & grid, key & harmony,
 loudness, timbre, genre & tags, mood, vocals & stems), one row each: what it is
@@ -378,7 +405,11 @@ link keeps it, audio from any other link starts unconfirmed. Settings' bulk bar 
 length and credited artist, then downloads through the verified fallback.
 
 Stats, a **structure strip** (sections, vocal and bed envelopes, loop window,
-playhead — click or drag to seek), a section table with loop buttons,
+playhead — click or drag to seek), a section table with loop buttons —
+span, bars, BPM, key, **energy** (bar + rising/falling/holding), **VOX**
+(vocal activity), **SUNG** range (10th–90th percentile note), **PHR** phrase
+length, class and pair count; a dash is unmeasured, and `prov` marks a
+provisional (quick-tier) section —
 Full/Vocals/Bed switching, a ▶ for the whole track, and a **partners rail**.
 Clicking a partner opens *its* track with the role flipped. `esc` returns.
 
@@ -391,7 +422,9 @@ Clicking a partner opens *its* track with the role flipped. `esc` returns.
   **Import & process** or **Add to crate**.
 - **Crates** are local shortlists. Items need not be downloaded; they reorder by
   drag, dedupe on add, export as URLs / JSON / M3U, and **Import** fetches what
-  is not in the library yet. A crate is also a library group.
+  is not in the library yet. A crate is also a library group. **⤓** in the
+  crate list builds a new crate from pasted SoundCloud links (tracks or sets),
+  the other half of the URL export.
 - **Suggestions** — seed from your library, a crate or a pasted link, or connect
   your public profile (identifies, does not log in). Returns tracks, artists and
   sets, each with the seeds that agreed.
@@ -461,7 +494,10 @@ a tick at the matcher's suggested value.
 
 A pair sent from the dock arrives conformed and placed, with a
 **TIMING** pill row — one pill per suggested overlay (`[` `]` cycle, `1–6` jump),
-each with ✓/~/✗. "Next pair" walks the dock's list. The arrangement auto-saves
+each with ✓/~/✗. The ALIGN bar also carries the plan's **measured harmonic
+fit** and, when the bed's bass root fights the vocal's tonic, a **bass clash —
+high-pass the bed** chip (the same advice the FL README writes).
+"Next pair" walks the dock's list. The arrangement auto-saves
 locally. **Export WAV** renders server-side; **FL session** export writes a
 drop-in folder (§5.11). The player bar hides in Studio.
 
@@ -1245,6 +1281,14 @@ Existing databases migrate on start.
   is fine on 3 rows and impossible on 206 is not fine. Both Mixes-tab buttons
   had to move (§5.9); the pattern to copy is `auto_resolve_mix` →
   `jobs.new_job` + `background.add_task`.
+- **Never pass `db_path=None` to a `database/models.py` helper.** Their
+  `db_path: Path = DB_PATH` default applies only when the argument is omitted;
+  an explicit `None` reaches `get_conn` and fails. Workers call the renderers
+  without a path, so a renderer resolves `db_path if db_path is not None else
+  models.DB_PATH` before calling down (`render/session.py`). Every FL session
+  export from the app failed this way while the tests, which all passed a
+  path, stayed green — `test_export_works_the_way_the_workers_call_it` now
+  calls it the way the workers do.
 - **Run the whole suite in one invocation** from the repo root — ~20 files reload
   `config` → `database.models` → routes and the order is load-bearing.
 - **Always pass `encoding="utf-8"`** to `read_text`/`write_text` (Windows codepage).

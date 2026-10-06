@@ -33,6 +33,11 @@ export function CratePanel({ refreshKey, onChanged, onOpenLibrary,
   // The dormant push explains itself through the 501 the server sends, rather
   // than the UI hard-coding a second copy of the reason.
   const [account, setAccount] = useState(null);
+  // "Import links": a crate built from a pasted list — the other half of the
+  // crate's URL export, so a crate file is an interchange format, not a dead end.
+  const [importing, setImporting] = useState(false);
+  const [importName, setImportName] = useState("");
+  const [importText, setImportText] = useState("");
 
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: { distance: 4 },
@@ -133,6 +138,21 @@ export function CratePanel({ refreshKey, onChanged, onOpenLibrary,
     } finally { setBusy(""); }
   };
 
+  const importLinks = async () => {
+    const urls = importText.split(/\s+/).map((u) => u.trim()).filter(Boolean);
+    if (!importName.trim() || !urls.length) return;
+    setBusy("import");
+    try {
+      const res = await api.importCrateUrls(importName.trim(), urls);
+      onActiveCrate?.(res.crate.id);
+      toast(`Imported ${res.added} track${res.added === 1 ? "" : "s"}`
+        + (res.failed?.length ? ` · ${res.failed.length} link${res.failed.length === 1 ? "" : "s"} could not be resolved` : ""));
+      setImporting(false); setImportName(""); setImportText("");
+      reload();
+    } catch (e) { toast(`Import failed: ${e.message}`); }
+    finally { setBusy(""); }
+  };
+
   const pending = crate ? crate.items.filter((i) => !i.song_id).length : 0;
   const canPush = Boolean(account?.authorized);
 
@@ -142,8 +162,23 @@ export function CratePanel({ refreshKey, onChanged, onOpenLibrary,
         <div className="mix-list-head">
           <b>Crates</b>
           <span style={{ flex: 1 }} />
+          <button className="mini-btn" onClick={() => setImporting((v) => !v)}
+            title="New crate from a pasted list of SoundCloud links (one per line — tracks or sets)">⤓</button>
           <button className="mini-btn" onClick={create} title="New crate">＋</button>
         </div>
+        {importing && (
+          <div className="crate-import">
+            <input value={importName} placeholder="Crate name"
+              onChange={(e) => setImportName(e.target.value)} />
+            <textarea rows={4} value={importText}
+              placeholder={"Paste SoundCloud links, one per line\n(tracks or sets — a set adds its tracks)"}
+              onChange={(e) => setImportText(e.target.value)} />
+            <button className="btn" onClick={importLinks}
+              disabled={busy === "import" || !importName.trim() || !importText.trim()}>
+              {busy === "import" ? "Resolving…" : "Import links"}
+            </button>
+          </div>
+        )}
         {!crates.length && (
           <div className="hint">
             A crate is a shortlist. Select tracks on the left and add them here —

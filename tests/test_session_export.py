@@ -119,6 +119,30 @@ def test_click_with_unknown_tempo_is_silent_not_broken():
 
 # ── The workflow acceptance ──────────────────────────────────────────────────
 
+def test_export_works_the_way_the_workers_call_it(env, monkeypatch):
+    """api/workers/session_worker calls build_session with no db_path. Every
+    test above passed one, so nothing noticed that the default path crashed in
+    get_conn(None) — every FL export from the app failed (found by the persona
+    simulation)."""
+    # Path defaults bind at import, so the modules are reloaded onto this
+    # test's DB (env already points MASHUP_DB_PATH at it) — as the app would
+    # have them, with nothing passing db_path.
+    import importlib
+    import config
+    importlib.reload(config)
+    import database.models as models
+    importlib.reload(models)
+    from render.session import build_session
+    tmp_path, db_path = env
+    assert models.DB_PATH == db_path
+    vocal = _seed_song(tmp_path, db_path, 1, bpm=120.0, camelot="8A",
+                       stems=("full", "vocals", "instrumental"))
+    inst = _seed_song(tmp_path, db_path, 2, bpm=124.0, camelot="8A",
+                      stems=("full", "vocals", "instrumental"))
+    out = build_session("abcdef0f", vocal, inst)
+    assert out is not None and (out / "session.json").exists()
+
+
 def test_export_produces_a_dropin_ready_folder(env):
     from render.session import build_session
     tmp_path, db_path = env

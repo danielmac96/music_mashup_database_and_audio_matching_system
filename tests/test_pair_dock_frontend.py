@@ -189,7 +189,7 @@ def test_the_dock_scopes_to_the_selected_track_server_side():
     truncated page client-side would search the top of the list, not the
     library."""
     fn = DOCK_HOOK[DOCK_HOOK.index("useEffect(() => {"):]
-    fn = fn[:fn.index("}, [selectedTrackId, role, order]);")]
+    fn = fn[:fn.index("}, [selectedTrackId, role, order")]
     assert "opts.instSongId = selectedTrackId" in fn
     assert "opts.vocalSongId = selectedTrackId" in fn
 
