@@ -220,3 +220,52 @@ def test_filters_still_respect_hiding(library):
     t = rows[0]
     hide_pair(t["vocal_song_id"], t["inst_song_id"], db_path=db_path)
     assert len(_rows(db_path, genre="House")) == len(rows) - 1
+
+
+# ── search and paging (the pair dock's find box and "Load more") ─────────────
+
+def test_search_matches_either_side_by_title_or_artist(library):
+    from database.models import get_candidates_enriched
+    db, ids = library
+    # S4 is a Rock song: every pair it is in scores 0.3 or less, so it is
+    # below the House rows a client-side search of the first page would see.
+    rows = get_candidates_enriched(search="s4", limit=50, db_path=db)
+    assert rows
+    assert all(ids[4] in (r["vocal_song_id"], r["inst_song_id"]) for r in rows)
+    by_artist = get_candidates_enriched(search="A4", limit=50, db_path=db)
+    assert {r["id"] for r in by_artist} == {r["id"] for r in rows}
+
+
+def test_offset_continues_the_capped_list(library):
+    """Page two is what a longer page one would have continued with — the
+    per-song cap is applied over both pages, not per page."""
+    from database.models import get_candidates_enriched
+    db, _ = library
+    whole = get_candidates_enriched(limit=8, max_per_song=3, db_path=db)
+    first = get_candidates_enriched(limit=4, max_per_song=3, db_path=db)
+    second = get_candidates_enriched(limit=4, offset=4, max_per_song=3, db_path=db)
+    assert [r["id"] for r in first + second] == [r["id"] for r in whole]
+
+
+def test_search_and_offset_reach_the_route(library):
+    # Path constants bind at import, so the route module is reloaded onto the
+    # fixture's DB (the suite's order is load-bearing — readme §7).
+    import importlib
+    import config
+    importlib.reload(config)
+    import database.models as models
+    importlib.reload(models)
+    import api.routes.mashups as mashups
+    importlib.reload(mashups)
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    db, ids = library
+    app = FastAPI()
+    app.include_router(mashups.router, prefix="/api/mashups")
+    c = TestClient(app)
+    r = c.get("/api/mashups?search=S4&limit=50")
+    assert r.status_code == 200
+    rows = r.json()["candidates"]
+    assert rows and all(ids[4] in (x["vocal_song_id"], x["inst_song_id"]) for x in rows)
+    assert c.get("/api/mashups?offset=-1").status_code == 400
+    assert c.get("/api/mashups?offset=2&limit=2").json()["offset"] == 2

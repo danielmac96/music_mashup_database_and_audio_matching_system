@@ -324,11 +324,15 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     i_start = pairing.get("inst_start") if pairing else None
     i_end = pairing.get("inst_end") if pairing else None
 
-    from database.models import get_features_for_song
-    v_feat = (get_features_for_song(vocal_song_id, "vocals", db_path=db_path)
-              or get_features_for_song(vocal_song_id, "full", db_path=db_path) or {})
-    i_feat = (get_features_for_song(inst_song_id, "instrumental", db_path=db_path)
-              or get_features_for_song(inst_song_id, "full", db_path=db_path) or {})
+    from database import models
+    # get_features_for_song defaults its db_path only when the argument is
+    # omitted; the workers call this with db_path=None, which it would hand to
+    # sqlite as-is. That made every FL session export from the app fail.
+    fdb = db_path if db_path is not None else models.DB_PATH
+    v_feat = (models.get_features_for_song(vocal_song_id, "vocals", db_path=fdb)
+              or models.get_features_for_song(vocal_song_id, "full", db_path=fdb) or {})
+    i_feat = (models.get_features_for_song(inst_song_id, "instrumental", db_path=fdb)
+              or models.get_features_for_song(inst_song_id, "full", db_path=fdb) or {})
 
     _tick(20, "Conforming the vocal…")
     v_y, v_info = conform_stem(vocal_song_id, "vocals",

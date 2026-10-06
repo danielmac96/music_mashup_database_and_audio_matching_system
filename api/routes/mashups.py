@@ -145,7 +145,8 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     bpm_band: str = "", vocal_forward: bool = False,
                     max_effort: Optional[float] = None,
                     order: str = "score",
-                    adventure: float = 0.0) -> dict:
+                    adventure: float = 0.0,
+                    search: str = "", offset: int = 0) -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -164,6 +165,8 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     if order not in _ORDERS:
         raise HTTPException(status_code=400,
                             detail=f"order must be one of {sorted(_ORDERS)}")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset must be 0 or greater")
     if not (0.0 <= adventure <= 1.0):
         raise HTTPException(status_code=400,
                             detail="adventure must be in [0, 1]")
@@ -181,13 +184,14 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
         max_per_song=max_per_song,
         genre=genre, era=era, energy=energy, bpm_band=bpm_band,
         vocal_forward=vocal_forward, max_effort=max_effort, order=order,
+        search=search[:100], offset=offset,
     )
     rows = _with_reasons(_with_playback_terms(rows))
     if adventure > 0 and order == "score":
         rows = _reorder_by_surprise(rows, adventure)
     return {"count": len(rows), "candidates": rows,
             "max_per_song": max_per_song, "order": order,
-            "adventure": adventure}
+            "adventure": adventure, "offset": offset}
 
 
 @router.get("/filters")
@@ -399,6 +403,7 @@ class BatchSessionRequest(BaseModel):
     energy: str = ""
     bpm_band: str = ""
     vocal_forward: bool = False
+    search: str = ""
 
 
 @router.post("/session/batch")
@@ -418,6 +423,7 @@ def queue_session_batch(req: BatchSessionRequest,
         max_per_song=req.max_per_song, genre=req.genre, era=req.era,
         energy=req.energy, bpm_band=req.bpm_band,
         vocal_forward=req.vocal_forward, max_effort=req.max_effort,
+        search=req.search[:100],
     )
     if not rows:
         raise HTTPException(status_code=404,

@@ -18,11 +18,13 @@ _TABLES = ("songs", "stems", "features", "sections", "mashup_candidates",
 def list_tables() -> dict:
     """Return the browsable table names with a row count for each."""
     conn = get_conn()
-    out = []
-    for name in _TABLES:
-        n = conn.execute(f"SELECT COUNT(*) AS n FROM {name}").fetchone()["n"]
-        out.append({"name": name, "count": n})
-    conn.close()
+    try:
+        out = []
+        for name in _TABLES:
+            n = conn.execute(f"SELECT COUNT(*) AS n FROM {name}").fetchone()["n"]
+            out.append({"name": name, "count": n})
+    finally:
+        conn.close()
     return {"tables": out}
 
 
@@ -37,12 +39,17 @@ def get_table(
         raise HTTPException(status_code=404, detail=f"unknown table; choose one of {list(_TABLES)}")
 
     conn = get_conn()
-    columns = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
-    total = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
-    rows = conn.execute(
-        f"SELECT * FROM {table} ORDER BY id LIMIT ? OFFSET ?", (limit, offset)
-    ).fetchall()
-    conn.close()
+    try:
+        columns = [r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()]
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+        # rowid, not id: track_excluded is keyed by song_id and has no id
+        # column, so ORDER BY id answered 500 for it. Every whitelisted table
+        # is a rowid table, and rowid is insertion order where id was.
+        rows = conn.execute(
+            f"SELECT * FROM {table} ORDER BY rowid LIMIT ? OFFSET ?", (limit, offset)
+        ).fetchall()
+    finally:
+        conn.close()
 
     return {
         "table": table,

@@ -1,7 +1,8 @@
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
 import {
-  EFFORT_TONE, nudgeLabel, pctOf, rawPctOf, spanLabel, termsOf, tierOf,
+  BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, nudgeLabel, pctOf, rawPctOf,
+  spanLabel, termsOf, tierOf,
 } from "./pairs/pairModel";
 import { bpmTag, camelotColor, keyRel } from "../theme";
 
@@ -22,6 +23,7 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
   const rel = keyRel(c.vocal_camelot, c.inst_camelot);
   const effort = c.effort_label || null;
   const tempo = c.target_bpm != null ? `→ ${c.target_bpm.toFixed(1)} BPM` : null;
+  const h = harmonyOf(c);
 
   return (
     <div
@@ -73,6 +75,20 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
             : "How far to slide the bed so the two bar lines land together."}>
           {nudgeLabel(c.alignment_offset)}
         </span>
+        {/* The measured harmony: the two sections' notes cross-correlated over
+            all twelve transpositions, not the Camelot lookup beside it. */}
+        {h.known && (
+          <span className={`pc-tag mono ${h.clash ? "clash" : "harmony"}`}
+            title={`Measured harmonic fit${h.fitPct != null ? ` ${h.fitPct}%` : ""} at ${h.shift > 0 ? "+" : ""}${h.shift} semitones on the bed`
+              + (h.sure ? "" : " — low confidence: another transposition fits almost as well")
+              + (h.clash ? ". Below 55% the notes genuinely clash." : ".")}>
+            ♪ {h.fitPct != null ? `${h.fitPct}%` : "fit"}
+            {h.shift ? ` · ${h.shift > 0 ? "+" : ""}${h.shift} st` : ""}{h.sure ? "" : " ?"}
+          </span>
+        )}
+        {h.bassClash && (
+          <span className="pc-tag mono clash" title={BASS_CLASH_ADVICE}>bass clash</span>
+        )}
       </div>
 
       {!compact && <ScoreBars candidate={c} />}

@@ -22,7 +22,39 @@ export const EMPTY_FILTERS = {
   playsMin: "",        // a floor, e.g. 100000
   yearMin: "", yearMax: "",
   minStars: 0,
+  // Analysed attributes (analysis/attributes.py), keyed by attribute id:
+  // { min, max } for a number, { value } for a category or a top-N list.
+  attrs: {},
 };
+
+// How deep into a top-N list (Discogs styles, moods/themes, instruments) a
+// value may sit and still count: "Tech House" as a track's 5th style at 3%
+// is not a tech-house track.
+export const ATTR_TOP_DEPTH = 3;
+
+// The labels a top-N attribute value carries, best first.
+const topLabels = (v) => (Array.isArray(v)
+  ? v.slice(0, ATTR_TOP_DEPTH).map((x) => x?.label).filter(Boolean) : []);
+
+// Whether one track passes one attribute condition. An unmeasured value never
+// passes: an attribute filter is a statement about that attribute, the same
+// rule the BPM and year filters follow.
+export function attrMatches(value, cond) {
+  if (!cond) return true;
+  if (cond.value != null && cond.value !== "") {
+    if (value == null) return false;
+    if (Array.isArray(value)) return topLabels(value).includes(cond.value);
+    return String(value) === String(cond.value);
+  }
+  const lo = cond.min === "" || cond.min == null ? null : Number(cond.min);
+  const hi = cond.max === "" || cond.max == null ? null : Number(cond.max);
+  if (lo == null && hi == null) return true;
+  const x = Number(value);
+  if (value == null || !Number.isFinite(x)) return false;
+  if (lo != null && x < lo) return false;
+  if (hi != null && x > hi) return false;
+  return true;
+}
 
 export const EMPTY_SORT = { primary: "", primaryDir: "desc",
                             secondary: "", secondaryDir: "desc" };
@@ -111,7 +143,24 @@ export function facetsOf(rows) {
   const genres = new Map();
   const keys = new Set();
   let yearLo = null, yearHi = null;
+  // Per analysed attribute: the values a category/top-N attribute takes in
+  // this library (with counts), and the range a number spans.
+  const attrValues = {};
+  const attrRange = {};
   for (const t of rows) {
+    for (const [id, v] of Object.entries(t.attrs || {})) {
+      if (v == null) continue;
+      if (Array.isArray(v) || typeof v === "string") {
+        const m = attrValues[id] || (attrValues[id] = new Map());
+        for (const label of (Array.isArray(v) ? topLabels(v) : [v])) {
+          m.set(label, (m.get(label) || 0) + 1);
+        }
+      } else if (Number.isFinite(Number(v))) {
+        const r = attrRange[id] || (attrRange[id] = { lo: Number(v), hi: Number(v) });
+        r.lo = Math.min(r.lo, Number(v));
+        r.hi = Math.max(r.hi, Number(v));
+      }
+    }
     const g = (t.genre || "").trim();
     if (g) genres.set(g, (genres.get(g) || 0) + 1);
     const cam = feat(t).camelot;
@@ -131,13 +180,17 @@ export function facetsOf(rows) {
       return (x?.num ?? 99) - (y?.num ?? 99) || a.localeCompare(b);
     }),
     yearLo, yearHi,
+    attrValues: Object.fromEntries(Object.entries(attrValues).map(([id, m]) => [
+      id, [...m.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+        .map(([name, n]) => ({ name, n }))])),
+    attrRange,
   };
 }
 
 export function isActive(f) {
   return !!(f.search || f.view || f.group || f.key || f.bpmMin || f.bpmMax
     || (f.genres && f.genres.length) || f.playsMin || f.yearMin
-    || f.yearMax || f.minStars);
+    || f.yearMax || f.minStars || Object.keys(f.attrs || {}).length);
 }
 
 export function countView(rows, id) {
@@ -158,6 +211,7 @@ export function applyLibraryFilters(rows, f, starOf = () => null,
   const playsMin = filters.playsMin === "" ? null : Number(filters.playsMin);
   const yearMin = filters.yearMin === "" ? null : Number(filters.yearMin);
   const yearMax = filters.yearMax === "" ? null : Number(filters.yearMax);
+  const attrConds = Object.entries(filters.attrs || {});
 
   return rows.filter((t) => {
     if (view && !view[3](t)) return false;
@@ -192,6 +246,9 @@ export function applyLibraryFilters(rows, f, starOf = () => null,
     }
     if (filters.minStars) {
       if ((starOf(t.id) || 0) < filters.minStars) return false;
+    }
+    for (const [id, cond] of attrConds) {
+      if (!attrMatches(t.attrs?.[id], cond)) return false;
     }
     return true;
   });

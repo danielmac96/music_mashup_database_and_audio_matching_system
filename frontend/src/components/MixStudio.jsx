@@ -8,6 +8,7 @@ import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
 import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
 import { usePlan } from "../hooks/usePlan";
+import { BASS_CLASH_ADVICE } from "./pairs/pairModel";
 import { fmtTime, keyRel } from "../theme";
 import { toast } from "../toast";
 
@@ -1576,6 +1577,23 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
             : "Both sides have a measured downbeat grid"}>
           {suggested.nudgeSec == null ? "no grid" : "downbeat locked"}
         </span>
+        {/* The plan's MEASURED harmony for its top section pairing (chroma
+            cross-correlated, matcher/harmony.py) and its bass-clash advice —
+            the same words the FL README carries. Absent when either section
+            has no stored chroma: then the Camelot shift is all there is. */}
+        {bedLane && vocalLane && pairPlan?.harmony?.known && (
+          <span className={`align-chip mono${pairPlan.harmony.is_clash ? " clash" : ""}`}
+            title={`Measured harmonic fit of the matcher's top section pairing, at ${pairPlan.harmony.shift > 0 ? "+" : ""}${pairPlan.harmony.shift} st on the bed`
+              + (pairPlan.harmony.is_clash ? " — below 55%, the notes clash" : "")}>
+            ♪ fit {Math.round(pairPlan.harmony.harmonic_fit * 100)}%
+          </span>
+        )}
+        {bedLane && vocalLane && pairPlan?.harmony?.bass_clash && (
+          <span className="align-chip mono clash"
+            title={pairPlan.harmony.advice || BASS_CLASH_ADVICE}>
+            bass clash — high-pass the bed
+          </span>
+        )}
         {dirty && (
           <button className="studio-btn" onClick={resetToSuggestion}
             title="Put the tempo, pitch and nudge back to what the matcher suggested">

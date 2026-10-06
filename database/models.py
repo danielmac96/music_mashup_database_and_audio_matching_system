@@ -2469,6 +2469,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             max_effort: Optional[float] = None,
                             order: str = "score",
                             max_per_song_pair: int = 1,
+                            search: str = "", offset: int = 0,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -2503,7 +2504,16 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     It can also be one of SECTION_TERM_ORDERS — label / duration / voice /
     phrase — which ranks by that one section term. This runs in SQL for the
     same reason the filters do: re-sorting the page the server already
-    truncated by score would rank a page, not a library."""
+    truncated by score would rank a page, not a library.
+
+    search matches either side's title or artist (case-insensitive substring),
+    in SQL for the same reason: finding "Massive" in a client-side page of 40
+    finds it only if it already ranked there.
+
+    offset pages through the capped list: the cap is applied to the first
+    offset + limit rows and the first `offset` are dropped, so page two is
+    exactly what a longer page one would have continued with."""
+    offset = max(0, int(offset or 0))
     conn = get_conn(db_path)
     # min_score gates on the PERCENTILE, not the raw composite — the same number
     # the row displays and the same one `tierFor` colours.
@@ -2568,6 +2578,11 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         # it in. Treat it as passing rather than hiding the whole library.
         where.append("(mc.score_effort IS NULL OR mc.score_effort <= ?)")
         params.append(float(max_effort))
+    if search and search.strip():
+        like = f"%{search.strip()}%"
+        where.append("(sv.title LIKE ? OR sv.artist LIKE ? "
+                     " OR si.title LIKE ? OR si.artist LIKE ?)")
+        params += [like] * 4
     if vocal_forward:
         # The vocal presence of the section that will actually play, falling
         # back to the track's most vocal section when no pair was stored.
@@ -2603,7 +2618,8 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     # on a big library; this pool is enough to fill `limit` unless one song
     # dominates far beyond the cap, and the shortfall is visible as a short page
     # rather than a wrong one.
-    fetch = limit if max_per_song <= 0 else min(max(limit * 20, 200), 5000)
+    want = limit + offset
+    fetch = want if max_per_song <= 0 else min(max(want * 20, 200), 5000)
     params.append(fetch)
     rows = conn.execute(
         f"""WITH pop AS (
@@ -2687,8 +2703,8 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         params,
     ).fetchall()
     conn.close()
-    return _cap_per_song([dict(r) for r in rows], max_per_song, limit,
-                         max_per_song_pair)
+    return _cap_per_song([dict(r) for r in rows], max_per_song, want,
+                         max_per_song_pair)[offset:]
 
 
 # ── T3.5 filter vocabularies ─────────────────────────────────────────────────

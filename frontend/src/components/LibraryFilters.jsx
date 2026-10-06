@@ -58,7 +58,8 @@ function MenuChip({ label, value, on, width = 200, title, children }) {
 
 export function LibraryFilters({ filters, patch, reset, active, facets,
                                  shown, total, sort, setSort, groups = [],
-                                 views, savedViews, onSaveView, onDropView }) {
+                                 views, savedViews, onSaveView, onDropView,
+                                 catalogue = [] }) {
   const bpmLabel = filters.bpmMin || filters.bpmMax
     ? `${filters.bpmMin || "0"}–${filters.bpmMax || "∞"}`
     : "Any";
@@ -197,6 +198,14 @@ export function LibraryFilters({ filters, patch, reset, active, facets,
           )}
         </MenuChip>
 
+        <AttributeFilter catalogue={catalogue} facets={facets}
+          conds={filters.attrs || {}}
+          setCond={(id, cond) => {
+            const next = { ...(filters.attrs || {}) };
+            if (cond) next[id] = cond; else delete next[id];
+            patch({ attrs: next });
+          }} />
+
         <button type="button"
           className={`fchip star${filters.minStars ? " on" : ""}`}
           title="Only tracks in a pair you have rated this highly."
@@ -276,3 +285,91 @@ function SortKey({ value, dir, onKey, onDir, disabled = false }) {
     </span>
   );
 }
+
+// Filter on any analysed attribute (analysis/attributes.py): mood, Discogs
+// style, danceability, LUFS, has vocals… Every value offered comes from rows in
+// memory (facets.attrValues / attrRange), never from a request. Active
+// conditions show as removable pills beside the chip.
+function AttributeFilter({ catalogue, facets, conds, setCond }) {
+  const [pick, setPick] = useState("");
+  const measured = catalogue.filter((a) =>
+    facets.attrValues?.[a.id]?.length || facets.attrRange?.[a.id]);
+  const attr = measured.find((a) => a.id === pick) || null;
+  const ids = Object.keys(conds);
+  const byId = Object.fromEntries(catalogue.map((a) => [a.id, a]));
+  const describe = (a, c) => (c.value != null && c.value !== ""
+    ? String(c.value)
+    : `${c.min !== "" && c.min != null ? c.min : "…"}–${c.max !== "" && c.max != null ? c.max : "…"}`);
+
+  if (!measured.length) return null;
+  return (
+    <>
+      <MenuChip label="Attribute" value={ids.length ? `${ids.length} set` : "Any"}
+        on={ids.length > 0} width={300}
+        title="Filter by anything the analysis measured — mood, style, danceability, loudness, voice. A track without that measurement is left out.">
+        {() => (
+          <>
+            <div className="fmenu-row">
+              <select className="fmenu-select" value={pick}
+                onChange={(e) => setPick(e.target.value)}>
+                <option value="">Choose an attribute…</option>
+                {[...new Set(measured.map((a) => a.category))].map((cat) => (
+                  <optgroup key={cat} label={cat}>
+                    {measured.filter((a) => a.category === cat).map((a) => (
+                      <option key={a.id} value={a.id}>{a.label}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </div>
+            {attr && attr.kind === "number" && (
+              <>
+                <div className="fmenu-row">
+                  <input className="mini-num" type="number" step="any"
+                    placeholder={fmtNum(facets.attrRange[attr.id]?.lo)}
+                    value={conds[attr.id]?.min ?? ""}
+                    onChange={(e) => setCond(attr.id, rangeCond(
+                      e.target.value, conds[attr.id]?.max ?? ""))} />
+                  <span className="faint">–</span>
+                  <input className="mini-num" type="number" step="any"
+                    placeholder={fmtNum(facets.attrRange[attr.id]?.hi)}
+                    value={conds[attr.id]?.max ?? ""}
+                    onChange={(e) => setCond(attr.id, rangeCond(
+                      conds[attr.id]?.min ?? "", e.target.value))} />
+                  {attr.unit && <span className="faint">{attr.unit}</span>}
+                </div>
+                <div className="fmenu-empty">{attr.description}</div>
+              </>
+            )}
+            {attr && attr.kind !== "number" && (
+              <div className="fmenu-scroll">
+                {(facets.attrValues[attr.id] || []).slice(0, 40).map(({ name, n }) => (
+                  <button key={name}
+                    className={`fmenu-opt${conds[attr.id]?.value === name ? " on" : ""}`}
+                    onClick={() => setCond(attr.id,
+                      conds[attr.id]?.value === name ? null : { value: name })}>
+                    <span>{name}</span>
+                    <span className="fmenu-n mono">{n}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </MenuChip>
+      {ids.map((id) => byId[id] && (
+        <button key={id} type="button" className="fchip on attr-pill"
+          title={`${byId[id].label} — click to remove`}
+          onClick={() => setCond(id, null)}>
+          <span className="fchip-k">{byId[id].short}</span>
+          <span className="fchip-v">{describe(byId[id], conds[id])}</span>
+          <span className="fchip-caret">×</span>
+        </button>
+      ))}
+    </>
+  );
+}
+
+// An empty range is no condition at all, so clearing both boxes removes it.
+const rangeCond = (min, max) => (min === "" && max === "" ? null : { min, max });
+const fmtNum = (x) => (x == null ? "" : String(Math.round(x * 100) / 100));

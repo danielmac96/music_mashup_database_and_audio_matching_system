@@ -34,6 +34,31 @@ const LIMIT = 40;
 // at more than one moment without a single strong vocal taking the page.
 const MAX_PER_SONG = 3;
 
+// The dock's filters. Every one of them runs in SQL (get_candidates_enriched),
+// for the reason the orders do: narrowing a page the server already truncated
+// would search the top 40, not the library. `perVocal` swaps the list for
+// "best bed for each of my vocals" (GET /api/mashups/by-vocal).
+export const DOCK_FILTERS = {
+  search: "", minScore: 0, maxEffort: null, genre: "", era: "", energy: "",
+  bpmBand: "", vocalForward: false, adventure: 0, perVocal: false,
+};
+
+// How many filters differ from the defaults (search is shown on its own).
+export function activeFilterCount(f) {
+  return Object.keys(DOCK_FILTERS)
+    .filter((k) => k !== "search" && f[k] !== DOCK_FILTERS[k]).length;
+}
+
+// The list route's query options for a filter set — shared by the fetch and
+// "load more", so page two is the same query as page one.
+function filterOpts(f) {
+  return {
+    search: f.search.trim(), minScore: f.minScore, maxEffort: f.maxEffort,
+    genre: f.genre, era: f.era, energy: f.energy, bpmBand: f.bpmBand,
+    vocalForward: f.vocalForward, adventure: f.adventure,
+  };
+}
+
 // `player` is the app-wide one from usePlayer. The dock used to build its own
 // MashupEngine, which is how the app ended up with several players and one bar
 // that belonged to none of them. It borrows the shared one now, so the bar at
@@ -45,6 +70,15 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [cursor, setCursor] = useState(0);
+  const [filters, setFiltersState] = useState(DOCK_FILTERS);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const setFilters = useCallback(
+    (patch) => setFiltersState((f) => ({ ...f, ...patch })), []);
+  const resetFilters = useCallback(() => setFiltersState(DOCK_FILTERS), []);
+  // "Best bed per vocal" is a library-wide view; scoped to one track it would
+  // be that track's single best row, which the normal list already leads with.
+  const perVocal = filters.perVocal && selectedTrackId == null;
 
   // Which pair the transport is actually on, keyed by the pair's four ids
   // rather than candidate.id — mashup_candidates is truncated on every
@@ -60,7 +94,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const opts = { limit: LIMIT, maxPerSong: MAX_PER_SONG };
+    const opts = { limit: LIMIT, maxPerSong: MAX_PER_SONG, ...filterOpts(filters) };
     if (selectedTrackId != null) {
       // Scoping by role, because a track can be either side of a pair. Picking
       // a row in the library asks "what beds fit this vocal"; the dock says so
@@ -69,16 +103,58 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       else opts.vocalSongId = selectedTrackId;
     }
     if (order !== CLIENT_ORDER) opts.order = order;
-    api.getMashups(opts)
+    const request = perVocal
+      ? api.getBestBedPerVocal({ limit: LIMIT, minScore: filters.minScore })
+      : api.getMashups(opts);
+    request
       .then((d) => {
         if (cancelled) return;
-        setRows(d.candidates || []);
+        const got = d.candidates || [];
+        setRows(got);
+        setHasMore(!perVocal && got.length >= LIMIT);
         setCursor(0);
       })
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [selectedTrackId, role, order]);
+  }, [selectedTrackId, role, order, filters, perVocal]);
+
+  // The next page of the same server-side list. The offset is applied after
+  // the per-song cap, so page two continues exactly where page one stopped.
+  const loadMore = useCallback(async () => {
+    if (loadingMore || perVocal) return;
+    setLoadingMore(true);
+    const opts = { limit: LIMIT, maxPerSong: MAX_PER_SONG, ...filterOpts(filters),
+                   offset: rowsRef.current.length };
+    if (selectedTrackId != null) {
+      if (role === "instrumental") opts.instSongId = selectedTrackId;
+      else opts.vocalSongId = selectedTrackId;
+    }
+    if (order !== CLIENT_ORDER) opts.order = order;
+    try {
+      const d = await api.getMashups(opts);
+      const got = d.candidates || [];
+      setRows((rs) => {
+        const seen = new Set(rs.map(keyOf));
+        return [...rs, ...got.filter((r) => !seen.has(keyOf(r)))];
+      });
+      setHasMore(got.length >= LIMIT);
+    } catch (e) {
+      toast(`Could not load more pairs: ${e.message}`);
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, perVocal, filters, selectedTrackId, role, order]);
+
+  // Export the top N of what the dock is showing as FL session folders, one
+  // zip. The filters go to the server rather than a list of rows, so the
+  // diversity cap is applied the same way the list applied it.
+  const exportBatch = useCallback((topN) => api.startSessionBatch({
+    top_n: topN, min_score: filters.minScore, max_per_song: MAX_PER_SONG,
+    max_effort: filters.maxEffort, genre: filters.genre, era: filters.era,
+    energy: filters.energy, bpm_band: filters.bpmBand,
+    vocal_forward: filters.vocalForward, search: filters.search.trim(),
+  }), [filters]);
 
   const visible = useMemo(() => {
     if (order !== CLIENT_ORDER) return rows;
@@ -185,6 +261,8 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
 
   return {
     order, setOrder, rows: visible, loading, error,
+    filters, setFilters, resetFilters, perVocal, hasMore, loadMore, loadingMore,
+    exportBatch,
     cursor, setCursor, current, armedKey,
     play, move, openStudio, hide, bindKeys, audio,
   };
