@@ -265,6 +265,8 @@ export const api = {
     // Title/artist substring on either side, and paging past the first page —
     // both in SQL, so they search and page the library rather than the page.
     search = "", offset = 0,
+    // Keepers / unrated, the landing key ± n Camelot steps, section types.
+    rated = "", key = "", keyTol = 1, vocalLabel = "", instLabel = "",
   } = {}) => {
     const params = new URLSearchParams();
     if (search) params.set("search", search);
@@ -283,6 +285,10 @@ export const api = {
     if (energy) params.set("energy", energy);
     if (bpmBand) params.set("bpm_band", bpmBand);
     if (vocalForward) params.set("vocal_forward", "true");
+    if (rated) params.set("rated", rated);
+    if (key) { params.set("key", key); params.set("key_tolerance", String(keyTol)); }
+    if (vocalLabel) params.set("vocal_label", vocalLabel);
+    if (instLabel) params.set("inst_label", instLabel);
     return jsonFetch(`/api/mashups?${params}`);
   },
 

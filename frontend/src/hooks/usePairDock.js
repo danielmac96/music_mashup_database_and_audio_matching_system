@@ -41,12 +41,16 @@ const MAX_PER_SONG = 3;
 export const DOCK_FILTERS = {
   search: "", minScore: 0, maxEffort: null, genre: "", era: "", energy: "",
   bpmBand: "", vocalForward: false, adventure: 0, perVocal: false,
+  // Keepers ("rated" / "loved") and the opposite ("unrated"); the key the pair
+  // LANDS in (the vocal's) within keyTol Camelot steps; one section type per
+  // side. All four in SQL too.
+  rated: "", key: "", keyTol: 1, vocalLabel: "", instLabel: "",
 };
 
 // How many filters differ from the defaults (search is shown on its own).
 export function activeFilterCount(f) {
   return Object.keys(DOCK_FILTERS)
-    .filter((k) => k !== "search" && f[k] !== DOCK_FILTERS[k]).length;
+    .filter((k) => k !== "search" && k !== "keyTol" && f[k] !== DOCK_FILTERS[k]).length;
 }
 
 // The list route's query options for a filter set — shared by the fetch and
@@ -56,6 +60,8 @@ function filterOpts(f) {
     search: f.search.trim(), minScore: f.minScore, maxEffort: f.maxEffort,
     genre: f.genre, era: f.era, energy: f.energy, bpmBand: f.bpmBand,
     vocalForward: f.vocalForward, adventure: f.adventure,
+    rated: f.rated, key: f.key, keyTol: f.keyTol,
+    vocalLabel: f.vocalLabel, instLabel: f.instLabel,
   };
 }
 

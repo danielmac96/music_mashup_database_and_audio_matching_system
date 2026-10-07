@@ -310,3 +310,108 @@ def test_sets_screen_is_wired():
     studio = _read("components/MixStudio.jsx")
     assert "const layPairs" in studio and "seed?.chain" in studio
     assert "onAppendNext" in _read("components/StudioRail.jsx")
+
+
+# ── 7 / 10. dock: keepers, landing key, section type ────────────────────────
+
+@pytest.fixture()
+def keyed_pairs(db_path):
+    from database import models
+    models.init_db(db_path)
+    ids = [models.upsert_song(f"S{n}", "A", f"https://sc/{n}", 200, "House",
+                              status="analysed", db_path=db_path) for n in range(6)]
+    keys = ["8A", "9A", "3A", "8B", "12A"]
+    for n, bed in enumerate(ids[1:]):
+        models.upsert_candidate(_side(bed, camelot=keys[n]), _side(ids[0]),
+                                {"total": 0.9 - n * 0.01, "bpm_score": 1.0, "key_score": 1.0,
+                                 "energy_score": 0.5, "timbre_score": 0.5}, db_path=db_path)
+    conn = models.get_conn(db_path)
+    conn.execute("UPDATE mashup_candidates SET vocal_section_idx=1, inst_section_idx=2, "
+                 "vocal_section_label='chorus', inst_section_label="
+                 "CASE WHEN vocal_song_id % 2 = 0 THEN 'drop' ELSE 'breakdown' END")
+    conn.commit(); conn.close()
+    models.upsert_pair_feedback(ids[1], ids[0], "love", 1, 2, rating=5, db_path=db_path)
+    models.upsert_pair_feedback(ids[2], ids[0], "no", rating=1, db_path=db_path)  # no sections
+    return db_path, ids
+
+
+def test_keepers_and_unrated(keyed_pairs):
+    from database.models import get_candidates_enriched
+    db, ids = keyed_pairs
+    v = lambda **kw: sorted(r["vocal_song_id"] for r in get_candidates_enriched(limit=50, db_path=db, **kw))
+    assert v(rated="loved") == [ids[1]]
+    assert v(rated="rated") == [ids[1], ids[2]], "a section-less verdict counts for the pair"
+    assert v(rated="unrated") == ids[3:]
+    with pytest.raises(ValueError):
+        get_candidates_enriched(rated="nope", db_path=db)
+
+
+def test_landing_key_with_tolerance(keyed_pairs):
+    from database.models import get_candidates_enriched
+    db, ids = keyed_pairs
+    cams = lambda **kw: sorted(r["vocal_camelot"] for r in get_candidates_enriched(limit=50, db_path=db, **kw))
+    assert cams(key="8A") == ["8A", "8B"], "the relative minor/major is the same place"
+    assert cams(key="8A", key_tolerance=1) == ["8A", "8B", "9A"]
+    assert cams(key="9A", key_tolerance=6) == ["12A", "3A", "8A", "8B", "9A"]
+    with pytest.raises(ValueError):
+        get_candidates_enriched(key="Z9", db_path=db)
+
+
+def test_section_type_filter_and_options(keyed_pairs):
+    from database.models import candidate_filter_options, get_candidates_enriched
+    db, ids = keyed_pairs
+    rows = get_candidates_enriched(limit=50, vocal_label="chorus", inst_label="drop", db_path=db)
+    assert rows and all(r["inst_section_label"] == "drop" for r in rows)
+    opts = candidate_filter_options(db_path=db)
+    assert opts["vocal_labels"] == ["chorus"] and set(opts["inst_labels"]) == {"drop", "breakdown"}
+
+
+def test_dock_offers_keepers_key_and_section_filters():
+    dock = _read("components/PairDock.jsx")
+    assert "pd-keepers" in dock and 'rated: filters.rated === "loved"' in dock
+    assert "Lands in" in dock and "Bed part" in dock and "Vocal part" in dock
+    assert "api.exportPairs(rows.slice(0, exportN)" in dock
+    api_js = _read("api.js")
+    assert 'params.set("rated", rated)' in api_js and 'params.set("key_tolerance"' in api_js
+
+
+# ── 9. mixes: the documented pairs as the engine sees them ──────────────────
+
+def test_mix_detail_scores_and_ranks_documented_pairs(db_path):
+    c, m = _app(("mixes", "/api/mixes"))
+    ids = [m.upsert_song(f"S{n}", "A", f"https://sc/{n}", 200, "House",
+                         status="analysed", db_path=m.DB_PATH) for n in range(4)]
+    vocal = ids[0]
+    for n, bed in enumerate(ids[1:3]):
+        m.upsert_candidate(_side(vocal), _side(bed),
+                           {"total": 0.9 - n * 0.1, "bpm_score": 1.0, "key_score": 1.0,
+                            "energy_score": 0.5, "timbre_score": 0.5}, db_path=m.DB_PATH)
+    conn = m.get_conn(m.DB_PATH)
+    conn.execute("INSERT INTO mixes(title, source_url) VALUES('Vol', 'https://x/1')")
+    rows = [(0, 1, 0, ids[2]), (None, 2, 1, vocal), (1, 3, 0, ids[3]), (None, 4, 1, None)]
+    for entry, pos, ov, sid in rows:
+        conn.execute("INSERT INTO mix_tracks(mix_id, entry_index, position, is_overlay, title, song_id)"
+                     " VALUES(1, ?, ?, ?, ?, ?)", (entry, pos, ov, f"T{pos}", sid))
+    conn.execute("INSERT INTO mashup_pairs(mix_id, inst_mix_track_id, vocal_mix_track_id) VALUES(1, 1, 2)")
+    conn.execute("INSERT INTO mashup_pairs(mix_id, inst_mix_track_id, vocal_mix_track_id) VALUES(1, 3, 4)")
+    conn.commit(); conn.close()
+    pairs = c.get("/api/mixes/1").json()["pairs"]
+    assert pairs[0]["engine_state"] == "scored"
+    assert pairs[0]["engine_rank"] == 2 and pairs[0]["engine_field"] == 2
+    assert pairs[0]["engine"]["semitone_shift"] == 0, "playable in the shared player"
+    assert pairs[1]["engine"] is None and pairs[1]["engine_state"] == "not in library"
+
+
+def test_mixes_screen_can_play_open_and_find_similar():
+    mixes, app = _read("components/MixImporter.jsx"), _read("App.jsx")
+    assert "function DocumentedPairs" in mixes and "onFindSimilar(p.vocal_song_id)" in mixes
+    assert "<MixImporter player={player} onOpenStudio={pairToStudio}" in app
+
+
+# ── 8. Studio picker: ranked by fit, matcher-scored layers ─────────────────
+
+def test_studio_picker_ranks_by_fit_and_offers_scored_layers():
+    studio = _read("components/MixStudio.jsx")
+    assert "const fitOf" in studio and ".sort((x, y) => (x.fit?.cost" in studio
+    assert "Second vocal over this bed" in studio and "const addLayer" in studio
+    assert "Import tab" not in studio

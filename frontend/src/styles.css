@@ -3077,3 +3077,50 @@ input, select { font-family: inherit; }
   background: var(--inset); border: 1px solid var(--border); border-radius: 6px;
   color: var(--text-2); font: 11px var(--font-mono); padding: 5px 8px; margin: 0 8px 6px;
 }
+
+/* ── Dock: keepers, landing key, section type, plain exports ─────────────── */
+.pd-keepers {
+  flex: none; cursor: pointer; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--border-ctrl); background: transparent;
+  color: var(--muted); font-size: 11px;
+}
+.pd-keepers.on { color: var(--amber); border-color: var(--amber); }
+.pd-keypick { display: flex; gap: 4px; }
+.pd-keypick select { flex: 1; min-width: 0; }
+.pd-plainexport { justify-content: flex-end; }
+
+/* ── Studio picker: fit to the timeline, and matcher-scored layers ───────── */
+.picker-fit { font-size: 10.5px; color: var(--faint); white-space: nowrap; }
+.picker-fit.good { color: var(--green); }
+.picker-fit.ok { color: var(--amber-light); }
+.studio-picker-row.on-timeline .t::after { content: " · on the timeline"; color: var(--faint); font-weight: 400; }
+.layer-sugs { display: flex; flex-direction: column; gap: 8px; padding: 4px 6px 10px;
+  border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.layer-sug-group { display: flex; flex-direction: column; gap: 3px; }
+.layer-sug {
+  display: grid; grid-template-columns: 34px minmax(0, 1.2fr) minmax(0, 1fr) auto 28px;
+  gap: 8px; align-items: center; text-align: left; cursor: pointer;
+  background: var(--inset-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 8px; color: var(--text-2); font: 12px var(--font-ui);
+}
+.layer-sug:hover { border-color: var(--accent); }
+.layer-sug .t { font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.layer-sug .a { color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.layer-pct { color: var(--green); text-align: right; }
+
+/* ── Mixes: documented pairs as the engine sees them ─────────────────────── */
+.mix-docpairs { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; margin: 0 0 12px; display: flex; flex-direction: column; gap: 6px; }
+.mix-docpair { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center;
+  font-size: 12.5px; }
+.mix-docpair-text { display: flex; gap: 6px; align-items: center; min-width: 0; white-space: nowrap; overflow: hidden; }
+.mix-docpair-text .t { overflow: hidden; text-overflow: ellipsis; }
+.mix-docpair-engine { font-size: 11px; white-space: nowrap; }
+.mix-docpair-engine .good { color: var(--green); }
+.mix-docpair-engine .ok { color: var(--amber-light); }
+.mix-docpair-engine .low { color: var(--red); }
+.mix-docpair-actions { display: flex; gap: 6px; }
+.mix-docpair-actions button { cursor: pointer; padding: 3px 8px; border-radius: 6px; font-size: 11px;
+  border: 1px solid var(--border-ctrl); background: transparent; color: var(--text-2); }
+.mix-docpair-actions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-light); }
+.mix-docpair-actions button:disabled { opacity: 0.4; cursor: default; }

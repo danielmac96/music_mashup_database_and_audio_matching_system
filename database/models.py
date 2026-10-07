@@ -2516,6 +2516,8 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             order: str = "score",
                             max_per_song_pair: int = 1,
                             search: str = "", offset: int = 0,
+                            rated: str = "", key: str = "", key_tolerance: int = 0,
+                            vocal_label: str = "", inst_label: str = "",
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -2558,7 +2560,15 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
 
     offset pages through the capped list: the cap is applied to the first
     offset + limit rows and the first `offset` are dropped, so page two is
-    exactly what a longer page one would have continued with."""
+    exactly what a longer page one would have continued with.
+
+    rated is "rated" / "loved" (4-5 stars or a love verdict) / "unrated" — the
+    first two are the list of keepers; a verdict on the pair with no sections
+    stored counts for every section pairing of it. key + key_tolerance keep
+    pairs that LAND within n Camelot steps of `key` — the vocal's key, since
+    the bed is transposed to it (relative major/minor count as the same place,
+    as in the Library's key filter). vocal_label / inst_label keep one section
+    type per side ("chorus" over "drop")."""
     offset = max(0, int(offset or 0))
     conn = get_conn(db_path)
     # min_score gates on the PERCENTILE, not the raw composite — the same number
@@ -2624,6 +2634,36 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         # it in. Treat it as passing rather than hiding the whole library.
         where.append("(mc.score_effort IS NULL OR mc.score_effort <= ?)")
         params.append(float(max_effort))
+    if rated:
+        if rated not in RATED_FILTERS:
+            raise ValueError(f"rated must be one of {sorted(RATED_FILTERS)}")
+        judged = ("SELECT 1 FROM pair_feedback f "
+                  " WHERE f.vocal_song_id = mc.vocal_song_id "
+                  "   AND f.inst_song_id = mc.inst_song_id "
+                  "   AND ((f.vocal_section IS NULL AND f.inst_section IS NULL) "
+                  "        OR (COALESCE(f.vocal_section, -1) = COALESCE(mc.vocal_section_idx, -1) "
+                  "            AND COALESCE(f.inst_section, -1) = COALESCE(mc.inst_section_idx, -1)))")
+        if rated == "unrated":
+            where.append(f"NOT EXISTS ({judged})")
+        elif rated == "loved":
+            where.append(f"EXISTS ({judged} AND (f.rating >= 4 OR f.verdict = 'love'))")
+        else:
+            where.append(f"EXISTS ({judged})")
+    if key:
+        parsed = _camelot_parts(key)
+        if parsed is None:
+            raise ValueError("key must be a Camelot code like 8A")
+        n = ("CAST(substr(mc.vocal_camelot, 1, length(mc.vocal_camelot) - 1) "
+             "AS INTEGER)")
+        where.append(f"mc.vocal_camelot IS NOT NULL AND mc.vocal_camelot != '' "
+                     f"AND MIN(ABS({n} - ?), 12 - ABS({n} - ?)) <= ?")
+        params += [parsed[0], parsed[0], max(0, min(6, int(key_tolerance or 0)))]
+    if vocal_label:
+        where.append("mc.vocal_section_label = ?")
+        params.append(vocal_label)
+    if inst_label:
+        where.append("mc.inst_section_label = ?")
+        params.append(inst_label)
     if search and search.strip():
         like = f"%{search.strip()}%"
         where.append("(sv.title LIKE ? OR sv.artist LIKE ? "
@@ -2803,6 +2843,15 @@ def bpm_bounds(band: str) -> tuple:
     return BPM_BANDS.get(band, (None, None))
 
 
+RATED_FILTERS = ("rated", "loved", "unrated")
+
+
+def _camelot_parts(code: str):
+    import re as _re
+    m = _re.fullmatch(r"\s*(1[0-2]|[1-9])\s*([ABab])\s*", code or "")
+    return (int(m.group(1)), m.group(2).upper()) if m else None
+
+
 def candidate_filter_options(combo_type: str = "",
                              db_path: Path = DB_PATH) -> Dict[str, list]:
     """Which filter values actually match something, so the chips only offer
@@ -2825,6 +2874,12 @@ def candidate_filter_options(combo_type: str = "",
     years = conn.execute(
         """SELECT MIN(release_year) AS lo, MAX(release_year) AS hi
            FROM songs WHERE release_year > 0""").fetchone()
+    labels = {}
+    for side in ("vocal", "inst"):
+        labels[side] = [r[0] for r in conn.execute(
+            f"""SELECT mc.{side}_section_label, COUNT(*) AS n FROM mashup_candidates mc
+                {where + ' AND' if where else 'WHERE'} mc.{side}_section_label IS NOT NULL
+                GROUP BY 1 ORDER BY n DESC""", args).fetchall()]
     conn.close()
     lo, hi = (years["lo"], years["hi"]) if years else (None, None)
     eras = [name for name, (a, b) in ERA_BANDS.items()
@@ -2834,6 +2889,8 @@ def candidate_filter_options(combo_type: str = "",
         "eras": eras,
         "bpm_bands": list(BPM_BANDS),
         "energy_bands": list(ENERGY_BANDS),
+        "vocal_labels": labels["vocal"],
+        "inst_labels": labels["inst"],
     }
 
 

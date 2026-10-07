@@ -8,6 +8,68 @@ import { classifyUrl } from "../sources";
 import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
 import { MixMatchBoard } from "./MixMatchBoard";
+import { keyOf } from "./pairs/pairModel";
+
+// The DJ's documented pairs, as the engine sees them: play one, open it in
+// Studio, ask for pairs like it, and see whether the engine agrees — its
+// score for the pair and where it ranks among that vocal's beds.
+function DocumentedPairs({ pairs, player, onOpenStudio, onFindSimilar }) {
+  if (!pairs?.length) return null;
+  const playingKey = player?.kind === "pair" ? player.source?.key : null;
+  const agreeing = pairs.filter((p) => p.engine_rank && p.engine_rank <= 3).length;
+  const scored = pairs.filter((p) => p.engine).length;
+  return (
+    <div className="mix-docpairs">
+      <div className="mix-ingest-head">
+        <strong>Documented pairs</strong>
+        <span className="faint">
+          {scored
+            ? `the engine scores ${scored} of ${pairs.length}; ${agreeing} rank in that vocal's top 3 beds`
+            : "ingest and analyse both sides to hear and score them"}
+        </span>
+      </div>
+      {pairs.map((p) => {
+        const e = p.engine;
+        const pct = e?.score_percentile != null ? Math.round(e.score_percentile * 100) : null;
+        const k = e ? keyOf(e) : null;
+        return (
+          <div key={p.id} className="mix-docpair">
+            <div className="mix-docpair-text">
+              <span className="pc-role mono vox">VOX</span>
+              <span className="t">{p.vocal_artist ? `${p.vocal_artist} — ` : ""}{p.vocal_title}</span>
+              <span className="faint">over</span>
+              <span className="pc-role mono bed">BED</span>
+              <span className="t">{p.inst_artist ? `${p.inst_artist} — ` : ""}{p.inst_title}</span>
+            </div>
+            <div className="mix-docpair-engine mono"
+              title={e ? `${e.reason || ""}\nRank ${p.engine_rank} of ${p.engine_field} beds the engine scored for this vocal`
+                : p.engine_state}>
+              {e ? (
+                <>
+                  <span className={pct >= 75 ? "good" : pct >= 50 ? "ok" : "low"}>engine {pct}</span>
+                  <span className="faint"> · #{p.engine_rank} of {p.engine_field}</span>
+                </>
+              ) : <span className="faint">{p.engine_state}</span>}
+            </div>
+            <div className="mix-docpair-actions">
+              <button disabled={!e || !player} onClick={() => player.toggle({
+                kind: "pair", key: k, candidate: e,
+                title: e.vocal_title, subtitle: `over ${e.inst_title}`,
+              })}>{k && playingKey === k ? "◍ stop" : "▶ loop"}</button>
+              <button disabled={!(p.vocal_song_id && p.inst_song_id) || !onOpenStudio}
+                onClick={() => onOpenStudio(e || {
+                  vocal_song_id: p.vocal_song_id, inst_song_id: p.inst_song_id,
+                })}>Studio</button>
+              <button disabled={!p.vocal_song_id || !onFindSimilar}
+                title="The pair dock, scoped to this vocal: every bed the engine likes under it"
+                onClick={() => onFindSimilar(p.vocal_song_id)}>Similar →</button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function SortableRow({ track, children }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -249,7 +311,7 @@ function CandidatePicker({ track, platform, onResolved }) {
   );
 }
 
-export function MixImporter() {
+export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar = null } = {}) {
   const [mixes, setMixes] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -887,6 +949,10 @@ export function MixImporter() {
                     ))}
                   </div>
                 </div>
+              )}
+              {viewMode === "list" && (
+                <DocumentedPairs pairs={detail.pairs} player={player}
+                  onOpenStudio={onOpenStudio} onFindSimilar={onFindSimilar} />
               )}
               {viewMode === "match" && (
                 <MixMatchBoard mix={detail} onMixUpdated={setDetail} />

@@ -203,6 +203,41 @@ def _load_candidates(raw: Optional[str]) -> list[dict]:
     return [h for h in hits if isinstance(h, dict) and h.get("url")]
 
 
+def _with_engine_view(mix: dict) -> None:
+    """Each documented pair, as the engine sees it: both library songs (when
+    ingested), the engine's best scoring of that pair and where it ranks among
+    that vocal's beds. "Does the engine agree with the DJ?" — and the row a
+    documented pair is auditioned or opened in Studio from."""
+    from api.routes.mashups import _with_playback_terms
+    from database.models import get_candidates_enriched
+    by_id = {t["id"]: t for t in mix["tracks"]}
+    ranks: dict = {}
+    for p in mix["pairs"]:
+        v, b = by_id.get(p["vocal_mix_track_id"]) or {}, by_id.get(p["inst_mix_track_id"]) or {}
+        p["vocal_title"], p["vocal_artist"] = v.get("title"), v.get("artist")
+        p["inst_title"], p["inst_artist"] = b.get("title"), b.get("artist")
+        p["vocal_song_id"], p["inst_song_id"] = v.get("song_id"), b.get("song_id")
+        p["engine"] = None
+        if not (p["vocal_song_id"] and p["inst_song_id"]):
+            p["engine_state"] = "not in library"
+            continue
+        if p["vocal_song_id"] not in ranks:
+            # Best section pairing per bed, ranked — the vocal's whole field.
+            ranks[p["vocal_song_id"]] = get_candidates_enriched(
+                combo_type="vocal_over_instrumental", vocal_song_id=p["vocal_song_id"],
+                max_per_song=0, limit=500, include_hidden=True)
+        field = ranks[p["vocal_song_id"]]
+        hit = next((k for k, r in enumerate(field) if r["inst_song_id"] == p["inst_song_id"]), None)
+        if hit is None:
+            p["engine_state"] = "not scored — failed a gate, or no re-score since ingest"
+            continue
+        row = _with_playback_terms([dict(field[hit])])[0]
+        p["engine"] = row
+        p["engine_rank"] = hit + 1
+        p["engine_field"] = len(field)
+        p["engine_state"] = "scored"
+
+
 def _mix_detail(conn, mix_id: int) -> dict:
     row = conn.execute("SELECT * FROM mixes WHERE id=?", (mix_id,)).fetchone()
     if not row:
@@ -218,6 +253,7 @@ def _mix_detail(conn, mix_id: int) -> dict:
         "SELECT id, inst_mix_track_id, vocal_mix_track_id, cue_secs, origin "
         "FROM mashup_pairs WHERE mix_id=? ORDER BY id", (mix_id,)).fetchall()]
     mix["match_count"] = len(mix["pairs"])
+    _with_engine_view(mix)
     # Ingest tracker rollup: how far the mix's songs are through the pipeline.
     # Keyed by songs.status ('queued'|'downloaded'|'stemmed'|'analysed'|'error_*').
     counts: dict[str, int] = {}

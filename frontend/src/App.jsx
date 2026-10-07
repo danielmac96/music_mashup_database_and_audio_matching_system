@@ -285,7 +285,12 @@ export default function App() {
 
       <div className="app-main">
 
-        {route === "mixes" && <MixImporter />}
+        {route === "mixes" && (
+          <MixImporter player={player} onOpenStudio={pairToStudio}
+            onFindSimilar={(vocalId) => {
+              setSelectedTrackId(vocalId); setDockRole("vocal"); setRoute("library");
+            }} />
+        )}
         {route === "library" && (
           <div className="lib-layout">
             <main className="lib-main">

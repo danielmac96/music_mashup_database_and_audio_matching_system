@@ -9,7 +9,7 @@ import { decodeStem } from "../engine/decode";
 import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
 import { usePlan } from "../hooks/usePlan";
 import { BASS_CLASH_ADVICE } from "./pairs/pairModel";
-import { fmtTime, keyRel } from "../theme";
+import { fmtTime, keyRel, parseCamelot } from "../theme";
 import { toast } from "../toast";
 
 // ── Studio: multi-track DAW-style arrangement view ───────────────────────────
@@ -501,6 +501,9 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
 
   const [picker, setPicker] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
+  // What the matcher has already scored against the lanes on the timeline: a
+  // second vocal over the bed, another bed under the vocal.
+  const [layerSugs, setLayerSugs] = useState({ vocals: [], beds: [] });
   const [error, setError] = useState(null);
   const [exportJobId, setExportJobId] = useState(null);
   const [exportToken, setExportToken] = useState(null);
@@ -848,6 +851,63 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     return n;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addLane]);
+
+  useEffect(() => {
+    if (!picker) return undefined;
+    let live = true;
+    const ls = lanesRef.current;
+    const vl = ls.find((l) => l.stem === "vocals");
+    const bl = ls.find((l) => l.stem !== "vocals");
+    const on = new Set(ls.map((l) => l.songId));
+    Promise.all([
+      bl ? api.getMashups({ instSongId: bl.songId, maxPerSong: 0, limit: 12 }).catch(() => null) : null,
+      vl ? api.getMashups({ vocalSongId: vl.songId, maxPerSong: 0, limit: 12 }).catch(() => null) : null,
+    ]).then(([a, b]) => {
+      if (!live) return;
+      setLayerSugs({
+        vocals: (a?.candidates || []).filter((c) => !on.has(c.vocal_song_id)).slice(0, 5),
+        beds: (b?.candidates || []).filter((c) => !on.has(c.inst_song_id)).slice(0, 5),
+      });
+    });
+    return () => { live = false; };
+  }, [picker]);
+
+  /** Add a matcher-scored layer, placed against the lane it was scored with:
+   * its section lands where that lane's paired section plays, nudged by the
+   * stored alignment, and its key follows the transpose already applied there. */
+  const addLayer = useCallback((kind, c) => {
+    const ls = lanesRef.current;
+    const anchor = kind === "vocals" ? ls.find((l) => l.stem !== "vocals")
+      : ls.find((l) => l.stem === "vocals");
+    const songId = kind === "vocals" ? c.vocal_song_id : c.inst_song_id;
+    const track = tracks.find((t) => t.id === songId);
+    if (!anchor || !track) return;
+    const stem = kind === "vocals" ? (track.stems?.vocals ? "vocals" : "full")
+      : (track.stems?.instrumental ? "instrumental" : "full");
+    const bpm = laneBpmFor(track, stem);
+    const rate = (projectBpm && bpm && syncRateFor(bpm, projectBpm)) || 1;
+    const off = c.alignment_offset ?? 0;
+    const shift = c.semitone_shift ?? 0;
+    let offsetSec, semitones, clipStart, clipEnd;
+    if (kind === "vocals") {
+      // anchor is the bed: the candidate's bed section, as placed on the timeline
+      const bedAt = anchor.offsetSec + (c.inst_section_start ?? 0) / (anchor.rate || 1);
+      offsetSec = bedAt - off - (c.vocal_section_start ?? 0) / rate;
+      // The bed already carries a transpose; the new vocal moves by what the
+      // matcher would have moved the bed, the other way.
+      semitones = (anchor.semitones || 0) - shift;
+      clipStart = c.vocal_section_start; clipEnd = c.vocal_section_end;
+    } else {
+      const vocAt = anchor.offsetSec + (c.vocal_section_start ?? 0) / (anchor.rate || 1);
+      offsetSec = vocAt + off - (c.inst_section_start ?? 0) / rate;
+      semitones = (anchor.semitones || 0) + shift;
+      clipStart = c.inst_section_start; clipEnd = c.inst_section_end;
+    }
+    addLane(track, stem, { offsetSec, rate, semitones, clipStart, clipEnd,
+      gain: kind === "vocals" ? 0.75 : 0.7, synced: Boolean(projectBpm && bpm) });
+    setPicker(false);
+    toast(`Layered ${track.title} — ${c.reason || "placed at the scored section"}`);
+  }, [tracks, projectBpm, addLane]);
 
   // ── persistence (localStorage, debounced) ───────────────────────────────
   // Saving stays OFF until the restore finishes — otherwise the empty initial
@@ -1476,12 +1536,32 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
 
   // ── derived / picker ────────────────────────────────────────────────────
   const playheadX = (position - viewStart) * pps;
+  // Ranked by fit to what is already on the timeline: the stretch to the
+  // project tempo (half/double aware) and the Camelot steps from the first
+  // lane's key as played. An unranked alphabet of the library made the third
+  // layer a guess.
+  const pickRef = {
+    bpm: lanes.length ? projectBpm : null,
+    camelot: lanes[0] ? shiftCamelot(lanes[0].camelot, lanes[0].semitones) : null,
+  };
+  const fitOf = (t) => {
+    const bpm = t.features?.full?.bpm;
+    const rate = pickRef.bpm && bpm ? syncRateFor(bpm, pickRef.bpm) : null;
+    const tempo = rate ? Math.abs(rate - 1) * 100 : null;
+    const a = parseCamelot(pickRef.camelot), b = parseCamelot(t.features?.full?.camelot);
+    const steps = a && b ? Math.min(Math.abs(a.num - b.num), 12 - Math.abs(a.num - b.num)) : null;
+    if (tempo == null && steps == null) return null;
+    return { tempo, steps, cost: (tempo ?? 20) / 3 + (steps ?? 6) };
+  };
   const pickerList = tracks
     .filter((t) => t.stems?.full || t.stems?.vocals || t.stems?.instrumental)
     .filter((t) => {
       const q = pickerSearch.toLowerCase();
       return !q || `${t.title} ${t.artist || ""}`.toLowerCase().includes(q);
-    });
+    })
+    .map((t) => ({ t, fit: fitOf(t) }))
+    .sort((x, y) => (x.fit?.cost ?? 1e9) - (y.fit?.cost ?? 1e9));
+  const onTimeline = new Set(lanes.map((l) => l.songId));
 
   const zoom = (f) => {
     const center = viewStart + viewSecs / 2;
@@ -1974,8 +2054,32 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
             <input autoFocus placeholder="Search library…" value={pickerSearch}
               onChange={(e) => setPickerSearch(e.target.value)} />
           </div>
-          {pickerList.map((t) => (
-            <div key={t.id} className="picker-row studio-picker-row">
+          {(layerSugs.vocals.length > 0 || layerSugs.beds.length > 0) && !pickerSearch && (
+            <div className="layer-sugs">
+              {[["vocals", "Second vocal over this bed", "VOX"], ["beds", "Another bed under this vocal", "BED"]]
+                .filter(([k]) => layerSugs[k].length)
+                .map(([k, label, tag]) => (
+                  <div key={k} className="layer-sug-group">
+                    <div className="micro-label">{label} <span className="faint">— scored by the matcher</span></div>
+                    {layerSugs[k].map((c) => {
+                      const sid = k === "vocals" ? c.vocal_song_id : c.inst_song_id;
+                      return (
+                        <button key={`${k}${sid}`} className="layer-sug" onClick={() => addLayer(k, c)}
+                          title={c.reason || ""}>
+                          <span className={`pc-role mono ${tag.toLowerCase()}`}>{tag}</span>
+                          <span className="t">{k === "vocals" ? c.vocal_title : c.inst_title}</span>
+                          <span className="a">{k === "vocals" ? c.vocal_artist : c.inst_artist}</span>
+                          <span className="mono faint">{k === "vocals" ? c.vocal_section_label : c.inst_section_label}</span>
+                          <span className="mono layer-pct">{Math.round((c.score_percentile ?? c.score_total ?? 0) * 100)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+            </div>
+          )}
+          {pickerList.map(({ t, fit }) => (
+            <div key={t.id} className={`picker-row studio-picker-row${onTimeline.has(t.id) ? " on-timeline" : ""}`}>
               <TrackArt id={t.id} thumbnail={t.thumbnail} className="art" />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="t">{t.title}</div>
@@ -1986,6 +2090,12 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
               </div>
               {t.features?.full?.camelot && (
                 <KeyChip camelot={t.features.full.camelot} style={{ fontSize: 11, padding: "2px 6px" }} />
+              )}
+              {fit && (
+                <span className={`picker-fit mono${fit.cost <= 2 ? " good" : fit.cost <= 4 ? " ok" : ""}`}
+                  title="Fit to the timeline: stretch to the project tempo · Camelot steps from the first lane's key as played">
+                  {fit.tempo != null ? `${fit.tempo.toFixed(1)}%` : "?"} · {fit.steps != null ? `${fit.steps} step${fit.steps === 1 ? "" : "s"}` : "?"}
+                </span>
               )}
               <div className="studio-stem-btns">
                 {STEM_ORDER.filter((s) => t.stems?.[s]
@@ -1999,7 +2109,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
               </div>
             </div>
           ))}
-          {pickerList.length === 0 && <div className="empty" style={{ padding: 12 }}>No processed tracks yet — import some in the Import tab.</div>}
+          {pickerList.length === 0 && <div className="empty" style={{ padding: 12 }}>No processed tracks yet — import some from the Library's + Import.</div>}
         </div>
       )}
     </div>

@@ -19,6 +19,9 @@ const KEYS = [
 const MIN_MATCH = [[0, "Any"], [0.5, "top 50%"], [0.75, "top 25%"], [0.9, "top 10%"]];
 const EFFORT = [[null, "Any"], [0.25, "Free builds only"], [0.5, "Free or light"]];
 const EXPORT_N = [5, 10, 16];
+const RATED = [["", "Any"], ["rated", "Rated by you"], ["loved", "Loved (4–5★)"],
+               ["unrated", "Not rated yet"]];
+const CAMELOT = Array.from({ length: 12 }, (_, i) => [`${i + 1}A`, `${i + 1}B`]).flat();
 
 export function PairDock({ dock, ratings, scopeTitle, role, onRole,
                           onAddToSet = null, setName = null }) {
@@ -106,6 +109,11 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Escape") { setSearch(""); e.currentTarget.blur(); } }}
           title="Title or artist, on either side — searched across every scored pair, not just this page" />
+        <button className={`pd-keepers mono${filters.rated === "loved" ? " on" : ""}`}
+          onClick={() => setFilters({ rated: filters.rated === "loved" ? "" : "loved" })}
+          title="Your keepers: only the pairs you rated 4–5 stars, every section pairing of them, uncapped">
+          ★ Keepers
+        </button>
         <button className={`pd-filterbtn mono${open ? " on" : ""}${nActive ? " active" : ""}`}
           onClick={() => setOpen((v) => !v)}
           title="Narrow the pairs: match, build effort, genre, era, tempo, energy, vocal-forward">
@@ -152,6 +160,36 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
               {(options?.energy_bands || []).map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
           </label>
+          <label title="Your judgements: keepers (rated, or loved at 4–5 stars) or what you have not judged yet">Rated
+            <select value={filters.rated} onChange={(e) => setFilters({ rated: e.target.value })}>
+              {RATED.map(([v, l]) => <option key={l} value={v}>{l}</option>)}
+            </select>
+          </label>
+          <label title="The key the mashup lands in — the vocal's, since the bed is transposed to it. For a slot in a set: 'lands in 8A ±1'.">Lands in
+            <span className="pd-keypick">
+              <select value={filters.key} onChange={(e) => setFilters({ key: e.target.value })}>
+                <option value="">Any key</option>
+                {CAMELOT.map((c) => <option key={c} value={c}>{c}</option>)}
+              </select>
+              <select value={filters.keyTol} disabled={!filters.key}
+                onChange={(e) => setFilters({ keyTol: Number(e.target.value) })}
+                title="Camelot steps either way (relative major/minor count as the same place)">
+                {[0, 1, 2].map((n) => <option key={n} value={n}>{n ? `±${n}` : "exact"}</option>)}
+              </select>
+            </span>
+          </label>
+          <label title="Which section of the vocal plays">Vocal part
+            <select value={filters.vocalLabel} onChange={(e) => setFilters({ vocalLabel: e.target.value })}>
+              <option value="">Any</option>
+              {(options?.vocal_labels || []).map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </label>
+          <label title="Which section of the bed plays under it">Bed part
+            <select value={filters.instLabel} onChange={(e) => setFilters({ instLabel: e.target.value })}>
+              <option value="">Any</option>
+              {(options?.inst_labels || []).map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </label>
           <label className="pd-check" title="Only pairs whose vocal section has a strong, forward voice">
             <input type="checkbox" checked={filters.vocalForward}
               onChange={(e) => setFilters({ vocalForward: e.target.checked })} />
@@ -196,6 +234,20 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
                   target="_blank" rel="noreferrer">↓ zip</a>
               )}
             </span>
+          </div>
+          <div className="pd-filteractions pd-plainexport">
+            <span className="faint">Top {exportN} as</span>
+            {[["csv", "CSV", "One row per pair: both sides, sections, landing key and tempo, bed transpose, harmony, note"],
+              ["cue", "cue sheet", "A timed running order you can read or paste into a tracklist"],
+              ["rekordbox", "rekordbox", "rekordbox XML: each vocal's acapella and each bed, with a beat grid and a hot cue at the paired section"]]
+              .map(([fmt, label, why]) => (
+                <button key={fmt} title={why} disabled={!rows.length || perVocal}
+                  onClick={() => api.exportPairs(rows.slice(0, exportN), fmt, "pairs")
+                    .then((r) => r.skipped && toast(`${r.skipped} track(s) skipped — no audio on disk`))
+                    .catch((e) => toast(`Export failed: ${e.message}`))}>
+                  {label}
+                </button>
+              ))}
           </div>
         </div>
       )}

@@ -8,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from database.models import (
+    RATED_FILTERS,
     get_conn,
     BPM_BANDS, ENERGY_BANDS, ERA_BANDS, VERDICTS, best_bed_per_vocal,
     candidate_filter_options, exclude_track, get_candidates_enriched,
@@ -162,7 +163,9 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     max_effort: Optional[float] = None,
                     order: str = "score",
                     adventure: float = 0.0,
-                    search: str = "", offset: int = 0) -> dict:
+                    search: str = "", offset: int = 0,
+                    rated: str = "", key: str = "", key_tolerance: int = 1,
+                    vocal_label: str = "", inst_label: str = "") -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -193,15 +196,27 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
             raise HTTPException(
                 status_code=400,
                 detail=f"{name} must be one of {sorted(allowed)}")
-    rows = get_candidates_enriched(
-        combo_type=combo_type, min_score=min_score,
-        limit=max(1, min(limit, 500)),
-        vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
-        max_per_song=max_per_song,
-        genre=genre, era=era, energy=energy, bpm_band=bpm_band,
-        vocal_forward=vocal_forward, max_effort=max_effort, order=order,
-        search=search[:100], offset=offset,
-    )
+    if rated and rated not in RATED_FILTERS:
+        raise HTTPException(status_code=400,
+                            detail=f"rated must be one of {sorted(RATED_FILTERS)}")
+    keepers = rated in ("rated", "loved")
+    try:
+        rows = get_candidates_enriched(
+            combo_type=combo_type, min_score=min_score,
+            limit=max(1, min(limit, 500)),
+            vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
+            # Your own keepers are listed whole: capping them would hide
+            # pairs you rated, and every section pairing you judged.
+            max_per_song=0 if keepers else max_per_song,
+            max_per_song_pair=0 if keepers else 1,
+            genre=genre, era=era, energy=energy, bpm_band=bpm_band,
+            vocal_forward=vocal_forward, max_effort=max_effort, order=order,
+            search=search[:100], offset=offset,
+            rated=rated, key=key, key_tolerance=key_tolerance,
+            vocal_label=vocal_label, inst_label=inst_label,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     rows = _with_reasons(_with_playback_terms(rows))
     if adventure > 0 and order == "score":
         rows = _reorder_by_surprise(rows, adventure)
