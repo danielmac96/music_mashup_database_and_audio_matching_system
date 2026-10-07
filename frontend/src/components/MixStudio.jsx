@@ -87,7 +87,8 @@ let laneUid = 1;
 // audio. ONE list, read by the saved project, snapshots and undo, so a lane
 // property added later (fades, filters) is kept by all three or by none.
 const LANE_KEYS = ["songId", "stem", "offsetSec", "rate", "semitones", "gain",
-  "muted", "synced", "colorIdx", "clipStart", "clipEnd"];
+  "muted", "synced", "colorIdx", "clipStart", "clipEnd",
+  "fadeIn", "fadeOut", "hpHz", "lpHz"];
 const laneState = (l) => Object.fromEntries(LANE_KEYS.map((k) => [k, l[k]]));
 
 function readSnapshots() {
@@ -619,6 +620,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       gain: saved.gain ?? 0.8,
       muted: saved.muted ?? false,
       synced: saved.synced ?? false,
+      // Fades (seconds) and filters (Hz, 0 = off): the bass swap and the
+      // breakdown the matcher's advice keeps asking for.
+      fadeIn: saved.fadeIn ?? 0, fadeOut: saved.fadeOut ?? 0,
+      hpHz: saved.hpHz ?? 0, lpHz: saved.lpHz ?? 0,
       waveform: [], beatTimes: [], beatPhase: 0, sections: [],
       buffer: null, rawDur: track.duration_secs || 0,
       loading: true, loadError: null,
@@ -745,6 +750,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
           buffer: l.buffer, offsetSec: l.offsetSec, rate: l.rate,
           semitones: l.semitones, gain: gainFor(l, idx),
           clipStartSec: l.clipStart ?? 0, clipEndSec: l.clipEnd ?? null,
+          fadeInSec: l.fadeIn || 0, fadeOutSec: l.fadeOut || 0,
+          hpHz: l.hpHz || 0, lpHz: l.lpHz || 0,
         });
         structural = true; // new voice needs arming if we're mid-playback
       } else {
@@ -755,6 +762,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
           rate: l.rate, offsetSec: l.offsetSec,
           semitones: l.semitones, gain: gainFor(l, idx),
           clipStartSec: l.clipStart ?? 0, clipEndSec: l.clipEnd ?? null,
+          fadeInSec: l.fadeIn || 0, fadeOutSec: l.fadeOut || 0,
+          hpHz: l.hpHz || 0, lpHz: l.lpHz || 0,
         });
       }
     });
@@ -908,6 +917,70 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     setPicker(false);
     toast(`Layered ${track.title} — ${c.reason || "placed at the scored section"}`);
   }, [tracks, projectBpm, addLane]);
+
+  // ── undo / redo ─────────────────────────────────────────────────────────
+  // Over the arrangement (every lane's laneState and the project tempo), not
+  // over UI state. Debounced: a slider drag or a clip drag settles into ONE
+  // step. Restoring patches lanes in place by id — audio already decoded stays
+  // loaded — and re-adds a lane an undo brings back.
+  const histRef = useRef({ past: [], future: [], last: null, skip: false });
+  const [hist, setHist] = useState({ canUndo: false, canRedo: false });
+  const syncHist = () => {
+    const h = histRef.current;
+    setHist({ canUndo: h.past.length > 0, canRedo: h.future.length > 0 });
+  };
+  const histSnapshot = useCallback(() => JSON.stringify({
+    bpm: projectBpm, lanes: lanesRef.current.map((l) => ({ id: l.id, ...laneState(l) })),
+  }), [projectBpm]);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const h = histRef.current;
+      const now = histSnapshot();
+      if (h.skip) { h.skip = false; h.last = now; return; }
+      if (h.last != null && now !== h.last) {
+        h.past.push(h.last);
+        if (h.past.length > 100) h.past.shift();
+        h.future = [];
+        syncHist();
+      }
+      h.last = now;
+    }, 350);
+    return () => clearTimeout(t);
+  }, [lanes, projectBpm, histSnapshot]);
+
+  const applyHist = useCallback((json) => {
+    const st = JSON.parse(json);
+    const h = histRef.current;
+    h.skip = true;
+    h.last = json;
+    if (st.bpm) setProjectBpm(st.bpm);
+    const cur = lanesRef.current;
+    const want = new Set(st.lanes.map((l) => l.id));
+    for (const l of cur) if (!want.has(l.id)) engineRef.current?.removeVoice(l.id);
+    const kept = st.lanes.filter((s) => cur.some((c) => c.id === s.id));
+    setLanes(kept.map((s) => ({ ...cur.find((c) => c.id === s.id), ...s })));
+    for (const s of st.lanes) {
+      if (cur.some((c) => c.id === s.id)) continue;
+      const t = tracks.find((x) => x.id === s.songId);
+      if (t) addLane(t, s.stem, s);
+    }
+  }, [tracks, addLane]);
+
+  const undo = useCallback(() => {
+    const h = histRef.current;
+    if (!h.past.length) return;
+    const now = histSnapshot();
+    h.future.push(now);
+    applyHist(h.past.pop());
+    syncHist();
+  }, [applyHist, histSnapshot]);
+  const redo = useCallback(() => {
+    const h = histRef.current;
+    if (!h.future.length) return;
+    h.past.push(histSnapshot());
+    applyHist(h.future.pop());
+    syncHist();
+  }, [applyHist, histSnapshot]);
 
   // ── persistence (localStorage, debounced) ───────────────────────────────
   // Saving stays OFF until the restore finishes — otherwise the empty initial
@@ -1440,6 +1513,13 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     const onKey = (e) => {
       const tag = e.target?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        if (e.shiftKey) redo(); else undo();
+        return;
+      }
+      if (mod && (e.key === "y" || e.key === "Y")) { e.preventDefault(); redo(); return; }
       if (e.code === "Space") {
         e.preventDefault();
         togglePlay();
@@ -1489,8 +1569,15 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       .map((l) => {
         const { cs, ce, trimmed } = clipRangeOf(l);
         return {
-          song_id: l.songId, stem: l.stem, offset_sec: l.offsetSec,
+          song_id: l.songId, stem: l.stem,
+          // build_mixdown places the FIRST RENDERED SAMPLE at offset_sec. With
+          // a trim that is the trim start, which Studio plays at
+          // offsetSec + clipStart / rate — sending offsetSec alone rendered
+          // every trimmed lane (every pair opened from the dock) early.
+          offset_sec: trimmed ? l.offsetSec + cs / (l.rate || 1) : l.offsetSec,
           rate: l.rate, semitones: l.semitones, gain: l.gain,
+          fade_in: l.fadeIn || 0, fade_out: l.fadeOut || 0,
+          hp_hz: l.hpHz || 0, lp_hz: l.lpHz || 0,
           // Send a trim only when there is one. An untrimmed clip must reach
           // build_mixdown with start/end absent, which is how it reads "play
           // the whole stem" — a clip that starts at 0.0 is a different
@@ -1593,6 +1680,17 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   const bedLane = pairLanes?.bed ?? null;
   const vocalLane = pairLanes?.vocal ?? null;
   const selectedLane = lanes.find((l) => l.id === selectedId) || null;
+  // Where the bed sits against the vocal with the two SECTIONS lined up and no
+  // nudge. The rail's nudge is measured from here, so it reads as the few ms
+  // you actually slid it — not the 23 s between where the two sections happen
+  // to sit in their songs, which pinned the slider at its end.
+  const nudgeBase = (activeOption && vocalLane && bedLane && usableOption(activeOption))
+    ? (() => {
+        const p = placementFor({ ...activeOption, alignment_offset: 0 },
+          vocalLane.rate, bedLane.rate);
+        return p.bed.offsetSec - p.vocal.offsetSec;
+      })()
+    : 0;
   const buildRating = activeOption ? (optionRatings[verdictKey(activeOption)] ?? null) : null;
   // "edited" means the arrangement has diverged from the recipe the matcher
   // handed over, not merely that something was touched.
@@ -1798,6 +1896,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
 
         <span className="spacer" style={{ flex: 1 }} />
 
+        <button className="studio-btn" onClick={undo} disabled={!hist.canUndo}
+          title="Undo (ctrl/⌘+Z)">↶</button>
+        <button className="studio-btn" onClick={redo} disabled={!hist.canRedo}
+          title="Redo (shift+ctrl/⌘+Z or ctrl+Y)">↷</button>
         <button className="studio-btn" onClick={clearProject} disabled={lanes.length === 0}
           title="Remove all lanes and clear the saved project">✕ clear</button>
       </div>
@@ -1823,7 +1925,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                   title={o.reason
                     || `${o.vocal_section_label} over ${o.inst_section_label}`}>
                   <span className="tp-n">{i + 1}</span>
-                  {o.vocal_section_label || "vocal"} ▸ {o.inst_section_label || "bed"}
+                  {o.vocal_section_label || "vocal"} {fmtTime(o.vocal_section_start ?? 0)} ▸ {o.inst_section_label || "bed"} {fmtTime(o.inst_section_start ?? 0)}
                   {o.score_section != null && (
                     <span className="tp-fit">{Math.round(o.score_section * 100)}%</span>
                   )}
@@ -2042,6 +2144,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
           inst_section_idx: activeOption.inst_section_idx ?? null,
         }) : null}
         setName={setName}
+        nudgeBase={nudgeBase}
         dirty={dirty} />
       </div>
 

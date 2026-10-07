@@ -456,3 +456,61 @@ def test_library_summarises_each_track_as_mashup_material(one_vocal_many_beds):
     table = _read("components/TrackTable.jsx")
     assert 'id: "mash"' in table and "function ShapeThumb" in table
     assert "best: (t) => t.mash?.best_pct" in _read("hooks/useLibraryFilters.js")
+
+
+# ── 14 / 15. track detail strip, Studio fades/filters/undo/export ───────────
+
+def test_structure_strip_has_a_bar_ruler_energy_curve_and_key_lane():
+    strip = _read("components/StructureStrip.jsx")
+    assert "struct-ruler" in strip and "downbeats" in strip
+    assert "struct-energy" in strip and "struct-keys" in strip
+
+
+def test_render_fades_and_filters():
+    import numpy as np
+    from render.dsp import apply_fades, apply_filters
+    sr = 8000
+    y = np.ones(sr, dtype="float32")
+    f = apply_fades(y, sr, fade_in=0.5, fade_out=0.25)
+    assert f[0] == 0.0 and abs(f[sr // 2] - 1.0) < 1e-6 and f[-1] == 0.0
+    assert abs(f[sr // 4] - 0.5) < 0.01
+    assert apply_fades(y, sr) is not None and np.array_equal(apply_fades(y, sr), y)
+    t = np.arange(sr) / sr
+    low = np.sin(2 * np.pi * 50 * t).astype("float32")
+    hp = apply_filters(low, sr, hp_hz=500)
+    assert np.sqrt(np.mean(hp[sr // 2:] ** 2)) < 0.05, "50 Hz is cut by a 500 Hz high-pass"
+    assert apply_filters(low, sr) is low, "0 Hz means off"
+
+
+def test_mixdown_applies_lane_fades_and_filters(tmp_path, monkeypatch):
+    import numpy as np
+    import soundfile as sf
+    from render import mixdown
+    src = tmp_path / "a.wav"
+    sf.write(src, np.ones(mixdown.MIXDOWN_SR * 2, dtype="float32") * 0.5, mixdown.MIXDOWN_SR)
+    monkeypatch.setattr(mixdown, "resolve_stem_path", lambda *a, **k: src)
+    monkeypatch.setattr(mixdown, "PREVIEWS_DIR", tmp_path)
+    out = mixdown.build_mixdown("0123456789abcdef0123456789abcdef", [{"song_id": 1, "stem": "full", "offset_sec": 0.5,
+                                          "rate": 1, "semitones": 0, "gain": 1.0,
+                                          "fade_in": 1.0}])
+    y, sr = sf.read(out)
+    assert abs(y[int(0.5 * sr)]) < 1e-3, "the clip starts at its offset, faded in from silence"
+    assert abs(y[int(2.0 * sr)] - 0.5) < 1e-3
+
+
+def test_studio_export_places_a_trimmed_clip_where_studio_plays_it():
+    studio = _read("components/MixStudio.jsx")
+    assert "offset_sec: trimmed ? l.offsetSec + cs / (l.rate || 1) : l.offsetSec" in studio
+    assert "fade_in: l.fadeIn || 0" in studio and "hp_hz: l.hpHz || 0" in studio
+
+
+def test_studio_lanes_carry_fades_filters_and_undo():
+    studio, rail = _read("components/MixStudio.jsx"), _read("components/StudioRail.jsx")
+    engine = (SRC / "engine" / "MashupEngine.js").read_text(encoding="utf-8")
+    for k in ('"fadeIn"', '"fadeOut"', '"hpHz"', '"lpHz"'):
+        assert k in studio
+    assert "createBiquadFilter" in engine and "_fadeAt" in engine
+    assert "const undo = useCallback" in studio and 'e.key === "z"' in studio
+    assert "LOW_CUTS" in rail and "nudgeBase" in rail
+    # The pills say WHICH chorus and drop.
+    assert "fmtTime(o.vocal_section_start ?? 0)" in studio

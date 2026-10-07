@@ -155,6 +155,38 @@ def conform(y, sr: int, rate: float, semitones: int,
     return y
 
 
+def apply_filters(y, sr: int, hp_hz: float = 0.0, lp_hz: float = 0.0):
+    """High-pass and/or low-pass, 2nd-order Butterworth (12 dB/oct) — the
+    same slope as Studio's Web Audio biquads (Q 0.707), so the render sounds
+    like the browser did. 0 means off."""
+    if not (hp_hz and hp_hz > 0) and not (lp_hz and lp_hz > 0):
+        return y
+    from scipy.signal import butter, sosfilt
+    nyq = sr / 2.0
+    if hp_hz and hp_hz > 0:
+        y = sosfilt(butter(2, min(hp_hz, nyq * 0.99) / nyq, "highpass", output="sos"), y)
+    if lp_hz and lp_hz > 0:
+        y = sosfilt(butter(2, min(lp_hz, nyq * 0.99) / nyq, "lowpass", output="sos"), y)
+    return y.astype("float32")
+
+
+def apply_fades(y, sr: int, fade_in: float = 0.0, fade_out: float = 0.0):
+    """Linear fade-in at the head and fade-out at the tail, in seconds of the
+    rendered (conformed) clip — Studio's fades are in timeline time too."""
+    np, _librosa, _sf = require_audio_stack()
+    n = len(y)
+    if n == 0:
+        return y
+    y = np.array(y, dtype="float32", copy=True)
+    if fade_in and fade_in > 0:
+        k = min(n, int(round(fade_in * sr)))
+        y[:k] *= np.linspace(0.0, 1.0, k, endpoint=False, dtype="float32")
+    if fade_out and fade_out > 0:
+        k = min(n, int(round(fade_out * sr)))
+        y[n - k:] *= np.linspace(1.0, 0.0, k, dtype="float32")
+    return y
+
+
 def peak_normalise(mix):
     """Scale down to unity only if the sum clipped. Never boosts a quiet mix."""
     _np, _librosa, _sf = require_audio_stack()

@@ -1,4 +1,4 @@
-import { useCallback, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { envelopePoints, useWaveform } from "../hooks/useWaveform";
 import { fmtTime } from "../theme";
 
@@ -71,8 +71,45 @@ export function StructureStrip({ songId, sections, duration, loop, position,
   });
 
   const bars = sections.reduce((n, s) => n + (s.bar_count || 0), 0);
+
   const phrase = sections.find((s) => s.phrase_length_bars)?.phrase_length_bars;
   const fill = WAVE_FILL[stem] || WAVE_FILL.full;
+
+  // The bar ruler: every stored downbeat, numbered from 1 in order, with the
+  // phrase starts labelled — so "a 16-bar chorus at bar 33" is on the
+  // waveform rather than only in the table below it.
+  const downbeats = useMemo(() => {
+    const out = [];
+    for (const s of sections) {
+      let d = s.downbeats;
+      if (typeof d === "string") { try { d = JSON.parse(d); } catch { d = null; } }
+      for (const t of d || []) {
+        if (!out.length || t - out[out.length - 1] > 0.25) out.push(t);
+      }
+    }
+    return out;
+  }, [sections]);
+  const phraseEvery = Math.max(4, Math.round(phrase || 8));
+  const labelEvery = total > 0 && downbeats.length > 96 ? phraseEvery * 2 : phraseEvery;
+
+  // Energy across the track as a step curve over the waveform (each
+  // section's energy relative to the loudest), and the key of each section in
+  // a lane beneath it — one energy tile per track said nothing about the drop.
+  const energyPts = useMemo(() => {
+    const e = sections.map((s) => s.energy_absolute ?? s.energy);
+    const max = Math.max(...e.filter((x) => x != null), 0);
+    if (!(max > 0)) return null;
+    const pts = [];
+    sections.forEach((s, i) => {
+      if (e[i] == null) return;
+      const y = 74 - 66 * (e[i] / max);
+      pts.push(`${(pct(s.start_sec) * 10).toFixed(1)},${y.toFixed(1)}`,
+               `${(pct(s.end_sec) * 10).toFixed(1)},${y.toFixed(1)}`);
+    });
+    return pts.join(" ");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sections, total]);
+  const keysVary = new Set(sections.map((s) => s.camelot).filter(Boolean)).size > 1;
 
   // Click or drag the waveform to move the playhead. The red line was a readout
   // with nothing listening to it.
@@ -116,6 +153,16 @@ export function StructureStrip({ songId, sections, duration, loop, position,
       </div>
 
       <div className="struct-body">
+        {downbeats.length > 0 && (
+          <div className="struct-ruler mono" aria-label="bar ruler">
+            {downbeats.map((t, i) => (
+              <span key={i} className={`struct-bar${i % phraseEvery === 0 ? " phrase" : ""}`}
+                style={{ left: `${pct(t)}%` }}>
+                {i % labelEvery === 0 ? <b>{i + 1}</b> : null}
+              </span>
+            ))}
+          </div>
+        )}
         <div className="struct-labels">
           {sections.map((s) => (
             <button key={s.section_index} style={span(s)}
@@ -144,6 +191,10 @@ export function StructureStrip({ songId, sections, duration, loop, position,
               <polygon points={envelopePoints(vox.waveform, 1000, 78)}
                 fill={`rgba(167,139,250,${fill.vox})`} />
             )}
+            {energyPts && (
+              <polyline className="struct-energy" points={energyPts} fill="none"
+                stroke="var(--amber)" strokeWidth="2" vectorEffect="non-scaling-stroke" />
+            )}
           </svg>
 
           <div className="struct-dividers">
@@ -171,6 +222,17 @@ export function StructureStrip({ songId, sections, duration, loop, position,
           )}
         </div>
 
+        {sections.some((s) => s.camelot) && (
+          <div className={`struct-keys mono${keysVary ? "" : " steady"}`}>
+            {sections.map((s) => (
+              <span key={s.section_index} style={span(s)}
+                title={`${s.label || "section"}: ${s.camelot || "key unmeasured"}${s.key_confidence != null ? ` (confidence ${Math.round(s.key_confidence * 100)}%)` : ""}`}>
+                {s.camelot || "·"}
+              </span>
+            ))}
+          </div>
+        )}
+
         <div className="struct-legend mono">
           <span className={stem === "vocals" ? "live" : ""}>
             <i style={{ color: "var(--violet)" }}>▬</i> vocal stem
@@ -178,6 +240,10 @@ export function StructureStrip({ songId, sections, duration, loop, position,
           <span className={stem === "instrumental" ? "live" : ""}>
             <i style={{ color: "var(--cyan)" }}>▬</i> instrumental stem
           </span>
+          {energyPts && (
+            <span><i style={{ color: "var(--amber)" }}>━</i> section energy</span>
+          )}
+          {keysVary && <span>key changes between sections</span>}
           {loop && (
             <span>
               <i style={{ color: "var(--accent)" }}>▮</i>

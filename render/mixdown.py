@@ -23,7 +23,8 @@ from typing import Optional
 from config import PREVIEWS_DIR
 from render.dsp import (
     MAX_CLIPS, MAX_RENDER_SECS, RENDER_SR, STEM_TYPES, AudioStackMissing,
-    ProgressCb, clamp_gain, clamp_rate, clamp_semitones, conform, is_valid_token,
+    ProgressCb, apply_fades, apply_filters, clamp_gain, clamp_rate,
+    clamp_semitones, conform, is_valid_token,
     load_segment, peak_normalise, require_audio_stack, resolve_stem_path,
 )
 
@@ -52,6 +53,10 @@ def build_mixdown(token: str, clips: list[dict],
         song_id: int, stem: str, offset_sec: float,
         rate: float (>0), semitones: int, gain: float (linear),
         start_sec: float | None, end_sec: float | None   (trim, optional)
+        fade_in / fade_out: float seconds, hp_hz / lp_hz: float (0 = off)
+
+    `offset_sec` is where the clip's FIRST RENDERED SAMPLE lands — the trim
+    start when there is a trim, not where the stem's 0:00 would sit.
 
     `start_sec`/`end_sec` take a SECTION out of the stem rather than playing it
     whole — what a candidate preview needs. Omitted, the clip behaves exactly
@@ -116,6 +121,10 @@ def build_mixdown(token: str, clips: list[dict],
                          max_secs=MAX_MIXDOWN_SECS, rate=rate)
         y = conform(y, MIXDOWN_SR, rate, semitones,
                     on_progress=on_progress, label=label)
+        y = apply_filters(y, MIXDOWN_SR, float(c.get("hp_hz") or 0.0),
+                          float(c.get("lp_hz") or 0.0))
+        y = apply_fades(y, MIXDOWN_SR, float(c.get("fade_in") or 0.0),
+                        float(c.get("fade_out") or 0.0))
 
         start = int(round((offset - base) * MIXDOWN_SR))
         rendered.append((start, y, gain))

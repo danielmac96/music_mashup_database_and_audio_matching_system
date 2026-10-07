@@ -83,14 +83,29 @@ export class MashupEngine {
   // (1.0 for an un-stretched voice, the stretch factor for the anchored one);
   // `semitones` is the pitch offset. Changing config while playing re-arms the
   // voices from the current position so the new settings take effect in sync.
+  //
+  // Per voice: SoundTouch → high-pass → low-pass → fade → gain → master. The
+  // filters are the bass swap the app keeps advising ("high-pass the bed") and
+  // a dark low-pass for breakdowns; 0 Hz means off. Fades are seconds at the
+  // clip's head and tail, in display (timeline) time.
   setVoice(role, { buffer, offsetSec = 0, rate = 1, semitones = 0, gain = 1,
-                   clipStartSec = 0, clipEndSec = null }) {
+                   clipStartSec = 0, clipEndSec = null,
+                   fadeInSec = 0, fadeOutSec = 0, hpHz = 0, lpHz = 0 }) {
     const existing = this.voices.get(role);
     const gainNode = existing?.gainNode ?? this.ctx.createGain();
     gainNode.gain.value = gain;
     if (!existing) gainNode.connect(this.master);
+    let { hp, lp, fade } = existing || {};
+    if (!hp) {
+      hp = this.ctx.createBiquadFilter(); hp.type = "highpass"; hp.Q.value = 0.707;
+      lp = this.ctx.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = 0.707;
+      fade = this.ctx.createGain();
+      hp.connect(lp); lp.connect(fade); fade.connect(gainNode);
+    }
+    this._setFilters(hp, lp, hpHz, lpHz);
     this.voices.set(role, {
       buffer, offsetSec, rate, semitones, gainNode, clipStartSec, clipEndSec,
+      hp, lp, fade, fadeInSec, fadeOutSec, hpHz, lpHz,
       loop: existing?.loop ?? null,          // per-voice loop {start,end} (display secs)
       src: existing?.src ?? null, st: existing?.st ?? null,
       _armWhen: 0, _looped: false, _loopPhase: 0, // filled at arm for voicePosition()
@@ -98,11 +113,29 @@ export class MashupEngine {
     });
   }
 
+  _setFilters(hp, lp, hpHz, lpHz) {
+    const nyq = this.ctx.sampleRate / 2;
+    hp.frequency.value = hpHz > 0 ? Math.min(hpHz, nyq - 100) : 10;
+    lp.frequency.value = lpHz > 0 ? Math.min(lpHz, nyq - 100) : nyq - 100;
+  }
+
+  // The fade envelope at display time t: 0..1, ramping in over fadeInSec from
+  // the clip's head and out over fadeOutSec to its tail.
+  _fadeAt(v, t) {
+    const head = v.offsetSec + this._clipStart(v) / v.rate;
+    const tail = v.offsetSec + this._clipEnd(v) / v.rate;
+    let g = 1;
+    if (v.fadeInSec > 0) g = Math.min(g, (t - head) / v.fadeInSec);
+    if (v.fadeOutSec > 0) g = Math.min(g, (tail - t) / v.fadeOutSec);
+    return Math.max(0, Math.min(1, g));
+  }
+
   removeVoice(role) {
     const v = this.voices.get(role);
     if (!v) return;
     this._stopVoice(v);
     try { v.gainNode.disconnect(); } catch { /* already gone */ }
+    for (const n of [v.hp, v.lp, v.fade]) { try { n?.disconnect(); } catch { /* gone */ } }
     this.voices.delete(role);
   }
 
@@ -155,10 +188,18 @@ export class MashupEngine {
   // change in place (SoundTouch handles it); rate/offset changes require a
   // re-arm because they remap the whole timeline.
   updateVoiceParams(role, { rate, semitones, offsetSec, gain,
-                            clipStartSec, clipEndSec }) {
+                            clipStartSec, clipEndSec,
+                            fadeInSec, fadeOutSec, hpHz, lpHz }) {
     const v = this.voices.get(role);
     if (!v) return;
     let needsRearm = false;
+    // Filters apply in place; a fade change re-arms so its ramps are rescheduled.
+    if ((hpHz !== undefined && hpHz !== v.hpHz) || (lpHz !== undefined && lpHz !== v.lpHz)) {
+      v.hpHz = hpHz ?? v.hpHz; v.lpHz = lpHz ?? v.lpHz;
+      this._setFilters(v.hp, v.lp, v.hpHz, v.lpHz);
+    }
+    if (fadeInSec !== undefined && fadeInSec !== v.fadeInSec) { v.fadeInSec = fadeInSec; needsRearm = true; }
+    if (fadeOutSec !== undefined && fadeOutSec !== v.fadeOutSec) { v.fadeOutSec = fadeOutSec; needsRearm = true; }
     if (rate != null && rate !== v.rate) { v.rate = rate; needsRearm = true; }
     if (offsetSec != null && offsetSec !== v.offsetSec) { v.offsetSec = offsetSec; needsRearm = true; }
     // A trim change remaps where the voice reads from, exactly like an offset
@@ -312,7 +353,28 @@ export class MashupEngine {
     st.playbackRate.value = v.rate;          // mirror source rate so pitch is corrected
     st.pitchSemitones.value = v.semitones;   // decoupled key shift
     src.connect(st);
-    st.connect(v.gainNode);
+    st.connect(v.hp);
+    // Fades: baked into the loop image under a loop (it repeats), scheduled as
+    // gain ramps on a linear pass.
+    const fg = v.fade.gain;
+    fg.cancelScheduledValues(0);
+    fg.setValueAtTime(1, this.ctx.currentTime);
+    if (!loop && (v.fadeInSec > 0 || v.fadeOutSec > 0)) {
+      const at = (t) => when + Math.max(0, t - pos);
+      const head = v.offsetSec + clipStart / v.rate, tail = v.offsetSec + clipEnd / v.rate;
+      fg.setValueAtTime(this._fadeAt(v, Math.max(pos, head)), when);
+      if (v.fadeInSec > 0 && pos < head + v.fadeInSec) {
+        // Hold silence until the head, THEN ramp — a ramp from `when` would be
+        // half done before the clip makes a sound.
+        if (pos < head) fg.setValueAtTime(0, at(head));
+        fg.linearRampToValueAtTime(1, at(head + v.fadeInSec));
+      }
+      if (v.fadeOutSec > 0 && pos < tail) {
+        const from = Math.max(pos, tail - v.fadeOutSec);
+        fg.setValueAtTime(this._fadeAt(v, from), at(from));
+        fg.linearRampToValueAtTime(0, at(tail));
+      }
+    }
 
     if (loop) {
       const len = loop.end - loop.start;
@@ -351,7 +413,8 @@ export class MashupEngine {
    *  re-copy the samples. */
   _loopImage(v, loop) {
     const clipStart = this._clipStart(v), clipEnd = this._clipEnd(v);
-    const key = [v.offsetSec, v.rate, clipStart, clipEnd, loop.start, loop.end].join("|");
+    const key = [v.offsetSec, v.rate, clipStart, clipEnd, loop.start, loop.end,
+                 v.fadeInSec, v.fadeOutSec].join("|");
     if (v._img && v._img.buffer === v.buffer && v._img.key === key) return v._img.image;
 
     const buf = v.buffer, sr = buf.sampleRate;
@@ -372,6 +435,14 @@ export class MashupEngine {
       if (n > 0) {
         for (let ch = 0; ch < buf.numberOfChannels; ch++) {
           image.copyToChannel(buf.getChannelData(ch).subarray(from, from + n), ch, dst);
+        }
+        if (v.fadeInSec > 0 || v.fadeOutSec > 0) {
+          for (let ch = 0; ch < image.numberOfChannels; ch++) {
+            const d = image.getChannelData(ch);
+            for (let i = dst; i < dst + n; i++) {
+              d[i] *= this._fadeAt(v, v.offsetSec + (lsRaw + i / sr) / v.rate);
+            }
+          }
         }
       }
     }

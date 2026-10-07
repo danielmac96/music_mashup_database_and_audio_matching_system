@@ -3141,3 +3141,30 @@ input, select { font-family: inherit; }
 .tt-mash { display: flex; align-items: center; gap: 6px; }
 .tt-mash .tt-shape { flex: 1; min-width: 0; }
 .tt-best { font-size: 11px; color: var(--text-2); width: 20px; text-align: right; flex: none; }
+
+/* ── Structure strip: bar ruler, energy curve, key lane ──────────────────── */
+.struct-ruler { position: relative; height: 14px; margin-bottom: 4px; }
+.struct-bar {
+  position: absolute; bottom: 0; width: 1px; height: 4px; background: var(--faint-2);
+}
+.struct-bar.phrase { height: 8px; background: var(--faint); }
+.struct-bar b {
+  position: absolute; bottom: 7px; left: 2px; font-size: 9px; font-weight: 500;
+  color: var(--muted); white-space: nowrap;
+}
+.struct-energy { opacity: 0.9; }
+.struct-keys { position: relative; height: 16px; margin-top: 4px; font-size: 9.5px; }
+.struct-keys > span {
+  position: absolute; top: 0; height: 16px; display: flex; align-items: center;
+  justify-content: center; border-left: 1px solid var(--hair); color: var(--text-2);
+  overflow: hidden; white-space: nowrap;
+}
+.struct-keys.steady > span { color: var(--faint); }
+
+/* ── Studio rail: per-lane filters ───────────────────────────────────────── */
+.rail-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0 8px; }
+.rail-filters label { display: flex; flex-direction: column; gap: 4px; }
+.rail-filters select {
+  background: var(--inset); border: 1px solid var(--border-ctrl); border-radius: 6px;
+  color: var(--text-2); font: 11px var(--font-ui); padding: 4px 6px;
+}

@@ -28,6 +28,11 @@ function positions(value, min, max, suggest) {
   };
 }
 
+const LOW_CUTS = [[0, "off"], [60, "60 Hz"], [120, "120 Hz — bass swap"], [250, "250 Hz"],
+                  [500, "500 Hz — thin"]];
+const HIGH_CUTS = [[0, "off"], [12000, "12 kHz"], [6000, "6 kHz"], [3000, "3 kHz"],
+                   [1200, "1.2 kHz — muffled"], [500, "500 Hz — underwater"]];
+
 function Knob({ label, value, min, max, step, suggest = null, format, hint,
                 onChange, disabled = false }) {
   const p = positions(value, min, max, suggest);
@@ -59,15 +64,17 @@ export function StudioRail({
   resetLane, clearTrim, trimOf, syncRateFor, projectBpm,
   buildRating, onRateBuild, onSaveSnapshot, onNextPair, hasNextPair, dirty,
   snapshots = [], onLoadSnapshot = () => {}, onDeleteSnapshot = () => {},
-  onAppendNext = null, onAddToSet = null, setName = null,
+  onAppendNext = null, onAddToSet = null, setName = null, nudgeBase = 0,
 }) {
   const [showSnaps, setShowSnaps] = useState(false);
   const bedRate = bedLane?.rate ?? 1;
   const bedPitch = bedLane?.semitones ?? 0;
   // Nudge is expressed where a person can act on it: milliseconds of bed
   // against vocal, not an absolute position on the timeline.
+  // Measured from the sections-aligned placement (nudgeBase) when a timing
+  // option is armed; from the vocal lane's start otherwise.
   const nudgeMs = bedLane && vocalLane
-    ? Math.round((bedLane.offsetSec - vocalLane.offsetSec) * 1000) : 0;
+    ? Math.round((bedLane.offsetSec - vocalLane.offsetSec - nudgeBase) * 1000) : 0;
 
   const suggestNudgeMs = suggested.nudgeSec == null
     ? null : Math.round(suggested.nudgeSec * 1000);
@@ -104,7 +111,7 @@ export function StudioRail({
                 : "Slides the bed against the vocal"}
               disabled={!vocalLane}
               onChange={(v) => vocalLane && patchLane(bedLane.id, {
-                offsetSec: vocalLane.offsetSec + v / 1000,
+                offsetSec: vocalLane.offsetSec + nudgeBase + v / 1000,
               })} />
           </>
         ) : (
@@ -186,6 +193,31 @@ export function StudioRail({
               <button className="lh-btn trim on" onClick={() => clearTrim(selected)}
                 title="Trimmed — click to play the whole stem">✂</button>
             )}
+          </div>
+
+          <Knob label="Fade in" value={selected.fadeIn || 0} min={0} max={8} step={0.1}
+            format={(v) => (v ? `${v.toFixed(1)} s` : "none")}
+            hint="Ramps the lane in from its clip's first sound"
+            onChange={(v) => patchLane(selected.id, { fadeIn: v })} />
+          <Knob label="Fade out" value={selected.fadeOut || 0} min={0} max={8} step={0.1}
+            format={(v) => (v ? `${v.toFixed(1)} s` : "none")}
+            hint="Ramps it out into the clip's last sound"
+            onChange={(v) => patchLane(selected.id, { fadeOut: v })} />
+          <div className="rail-filters">
+            <label title="High-pass: cut the bass under this lane — the bass swap, and the fix for a bass clash">
+              <span className="micro-label">LOW CUT</span>
+              <select value={selected.hpHz || 0}
+                onChange={(e) => patchLane(selected.id, { hpHz: Number(e.target.value) })}>
+                {LOW_CUTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </label>
+            <label title="Low-pass: darken the lane — a filtered breakdown or build">
+              <span className="micro-label">HIGH CUT</span>
+              <select value={selected.lpHz || 0}
+                onChange={(e) => patchLane(selected.id, { lpHz: Number(e.target.value) })}>
+                {HIGH_CUTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </label>
           </div>
 
           <div className="rail-row">
