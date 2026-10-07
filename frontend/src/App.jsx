@@ -77,6 +77,13 @@ export default function App() {
   // What the rail's per-route slot is showing. Each screen registers its own
   // block here rather than the rail knowing every screen's internals.
   const [railSlot, setRailSlot] = useState(null);
+  // A SoundCloud search handed to Discover from elsewhere (Track detail's
+  // "Find acapella / instrumental").
+  const [discoverNav, setDiscoverNav] = useState(null);
+  const discoverSearch = (q, role = "") => {
+    setDiscoverNav({ kind: "search", q, role, at: Date.now() });
+    setRoute("discovery");
+  };
 
   // ONE player for the whole app, and it lives here for the same reason the
   // library and the judgements do: every screen starts audio, and four
@@ -343,6 +350,7 @@ export default function App() {
             onOpenTrack={setSelectedTrackId}
             onStatus={setHeaderStatus}
             onChanged={() => library.refresh(true)}
+            onDiscover={discoverSearch}
           />
         )}
         {route === "discovery" && (
@@ -352,6 +360,7 @@ export default function App() {
             onStatus={setHeaderStatus}
             onOpenLibrary={() => setRoute("library")}
             onRailSlot={setRailSlot}
+            externalNav={discoverNav}
           />
         )}
         {route === "sets" && (

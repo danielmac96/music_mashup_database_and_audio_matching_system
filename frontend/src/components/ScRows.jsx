@@ -160,6 +160,20 @@ export function TrackRow({ row, checked, onToggle, onArtist, onRelated,
             </span>
           ) : null}
         </div>
+        {row.fit_hint && (row.fit_hint.bpm || row.fit_hint.camelot || row.fit_hint.role) && (
+          <div className="sc-fit mono"
+            title={"What the upload prints about itself (nothing outside the library is analysed)"
+              + (row.fit_hint.fits != null ? ` — tempo${row.fit_hint.camelot ? " and key" : ""} sit with ${row.fit_hint.fits} track(s) in your library` : "")}>
+            {row.fit_hint.role && <span className={`sc-role ${row.fit_hint.role}`}>{row.fit_hint.role}</span>}
+            {row.fit_hint.bpm && <span>~{Math.round(row.fit_hint.bpm)} BPM</span>}
+            {row.fit_hint.camelot && <span>{row.fit_hint.camelot}</span>}
+            {row.fit_hint.fits != null && (
+              <span className={row.fit_hint.fits > 0 ? "fits" : "nofit"}>
+                fits {row.fit_hint.fits} in library
+              </span>
+            )}
+          </div>
+        )}
         {because && (
           <div className="sc-because" title={because.join(", ")}>
             from {because.slice(0, 2).join(", ")}

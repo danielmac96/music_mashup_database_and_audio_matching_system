@@ -517,6 +517,9 @@ export const api = {
   // Every track row comes back with `in_library` already resolved server-side,
   // so the browser never has to reconcile results against the library itself.
 
+  // Where the library is thin: vocals with few beds, beds with few vocals.
+  discoveryGaps: (maxPartners = 2) => jsonFetch(`/api/discovery/gaps?max_partners=${maxPartners}`),
+
   discoverySearch: (q, kind = "tracks", cursor = null, limit = 20) =>
     jsonFetch(`/api/discovery/search?${new URLSearchParams({
       q, kind, limit: String(limit), ...(cursor ? { cursor } : {}),

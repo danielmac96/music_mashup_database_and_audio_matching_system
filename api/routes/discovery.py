@@ -79,6 +79,22 @@ def _guard(fn, *args, **kwargs):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _with_fit_hints(tracks: list[dict]) -> None:
+    """What each row prints about itself (tempo, key, acapella/instrumental)
+    and how many library tracks it would sit with. Added here, beside
+    in_library, so the browse layer's canonical rows stay untouched."""
+    from database.models import get_all_features
+    from ingest.fit_hints import fits, parse
+    try:
+        library = get_all_features(stem_type="full")
+    except Exception:  # noqa: BLE001 — a hint is never worth a failed search
+        library = []
+    for row in tracks:
+        hint = parse(row)
+        hint["fits"] = fits(hint, library)
+        row["fit_hint"] = hint
+
+
 def _annotate(items: list[dict]) -> list[dict]:
     """Mark which track rows are already in the library.
 
@@ -89,6 +105,7 @@ def _annotate(items: list[dict]) -> list[dict]:
     tracks = [i for i in items if i.get("source_url") and not i.get("kind")]
     if not tracks:
         return items
+    _with_fit_hints(tracks)
 
     found = songs_by_identity(
         source_urls=[t["source_url"] for t in tracks],
@@ -486,3 +503,50 @@ def like(track_id: str) -> dict:
 @router.delete("/tracks/{track_id}/like")
 def unlike(track_id: str) -> dict:
     return {"liked": False, "result": guard_write(_oauth().unlike_track, track_id)}
+
+
+# ── where the library is thin ────────────────────────────────────────────────
+
+@router.get("/gaps")
+def library_gaps(max_partners: int = Query(2, ge=0, le=10)) -> dict:
+    """Where digging pays: vocals the matcher found few beds for, and beds it
+    found few vocals for, grouped by tempo band and key, each group with the
+    SoundCloud search that would fill it. Read off mashup_candidates, so a
+    "gap" is a gap in what actually pairs, not in a genre count."""
+    from api.routes.tracks import _mash_summary_by_song
+    from database.models import get_all_features, get_all_songs
+    mash, _ = _mash_summary_by_song()
+    feats = {f["song_id"]: f for f in get_all_features(stem_type="full")}
+    songs = {s["id"]: s for s in get_all_songs()}
+    lonely = {"bed": [], "vocal": []}   # what each group NEEDS
+    for sid, m in mash.items():
+        f, s = feats.get(sid) or {}, songs.get(sid) or {}
+        if not f.get("bpm") or s.get("status") != "analysed":
+            continue
+        cov = m.get("vocal_coverage")
+        row = {"song_id": sid, "title": s.get("title"), "artist": s.get("artist"),
+               "genre": s.get("genre") or "", "bpm": round(f["bpm"], 1),
+               "camelot": f.get("camelot")}
+        if cov is not None and cov >= 0.25 and m["as_vocal"] <= max_partners:
+            lonely["bed"].append({**row, "partners": m["as_vocal"]})
+        if (cov is None or cov < 0.5) and m["as_bed"] <= max_partners:
+            lonely["vocal"].append({**row, "partners": m["as_bed"]})
+    groups = []
+    for need, rows in lonely.items():
+        bands: dict = {}
+        for r in rows:
+            lo = int(r["bpm"] // 5 * 5)
+            bands.setdefault(lo, []).append(r)
+        for lo, rs in bands.items():
+            genres = [r["genre"] for r in rs if r["genre"]]
+            genre = max(set(genres), key=genres.count) if genres else ""
+            mid = round(sum(r["bpm"] for r in rs) / len(rs))
+            word = "instrumental" if need == "bed" else "acapella"
+            groups.append({
+                "need": need, "bpm_lo": lo, "bpm_hi": lo + 5,
+                "keys": sorted({r["camelot"] for r in rs if r.get("camelot")}),
+                "tracks": rs, "count": len(rs),
+                "query": " ".join(x for x in (genre, word, f"{mid} bpm") if x),
+            })
+    groups.sort(key=lambda g: (-g["count"], g["bpm_lo"]))
+    return {"groups": groups, "max_partners": max_partners}

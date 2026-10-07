@@ -545,3 +545,61 @@ def test_dock_compares_two_pairs_and_carries_notes():
     assert "notes.noteOf(c)" in dock and "pc-note" in _read("components/PairCard.jsx")
     assert "export function usePairNotes" in _read("hooks/usePairNotes.js")
     assert "pairNote" in _read("components/StudioRail.jsx")
+
+
+# ── 17. Discover: roles, fit hints, gaps ────────────────────────────────────
+
+def test_fit_hints_read_what_an_upload_prints():
+    from ingest.fit_hints import fits, parse
+    assert parse({"title": "Titanium (Acapella) 126 BPM"}) == {"bpm": 126.0, "camelot": None, "role": "acapella"}
+    assert parse({"title": "Levels Instrumental [8A]"})["camelot"] == "8A"
+    assert parse({"title": "Song in F#m 128bpm"})["camelot"] == "11A"
+    assert parse({"title": "Strobe - Eb major"})["camelot"] == "5B"
+    assert parse({"title": "A Day In The Life"}) == {"bpm": None, "camelot": None, "role": None}
+    assert parse({"title": "x", "tags": '["acapella", "house"]'})["role"] == "acapella"
+    lib = [{"bpm": 128, "camelot": "8A"}, {"bpm": 64, "camelot": "9A"}, {"bpm": 128, "camelot": "2A"},
+           {"bpm": 100, "camelot": "8A"}]
+    assert fits({"bpm": 127, "camelot": "8A"}, lib) == 2, "half time counts, a far key does not"
+    assert fits({"bpm": 127, "camelot": None}, lib) == 3
+    assert fits({"bpm": None, "camelot": "8A"}, lib) is None
+
+
+def test_discover_rows_carry_fit_hints(db_path, monkeypatch):
+    import importlib
+    import config
+    importlib.reload(config)
+    import database.models as models
+    importlib.reload(models)
+    models.init_db(models.DB_PATH)
+    sid = models.upsert_song("T", "A", "https://sc/t", 200, "", db_path=models.DB_PATH)
+    models.upsert_features(sid, "full", {"bpm": 126.0, "camelot": "8A"}, db_path=models.DB_PATH)
+    import api.routes.discovery as disc
+    importlib.reload(disc)
+    rows = disc._annotate([{"source_url": "https://soundcloud.com/x/y", "track_id": "9",
+                            "title": "Levels (Acapella) 126 BPM 8A"}])
+    assert rows[0]["fit_hint"] == {"bpm": 126.0, "camelot": "8A", "role": "acapella", "fits": 1}
+
+
+def test_gaps_group_lonely_vocals_by_tempo(db_path):
+    # tracks too: the gaps route reads its per-track summary from there.
+    c, m = _app(("tracks", "/api/tracks"), ("discovery", "/api/discovery"))
+    vocal = m.upsert_song("V", "A", "https://sc/v", 64, "House", status="analysed", db_path=m.DB_PATH)
+    bed = m.upsert_song("B", "A", "https://sc/b", 64, "House", status="analysed", db_path=m.DB_PATH)
+    for sid in (vocal, bed):
+        m.upsert_features(sid, "full", {"bpm": 126.0, "camelot": "8A"}, db_path=m.DB_PATH)
+    m.replace_sections(vocal, [{"start_sec": 0, "end_sec": 64, "label": "chorus",
+                                "section_class": "vocal", "vocal_presence": 0.9}], db_path=m.DB_PATH)
+    m.upsert_candidate(_side(vocal), _side(bed), {"total": 0.9, "bpm_score": 1, "key_score": 1,
+                       "energy_score": 0.5, "timbre_score": 0.5}, db_path=m.DB_PATH)
+    groups = c.get("/api/discovery/gaps").json()["groups"]
+    need_bed = [g for g in groups if g["need"] == "bed"]
+    assert need_bed and need_bed[0]["bpm_lo"] == 125 and need_bed[0]["keys"] == ["8A"]
+    assert need_bed[0]["query"] == "House instrumental 126 bpm"
+
+
+def test_discover_has_roles_gaps_and_a_search_hand_off():
+    sc, disc = _read("components/SoundCloudBrowser.jsx"), _read("components/Discovery.jsx")
+    assert "const ROLES" in sc and 'nav.kind === "search"' in sc
+    assert '["gaps", "Library gaps"]' in disc and "function GapsPane" in disc
+    assert "sc-fit" in _read("components/ScRows.jsx")
+    assert "onDiscover(" in _read("components/TrackDetail.jsx")
