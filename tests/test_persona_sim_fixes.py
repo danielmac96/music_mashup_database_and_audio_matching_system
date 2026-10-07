@@ -647,3 +647,20 @@ def test_pair_rows_carry_the_vocal_sections_line(one_vocal_many_beds):
     assert rows[0]["vocal_section_line"] == "Shout it out"
     assert "pc-line" in _read("components/PairCard.jsx")
     assert "function SectionLine" in _read("components/SectionTable.jsx")
+
+
+# ── found by the re-run of the 100 personas ─────────────────────────────────
+
+def test_studio_receives_the_pair_notes_once():
+    app = _read("App.jsx")
+    studio = app[app.index("<MixStudio"):]
+    studio = studio[:studio.index("/>")]
+    assert "notes={notes}" in studio
+    dock = app[app.index("<PairDock"):]
+    dock = dock[:dock.index("/>")]
+    assert dock.count("notes={notes}") == 1
+
+
+def test_bar_ruler_labels_are_spaced_4_to_16_bars():
+    strip = _read("components/StructureStrip.jsx")
+    assert "Math.min(16, Math.max(4, Math.round(phrase || 8)))" in strip

@@ -89,7 +89,9 @@ export function StructureStrip({ songId, sections, duration, loop, position,
     }
     return out;
   }, [sections]);
-  const phraseEvery = Math.max(4, Math.round(phrase || 8));
+  // Clamped: one long section can report a 64-bar phrase, which labelled a
+  // 52-bar track with nothing but "1".
+  const phraseEvery = Math.min(16, Math.max(4, Math.round(phrase || 8)));
   const labelEvery = total > 0 && downbeats.length > 96 ? phraseEvery * 2 : phraseEvery;
 
   // Energy across the track as a step curve over the waveform (each

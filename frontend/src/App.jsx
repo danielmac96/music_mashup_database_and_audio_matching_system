@@ -340,7 +340,6 @@ export default function App() {
             </main>
             <PairDock dock={dock} ratings={ratings}
               onAddToSet={sets.addPair} setName={sets.active?.name || null}
-            notes={notes}
               notes={notes}
               scopeTitle={selectedTrack?.title || null}
               role={dockRole} onRole={setDockRole} />
@@ -398,7 +397,7 @@ export default function App() {
             onStatus={setHeaderStatus}
             onNextPair={dock.rows.length > 1 ? () => nextPair(false) : null}
             onAppendNext={dock.rows.length > 1 ? () => nextPair(true) : null}
-            onAddToSet={sets.addPair} setName={sets.active?.name || null}
+            onAddToSet={sets.addPair} notes={notes} setName={sets.active?.name || null}
           />
         )}
 
