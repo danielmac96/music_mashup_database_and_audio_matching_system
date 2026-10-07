@@ -78,6 +78,17 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   const [cursor, setCursor] = useState(0);
   const [filters, setFiltersState] = useState(DOCK_FILTERS);
   const [hasMore, setHasMore] = useState(false);
+  // Up to two pairs held side by side (the ⇄ button, or c).
+  const [compare, setCompare] = useState([]);
+  const toggleCompare = useCallback((c) => {
+    if (!c) return;
+    setCompare((cur) => {
+      const k = keyOf(c);
+      if (cur.some((x) => keyOf(x) === k)) return cur.filter((x) => keyOf(x) !== k);
+      return [...cur, c].slice(-2);
+    });
+  }, []);
+  const clearCompare = useCallback(() => setCompare([]), []);
   const [loadingMore, setLoadingMore] = useState(false);
   const setFilters = useCallback(
     (patch) => setFiltersState((f) => ({ ...f, ...patch })), []);
@@ -241,6 +252,9 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); move(-1); return; }
       if (e.key === " ") { e.preventDefault(); play(row); return; }
       if (e.key === "Enter") { e.preventDefault(); openStudio(row); return; }
+      if ((e.key === "c" || e.key === "C") && row) {
+        e.preventDefault(); toggleCompare(row); return;
+      }
       if ((e.key === "a" || e.key === "A") && row && onAddToSet) {
         e.preventDefault(); onAddToSet(row); return;
       }
@@ -266,7 +280,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, cursor, move, play, openStudio, hide, audio, ratings, onAddToSet]);
+  }, [visible, cursor, move, play, openStudio, hide, audio, ratings, onAddToSet, toggleCompare]);
 
   return {
     order, setOrder, rows: visible, loading, error,
@@ -274,5 +288,6 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     exportBatch,
     cursor, setCursor, current, armedKey,
     play, move, openStudio, hide, bindKeys, audio,
+    compare, toggleCompare, clearCompare,
   };
 }

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
 import {
@@ -18,7 +19,11 @@ import { bpmTag, camelotColor, keyRel } from "../theme";
 export function PairCard({ candidate: c, rating, onRate, focused = false,
                            playing = false, compact = false,
                            onSelect, onPlay, onStudio, onHide = null,
-                           onAddToSet = null, setName = null }) {
+                           onAddToSet = null, setName = null,
+                           note = "", onNote = null,
+                           comparing = false, onCompare = null }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note);
   const tier = tierOf(c);
   const pct = pctOf(c);
   const rel = keyRel(c.vocal_camelot, c.inst_camelot);
@@ -106,6 +111,23 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
 
       {!compact && <ScoreBars candidate={c} />}
 
+      {(note || editing) && (
+        <div className="pc-note" onClick={(e) => e.stopPropagation()}>
+          {editing ? (
+            <input autoFocus value={draft} placeholder="opener · needs a riser · use the 2nd chorus"
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => { setEditing(false); if (draft !== note) onNote?.(draft.trim()); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") { setDraft(note); setEditing(false); }
+                e.stopPropagation();
+              }} />
+          ) : (
+            <span title="Click to edit" onClick={() => { setDraft(note); setEditing(true); }}>✎ {note}</span>
+          )}
+        </div>
+      )}
+
       <div className="pc-foot">
         <StarRating value={rating} onRate={onRate} size={15} />
         <button className="pc-loop" onClick={(e) => { e.stopPropagation(); onPlay(); }}
@@ -117,6 +139,15 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
         {onAddToSet && (
           <button className="pc-addset" onClick={(e) => { e.stopPropagation(); onAddToSet(); }}
             title={`Add to the set “${setName || "My set"}” (a)`}>+ Set</button>
+        )}
+        {onNote && !note && !editing && (
+          <button className="pc-hide" title="Add a note to this pair — never training data"
+            onClick={(e) => { e.stopPropagation(); setDraft(""); setEditing(true); }}>✎</button>
+        )}
+        {onCompare && (
+          <button className={`pc-hide pc-cmp${comparing ? " on" : ""}`}
+            title="Compare side by side (c) — pick two"
+            onClick={(e) => { e.stopPropagation(); onCompare(); }}>⇄</button>
         )}
         {onHide && (
           <button className="pc-hide" onClick={(e) => { e.stopPropagation(); onHide(); }}

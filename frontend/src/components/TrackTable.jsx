@@ -87,7 +87,8 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
                              runningKind = () => null, playingId = null,
                              sort = null, onSort = null,
                              menuId = null, onMenu = () => {},
-                             renderMenu = () => null, attributes = null }) {
+                             renderMenu = () => null, attributes = null,
+                             onFixTempo = null }) {
   // A header click sets the PRIMARY key. The filter bar's two-level sort keeps
   // its secondary, which is what makes "artist, then year" reachable there and
   // still one click away here.
@@ -164,6 +165,7 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
       <div className="tt-body">
         {tracks.map((t) => (
           <TrackRow key={t.id} t={t} cols={template} extra={extra} wide={wide}
+            onFixTempo={onFixTempo}
             selected={selectedId === t.id}
             playing={playingId === t.id}
             running={runningKind(t)}
@@ -182,7 +184,7 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
   );
 }
 
-function TrackRow({ t, cols, extra = [], wide = true, selected, playing, running, menuOpen, onMenu,
+function TrackRow({ t, cols, extra = [], wide = true, onFixTempo = null, selected, playing, running, menuOpen, onMenu,
                     renderMenu, onSelect, onOpen, onPlay }) {
   const f = t.features?.full || {};
   const dots = pipelineDots(t, running);
@@ -242,8 +244,15 @@ function TrackRow({ t, cols, extra = [], wide = true, selected, playing, running
         {fmtPlays(t.plays)}
       </div>
 
-      <div className="tt-num mono">
+      <div className="tt-num mono tt-bpm">
         {f.bpm != null ? Math.round(f.bpm) : <span className="faint">—</span>}
+        {t.tempo_hint && onFixTempo && (
+          <button className="tt-tempo-hint"
+            title={`Suspected ${t.tempo_hint.label === "×2" ? "half" : "double"}-time read: ${t.tempo_hint.why}. Click to set ${t.tempo_hint.suggest} BPM.`}
+            onClick={(e) => { e.stopPropagation(); onFixTempo(t, t.tempo_hint.suggest); }}>
+            {t.tempo_hint.label}?
+          </button>
+        )}
       </div>
 
       <div className="tt-cell">

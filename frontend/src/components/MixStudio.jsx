@@ -478,7 +478,8 @@ export function placementFor(opt, vRate, bRate) {
 // ── main component ────────────────────────────────────────────────────────────
 
 export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
-                           onAppendNext = null, onAddToSet = null, setName = null }) {
+                           onAppendNext = null, onAddToSet = null, setName = null,
+                           notes = null }) {
   const [tracks, setTracks] = useState([]);
   const [lanes, setLanes] = useState([]);
   const [projectBpm, setProjectBpm] = useState(null);
@@ -1680,6 +1681,12 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   const bedLane = pairLanes?.bed ?? null;
   const vocalLane = pairLanes?.vocal ?? null;
   const selectedLane = lanes.find((l) => l.id === selectedId) || null;
+  // The pair a note in the rail is about: the two songs at the armed timing.
+  const notePair = pairCtx && activeOption ? {
+    vocal_song_id: pairCtx.vocalSongId, inst_song_id: pairCtx.instSongId,
+    vocal_section_idx: activeOption.vocal_section_idx ?? null,
+    inst_section_idx: activeOption.inst_section_idx ?? null,
+  } : null;
   // Where the bed sits against the vocal with the two SECTIONS lined up and no
   // nudge. The rail's nudge is measured from here, so it reads as the few ms
   // you actually slid it — not the 23 s between where the two sections happen
@@ -2145,6 +2152,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
         }) : null}
         setName={setName}
         nudgeBase={nudgeBase}
+        pairNote={notes && pairCtx && activeOption ? {
+          value: notes.noteOf(notePair),
+          save: (n) => notes.save(notePair, n),
+        } : null}
         dirty={dirty} />
       </div>
 

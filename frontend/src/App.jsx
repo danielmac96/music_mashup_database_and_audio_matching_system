@@ -22,6 +22,7 @@ import { useRatings } from "./hooks/useRatings";
 import { useAttributes } from "./hooks/useAttributes";
 import { usePairDock } from "./hooks/usePairDock";
 import { useSets } from "./hooks/useSets";
+import { usePairNotes } from "./hooks/usePairNotes";
 import { usePlayer } from "./hooks/usePlayer";
 import { isActiveJob } from "./hooks/useQueue";
 import { api } from "./api";
@@ -101,6 +102,7 @@ export default function App() {
   // Sets (mashups in running order) — the dock, Studio and the Sets screen all
   // add to the same active set.
   const sets = useSets();
+  const notes = usePairNotes();
 
   useEffect(() => {
     if (!settingsOpen) return undefined;
@@ -310,6 +312,8 @@ export default function App() {
             </main>
             <PairDock dock={dock} ratings={ratings}
               onAddToSet={sets.addPair} setName={sets.active?.name || null}
+            notes={notes}
+              notes={notes}
               scopeTitle={selectedTrack?.title || null}
               role={dockRole} onRole={setDockRole} />
           </div>

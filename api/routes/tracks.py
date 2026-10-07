@@ -178,6 +178,41 @@ def _mash_summary_by_song() -> tuple[dict, dict]:
     return out, shapes
 
 
+# Outside this band a dance-mashup tempo is more often an octave error than a
+# real tempo; inside it, only the analyser's own alternative votes can say so.
+TEMPO_LOW, TEMPO_HIGH = 80.0, 175.0
+
+
+def tempo_hint(full: Optional[dict]) -> Optional[dict]:
+    """A suspected half/double-time error in the stored BPM, or None.
+
+    The evidence, best first: Essentia's own alternative tempo votes
+    (bpm_candidates_json — Percival, the BPM histogram peaks) landing at ×2 or
+    ÷2 of the stored tempo; failing that, a tempo outside TEMPO_LOW..HIGH.
+    Advisory only — the Library offers the one-click fix, nothing is changed."""
+    import json
+    bpm = (full or {}).get("bpm")
+    if not bpm or bpm <= 0:
+        return None
+    try:
+        cands = json.loads(full.get("bpm_candidates_json") or "null") or {}
+    except (TypeError, ValueError):
+        cands = {}
+    votes = [float(v) for v in (cands.values() if isinstance(cands, dict) else cands)
+             if isinstance(v, (int, float)) and v > 0]
+    for mul, label in ((2.0, "×2"), (0.5, "÷2")):
+        if any(abs(v / (bpm * mul) - 1.0) <= 0.04 for v in votes):
+            return {"suggest": round(bpm * mul, 2), "label": label,
+                    "why": f"the analyser's alternative tempo votes include {bpm * mul:.1f} BPM"}
+    if bpm < TEMPO_LOW and bpm * 2 <= TEMPO_HIGH + 5:
+        return {"suggest": round(bpm * 2, 2), "label": "×2",
+                "why": f"{bpm:.1f} BPM is slow for dance material — often a half-time read"}
+    if bpm > TEMPO_HIGH and bpm / 2 >= TEMPO_LOW - 5:
+        return {"suggest": round(bpm / 2, 2), "label": "÷2",
+                "why": f"{bpm:.1f} BPM is fast for dance material — often a double-time read"}
+    return None
+
+
 def _dominant_class(classes: dict) -> Optional[str]:
     """Which of vocal / instrumental / mixed this track mostly is.
 
@@ -245,6 +280,7 @@ def list_tracks() -> dict:
             "track_class": _dominant_class(section_counts.get(sid, {}).get("classes")),
             "variant_count": variant_sizes.get(s.get("variant_cluster"), 0),
             "mash": mash.get(sid),
+            "tempo_hint": tempo_hint(raw_full.get(sid)),
             "shape": shapes.get(sid),
             "audio_provenance": _provenance(s.get("audio_provenance")),
             # Every captured attribute, from the one catalogue the Analysis

@@ -65,7 +65,9 @@ export function StudioRail({
   buildRating, onRateBuild, onSaveSnapshot, onNextPair, hasNextPair, dirty,
   snapshots = [], onLoadSnapshot = () => {}, onDeleteSnapshot = () => {},
   onAppendNext = null, onAddToSet = null, setName = null, nudgeBase = 0,
+  pairNote = null,
 }) {
+  const [noteDraft, setNoteDraft] = useState(null);
   const [showSnaps, setShowSnaps] = useState(false);
   const bedRate = bedLane?.rate ?? 1;
   const bedPitch = bedLane?.semitones ?? 0;
@@ -248,6 +250,17 @@ export function StudioRail({
               </div>
             ))}
           </div>
+        )}
+        {pairNote && (
+          <input className="rail-note" placeholder="Note on this pair — opener, needs a riser…"
+            value={noteDraft ?? pairNote.value}
+            onChange={(e) => setNoteDraft(e.target.value)}
+            onBlur={() => {
+              if (noteDraft != null && noteDraft !== pairNote.value) pairNote.save(noteDraft.trim());
+              setNoteDraft(null);
+            }}
+            onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") e.currentTarget.blur(); }}
+            title="Saved on the pair at the armed timing; shows on its dock card and in sets. Never training data." />
         )}
         <div className="rail-rate">
           <span className="hint">Rate this build</span>

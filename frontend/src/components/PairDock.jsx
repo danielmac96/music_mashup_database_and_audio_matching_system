@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { PairCard } from "./PairCard";
 import { JobBadge } from "./JobBadge";
 import { ORDERS, activeFilterCount } from "../hooks/usePairDock";
+import { SCORE_TERMS, SONG_TERMS, pctOf } from "./pairs/pairModel";
 import { keyOf } from "./pairs/pairModel";
 import { api } from "../api";
 import { toast } from "../toast";
@@ -24,10 +25,11 @@ const RATED = [["", "Any"], ["rated", "Rated by you"], ["loved", "Loved (4–5�
 const CAMELOT = Array.from({ length: 12 }, (_, i) => [`${i + 1}A`, `${i + 1}B`]).flat();
 
 export function PairDock({ dock, ratings, scopeTitle, role, onRole,
-                          onAddToSet = null, setName = null }) {
+                          onAddToSet = null, setName = null, notes = null }) {
   const { order, setOrder, rows, loading, error, cursor, setCursor, armedKey,
           play, openStudio, hide, audio, filters, setFilters, resetFilters,
-          perVocal, hasMore, loadMore, loadingMore, exportBatch } = dock;
+          perVocal, hasMore, loadMore, loadingMore, exportBatch,
+          compare, toggleCompare, clearCompare } = dock;
   const listRef = useRef(null);
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState(filters.search);
@@ -252,6 +254,12 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
         </div>
       )}
 
+      {compare.length > 0 && (
+        <ComparePanel pairs={compare} onClear={clearCompare} ratings={ratings}
+          play={play} armedKey={armedKey} playing={audio.playing}
+          onRemove={toggleCompare} />
+      )}
+
       <div className="pd-list" ref={listRef}>
         {error && <div className="error-text pd-msg">{error}</div>}
         {!error && !loading && rows.length === 0 && (nActive > 0 || filters.search) && (
@@ -283,6 +291,10 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
               onStudio={() => { setCursor(i); openStudio(c); }}
               onAddToSet={onAddToSet ? () => { setCursor(i); onAddToSet(c); } : null}
               setName={setName}
+              note={notes ? notes.noteOf(c) : ""}
+              onNote={notes ? (n) => notes.save(c, n) : null}
+              comparing={compare.some((x) => keyOf(x) === k)}
+              onCompare={() => toggleCompare(c)}
               onHide={() => hide(c)} />
           );
         })}
@@ -300,5 +312,66 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
         ))}
       </div>
     </aside>
+  );
+}
+
+
+// Two pairs side by side: every number the cards carry, aligned row by row, the
+// better of the two highlighted, and an A/B loop that swaps in one keypress —
+// "which bed sits better under this vocal" without holding a card in your head.
+const CMP_ROWS = [
+  ["Match", (c) => pctOf(c), (v) => `${v}`, 1],
+  ["Effort", (c) => c.score_effort, (v) => (v == null ? "—" : `${Math.round(v * 100)}%`), -1],
+  ["Harmony ♪", (c) => (c.harmonic_shift != null && c.score_key != null ? c.score_key : null),
+   (v) => (v == null ? "—" : `${Math.round(v * 100)}%`), 1],
+  ["Tempo change", (c) => (c.vocal_bpm && c.inst_bpm ? Math.abs(c.vocal_bpm / c.inst_bpm - 1) * 100 : null),
+   (v) => (v == null ? "—" : `${v.toFixed(1)}%`), -1],
+  ["Bed transpose", (c) => (c.harmonic_shift ?? c.semitone_shift ?? null),
+   (v) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v} st`), 0],
+  ...SCORE_TERMS.map((t) => [t.label, (c) => c[t.key], (v) => (v == null ? "—" : `${Math.round(v * 100)}`), 1]),
+  ...SONG_TERMS.filter((t) => !t.bedOnly).map((t) => [t.label, (c) => c[t.key],
+    (v) => (v == null ? "—" : `${Math.round(v * 100)}`), 1]),
+];
+
+function ComparePanel({ pairs, onClear, onRemove, play, armedKey, playing, ratings }) {
+  const [a, b] = pairs;
+  return (
+    <div className="pd-compare">
+      <div className="pd-compare-head">
+        <span className="micro-label">COMPARE</span>
+        <span className="faint">{pairs.length < 2 ? "pick a second pair with ⇄ or c" : "A / B"}</span>
+        <button className="pd-compare-x" onClick={onClear} title="Close the comparison">✕</button>
+      </div>
+      <div className="pd-compare-grid">
+        <span />
+        {[a, b].map((c, i) => (
+          <div key={i} className="pd-compare-col">
+            {c ? (
+              <>
+                <b>{"AB"[i]}</b> <span className="t">{c.vocal_title}</span>
+                <span className="faint"> over </span><span className="t">{c.inst_title}</span>
+                <div className="pd-compare-acts">
+                  <button onClick={() => play(c)}>
+                    {armedKey === keyOf(c) && playing ? "◍ stop" : `▶ ${"AB"[i]}`}
+                  </button>
+                  <button onClick={() => onRemove(c)} title="Take out of the comparison">✕</button>
+                  <span className="faint">{ratings.ratingOf(c) ? `★${ratings.ratingOf(c)}` : ""}</span>
+                </div>
+              </>
+            ) : <span className="faint">—</span>}
+          </div>
+        ))}
+        {CMP_ROWS.map(([label, get, fmt, better]) => {
+          const va = a ? get(a) : null, vb = b ? get(b) : null;
+          const win = better && va != null && vb != null && va !== vb
+            ? ((va > vb) === (better > 0) ? 0 : 1) : null;
+          return [
+            <span key={`${label}l`} className="pd-compare-label mono">{label}</span>,
+            <span key={`${label}a`} className={`mono${win === 0 ? " win" : ""}`}>{fmt(va)}</span>,
+            <span key={`${label}b`} className={`mono${win === 1 ? " win" : ""}`}>{b ? fmt(vb) : ""}</span>,
+          ];
+        })}
+      </div>
+    </div>
   );
 }

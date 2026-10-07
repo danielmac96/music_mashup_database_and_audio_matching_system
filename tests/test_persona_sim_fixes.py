@@ -514,3 +514,34 @@ def test_studio_lanes_carry_fades_filters_and_undo():
     assert "LOW_CUTS" in rail and "nudgeBase" in rail
     # The pills say WHICH chorus and drop.
     assert "fmtTime(o.vocal_section_start ?? 0)" in studio
+
+
+# ── 16. tempo octave fix, compare, notes ────────────────────────────────────
+
+def test_tempo_hint_flags_octave_errors():
+    import json
+    from api.routes.tracks import tempo_hint
+    assert tempo_hint({"bpm": 74.0})["suggest"] == 148.0
+    assert tempo_hint({"bpm": 186.0})["label"] == "÷2"
+    assert tempo_hint({"bpm": 128.0}) is None
+    assert tempo_hint({"bpm": 86.0}) is None, "hip-hop tempo is not flagged on range alone"
+    # The analyser's own alternative votes beat the range check.
+    h = tempo_hint({"bpm": 86.0, "bpm_candidates_json": json.dumps({"percival": 172.3})})
+    assert h["label"] == "×2" and "alternative tempo votes" in h["why"]
+    assert tempo_hint(None) is None and tempo_hint({"bpm": None}) is None
+
+
+def test_library_and_editor_offer_the_octave_fix():
+    assert "tt-tempo-hint" in _read("components/TrackTable.jsx")
+    assert "onFixTempo" in _read("components/LibraryScreen.jsx")
+    editor = _read("components/TrackEditor.jsx")
+    assert ">×2</button>" in editor and ">÷2</button>" in editor
+
+
+def test_dock_compares_two_pairs_and_carries_notes():
+    dock, hook = _read("components/PairDock.jsx"), _read("hooks/usePairDock.js")
+    assert "function ComparePanel" in dock and "toggleCompare" in hook
+    assert 'e.key === "c"' in hook and ".slice(-2)" in hook
+    assert "notes.noteOf(c)" in dock and "pc-note" in _read("components/PairCard.jsx")
+    assert "export function usePairNotes" in _read("hooks/usePairNotes.js")
+    assert "pairNote" in _read("components/StudioRail.jsx")
