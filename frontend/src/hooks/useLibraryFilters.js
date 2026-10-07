@@ -77,10 +77,11 @@ export const VIEWS = [
 ];
 
 /* ── sort keys ───────────────────────────────────────────────────────────── */
-// Deliberately no "best pair score": that would have to come from the ranked
-// list, which is truncated, so sorting the whole library by it would order the
-// rows it happened to fetch and silently mis-place the rest. Rating is the
-// honest second key — it is the user's own, and complete.
+// "best" is each track's best pairing as a library percentile, computed by the
+// server over the WHOLE of mashup_candidates for every track (GET /api/tracks
+// `mash`) — not read off the dock's ranked list, which is truncated and would
+// order only the rows it happened to fetch. "pairs" is how many partners a
+// track has (as vocal + as bed), "vox" the share of it that is sung.
 export const SORT_KEYS = [
   ["", "unsorted"],
   ["added", "added"],
@@ -94,6 +95,9 @@ export const SORT_KEYS = [
   ["duration", "length"],
   ["rating", "rating"],
   ["sections", "sections"],
+  ["pairs", "partners"],
+  ["best", "best pair"],
+  ["vox", "sung share"],
   ["group", "group order"],
 ];
 
@@ -114,6 +118,9 @@ const NUMERIC = {
   plays: (t) => t.plays || null,
   duration: (t) => t.duration_secs,
   sections: (t) => t.section_count || null,
+  pairs: (t) => (t.mash ? (t.mash.as_vocal || 0) + (t.mash.as_bed || 0) : null),
+  best: (t) => t.mash?.best_pct ?? null,
+  vox: (t) => t.mash?.vocal_coverage ?? null,
 };
 const TEXT = {
   title: (t) => t.title || "",

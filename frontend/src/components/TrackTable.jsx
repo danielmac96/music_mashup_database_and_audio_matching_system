@@ -1,10 +1,39 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
 import { SortHead } from "./SortHead";
 import { useColumnWidths } from "../hooks/useColumnWidths";
 import { audioSubstitution } from "../sources";
 import { attrColumns, fmtAttr } from "../attributes";
+import { sectionColor } from "./StructureStrip";
+
+// The track's shape at a glance: one bar per section, coloured by label and as
+// tall as its energy, with the sung sections underlined. Opening every track to
+// see whether it has a long intro or two drops was the alternative.
+function ShapeThumb({ shape, duration }) {
+  if (!shape?.length) return <span className="faint mono">—</span>;
+  const end = Math.max(shape[shape.length - 1][1], duration || 0) || 1;
+  const maxE = Math.max(...shape.map((s) => s[3] ?? 0), 1e-9);
+  return (
+    <svg className="tt-shape" viewBox="0 0 100 20" preserveAspectRatio="none"
+      aria-label="section shape">
+      <title>{shape.map((s) => `${s[2] || "?"} ${Math.round(s[0])}–${Math.round(s[1])}s`).join(" · ")}</title>
+      {shape.map(([a, b, label, e, v], i) => {
+        const h = 4 + 12 * ((e ?? 0) / maxE);
+        return (
+          <g key={i}>
+            <rect x={(a / end) * 100} y={16 - h} width={Math.max(0.6, ((b - a) / end) * 100 - 0.6)}
+              height={h} fill={sectionColor(label)} opacity="0.85" />
+            {v != null && v > 0.3 && (
+              <rect x={(a / end) * 100} y="18" width={Math.max(0.6, ((b - a) / end) * 100 - 0.6)}
+                height="2" fill="var(--violet)" />
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
 import {
   camelotColor, fmtDur, fmtPlays, fmtYear, pipelineDots, playsColor, yearColor,
 } from "../theme";
@@ -28,12 +57,15 @@ import {
 const HEADS = [
   { id: "play", label: "", w: "26px" },
   { id: "art", label: "", w: "30px" },
-  { id: "name", label: "TITLE", key: "title", also: { label: "ARTIST", key: "artist" }, w: "minmax(200px,1.6fr)", min: 160, grip: true },
-  { id: "genre", label: "GENRE", key: "genre", w: "minmax(96px,0.7fr)", min: 56, grip: true },
+  { id: "name", label: "TITLE", key: "title", also: { label: "ARTIST", key: "artist" }, w: "minmax(140px,1.6fr)", min: 120, grip: true },
+  { id: "genre", label: "GENRE", key: "genre", w: "minmax(64px,0.7fr)", min: 56, grip: true },
   { id: "year", label: "YEAR", key: "year", numeric: true, w: "44px", min: 36, grip: true },
   { id: "plays", label: "PLAYS", key: "plays", numeric: true, w: "56px", min: 44, grip: true },
   { id: "bpm", label: "BPM", key: "bpm", numeric: true, w: "52px", min: 40, grip: true },
   { id: "key", label: "KEY", key: "key", w: "46px", min: 38, grip: true },
+  { id: "mash", label: "MASH", key: "best", numeric: true, w: "84px", min: 60, grip: true },
+  { id: "vox", label: "VOX%", key: "vox", numeric: true, w: "46px", min: 40, grip: true, opt: 1 },
+  { id: "pairs", label: "PAIRS", key: "pairs", numeric: true, w: "56px", min: 46, grip: true, opt: 1 },
   { id: "pipe", label: "PIPE", w: "56px", min: 44, grip: true },
   { id: "rating", label: "RATING", key: "rating", numeric: true, w: "70px", min: 56, grip: true },
   { id: "time", label: "TIME", key: "duration", numeric: true, right: true, w: "48px", min: 40 },
@@ -42,6 +74,9 @@ const HEADS = [
 // Four stages, in the order they run: downloaded, analysed, sections, stems.
 // There are no per-stage columns on `songs` — the truth is assembled from the
 // stems, features and section-count the list already returns.
+// Table width below which the mashup columns (opt) are dropped.
+const WIDE_MIN = 940;
+
 const DOT_ORDER = ["dl", "analyse", "structure", "stems"];
 const DOT_TITLE = {
   dl: "downloaded", analyse: "analysed", structure: "sections detected",
@@ -67,10 +102,23 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
   // column rather than a position.
   const extra = useMemo(() => (attributes
     ? attrColumns(attributes.byId, attributes.visibility.library) : []), [attributes]);
+  // The mashup columns (opt) need room: below WIDE_MIN of table they are
+  // dropped rather than squeezing the title or scrolling the table sideways —
+  // at 1280px the library column is ~670px next to the dock.
+  const tableRef = useRef(null);
+  const [wide, setWide] = useState(true);
+  useEffect(() => {
+    const el = tableRef.current;
+    if (!el) return undefined;
+    const ro = new ResizeObserver(() => setWide(el.clientWidth >= WIDE_MIN));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const columns = useMemo(() => {
-    const at = HEADS.findIndex((h) => h.id === "rating");
-    return [...HEADS.slice(0, at), ...extra, ...HEADS.slice(at)];
-  }, [extra]);
+    const base = wide ? HEADS : HEADS.filter((h) => !h.opt);
+    const at = base.findIndex((h) => h.id === "rating");
+    return [...base.slice(0, at), ...extra, ...base.slice(at)];
+  }, [extra, wide]);
   const { template, setWidth, resetColumn } = useColumnWidths(columns);
 
   // Dragging measures the header cell rather than reading the stored width,
@@ -92,7 +140,7 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
   };
 
   return (
-    <div className="track-table">
+    <div className="track-table" ref={tableRef}>
       <div className="tt-head" style={{ gridTemplateColumns: template }}>
         {columns.map((h, i) => (
           <div key={h.id} className={`tt-h${h.right ? " right" : ""}`}>
@@ -115,7 +163,7 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
       </div>
       <div className="tt-body">
         {tracks.map((t) => (
-          <TrackRow key={t.id} t={t} cols={template} extra={extra}
+          <TrackRow key={t.id} t={t} cols={template} extra={extra} wide={wide}
             selected={selectedId === t.id}
             playing={playingId === t.id}
             running={runningKind(t)}
@@ -134,7 +182,7 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
   );
 }
 
-function TrackRow({ t, cols, extra = [], selected, playing, running, menuOpen, onMenu,
+function TrackRow({ t, cols, extra = [], wide = true, selected, playing, running, menuOpen, onMenu,
                     renderMenu, onSelect, onOpen, onPlay }) {
   const f = t.features?.full || {};
   const dots = pipelineDots(t, running);
@@ -205,6 +253,31 @@ function TrackRow({ t, cols, extra = [], selected, playing, running, menuOpen, o
               title={`${f.key || ""} ${f.mode || ""}`.trim()}>{cam}</span>
           : <span className="mono" style={{ color: "var(--faint-2)" }}>—</span>}
       </div>
+
+      <div className="tt-cell tt-mash"
+        title={t.mash?.best_pct != null
+          ? `Best pairing: ${Math.round(t.mash.best_pct * 100)}th percentile of every scored pair in the library`
+          : "Not scored yet"}>
+        <ShapeThumb shape={t.shape} duration={t.duration_secs} />
+        <span className="tt-best mono">
+          {t.mash?.best_pct != null ? Math.round(t.mash.best_pct * 100) : "—"}
+        </span>
+      </div>
+
+      {wide && <>
+      <div className="tt-num mono" title="Share of the track that is sung (vocal or mixed sections)">
+        {t.mash?.vocal_coverage != null ? Math.round(t.mash.vocal_coverage * 100)
+          : <span className="faint">—</span>}
+      </div>
+
+      <div className="tt-num mono"
+        title={t.mash ? `${t.mash.as_vocal} partner beds as the vocal · ${t.mash.as_bed} partner vocals as the bed` : "not scored yet"}>
+        {t.mash && (t.mash.as_vocal || t.mash.as_bed)
+          ? <span><span className="tt-pv">{t.mash.as_vocal}</span><span className="faint">/</span><span className="tt-pb">{t.mash.as_bed}</span></span>
+          : <span className="faint">—</span>}
+      </div>
+
+      </>}
 
       <div className="tt-dots-cell">
         <button className={`tt-dots${menuOpen ? " open" : ""}`}

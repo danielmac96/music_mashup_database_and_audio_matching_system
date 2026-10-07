@@ -123,6 +123,61 @@ def _section_counts_by_song() -> dict[int, dict]:
     return out
 
 
+def _mash_summary_by_song() -> tuple[dict, dict]:
+    """Per song, what the library knows about it AS MASHUP MATERIAL, from the
+    whole of mashup_candidates (not the truncated ranked list): how many
+    distinct partners it has as the vocal and as the bed, its best pairing's
+    library percentile, and how much of it is sung. Plus each track's section
+    shape — label, span, energy, vocal presence — for the Library's row
+    thumbnail, so the shape of a record is visible without opening it."""
+    import bisect
+    conn = get_conn()
+    try:
+        scores = sorted(r[0] for r in conn.execute(
+            "SELECT score_total FROM mashup_candidates "
+            "WHERE combo_type='vocal_over_instrumental' AND score_total IS NOT NULL"))
+        sides = {}
+        for side, other in (("vocal", "inst"), ("inst", "vocal")):
+            for r in conn.execute(
+                    f"SELECT {side}_song_id AS sid, COUNT(DISTINCT {other}_song_id) AS n, "
+                    f"       MAX(score_total) AS best FROM mashup_candidates "
+                    f"WHERE combo_type='vocal_over_instrumental' GROUP BY {side}_song_id"):
+                sides[(r["sid"], side)] = (r["n"], r["best"])
+        sections = conn.execute(
+            "SELECT song_id, start_sec, end_sec, label, energy, vocal_presence, "
+            "       vocal_activity, section_class, provisional "
+            "FROM sections ORDER BY song_id, section_index").fetchall()
+    finally:
+        conn.close()
+    pct = (lambda x: round(bisect.bisect_right(scores, x) / len(scores), 4)) if scores else None
+    shape: dict = {}
+    for r in sections:
+        shape.setdefault(r["song_id"], []).append(r)
+    ids = {sid for sid, _ in sides} | set(shape)
+    out: dict = {}
+    for sid in ids:
+        nv, bv = sides.get((sid, "vocal"), (0, None))
+        nb, bb = sides.get((sid, "inst"), (0, None))
+        best = max([b for b in (bv, bb) if b is not None], default=None)
+        secs = shape.get(sid, [])
+        total = sum(max(0.0, (s["end_sec"] or 0) - (s["start_sec"] or 0)) for s in secs)
+        known = [s for s in secs if s["section_class"] not in (None, "unknown")]
+        sung = sum(max(0.0, s["end_sec"] - s["start_sec"]) for s in known
+                   if s["section_class"] in ("vocal", "mixed"))
+        out[sid] = {
+            "as_vocal": nv, "as_bed": nb,
+            "best_pct": pct(best) if (pct and best is not None) else None,
+            # NULL, not 0, until the vocal stem has been measured.
+            "vocal_coverage": round(sung / total, 3) if known and total > 0 else None,
+            "vocal_sections": sum(1 for s in known if s["section_class"] == "vocal"),
+        }
+    shapes = {sid: [[round(s["start_sec"], 2), round(s["end_sec"], 2), s["label"],
+                     None if s["energy"] is None else round(s["energy"], 3),
+                     None if s["vocal_presence"] is None else round(s["vocal_presence"], 3)]
+                    for s in secs] for sid, secs in shape.items()}
+    return out, shapes
+
+
 def _dominant_class(classes: dict) -> Optional[str]:
     """Which of vocal / instrumental / mixed this track mostly is.
 
@@ -148,6 +203,7 @@ def list_tracks() -> dict:
     features_vocals = _features_by_song("vocals", raw_vocals)
     features_inst   = _features_by_song("instrumental", raw_inst)
     section_counts  = _section_counts_by_song()
+    mash, shapes    = _mash_summary_by_song()
 
     # How many uploads of the same work each track has (A.2). Sent as a count
     # rather than the raw cluster id so the UI can say "3 versions" without a
@@ -188,6 +244,8 @@ def list_tracks() -> dict:
             "section_classes": section_counts.get(sid, {}).get("classes", {}),
             "track_class": _dominant_class(section_counts.get(sid, {}).get("classes")),
             "variant_count": variant_sizes.get(s.get("variant_cluster"), 0),
+            "mash": mash.get(sid),
+            "shape": shapes.get(sid),
             "audio_provenance": _provenance(s.get("audio_provenance")),
             # Every captured attribute, from the one catalogue the Analysis
             # panel reads (analysis/attributes.py): the Library shows the ones

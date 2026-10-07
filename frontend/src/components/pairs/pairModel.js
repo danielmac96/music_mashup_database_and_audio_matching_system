@@ -66,6 +66,35 @@ export function termsOf(candidate) {
   });
 }
 
+/* ── the song-level terms ─────────────────────────────────────────────────── */
+// The whole-track sub-scores score_total is built from (config.MATCH_WEIGHTS),
+// stored on every row and — until the persona simulation asked "why does this
+// rank here?" — never shown. KEY is the MEASURED harmony once the section pair
+// is known (matcher/harmony.py replaces the Camelot lookup). Timbre carries no
+// weight for vocal-over-bed (config._for_combo moves it onto spectral room), so
+// it is only drawn for bed-over-bed pairs.
+export const SONG_TERMS = [
+  { key: "score_bpm", label: "BPM", color: "var(--green)",
+    what: "tempo — how close the two tempos are, half/double time allowed" },
+  { key: "score_key", label: "KEY", color: "var(--violet)",
+    what: "key — the measured harmonic fit of the two sections (Camelot lookup when unmeasured)" },
+  { key: "score_energy", label: "NRG", color: "var(--amber)",
+    what: "energy — closeness of the two sides' loudness, ranked within each stem kind" },
+  { key: "score_collision", label: "ROOM", color: "var(--cyan)",
+    what: "spectral room — whether the bed leaves space in the bands the vocal lives in" },
+  { key: "score_timbre", label: "TIM", color: "var(--accent)", bedOnly: true,
+    what: "timbre — how alike the two beds sound (weighted for bed-over-bed only)" },
+];
+
+export function songTermsOf(candidate) {
+  const bedPair = candidate?.combo_type === "instrumental_over_instrumental";
+  return SONG_TERMS.filter((t) => !t.bedOnly || bedPair).map((t) => {
+    const v = candidate?.[t.key];
+    const known = v != null && Number.isFinite(Number(v));
+    return { ...t, value: known ? Number(v) : null, known };
+  });
+}
+
 /* ── handing a pair to Studio ─────────────────────────────────────────────── */
 
 /** A candidate row, reshaped into the timing-option key set the plan emits.

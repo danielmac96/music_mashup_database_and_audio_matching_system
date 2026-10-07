@@ -415,3 +415,44 @@ def test_studio_picker_ranks_by_fit_and_offers_scored_layers():
     assert "const fitOf" in studio and ".sort((x, y) => (x.fit?.cost" in studio
     assert "Second vocal over this bed" in studio and "const addLayer" in studio
     assert "Import tab" not in studio
+
+
+# ── 12 / 13. pair card and library: what the scores are made of ────────────
+
+def test_pair_card_shows_artists_song_terms_and_loop_note():
+    card, model = _read("components/PairCard.jsx"), _read("components/pairs/pairModel.js")
+    assert "artist={c.vocal_artist}" in card and "pc-artist" in card
+    assert "export const SONG_TERMS" in model and "songTermsOf(candidate)" in card
+    for key in ("score_bpm", "score_key", "score_energy", "score_collision"):
+        assert key in model
+    assert "loop bed ×{c.section_loop_repeats}" in card
+    # A measured harmony makes the Camelot lookup context, not a verdict.
+    assert 'h.known ? " muted"' in card
+
+
+def test_library_summarises_each_track_as_mashup_material(one_vocal_many_beds):
+    c, m = _app(("tracks", "/api/tracks"))
+    vocal = m.upsert_song("V", "A", "https://sc/v", 64, "House", status="analysed",
+                          db_path=m.DB_PATH)
+    beds = [m.upsert_song(f"B{n}", "A", f"https://sc/b{n}", 64, "House",
+                          status="analysed", db_path=m.DB_PATH) for n in range(3)]
+    for n, bed in enumerate(beds):
+        m.upsert_candidate(_side(vocal), _side(bed),
+                           {"total": 0.9 - n * 0.2, "bpm_score": 1.0, "key_score": 1.0,
+                            "energy_score": 0.5, "timbre_score": 0.5}, db_path=m.DB_PATH)
+    m.replace_sections(vocal, [
+        {"start_sec": 0, "end_sec": 16, "label": "intro", "energy": 0.2,
+         "vocal_presence": 0.0, "section_class": "instrumental"},
+        {"start_sec": 16, "end_sec": 64, "label": "chorus", "energy": 0.9,
+         "vocal_presence": 0.8, "section_class": "vocal"},
+    ], db_path=m.DB_PATH)
+    rows = {t["id"]: t for t in c.get("/api/tracks").json()["tracks"]}
+    v = rows[vocal]
+    assert v["mash"]["as_vocal"] == 3 and v["mash"]["as_bed"] == 0
+    assert v["mash"]["best_pct"] == 1.0 and v["mash"]["vocal_coverage"] == 0.75
+    assert v["shape"][1][:3] == [16.0, 64.0, "chorus"]
+    assert rows[beds[2]]["mash"]["as_bed"] == 1 and rows[beds[2]]["mash"]["best_pct"] < 1.0
+    assert rows[beds[2]]["mash"]["vocal_coverage"] is None, "unmeasured, not zero"
+    table = _read("components/TrackTable.jsx")
+    assert 'id: "mash"' in table and "function ShapeThumb" in table
+    assert "best: (t) => t.mash?.best_pct" in _read("hooks/useLibraryFilters.js")
