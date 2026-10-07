@@ -64,7 +64,7 @@ function filterOpts(f) {
 // that belonged to none of them. It borrows the shared one now, so the bar at
 // the bottom is showing the same pair the dock's cursor is on.
 export function usePairDock({ selectedTrackId, role = "vocal", ratings,
-                              onOpenStudio, player }) {
+                              onOpenStudio, player, onAddToSet = null }) {
   const [order, setOrder] = useState("score");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -235,6 +235,9 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); move(-1); return; }
       if (e.key === " ") { e.preventDefault(); play(row); return; }
       if (e.key === "Enter") { e.preventDefault(); openStudio(row); return; }
+      if ((e.key === "a" || e.key === "A") && row && onAddToSet) {
+        e.preventDefault(); onAddToSet(row); return;
+      }
       if (e.key === "v" || e.key === "V") {
         e.preventDefault();
         audio.setStemMode(audio.stemMode === "vox" ? "both" : "vox");
@@ -257,7 +260,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, cursor, move, play, openStudio, hide, audio, ratings]);
+  }, [visible, cursor, move, play, openStudio, hide, audio, ratings, onAddToSet]);
 
   return {
     order, setOrder, rows: visible, loading, error,

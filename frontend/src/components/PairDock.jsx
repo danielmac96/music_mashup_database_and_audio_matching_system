@@ -20,7 +20,8 @@ const MIN_MATCH = [[0, "Any"], [0.5, "top 50%"], [0.75, "top 25%"], [0.9, "top 1
 const EFFORT = [[null, "Any"], [0.25, "Free builds only"], [0.5, "Free or light"]];
 const EXPORT_N = [5, 10, 16];
 
-export function PairDock({ dock, ratings, scopeTitle, role, onRole }) {
+export function PairDock({ dock, ratings, scopeTitle, role, onRole,
+                          onAddToSet = null, setName = null }) {
   const { order, setOrder, rows, loading, error, cursor, setCursor, armedKey,
           play, openStudio, hide, audio, filters, setFilters, resetFilters,
           perVocal, hasMore, loadMore, loadingMore, exportBatch } = dock;
@@ -228,6 +229,8 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole }) {
               onSelect={() => setCursor(i)}
               onPlay={() => { setCursor(i); play(c); }}
               onStudio={() => { setCursor(i); openStudio(c); }}
+              onAddToSet={onAddToSet ? () => { setCursor(i); onAddToSet(c); } : null}
+              setName={setName}
               onHide={() => hide(c)} />
           );
         })}

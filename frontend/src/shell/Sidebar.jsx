@@ -16,6 +16,7 @@ const NAV = [
   ["analysis", "Analysis", "◔"],
   ["discovery", "Discover", "⌕"],
   ["mixes", "Mixes", "≡"],
+  ["sets", "Sets", "♫"],
   ["studio", "Studio", "◫"],
 ];
 
@@ -23,7 +24,8 @@ const fmtCount = (n) =>
   n == null ? "" : n.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
 export function Sidebar({ route, onRoute, counts = {}, children,
-                          onOpenSettings, settingsOpen }) {
+                          onOpenSettings, settingsOpen, status = null,
+                          judged = null }) {
   // The footer says which scorer is ranking pairs and how many judgements it
   // has, because "why is this list ordered like that" is otherwise unanswerable
   // from inside the app.
@@ -61,12 +63,17 @@ export function Sidebar({ route, onRoute, counts = {}, children,
 
       <div className="rail-slot">{children}</div>
 
+      {status && <div className="rail-status">{status}</div>}
+
       <div className="rail-foot">
         <span className="mono">
           {scorer?.scorer === "model" ? "learned scorer" : "heuristic scorer"}
         </span>
         <span className="mono rail-judged">
-          {scorer ? `${fmtCount(scorer.n_judgments || 0)} judged` : ""}
+          {/* The live count from App's ratings, so it moves as you rate; the
+              fetched figure only until those have loaded. */}
+          {judged != null || scorer
+            ? `${fmtCount(judged ?? scorer?.n_judgments ?? 0)} judged` : ""}
         </span>
         <button className={`rail-gear${settingsOpen ? " on" : ""}`}
           onClick={onOpenSettings}

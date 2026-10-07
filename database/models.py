@@ -389,6 +389,52 @@ CREATE TABLE IF NOT EXISTS feature_cache (
     PRIMARY KEY (content_hash, grp)
 );
 CREATE INDEX IF NOT EXISTS idx_feature_cache_grp ON feature_cache(grp, version);
+
+-- ── Sets: chosen mashups in running order ────────────────────────────────────
+-- What a Big Bootie-style mix is made of: not tracks (that is a crate) but
+-- PAIRS, in order. An item is keyed by the four ids that name a pair (readme
+-- §7 — never candidate.id, which a re-score truncates), and freezes the scored
+-- row it was added from so the set survives a re-score that drops the pair.
+CREATE TABLE IF NOT EXISTS sets (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    note        TEXT DEFAULT '',
+    created_at  TEXT DEFAULT (datetime('now')),
+    updated_at  TEXT DEFAULT (datetime('now')),
+    UNIQUE(name)
+);
+
+CREATE TABLE IF NOT EXISTS set_items (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    set_id          INTEGER NOT NULL,
+    position        INTEGER NOT NULL,
+    vocal_song_id   INTEGER NOT NULL,
+    inst_song_id    INTEGER NOT NULL,
+    vocal_section   INTEGER,
+    inst_section    INTEGER,
+    payload_json    TEXT,
+    added_at        TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_set_items_set ON set_items(set_id, position);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_set_items_pair
+    ON set_items(set_id, vocal_song_id, inst_song_id,
+                 COALESCE(vocal_section, -1), COALESCE(inst_section, -1));
+
+-- ── Notes on a pair ──────────────────────────────────────────────────────────
+-- "Opener", "needs a riser", "use the 2nd chorus". Keyed like pair_feedback
+-- (sections included, COALESCEd) but kept apart from it: a note is not a
+-- verdict and must never become training data.
+CREATE TABLE IF NOT EXISTS pair_notes (
+    vocal_song_id   INTEGER NOT NULL,
+    inst_song_id    INTEGER NOT NULL,
+    vocal_section   INTEGER,
+    inst_section    INTEGER,
+    note            TEXT NOT NULL,
+    updated_at      TEXT DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_pair_notes
+    ON pair_notes(vocal_song_id, inst_song_id,
+                  COALESCE(vocal_section, -1), COALESCE(inst_section, -1));
 """
 
 
@@ -2703,8 +2749,12 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         params,
     ).fetchall()
     conn.close()
+    # The track a directed search is scoped to is on every row, so it must not
+    # count towards the cap — counted, it used up its share on the first three
+    # rows and "beds for this vocal" stopped at three.
+    scoped = {s for s in (vocal_song_id, inst_song_id) if s is not None}
     return _cap_per_song([dict(r) for r in rows], max_per_song, want,
-                         max_per_song_pair)[offset:]
+                         max_per_song_pair, exempt=scoped)[offset:]
 
 
 # ── T3.5 filter vocabularies ─────────────────────────────────────────────────
@@ -2788,7 +2838,7 @@ def candidate_filter_options(combo_type: str = "",
 
 
 def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int,
-                  max_per_song_pair: int = 1) -> List[Dict]:
+                  max_per_song_pair: int = 1, exempt=()) -> List[Dict]:
     """Keep the best `limit` rows in which no song appears more than
     `max_per_song` times, counting appearances on either side.
 
@@ -2802,7 +2852,10 @@ def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int,
     appear (E.3). The scorer now emits a row per section pairing, so without
     this one song pair could take three of the top ten with what is, to a
     browsing eye, the same suggestion three times. The extra pairings are still
-    in the table and still reachable by seeding on either track."""
+    in the table and still reachable by seeding on either track.
+
+    `exempt` songs never count towards `max_per_song`: a list scoped to one
+    track has that track on every row."""
     if max_per_song <= 0 and max_per_song_pair <= 0:
         return rows[:limit]
     seen: Dict[int, int] = {}
@@ -2812,8 +2865,8 @@ def _cap_per_song(rows: List[Dict], max_per_song: int, limit: int,
         v, i = row["vocal_song_id"], row["inst_song_id"]
         if max_per_song_pair > 0 and seen_pair.get((v, i), 0) >= max_per_song_pair:
             continue
-        if max_per_song > 0 and (seen.get(v, 0) >= max_per_song
-                                 or seen.get(i, 0) >= max_per_song):
+        if max_per_song > 0 and any(seen.get(x, 0) >= max_per_song
+                                    for x in (v, i) if x not in exempt):
             continue
         seen[v] = seen.get(v, 0) + 1
         seen[i] = seen.get(i, 0) + 1
@@ -3636,3 +3689,243 @@ def analysis_timing_summary(since: Optional[str] = None,
             "median_rtf": round(rtf, 4) if rtf is not None else None,
         })
     return out
+
+
+# ── Pair lookup by its four ids ──────────────────────────────────────────────
+
+def candidate_for_pair(vocal_song_id: int, inst_song_id: int,
+                       vocal_section: Optional[int] = None,
+                       inst_section: Optional[int] = None,
+                       db_path: Path = DB_PATH) -> Optional[Dict]:
+    """The scored vocal-over-bed row for one pair, enriched exactly as the dock
+    lists it. With sections, that section pairing; without, the pair's best.
+    None when the pair is not scored (it failed a gate, or no re-score yet)."""
+    rows = get_candidates_enriched(
+        combo_type="vocal_over_instrumental", vocal_song_id=vocal_song_id,
+        inst_song_id=inst_song_id, max_per_song=0, max_per_song_pair=0,
+        limit=200, include_hidden=True, db_path=db_path)
+    if vocal_section is None and inst_section is None:
+        return rows[0] if rows else None
+    for r in rows:
+        if (r.get("vocal_section_idx") == vocal_section
+                and r.get("inst_section_idx") == inst_section):
+            return r
+    return None
+
+
+def _pair_where(vocal_song_id, inst_song_id, vocal_section, inst_section):
+    return ("vocal_song_id=? AND inst_song_id=? AND COALESCE(vocal_section,-1)=? "
+            "AND COALESCE(inst_section,-1)=?",
+            (vocal_song_id, inst_song_id,
+             -1 if vocal_section is None else vocal_section,
+             -1 if inst_section is None else inst_section))
+
+
+# ── Pair notes ───────────────────────────────────────────────────────────────
+
+def set_pair_note(vocal_song_id: int, inst_song_id: int,
+                  vocal_section: Optional[int], inst_section: Optional[int],
+                  note: str, db_path: Path = DB_PATH) -> None:
+    """Write (or, with an empty note, delete) the note on one pair."""
+    where, args = _pair_where(vocal_song_id, inst_song_id, vocal_section, inst_section)
+    conn = get_conn(db_path)
+    try:
+        conn.execute(f"DELETE FROM pair_notes WHERE {where}", args)
+        if (note or "").strip():
+            conn.execute(
+                "INSERT INTO pair_notes(vocal_song_id, inst_song_id, vocal_section,"
+                " inst_section, note) VALUES (?,?,?,?,?)",
+                (vocal_song_id, inst_song_id, vocal_section, inst_section,
+                 note.strip()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_pair_notes(db_path: Path = DB_PATH) -> List[Dict]:
+    conn = get_conn(db_path)
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM pair_notes ORDER BY updated_at DESC").fetchall()]
+    finally:
+        conn.close()
+
+
+# ── Sets ─────────────────────────────────────────────────────────────────────
+
+_SET_PAYLOAD_KEYS = (
+    "vocal_title", "vocal_artist", "vocal_bpm", "vocal_camelot", "inst_title",
+    "inst_artist", "inst_bpm", "inst_camelot", "score_total", "score_percentile",
+    "target_bpm", "harmonic_shift", "harmonic_confidence",
+    "score_key", "score_bpm", "score_energy", "score_timbre", "score_collision",
+    "bass_clash", "vocal_section_idx", "inst_section_idx",
+    "vocal_section_start", "vocal_section_end", "inst_section_start",
+    "inst_section_end", "vocal_section_label", "inst_section_label",
+    "section_bars_vocal", "section_bars_bed", "section_loop_repeats",
+    "section_note", "alignment_offset", "reason", "score_section",
+    "effort_label",
+)
+
+
+def create_set(name: str, note: str = "", db_path: Path = DB_PATH) -> Dict:
+    name = (name or "").strip() or "Untitled set"
+    conn = get_conn(db_path)
+    try:
+        base, n = name, 2
+        while conn.execute("SELECT 1 FROM sets WHERE name=?", (name,)).fetchone():
+            name, n = f"{base} {n}", n + 1
+        cur = conn.execute("INSERT INTO sets(name, note) VALUES (?, ?)", (name, note))
+        conn.commit()
+        sid = cur.lastrowid
+    finally:
+        conn.close()
+    return get_set(sid, db_path=db_path)
+
+
+def list_sets(db_path: Path = DB_PATH) -> List[Dict]:
+    conn = get_conn(db_path)
+    try:
+        return [dict(r) for r in conn.execute(
+            """SELECT s.*, (SELECT COUNT(*) FROM set_items i WHERE i.set_id = s.id)
+                      AS item_count
+               FROM sets s ORDER BY s.updated_at DESC, s.id DESC""").fetchall()]
+    finally:
+        conn.close()
+
+
+def update_set(set_id: int, *, name: Optional[str] = None,
+               note: Optional[str] = None, db_path: Path = DB_PATH) -> Optional[Dict]:
+    conn = get_conn(db_path)
+    try:
+        if name is not None and name.strip():
+            conn.execute("UPDATE sets SET name=?, updated_at=datetime('now') WHERE id=?",
+                         (name.strip(), set_id))
+        if note is not None:
+            conn.execute("UPDATE sets SET note=?, updated_at=datetime('now') WHERE id=?",
+                         (note, set_id))
+        conn.commit()
+    finally:
+        conn.close()
+    return get_set(set_id, db_path=db_path)
+
+
+def delete_set(set_id: int, db_path: Path = DB_PATH) -> bool:
+    conn = get_conn(db_path)
+    try:
+        conn.execute("DELETE FROM set_items WHERE set_id=?", (set_id,))
+        n = conn.execute("DELETE FROM sets WHERE id=?", (set_id,)).rowcount
+        conn.commit()
+        return n > 0
+    finally:
+        conn.close()
+
+
+def add_set_item(set_id: int, vocal_song_id: int, inst_song_id: int,
+                 vocal_section: Optional[int] = None,
+                 inst_section: Optional[int] = None,
+                 db_path: Path = DB_PATH) -> Optional[Dict]:
+    """Append a pair to a set, freezing its scored row. Adding a pair already in
+    the set is a no-op that returns the existing item."""
+    row = candidate_for_pair(vocal_song_id, inst_song_id, vocal_section,
+                             inst_section, db_path=db_path)
+    payload = {k: row.get(k) for k in _SET_PAYLOAD_KEYS} if row else {}
+    if row and vocal_section is None and inst_section is None:
+        vocal_section = row.get("vocal_section_idx")
+        inst_section = row.get("inst_section_idx")
+    if not row:
+        # Not scored: still a pair the user chose. Titles from the songs table.
+        for side, sid in (("vocal", vocal_song_id), ("inst", inst_song_id)):
+            song = get_song(sid, db_path=db_path) or {}
+            payload[f"{side}_title"] = song.get("title")
+            payload[f"{side}_artist"] = song.get("artist")
+    conn = get_conn(db_path)
+    try:
+        if not conn.execute("SELECT 1 FROM sets WHERE id=?", (set_id,)).fetchone():
+            return None
+        where, args = _pair_where(vocal_song_id, inst_song_id, vocal_section, inst_section)
+        have = conn.execute(f"SELECT id FROM set_items WHERE set_id=? AND {where}",
+                            (set_id, *args)).fetchone()
+        if have:
+            return {"id": have["id"], "duplicate": True}
+        pos = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM set_items "
+                           "WHERE set_id=?", (set_id,)).fetchone()[0]
+        cur = conn.execute(
+            "INSERT INTO set_items(set_id, position, vocal_song_id, inst_song_id,"
+            " vocal_section, inst_section, payload_json) VALUES (?,?,?,?,?,?,?)",
+            (set_id, pos, vocal_song_id, inst_song_id, vocal_section, inst_section,
+             json.dumps(payload, default=str)))
+        conn.execute("UPDATE sets SET updated_at=datetime('now') WHERE id=?", (set_id,))
+        conn.commit()
+        return {"id": cur.lastrowid, "duplicate": False}
+    finally:
+        conn.close()
+
+
+def remove_set_item(set_id: int, item_id: int, db_path: Path = DB_PATH) -> bool:
+    conn = get_conn(db_path)
+    try:
+        n = conn.execute("DELETE FROM set_items WHERE set_id=? AND id=?",
+                         (set_id, item_id)).rowcount
+        rows = conn.execute("SELECT id FROM set_items WHERE set_id=? ORDER BY position",
+                            (set_id,)).fetchall()
+        for pos, r in enumerate(rows):
+            conn.execute("UPDATE set_items SET position=? WHERE id=?", (pos, r["id"]))
+        conn.execute("UPDATE sets SET updated_at=datetime('now') WHERE id=?", (set_id,))
+        conn.commit()
+        return n > 0
+    finally:
+        conn.close()
+
+
+def reorder_set(set_id: int, item_ids: Sequence[int], db_path: Path = DB_PATH) -> bool:
+    """Put the set in exactly this order. The ids must be the set's items."""
+    conn = get_conn(db_path)
+    try:
+        have = {r["id"] for r in conn.execute(
+            "SELECT id FROM set_items WHERE set_id=?", (set_id,)).fetchall()}
+        if set(item_ids) != have or len(item_ids) != len(have):
+            return False
+        for pos, iid in enumerate(item_ids):
+            conn.execute("UPDATE set_items SET position=? WHERE id=?", (pos, iid))
+        conn.execute("UPDATE sets SET updated_at=datetime('now') WHERE id=?", (set_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def get_set(set_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
+    """A set with its items in order. Each item is the pair's CURRENT scored row
+    when it still has one (a re-score refines it) and the frozen row when not
+    (`stale: True`), plus its note."""
+    conn = get_conn(db_path)
+    try:
+        s = conn.execute("SELECT * FROM sets WHERE id=?", (set_id,)).fetchone()
+        if not s:
+            return None
+        items = [dict(r) for r in conn.execute(
+            "SELECT * FROM set_items WHERE set_id=? ORDER BY position, id",
+            (set_id,)).fetchall()]
+        notes = {}
+        for n in conn.execute("SELECT * FROM pair_notes").fetchall():
+            notes[(n["vocal_song_id"], n["inst_song_id"],
+                   n["vocal_section"], n["inst_section"])] = n["note"]
+    finally:
+        conn.close()
+    out = []
+    for it in items:
+        frozen = json.loads(it.get("payload_json") or "{}")
+        live = candidate_for_pair(it["vocal_song_id"], it["inst_song_id"],
+                                  it["vocal_section"], it["inst_section"],
+                                  db_path=db_path)
+        row = {**frozen, **({k: live.get(k) for k in _SET_PAYLOAD_KEYS} if live else {})}
+        row.update({
+            "item_id": it["id"], "position": it["position"],
+            "vocal_song_id": it["vocal_song_id"], "inst_song_id": it["inst_song_id"],
+            "vocal_section_idx": it["vocal_section"], "inst_section_idx": it["inst_section"],
+            "stale": live is None,
+            "note": notes.get((it["vocal_song_id"], it["inst_song_id"],
+                               it["vocal_section"], it["inst_section"]), ""),
+        })
+        out.append(row)
+    return {**dict(s), "items": out}

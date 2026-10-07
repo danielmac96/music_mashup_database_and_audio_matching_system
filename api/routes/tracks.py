@@ -644,16 +644,28 @@ def list_sections(song_id: int) -> dict:
     return {"count": len(sections), "sections": sections}
 
 
+def _tempo_agrees(stem_bpm, full_bpm, tol: float = 0.03) -> bool:
+    """A stem's tempo is consistent with the full mix's: within `tol`, or no
+    full-mix tempo to disagree with."""
+    if not full_bpm:
+        return True
+    if not stem_bpm:
+        return False
+    return abs(stem_bpm / full_bpm - 1.0) <= tol
+
+
 @router.get("/{song_id}/waveform")
 def get_waveform(song_id: int, stem: str = "vocals") -> dict:
     """Waveform envelope (360 normalized RMS points) and beat timestamps for alignment.
 
-    Beat grid source — stems-first with fallback: the instrumental stem's own
-    beats are always used (percussive content tracks reliably). The vocal
-    stem's beats are used only when its bpm_confidence clears
-    VOCAL_BEAT_CONFIDENCE_MIN; below that, vocals aren't percussive enough for
-    librosa's beat tracker to trust, so we fall back to the full-mix grid.
-    The 'full' stem always uses its own beats."""
+    Beat grid source — stems-first with fallback. A stem's own beats are used
+    only when its tempo agrees with the full mix's (within 3%, see
+    _tempo_agrees); the vocal stem's additionally need a bpm_confidence above
+    VOCAL_BEAT_CONFIDENCE_MIN. Otherwise the full-mix grid is used: separation
+    adds octave and onset errors to stem beat tracking, and a vocal stem can be
+    tracked confidently at a quarter of the tempo (one onset per sung bar).
+    The matcher and Studio both take tempo from the full mix for the same
+    reason. The 'full' stem always uses its own beats."""
     if stem not in _STEM_TYPES:
         raise HTTPException(status_code=400, detail=f"stem must be one of {sorted(_STEM_TYPES)}")
     conn = get_conn()
@@ -670,19 +682,19 @@ def get_waveform(song_id: int, stem: str = "vocals") -> dict:
     # points at the wrong beat and moves every bar line.
     beat_times, beat_source = [], stem
     beat_feat = feat_stem
-    if stem == "vocals":
-        confidence = (feat_stem or {}).get("bpm_confidence") or 0.0
+    if stem == "full":
+        beat_times = (feat_stem or {}).get("beat_times") or []
+    else:
+        feat_full = get_features_for_song(song_id, stem_type="full")
         stem_beats = (feat_stem or {}).get("beat_times") or []
-        if stem_beats and confidence >= VOCAL_BEAT_CONFIDENCE_MIN:
+        trusted = bool(stem_beats) and _tempo_agrees(
+            (feat_stem or {}).get("bpm"), (feat_full or {}).get("bpm"))
+        if stem == "vocals":
+            confidence = (feat_stem or {}).get("bpm_confidence") or 0.0
+            trusted = trusted and confidence >= VOCAL_BEAT_CONFIDENCE_MIN
+        if trusted or (stem_beats and not feat_full):
             beat_times = stem_beats
         else:
-            feat_full = get_features_for_song(song_id, stem_type="full")
-            beat_times = feat_full.get("beat_times", []) if feat_full else []
-            beat_source, beat_feat = "full", feat_full
-    else:
-        beat_times = (feat_stem or {}).get("beat_times") or []
-        if not beat_times and stem == "instrumental":
-            feat_full = get_features_for_song(song_id, stem_type="full")
             beat_times = feat_full.get("beat_times", []) if feat_full else []
             beat_source, beat_feat = "full", feat_full
 

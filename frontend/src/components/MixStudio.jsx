@@ -61,7 +61,6 @@ const STEM_LABEL = {
 // what make the real producer moves possible — drop the bed's bass and keep the
 // vocal track's, or swap the bed's drums for a tighter kit.
 const STEM_ORDER = ["vocals", "instrumental", "drums", "bass", "other", "full"];
-const VOCAL_BPM_CONFIDENCE_MIN = 0.35; // mirror of backend fallback threshold
 const MIN_PPS = 4, MAX_PPS = 240;
 const SNAP_PX = 12;
 // Trim handles: 8px grab zones on the clip edges, and a floor short enough to
@@ -84,16 +83,28 @@ const MAX_SNAPSHOTS = 20;
 
 let laneUid = 1;
 
-// Source BPM for a lane, stems-first with the vocal-confidence fallback the
-// waveform endpoint also applies (its beat grid follows the same rule).
+// Everything about a lane that is the user's arrangement rather than loaded
+// audio. ONE list, read by the saved project, snapshots and undo, so a lane
+// property added later (fades, filters) is kept by all three or by none.
+const LANE_KEYS = ["songId", "stem", "offsetSec", "rate", "semitones", "gain",
+  "muted", "synced", "colorIdx", "clipStart", "clipEnd"];
+const laneState = (l) => Object.fromEntries(LANE_KEYS.map((k) => [k, l[k]]));
+
+function readSnapshots() {
+  try { return JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || "[]"); } catch { return []; }
+}
+
+// Source BPM for a lane: the FULL MIX's tempo, whatever stem the lane plays.
+// A stem is the same recording, so it has the same tempo — but beat tracking on
+// a separated stem picks up octave and onset errors, and a vocal stem can be
+// tracked confidently at a quarter of the tempo (one onset per sung bar). The
+// matcher, the plan and the FL export all read the full mix (matcher.match.
+// _with_full_bpm); Studio reading the stem made it conform pairs the matcher had
+// placed at 124 BPM to 31 BPM. The stem's own figure is only a fallback for a
+// track with no full-mix analysis.
 function laneBpmFor(track, stem) {
   const feats = track?.features || {};
-  if (stem === "vocals") {
-    const v = feats.vocals;
-    if (v?.bpm && (v.bpm_confidence ?? 0) >= VOCAL_BPM_CONFIDENCE_MIN) return v.bpm;
-    return feats.full?.bpm ?? null;
-  }
-  return feats[stem]?.bpm ?? feats.full?.bpm ?? null;
+  return feats.full?.bpm ?? feats[stem]?.bpm ?? null;
 }
 
 // Rate (playback-speed factor) that conforms a lane to the project tempo,
@@ -465,7 +476,8 @@ export function placementFor(opt, vRate, bRate) {
 
 // ── main component ────────────────────────────────────────────────────────────
 
-export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null }) {
+export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
+                           onAppendNext = null, onAddToSet = null, setName = null }) {
   const [tracks, setTracks] = useState([]);
   const [lanes, setLanes] = useState([]);
   const [projectBpm, setProjectBpm] = useState(null);
@@ -798,6 +810,45 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
     toast("Trim cleared — playing the whole stem");
   };
 
+  /** Lay out a saved arrangement — the restored project or a snapshot — in
+   * place of whatever is on the timeline. Returns how many lanes it placed
+   * (a track deleted since is skipped, not an error). */
+  const applyProject = useCallback((saved, trackList) => {
+    const byId = new Map((trackList || []).map((t) => [t.id, t]));
+    engineRef.current?.stop();
+    for (const l of lanesRef.current) engineRef.current?.removeVoice(l.id);
+    setLanes([]); setSoloId(null); setSelectedId(null);
+    if (saved.projectBpm) setProjectBpm(saved.projectBpm);
+    if (saved.snapMode) setSnapMode(saved.snapMode);
+    // The pair, not its options: the list is re-fetched from the plan, so a
+    // re-analysis can never leave stale timings on screen.
+    if (saved.pairCtx?.vocalSongId != null && saved.pairCtx?.instSongId != null) {
+      setPairCtx(saved.pairCtx);
+      setActiveOptionKey(saved.activeOptionKey ?? null);
+    } else {
+      setPairCtx(null); setActiveOptionKey(null);
+    }
+    if (saved.loop?.end > saved.loop?.start) {
+      setLoop(saved.loop);
+      if (saved.loopBars) setLoopBars(saved.loopBars);
+      // Open on the audio rather than on bar 1. A timing pill trims its lanes
+      // to a section two minutes in, so a viewport left at 0 restores to what
+      // looks like an empty project.
+      setPosition(saved.loop.start);
+      engineRef.current?.seek(saved.loop.start);
+      setViewStart(Math.max(0, saved.loop.start - 2));
+    } else {
+      setLoop(null); setPosition(0); setViewStart(0);
+    }
+    let n = 0;
+    for (const sl of saved.lanes || []) {
+      const t = byId.get(sl.songId);
+      if (t) { addLane(t, sl.stem, sl); n++; }
+    }
+    return n;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addLane]);
+
   // ── persistence (localStorage, debounced) ───────────────────────────────
   // Saving stays OFF until the restore finishes — otherwise the empty initial
   // state could overwrite the stored project before the async restore lands.
@@ -816,30 +867,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
     if (!saved?.lanes?.length) { setRestored(true); return; }
     // Restore once the library list is available so lanes get titles/BPM.
     api.getTracks().then((d) => {
-      const byId = new Map(d.tracks.map((t) => [t.id, t]));
-      if (saved.projectBpm) setProjectBpm(saved.projectBpm);
-      if (saved.snapMode) setSnapMode(saved.snapMode);
-      // The pair, not its options: the list is re-fetched from the plan below,
-      // so a re-analysis can never leave stale timings on screen.
-      if (saved.pairCtx?.vocalSongId != null && saved.pairCtx?.instSongId != null) {
-        setPairCtx(saved.pairCtx);
-        setActiveOptionKey(saved.activeOptionKey ?? null);
-      }
-      if (saved.loop?.end > saved.loop?.start) {
-        setLoop(saved.loop);
-        if (saved.loopBars) setLoopBars(saved.loopBars);
-        // Open on the audio rather than on bar 1. A timing pill trims its lanes
-        // to a section two minutes in, so a viewport left at 0 restores to what
-        // looks like an empty project.
-        setPosition(saved.loop.start);
-        engineRef.current?.seek(saved.loop.start);
-        setViewStart(Math.max(0, saved.loop.start - 2));
-      }
-      let n = 0;
-      for (const sl of saved.lanes) {
-        const t = byId.get(sl.songId);
-        if (t) { addLane(t, sl.stem, sl); n++; }
-      }
+      const n = applyProject(saved, d.tracks);
       if (n) toast(`Restored studio project (${n} lane${n === 1 ? "" : "s"})`);
     }).catch(() => {}).finally(() => setRestored(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -854,11 +882,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
         // never persisted before, so a shift-dragged loop was lost on reload
         // too; the pills just made that visible.
         projectBpm, snapMode, pairCtx, activeOptionKey, loop, loopBars,
-        lanes: lanes.map((l) => ({
-          songId: l.songId, stem: l.stem, offsetSec: l.offsetSec, rate: l.rate,
-          semitones: l.semitones, gain: l.gain, muted: l.muted, synced: l.synced,
-          colorIdx: l.colorIdx, clipStart: l.clipStart, clipEnd: l.clipEnd,
-        })),
+        lanes: lanes.map(laneState),
       };
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(payload)); } catch { /* full */ }
     }, 400);
@@ -870,8 +894,82 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
   // pitched by the shift the ranked list already computed, both lanes placed so
   // the winning section pair (T3.3) starts at the same instant.
   const seededFor = useRef(null);
+
+  /** Lay pairs back to back on one timeline — a set opened from the Sets
+   * screen, or "Append next" from the dock. Each pair is placed exactly as its
+   * timing option places it (placementFor), trimmed to its sections, then
+   * shifted so it starts where the previous one ended. Everything is synced to
+   * one project tempo: the first pair's vocal, or the project's when appending. */
+  const layPairs = useCallback((pairs, append) => {
+    const resolved = pairs.map((p) => ({
+      p, v: tracks.find((t) => t.id === p.vocalId), b: tracks.find((t) => t.id === p.instId),
+    })).filter((x) => x.v && x.b && usableOption(x.p.scoredOption));
+    if (!resolved.length) { toast("Those pairs have no analysed sections to place"); return; }
+    let bpm = append ? projectBpm : null;
+    if (!bpm) {
+      const v0 = laneBpmFor(resolved[0].v, "vocals");
+      bpm = v0 ? Math.round(v0) : projectBpm;
+    }
+    let cursor = 0;
+    if (append) {
+      for (const l of lanesRef.current) {
+        const end = l.offsetSec + ((l.clipEnd ?? l.rawDur ?? 0) / (l.rate || 1));
+        cursor = Math.max(cursor, end);
+      }
+    } else {
+      engineRef.current?.stop();
+      for (const l of lanesRef.current) engineRef.current?.removeVoice(l.id);
+      setLanes([]); setSoloId(null); setCross(0.5);
+    }
+    const first = cursor;
+    let color = append ? lanesRef.current.length : 0;
+    for (const { p, v, b } of resolved) {
+      const vStem = v.stems?.vocals ? "vocals" : "full";
+      const bStem = b.stems?.instrumental ? "instrumental" : "full";
+      const vBpm = laneBpmFor(v, vStem), bBpm = laneBpmFor(b, bStem);
+      const vRate = (bpm && vBpm && syncRateFor(vBpm, bpm)) || 1;
+      const bRate = (bpm && bBpm && syncRateFor(bBpm, bpm)) || 1;
+      const place = placementFor(p.scoredOption, vRate, bRate);
+      const off = p.scoredOption.alignment_offset ?? 0;
+      const vLen = (p.scoredOption.vocal_section_end - p.scoredOption.vocal_section_start) / vRate;
+      const bLen = (p.scoredOption.inst_section_end - p.scoredOption.inst_section_start) / bRate;
+      const startsAt = Math.min(place.base, place.base + off);
+      const shift = cursor - startsAt;
+      addLane(v, vStem, { offsetSec: place.vocal.offsetSec + shift,
+        clipStart: place.vocal.clipStart, clipEnd: place.vocal.clipEnd,
+        rate: vRate, semitones: 0, gain: 0.85, synced: Boolean(bpm && vBpm), colorIdx: color++ });
+      addLane(b, bStem, { offsetSec: place.bed.offsetSec + shift,
+        clipStart: place.bed.clipStart, clipEnd: place.bed.clipEnd,
+        rate: bRate, semitones: p.semitoneShift ?? 0, gain: 0.8,
+        synced: Boolean(bpm && bBpm), colorIdx: color++ });
+      cursor = shift + Math.max(place.base + vLen, place.base + off + bLen);
+    }
+    if (bpm) setProjectBpm(bpm);
+    // Several pairs share the timeline, so no one pair's timing pills apply.
+    setPairCtx(null); setActiveOptionKey(null); setLoop(null);
+    setPosition(first); engineRef.current?.seek(first);
+    setViewStart(Math.max(0, first - 2));
+    setRestored(true);
+    toast(append ? "Appended the next pair after the arrangement"
+      : `${resolved.length} mashup${resolved.length === 1 ? "" : "s"} laid back to back at ${bpm} BPM`);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tracks, projectBpm, addLane]);
+
+  useEffect(() => {
+    if (!tracks.length || !seed?.chain?.length) return;
+    // An append waits for the restore — it lands after the restored project.
+    if (seed.append && !restored) return;
+    const token = `chain:${seed.at ?? ""}`;
+    if (seededFor.current === token) return;
+    seededFor.current = token;
+    layPairs(seed.chain, Boolean(seed.append));
+    onSeedConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seed, tracks, restored, layPairs]);
+
   useEffect(() => {
     if (!tracks.length) return;
+    if (seed?.chain) return;
     if (seed?.vocalId == null && seed?.instId == null) return;
     const isPair = seed.vocalId != null && seed.instId != null;
     // A single track is appended to the saved project, so it has to wait for
@@ -1038,26 +1136,43 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
    * browser's working state — there is no server-side session store, and
    * inventing one to hold a scratch arrangement would be a bigger claim than
    * the button makes. */
+  const [snapshots, setSnapshots] = useState(readSnapshots);
+  const writeSnapshots = (all) => {
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(all));
+    setSnapshots(all);
+  };
   const saveSnapshot = useCallback(() => {
     const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
     const payload = {
       name: `${lanesRef.current.map((l) => l.title).join(" + ") || "empty"} · ${stamp}`,
-      at: Date.now(), projectBpm, loop, loopBars, pairCtx, activeOptionKey,
-      lanes: lanesRef.current.map((l) => ({
-        songId: l.songId, stem: l.stem, offsetSec: l.offsetSec, rate: l.rate,
-        semitones: l.semitones, gain: l.gain, muted: l.muted, synced: l.synced,
-        colorIdx: l.colorIdx, clipStart: l.clipStart, clipEnd: l.clipEnd,
-      })),
+      at: Date.now(), projectBpm, snapMode, loop, loopBars, pairCtx, activeOptionKey,
+      lanes: lanesRef.current.map(laneState),
     };
     try {
-      const all = JSON.parse(localStorage.getItem(SNAPSHOT_KEY) || "[]");
-      all.unshift(payload);
-      localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(all.slice(0, MAX_SNAPSHOTS)));
-      toast(`Snapshot saved — ${all.length > MAX_SNAPSHOTS ? MAX_SNAPSHOTS : all.length} kept`);
+      const all = [payload, ...readSnapshots()].slice(0, MAX_SNAPSHOTS);
+      writeSnapshots(all);
+      toast(`Snapshot saved — ${all.length} kept`);
     } catch {
       toast("Could not save the snapshot — this browser's storage is full");
     }
-  }, [projectBpm, loop, loopBars, pairCtx, activeOptionKey]);
+  }, [projectBpm, snapMode, loop, loopBars, pairCtx, activeOptionKey]);
+
+  // A snapshot replaces the arrangement on screen. The live project is not
+  // lost by accident: it is snapshotted first unless it is empty.
+  const loadSnapshot = useCallback((snap) => {
+    if (lanesRef.current.length) {
+      const stamp = new Date().toISOString().slice(0, 16).replace("T", " ");
+      const auto = { name: `before loading · ${stamp}`, at: Date.now(), projectBpm, snapMode,
+        loop, loopBars, pairCtx, activeOptionKey, lanes: lanesRef.current.map(laneState) };
+      try { writeSnapshots([auto, ...readSnapshots()].slice(0, MAX_SNAPSHOTS)); } catch { /* full */ }
+    }
+    const n = applyProject(snap, tracks);
+    toast(n ? `Loaded “${snap.name}”` : "None of that snapshot's tracks are in the library any more");
+  }, [applyProject, tracks, projectBpm, snapMode, loop, loopBars, pairCtx, activeOptionKey]);
+
+  const deleteSnapshot = useCallback((at) => {
+    try { writeSnapshots(readSnapshots().filter((x) => x.at !== at)); } catch { /* ignore */ }
+  }, []);
 
   /** Step to the next/previous timing option (the [ and ] keys). */
   const cycleOption = useCallback((dir) => {
@@ -1837,7 +1952,16 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null })
         buildRating={buildRating}
         onRateBuild={activeOption ? (n) => rateBuild(activeOption, n) : null}
         onSaveSnapshot={saveSnapshot}
+        snapshots={snapshots} onLoadSnapshot={loadSnapshot}
+        onDeleteSnapshot={deleteSnapshot}
         onNextPair={onNextPair} hasNextPair={Boolean(onNextPair)}
+        onAppendNext={onAppendNext}
+        onAddToSet={onAddToSet && pairCtx && activeOption ? () => onAddToSet({
+          vocal_song_id: pairCtx.vocalSongId, inst_song_id: pairCtx.instSongId,
+          vocal_section_idx: activeOption.vocal_section_idx ?? null,
+          inst_section_idx: activeOption.inst_section_idx ?? null,
+        }) : null}
+        setName={setName}
         dirty={dirty} />
       </div>
 

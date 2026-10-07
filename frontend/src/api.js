@@ -1,3 +1,26 @@
+// A POST whose answer is a file (an export built from a body too large for a
+// query string): fetch it and hand it to the browser as a download.
+async function downloadPost(url, body, fallbackName) {
+  const res = await fetch(url, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { detail = (await res.json()).detail || detail; } catch { /* not json */ }
+    throw new Error(`${res.status} ${detail}`);
+  }
+  const cd = res.headers.get("Content-Disposition") || "";
+  const name = (cd.match(/filename="([^"]+)"/) || [])[1] || fallbackName;
+  const blob = await res.blob();
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 5000);
+  return { name, skipped: Number(res.headers.get("X-Skipped-Tracks") || 0) };
+}
+
 async function jsonFetch(url, options = {}) {
   const res = await fetch(url, {
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
@@ -647,4 +670,55 @@ export const api = {
 
   getDbTable: (table, limit = 100, offset = 0) =>
     jsonFetch(`/api/db/tables/${table}?limit=${limit}&offset=${offset}`),
+
+  // ── Sets: chosen mashups in running order ──────────────────────────────────
+  getSets: () => jsonFetch("/api/sets"),
+  createSet: (name) =>
+    jsonFetch("/api/sets", { method: "POST", body: JSON.stringify({ name }) }),
+  getSet: (id) => jsonFetch(`/api/sets/${id}`),
+  updateSet: (id, patch) =>
+    jsonFetch(`/api/sets/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  deleteSet: (id) => jsonFetch(`/api/sets/${id}`, { method: "DELETE" }),
+  // A pair is named by its four ids (readme §7), never by candidate.id.
+  addToSet: (id, c) =>
+    jsonFetch(`/api/sets/${id}/items`, {
+      method: "POST",
+      body: JSON.stringify({
+        vocal_song_id: c.vocal_song_id, inst_song_id: c.inst_song_id,
+        vocal_section: c.vocal_section_idx ?? null, inst_section: c.inst_section_idx ?? null,
+      }),
+    }),
+  removeFromSet: (id, itemId) =>
+    jsonFetch(`/api/sets/${id}/items/${itemId}`, { method: "DELETE" }),
+  reorderSet: (id, itemIds) =>
+    jsonFetch(`/api/sets/${id}/reorder`, {
+      method: "POST", body: JSON.stringify({ item_ids: itemIds }),
+    }),
+  suggestSetOrder: (id, start = null) =>
+    jsonFetch(`/api/sets/${id}/suggest-order${start != null ? `?start=${start}` : ""}`),
+  setExportUrl: (id, format, base = "") => {
+    const q = new URLSearchParams({ format });
+    if (base) q.set("base", base);
+    return `/api/sets/${id}/export?${q}`;
+  },
+
+  // ── Notes on a pair, and plain exports of the dock's pairs ─────────────────
+  getPairNotes: () => jsonFetch("/api/mashups/notes"),
+  savePairNote: (c, note) =>
+    jsonFetch("/api/mashups/notes", {
+      method: "POST",
+      body: JSON.stringify({
+        vocal_song_id: c.vocal_song_id, inst_song_id: c.inst_song_id,
+        vocal_section: c.vocal_section_idx ?? null, inst_section: c.inst_section_idx ?? null,
+        note,
+      }),
+    }),
+  exportPairs: (rows, format, name = "pairs", base = "") =>
+    downloadPost("/api/mashups/export", {
+      format, name, base: base || null,
+      pairs: rows.map((c) => ({
+        vocal_song_id: c.vocal_song_id, inst_song_id: c.inst_song_id,
+        vocal_section: c.vocal_section_idx ?? null, inst_section: c.inst_section_idx ?? null,
+      })),
+    }, `${name}.${format === "rekordbox" ? "xml" : format === "cue" ? "txt" : "csv"}`),
 };

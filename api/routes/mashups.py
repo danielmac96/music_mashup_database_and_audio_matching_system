@@ -2,7 +2,7 @@
 and fetch an actionable section-level plan for a pair."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
@@ -63,6 +63,18 @@ def queue_score(background: BackgroundTasks,
     return {"job_id": job_id}
 
 
+def _count_judgments() -> int:
+    try:
+        from database.models import get_conn
+        conn = get_conn()
+        try:
+            return conn.execute("SELECT COUNT(*) FROM pair_feedback").fetchone()[0]
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — the badge is never worth a 500
+        return 0
+
+
 @router.get("/scorer-status")
 def scorer_status() -> dict:
     """What the 'auto' scorer would use right now — drives the Mashups badge."""
@@ -72,7 +84,11 @@ def scorer_status() -> dict:
     except Exception:  # noqa: BLE001
         bundle = None
     if not bundle:
-        return {"scorer": "heuristic", "model_version": None, "auc": None}
+        # The judgement count matters MOST here: the heuristic is what you rank
+        # with while collecting the verdicts a model needs. It was only counted
+        # for an active model, so the rail read "0 judged" however many you gave.
+        return {"scorer": "heuristic", "model_version": None, "auc": None,
+                "n_judgments": _count_judgments()}
     metrics = bundle.get("metrics") or {}
     cv = metrics.get("cv") or {}
 
@@ -537,3 +553,66 @@ def _reorder_by_surprise(rows: list, adventure: float) -> list:
                       + adventure * surprise)
     rows.sort(key=lambda r: r.pop("_rank", 0.0), reverse=True)
     return rows
+
+
+# ── Notes on a pair, and plain exports of pairs ─────────────────────────────
+
+class PairNoteBody(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+    vocal_section: Optional[int] = None
+    inst_section: Optional[int] = None
+    note: str = ""
+
+
+@router.get("/notes")
+def pair_notes() -> dict:
+    from database.models import get_pair_notes
+    return {"notes": get_pair_notes()}
+
+
+@router.post("/notes")
+def save_pair_note(body: PairNoteBody) -> dict:
+    """Write a note on a pair ('opener', 'needs a riser'); an empty note
+    deletes it. Notes are never training data."""
+    from database.models import set_pair_note
+    set_pair_note(body.vocal_song_id, body.inst_song_id, body.vocal_section,
+                  body.inst_section, body.note)
+    return {"ok": True}
+
+
+class PairKey(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+    vocal_section: Optional[int] = None
+    inst_section: Optional[int] = None
+
+
+class PairExportBody(BaseModel):
+    pairs: List[PairKey]
+    format: str = "csv"
+    name: str = "pairs"
+    base: Optional[str] = None
+
+
+@router.post("/export")
+def export_pairs(body: PairExportBody):
+    """The pairs the dock is showing, as CSV / cue sheet / rekordbox XML — the
+    same files a set exports (render/exports.py)."""
+    if body.format not in ("csv", "cue", "rekordbox"):
+        raise HTTPException(status_code=400, detail="format must be csv, cue or rekordbox")
+    from api.routes.sets import export_response
+    from database.models import candidate_for_pair, get_pair_notes
+    notes = {(n["vocal_song_id"], n["inst_song_id"], n["vocal_section"],
+              n["inst_section"]): n["note"] for n in get_pair_notes()}
+    items = []
+    for p in body.pairs[:200]:
+        row = candidate_for_pair(p.vocal_song_id, p.inst_song_id,
+                                 p.vocal_section, p.inst_section)
+        if row:
+            row["note"] = notes.get((p.vocal_song_id, p.inst_song_id,
+                                     p.vocal_section, p.inst_section), "")
+            items.append(row)
+    if not items:
+        raise HTTPException(status_code=404, detail="none of those pairs are scored")
+    return export_response(items, body.format, body.name, body.base)

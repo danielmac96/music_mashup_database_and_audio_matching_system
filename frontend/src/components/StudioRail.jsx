@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { StarRating } from "./StarRating";
 
 // The 340px adjustments rail.
@@ -57,7 +58,10 @@ export function StudioRail({
   soloId, setSoloId, referenceLane, matchKeyToReference, alignLaneToGrid,
   resetLane, clearTrim, trimOf, syncRateFor, projectBpm,
   buildRating, onRateBuild, onSaveSnapshot, onNextPair, hasNextPair, dirty,
+  snapshots = [], onLoadSnapshot = () => {}, onDeleteSnapshot = () => {},
+  onAppendNext = null, onAddToSet = null, setName = null,
 }) {
+  const [showSnaps, setShowSnaps] = useState(false);
   const bedRate = bedLane?.rate ?? 1;
   const bedPitch = bedLane?.semitones ?? 0;
   // Nudge is expressed where a person can act on it: milliseconds of bed
@@ -197,6 +201,22 @@ export function StudioRail({
       )}
 
       <div className="rail-foot">
+        {showSnaps && snapshots.length > 0 && (
+          <div className="snap-list">
+            {snapshots.map((sn) => (
+              <div key={sn.at} className="snap-row">
+                <button className="snap-load" title="Load this arrangement (the current one is snapshotted first)"
+                  onClick={() => { onLoadSnapshot(sn); setShowSnaps(false); }}>
+                  <span className="snap-name">{sn.name}</span>
+                  <span className="snap-meta mono">{(sn.lanes || []).length} lanes
+                    {sn.projectBpm ? ` · ${Math.round(sn.projectBpm)} BPM` : ""}</span>
+                </button>
+                <button className="snap-x" title="Delete this snapshot"
+                  onClick={() => onDeleteSnapshot(sn.at)}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="rail-rate">
           <span className="hint">Rate this build</span>
           <StarRating value={buildRating} onRate={onRateBuild} size={16}
@@ -208,11 +228,27 @@ export function StudioRail({
             title="Keep this arrangement so you can come back to it">
             Save snapshot
           </button>
+          <button className={`head-btn${showSnaps ? " on" : ""}`}
+            onClick={() => setShowSnaps((v) => !v)} disabled={!snapshots.length}
+            title={snapshots.length ? "Open a saved arrangement" : "No snapshots saved yet"}>
+            Snapshots {snapshots.length ? `(${snapshots.length})` : ""}
+          </button>
           <button className="rail-next" onClick={onNextPair} disabled={!hasNextPair}
             title={hasNextPair
               ? "Open the next pair from the dock"
               : "No next pair — the dock has not been opened on a list yet"}>
             Next pair ⏎
+          </button>
+        </div>
+        <div className="rail-buttons">
+          <button className="head-btn" onClick={onAddToSet || undefined} disabled={!onAddToSet}
+            title={onAddToSet ? `Add this pair, at the armed timing, to the set “${setName || "My set"}”`
+              : "Arm a timing option to add this pair to a set"}>
+            + Set
+          </button>
+          <button className="head-btn" onClick={onAppendNext || undefined} disabled={!onAppendNext}
+            title="Lay the dock's next pair AFTER this arrangement, to hear the transition between the two">
+            Append next ⇥
           </button>
         </div>
       </div>
