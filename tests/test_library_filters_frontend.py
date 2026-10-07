@@ -136,7 +136,8 @@ def test_every_column_declares_an_id_and_a_width():
     heads = TABLE[TABLE.index("const HEADS = ["):]
     heads = heads[:heads.index("];")]
     entries = [l for l in heads.split("\n") if l.strip().startswith("{ id:")]
-    assert len(entries) == 11, entries
+    # 11 original columns + MASH, VOX%, PAIRS (mashup columns).
+    assert len(entries) == 14, entries
     for line in entries:
         assert " w: " in line, line
     # Each entry stays on ONE line: test_sc_preview_frontend parses this block

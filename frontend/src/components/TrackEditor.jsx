@@ -77,6 +77,14 @@ export function TrackEditor({ track, onSaved, onCancel }) {
             <span className="muted" style={{ width: 34 }}>BPM</span>
             <input type="number" step="0.1" min="1" value={bpm}
               onChange={(e) => setBpm(e.target.value)} style={{ width: 72 }} />
+            {/* Half/double-time is the commonest tempo error by far: one click,
+                not retyping the number. Saved with the Save button. */}
+            <button type="button" className="mini-btn" title="Double the tempo (it was read at half time)"
+              disabled={!(parseFloat(bpm) > 0)}
+              onClick={() => setBpm(String(Math.round(parseFloat(bpm) * 200) / 100))}>×2</button>
+            <button type="button" className="mini-btn" title="Halve the tempo (it was read at double time)"
+              disabled={!(parseFloat(bpm) > 0)}
+              onClick={() => setBpm(String(Math.round(parseFloat(bpm) * 50) / 100))}>÷2</button>
           </label>
           <label>
             <span className="muted" style={{ width: 34 }}>Key</span>

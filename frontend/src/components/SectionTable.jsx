@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { sectionColor } from "./StructureStrip";
 import { camelotColor, fmtTime } from "../theme";
 
@@ -35,7 +36,8 @@ const CLASS_COLOR = {
   mixed: "var(--amber)",
 };
 
-export function SectionTable({ sections, pairsBySection, playingIndex, onPlay }) {
+export function SectionTable({ sections, pairsBySection, playingIndex, onPlay,
+                              onSaveLine = null }) {
   // The provenance line the design asks for, computed for THIS track: a section
   // that fell back to the track BPM was not measured, and the ranked list is
   // only as good as that measurement.
@@ -132,6 +134,9 @@ export function SectionTable({ sections, pairsBySection, playingIndex, onPlay })
             <div className="mono sectab-pairs right">
               {pairsBySection[s.section_index] || 0}
             </div>
+            {onSaveLine && (s.line || sings(s)) && (
+              <SectionLine section={s} onSave={onSaveLine} />
+            )}
           </div>
         );
       })}
@@ -143,5 +148,37 @@ export function SectionTable({ sections, pairsBySection, playingIndex, onPlay })
             + (fellBack ? ` · ${fellBack} fell back to the track BPM` : "")}
       </div>
     </section>
+  );
+}
+
+
+// Whether a section sings enough to be worth a lyric cue.
+const sings = (s) => s.section_class === "vocal" || s.section_class === "mixed"
+  || (s.vocal_activity ?? 0) >= 0.2;
+
+// The lyric cue of a vocal section, typed once ("Shout it out — 1st chorus")
+// and shown on every pair card that uses this section. Automatic transcription
+// is not built (readme §9): this is what makes "which line is this?" a glance.
+function SectionLine({ section, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(section.line || "");
+  return (
+    <div className="sectab-line" onClick={(e) => e.stopPropagation()}>
+      {editing ? (
+        <input autoFocus value={draft} placeholder="what this section sings — e.g. 'Shout it out' (1st chorus)"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => { setEditing(false); if (draft !== (section.line || "")) onSave(section, draft.trim()); }}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter") e.currentTarget.blur();
+            if (e.key === "Escape") { setDraft(section.line || ""); setEditing(false); }
+          }} />
+      ) : (
+        <button onClick={() => { setDraft(section.line || ""); setEditing(true); }}
+          title="The line this section sings — shown on its pair cards">
+          {section.line ? <>“{section.line}”</> : <span className="faint">＋ add the line it sings</span>}
+        </button>
+      )}
+    </div>
   );
 }

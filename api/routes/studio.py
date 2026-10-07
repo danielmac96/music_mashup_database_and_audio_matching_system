@@ -36,6 +36,11 @@ class Clip(BaseModel):
     # every clip meant before trimming existed.
     clip_start: Optional[float] = Field(default=None, ge=0)
     clip_end: Optional[float] = Field(default=None, gt=0)
+    # Studio's per-lane fades (seconds) and filters (Hz, 0 = off).
+    fade_in: float = Field(default=0.0, ge=0, le=60)
+    fade_out: float = Field(default=0.0, ge=0, le=60)
+    hp_hz: float = Field(default=0.0, ge=0, le=20000)
+    lp_hz: float = Field(default=0.0, ge=0, le=22050)
 
     @model_validator(mode="after")
     def _trim_is_a_real_window(self) -> "Clip":

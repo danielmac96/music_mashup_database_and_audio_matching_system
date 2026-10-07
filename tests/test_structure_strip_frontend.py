@@ -83,7 +83,7 @@ def test_blocks_dividers_loop_and_playhead_share_one_accessor():
     axes and nothing on screen looks broken — it just quietly disagrees."""
     # The section blocks and the dividers both go through `span()`...
     assert "const span = (s) => ({" in CODE
-    assert CODE.count("style={span(s)}") == 2, "labels and dividers"
+    assert CODE.count("style={span(s)}") == 3, "labels, dividers and the key lane"
     # ...which is built from the same pct() the loop and the playhead use.
     span = CODE[CODE.index("const span = (s) => ({"):]
     span = span[:span.index("});")]

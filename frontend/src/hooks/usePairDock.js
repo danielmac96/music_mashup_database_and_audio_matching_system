@@ -41,12 +41,16 @@ const MAX_PER_SONG = 3;
 export const DOCK_FILTERS = {
   search: "", minScore: 0, maxEffort: null, genre: "", era: "", energy: "",
   bpmBand: "", vocalForward: false, adventure: 0, perVocal: false,
+  // Keepers ("rated" / "loved") and the opposite ("unrated"); the key the pair
+  // LANDS in (the vocal's) within keyTol Camelot steps; one section type per
+  // side. All four in SQL too.
+  rated: "", key: "", keyTol: 1, vocalLabel: "", instLabel: "",
 };
 
 // How many filters differ from the defaults (search is shown on its own).
 export function activeFilterCount(f) {
   return Object.keys(DOCK_FILTERS)
-    .filter((k) => k !== "search" && f[k] !== DOCK_FILTERS[k]).length;
+    .filter((k) => k !== "search" && k !== "keyTol" && f[k] !== DOCK_FILTERS[k]).length;
 }
 
 // The list route's query options for a filter set — shared by the fetch and
@@ -56,6 +60,8 @@ function filterOpts(f) {
     search: f.search.trim(), minScore: f.minScore, maxEffort: f.maxEffort,
     genre: f.genre, era: f.era, energy: f.energy, bpmBand: f.bpmBand,
     vocalForward: f.vocalForward, adventure: f.adventure,
+    rated: f.rated, key: f.key, keyTol: f.keyTol,
+    vocalLabel: f.vocalLabel, instLabel: f.instLabel,
   };
 }
 
@@ -64,7 +70,7 @@ function filterOpts(f) {
 // that belonged to none of them. It borrows the shared one now, so the bar at
 // the bottom is showing the same pair the dock's cursor is on.
 export function usePairDock({ selectedTrackId, role = "vocal", ratings,
-                              onOpenStudio, player }) {
+                              onOpenStudio, player, onAddToSet = null }) {
   const [order, setOrder] = useState("score");
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -72,6 +78,21 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   const [cursor, setCursor] = useState(0);
   const [filters, setFiltersState] = useState(DOCK_FILTERS);
   const [hasMore, setHasMore] = useState(false);
+  // Up to two pairs held side by side (the ⇄ button, or c).
+  const [compare, setCompare] = useState([]);
+  const toggleCompare = useCallback((c) => {
+    if (!c) return;
+    setCompare((cur) => {
+      const k = keyOf(c);
+      if (cur.some((x) => keyOf(x) === k)) return cur.filter((x) => keyOf(x) !== k);
+      return [...cur, c].slice(-2);
+    });
+  }, []);
+  const clearCompare = useCallback(() => setCompare([]), []);
+  // Re-fetch the same list — after something it shows changed elsewhere (a
+  // section line typed on Track detail).
+  const [nonce, setNonce] = useState(0);
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
   const [loadingMore, setLoadingMore] = useState(false);
   const setFilters = useCallback(
     (patch) => setFiltersState((f) => ({ ...f, ...patch })), []);
@@ -117,7 +138,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [selectedTrackId, role, order, filters, perVocal]);
+  }, [selectedTrackId, role, order, filters, perVocal, nonce]);
 
   // The next page of the same server-side list. The offset is applied after
   // the per-song cap, so page two continues exactly where page one stopped.
@@ -235,6 +256,12 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); move(-1); return; }
       if (e.key === " ") { e.preventDefault(); play(row); return; }
       if (e.key === "Enter") { e.preventDefault(); openStudio(row); return; }
+      if ((e.key === "c" || e.key === "C") && row) {
+        e.preventDefault(); toggleCompare(row); return;
+      }
+      if ((e.key === "a" || e.key === "A") && row && onAddToSet) {
+        e.preventDefault(); onAddToSet(row); return;
+      }
       if (e.key === "v" || e.key === "V") {
         e.preventDefault();
         audio.setStemMode(audio.stemMode === "vox" ? "both" : "vox");
@@ -257,7 +284,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, cursor, move, play, openStudio, hide, audio, ratings]);
+  }, [visible, cursor, move, play, openStudio, hide, audio, ratings, onAddToSet, toggleCompare]);
 
   return {
     order, setOrder, rows: visible, loading, error,
@@ -265,5 +292,6 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     exportBatch,
     cursor, setCursor, current, armedKey,
     play, move, openStudio, hide, bindKeys, audio,
+    compare, toggleCompare, clearCompare, reload,
   };
 }

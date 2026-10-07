@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { toast } from "../toast";
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
 import { StructureStrip } from "./StructureStrip";
@@ -27,7 +28,7 @@ const PAIR_LIMIT = 500;
 
 export function TrackDetail({ track, tracks, attributes = null, ratings, groups, player, role,
                               onRole, onBack, onStudio, onOpenTrack, onStatus,
-                              onChanged }) {
+                              onChanged, onDiscover = null, onLinesChanged = null }) {
   const [sections, setSections] = useState([]);
   // The "Wrong audio?" picker. Closed on every walk to another track: it holds
   // one track's search results, and they must not sit under another's title.
@@ -278,6 +279,17 @@ export function TrackDetail({ track, tracks, attributes = null, ratings, groups,
                 <AudioSourcePicker track={track} onClose={() => setPicking(false)}
                   onChanged={onChanged} />
               )}
+              {/* Separated stems are good; an official acapella or
+                  instrumental is better. One click to look for one. */}
+              {onDiscover && (
+                <div className="hero-dig">
+                  <span className="faint">Dig on SoundCloud:</span>
+                  <button className="mini-btn" onClick={() => onDiscover(`${track.artist || ""} ${track.title}`.trim(), "acapella")}
+                    title="Search SoundCloud for an acapella of this track">acapella ↗</button>
+                  <button className="mini-btn" onClick={() => onDiscover(`${track.artist || ""} ${track.title}`.trim(), "instrumental")}
+                    title="Search SoundCloud for an instrumental of this track">instrumental ↗</button>
+                </div>
+              )}
               <div className="tiles">
                 <Tile label="BPM" value={f.bpm != null ? f.bpm.toFixed(1) : "—"} />
                 <Tile label="KEY">
@@ -337,7 +349,15 @@ export function TrackDetail({ track, tracks, attributes = null, ratings, groups,
             stem={stem} onSeek={seekTo} onPickSection={playSection} />
 
           <SectionTable sections={sections} pairsBySection={pairsBySection}
-            playingIndex={sectionPlaying} onPlay={playSection} />
+            playingIndex={sectionPlaying} onPlay={playSection}
+            onSaveLine={async (s, text) => {
+              try {
+                await api.saveSectionLine(track.id, s, text);
+                setSections((ss) => ss.map((x) => (x.section_index === s.section_index
+                  ? { ...x, line: text || null } : x)));
+                onLinesChanged?.();
+              } catch (e) { toast(`Could not save the line: ${e.message}`); }
+            }} />
 
           {/* The attributes toggled on for Detail in the Analysis panel. */}
           {attributes && attributes.visibility.detail.length > 0 && (

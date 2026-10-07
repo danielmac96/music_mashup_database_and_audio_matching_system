@@ -131,14 +131,13 @@ def test_the_rails_link_treatment_is_scoped_to_the_rail():
 
 
 def test_the_way_out_is_not_buried_under_the_status_pill():
-    """.float-status is absolutely positioned top-right of the main column,
-    which on this screen is `song #N` and the esc button. Measured in the
-    browser: the pill covered both. It has pointer-events:none so esc still
-    worked, but a dismiss control you cannot see is the same bug as a way in
-    you cannot see."""
+    """.float-status used to float top-right of the main column, which on this
+    screen is `song #N` and the esc button (and on others the pair dock's
+    header and Studio's export buttons). It now sits in flow in the rail."""
     block = CSS[CSS.index("\n.float-status {"):]
     block = block[:block.index("}")]
-    assert "position: absolute" in block and "right: 16px" in block
+    assert "position: absolute" not in block
+    assert "rail-status" in _read("shell/Sidebar.jsx")
     assert "onStatus(null)" in DETAIL, \
         "the detail screen must not publish a float status over its own header"
     assert "scored pairings" not in DETAIL

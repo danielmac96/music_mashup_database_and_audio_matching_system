@@ -9,6 +9,7 @@ import { PlaylistImporter } from "./PlaylistImporter";
 import { useLibraryFilters, VIEWS, countView } from "../hooks/useLibraryFilters";
 import { isActiveJob, jobRunning, latestJobBySong } from "../hooks/useQueue";
 import { toast } from "../toast";
+import { api } from "../api";
 
 // Screen 1a's left two thirds: the library, its filters, and the rail furniture
 // that belongs to it. The pair dock is a sibling, not a child — it scopes to
@@ -239,6 +240,13 @@ export function LibraryScreen({ library, attributes, ratings, groups, player, se
         onPlay={play}
         menuId={menuId}
         onMenu={setMenuId}
+        onFixTempo={async (t, bpm) => {
+          try {
+            await api.correctFeatures(t.id, { bpm });
+            toast(`${t.title}: ${bpm} BPM — Score library to re-pair it`);
+            refresh();
+          } catch (e) { toast(`Could not correct the tempo: ${e.message}`); }
+        }}
         renderMenu={(t) => (
           <TrackActions track={t} job={jobs[t.id]} pipeJob={pipeBySong[t.id]}
             groups={groups} activeGroup={filters.group}

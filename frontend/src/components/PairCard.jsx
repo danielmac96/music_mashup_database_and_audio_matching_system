@@ -1,8 +1,9 @@
+import { useState } from "react";
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
 import {
   BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, nudgeLabel, pctOf, rawPctOf,
-  spanLabel, termsOf, tierOf,
+  songTermsOf, spanLabel, termsOf, tierOf,
 } from "./pairs/pairModel";
 import { bpmTag, camelotColor, keyRel } from "../theme";
 
@@ -17,7 +18,12 @@ import { bpmTag, camelotColor, keyRel } from "../theme";
 
 export function PairCard({ candidate: c, rating, onRate, focused = false,
                            playing = false, compact = false,
-                           onSelect, onPlay, onStudio, onHide = null }) {
+                           onSelect, onPlay, onStudio, onHide = null,
+                           onAddToSet = null, setName = null,
+                           note = "", onNote = null,
+                           comparing = false, onCompare = null }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(note);
   const tier = tierOf(c);
   const pct = pctOf(c);
   const rel = keyRel(c.vocal_camelot, c.inst_camelot);
@@ -48,12 +54,12 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
       </div>
 
       <div className="pc-sides">
-        <Side role="VOX" songId={c.vocal_song_id} title={c.vocal_title}
+        <Side role="VOX" songId={c.vocal_song_id} title={c.vocal_title} artist={c.vocal_artist}
           span={spanLabel(c.vocal_section_label, c.vocal_section_start,
             c.vocal_section_end)}
-          bars={c.section_bars_vocal}
+          bars={c.section_bars_vocal} line={c.vocal_section_line}
           camelot={c.vocal_camelot} bpm={c.vocal_bpm} />
-        <Side role="BED" songId={c.inst_song_id} title={c.inst_title}
+        <Side role="BED" songId={c.inst_song_id} title={c.inst_title} artist={c.inst_artist}
           span={spanLabel(c.inst_section_label, c.inst_section_start,
             c.inst_section_end)}
           bars={c.section_bars_bed}
@@ -61,10 +67,16 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
       </div>
 
       <div className="pc-tags">
-        <span className="pc-tag mono"
-          style={{ background: rel.tagBg, color: rel.tagColor }}
-          title={rel.text}>
-          {rel.tag}{rel.suggest ? ` · ${rel.suggest > 0 ? "+" : ""}${rel.suggest} st` : ""}
+        {/* With a measured harmony the Camelot lookup is context, not the
+            verdict — drawn neutral, so "5 STEPS OFF" in amber no longer sits
+            beside a 90% fit as if the two disagreed. */}
+        <span className={`pc-tag mono${h.known ? " muted" : ""}`}
+          style={h.known ? undefined : { background: rel.tagBg, color: rel.tagColor }}
+          title={h.known
+            ? `Camelot lookup: ${rel.text} The measured fit (♪) is what ranks this pair.`
+            : rel.text}>
+          {h.known ? `${c.vocal_camelot || "?"}/${c.inst_camelot || "?"} wheel` : rel.tag}
+          {!h.known && rel.suggest ? ` · ${rel.suggest > 0 ? "+" : ""}${rel.suggest} st` : ""}
         </span>
         <span className="pc-tag mono neutral">
           {bpmTag(c.vocal_bpm, c.inst_bpm)}
@@ -89,9 +101,32 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
         {h.bassClash && (
           <span className="pc-tag mono clash" title={BASS_CLASH_ADVICE}>bass clash</span>
         )}
+        {(c.section_loop_repeats ?? 1) > 1 && (
+          <span className="pc-tag mono neutral"
+            title={c.section_note || "The bed section is shorter than the vocal's: loop it to cover"}>
+            loop bed ×{c.section_loop_repeats}
+          </span>
+        )}
       </div>
 
       {!compact && <ScoreBars candidate={c} />}
+
+      {(note || editing) && (
+        <div className="pc-note" onClick={(e) => e.stopPropagation()}>
+          {editing ? (
+            <input autoFocus value={draft} placeholder="opener · needs a riser · use the 2nd chorus"
+              onChange={(e) => setDraft(e.target.value)}
+              onBlur={() => { setEditing(false); if (draft !== note) onNote?.(draft.trim()); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") e.currentTarget.blur();
+                if (e.key === "Escape") { setDraft(note); setEditing(false); }
+                e.stopPropagation();
+              }} />
+          ) : (
+            <span title="Click to edit" onClick={() => { setDraft(note); setEditing(true); }}>✎ {note}</span>
+          )}
+        </div>
+      )}
 
       <div className="pc-foot">
         <StarRating value={rating} onRate={onRate} size={15} />
@@ -101,6 +136,19 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
         </button>
         <button className="pc-studio" onClick={(e) => { e.stopPropagation(); onStudio(); }}
           title="Open both tracks in Studio (enter)">Studio ⏎</button>
+        {onAddToSet && (
+          <button className="pc-addset" onClick={(e) => { e.stopPropagation(); onAddToSet(); }}
+            title={`Add to the set “${setName || "My set"}” (a)`}>+ Set</button>
+        )}
+        {onNote && !note && !editing && (
+          <button className="pc-hide" title="Add a note to this pair — never training data"
+            onClick={(e) => { e.stopPropagation(); setDraft(""); setEditing(true); }}>✎</button>
+        )}
+        {onCompare && (
+          <button className={`pc-hide pc-cmp${comparing ? " on" : ""}`}
+            title="Compare side by side (c) — pick two"
+            onClick={(e) => { e.stopPropagation(); onCompare(); }}>⇄</button>
+        )}
         {onHide && (
           <button className="pc-hide" onClick={(e) => { e.stopPropagation(); onHide(); }}
             title="Hide this pair (h). A display preference, not a verdict — it never trains the scorer, and ⚙ restores it.">⊘</button>
@@ -113,7 +161,7 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
 // One song of the pair: what it is, which stretch of it plays, and the key and
 // tempo it brings before any adjustment. A null bpm is unanalysed, drawn as a
 // dash like the key chip, never as 0.
-function Side({ role, songId, title, span, bars, camelot, bpm }) {
+function Side({ role, songId, title, artist, span, bars, camelot, bpm, line = null }) {
   const barText = bars != null && Number.isFinite(Number(bars))
     ? ` · ${Math.round(bars)} bars` : "";
   return (
@@ -121,8 +169,11 @@ function Side({ role, songId, title, span, bars, camelot, bpm }) {
       <span className={`pc-role mono ${role.toLowerCase()}`}>{role}</span>
       <TrackArt id={songId} className="pc-art" />
       <div className="pc-sidetext">
-        <div className="pc-title">{title}</div>
+        <div className="pc-title" title={artist ? `${title} — ${artist}` : title}>
+          {title}{artist && <span className="pc-artist"> · {artist}</span>}
+        </div>
         <div className="pc-span mono">{span}{barText}</div>
+        {line && <div className="pc-line" title="The line this vocal section sings">“{line}”</div>}
       </div>
       {camelot
         ? <span className="pc-key mono" style={{ background: camelotColor(camelot) }}>
@@ -146,8 +197,17 @@ function Side({ role, songId, title, span, bars, camelot, bpm }) {
 // test it was never given.
 function ScoreBars({ candidate }) {
   return (
-    <div className="pc-bars">
-      {termsOf(candidate).map((t) => (
+    <>
+      <Bars terms={termsOf(candidate)} group="section fit" />
+      <Bars terms={songTermsOf(candidate)} group="track fit" song />
+    </>
+  );
+}
+
+function Bars({ terms, group, song = false }) {
+  return (
+    <div className={`pc-bars${song ? " song" : ""}`} data-group={group}>
+      {terms.map((t) => (
         <div key={t.key} className="pc-bar-row">
           <span className="pc-bar-label mono" title={t.what}>{t.label}</span>
           <span className={`pc-bar${t.known ? "" : " unmeasured"}`}

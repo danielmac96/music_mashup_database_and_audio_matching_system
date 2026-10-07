@@ -123,6 +123,96 @@ def _section_counts_by_song() -> dict[int, dict]:
     return out
 
 
+def _mash_summary_by_song() -> tuple[dict, dict]:
+    """Per song, what the library knows about it AS MASHUP MATERIAL, from the
+    whole of mashup_candidates (not the truncated ranked list): how many
+    distinct partners it has as the vocal and as the bed, its best pairing's
+    library percentile, and how much of it is sung. Plus each track's section
+    shape — label, span, energy, vocal presence — for the Library's row
+    thumbnail, so the shape of a record is visible without opening it."""
+    import bisect
+    conn = get_conn()
+    try:
+        scores = sorted(r[0] for r in conn.execute(
+            "SELECT score_total FROM mashup_candidates "
+            "WHERE combo_type='vocal_over_instrumental' AND score_total IS NOT NULL"))
+        sides = {}
+        for side, other in (("vocal", "inst"), ("inst", "vocal")):
+            for r in conn.execute(
+                    f"SELECT {side}_song_id AS sid, COUNT(DISTINCT {other}_song_id) AS n, "
+                    f"       MAX(score_total) AS best FROM mashup_candidates "
+                    f"WHERE combo_type='vocal_over_instrumental' GROUP BY {side}_song_id"):
+                sides[(r["sid"], side)] = (r["n"], r["best"])
+        sections = conn.execute(
+            "SELECT song_id, start_sec, end_sec, label, energy, vocal_presence, "
+            "       vocal_activity, section_class, provisional "
+            "FROM sections ORDER BY song_id, section_index").fetchall()
+    finally:
+        conn.close()
+    pct = (lambda x: round(bisect.bisect_right(scores, x) / len(scores), 4)) if scores else None
+    shape: dict = {}
+    for r in sections:
+        shape.setdefault(r["song_id"], []).append(r)
+    ids = {sid for sid, _ in sides} | set(shape)
+    out: dict = {}
+    for sid in ids:
+        nv, bv = sides.get((sid, "vocal"), (0, None))
+        nb, bb = sides.get((sid, "inst"), (0, None))
+        best = max([b for b in (bv, bb) if b is not None], default=None)
+        secs = shape.get(sid, [])
+        total = sum(max(0.0, (s["end_sec"] or 0) - (s["start_sec"] or 0)) for s in secs)
+        known = [s for s in secs if s["section_class"] not in (None, "unknown")]
+        sung = sum(max(0.0, s["end_sec"] - s["start_sec"]) for s in known
+                   if s["section_class"] in ("vocal", "mixed"))
+        out[sid] = {
+            "as_vocal": nv, "as_bed": nb,
+            "best_pct": pct(best) if (pct and best is not None) else None,
+            # NULL, not 0, until the vocal stem has been measured.
+            "vocal_coverage": round(sung / total, 3) if known and total > 0 else None,
+            "vocal_sections": sum(1 for s in known if s["section_class"] == "vocal"),
+        }
+    shapes = {sid: [[round(s["start_sec"], 2), round(s["end_sec"], 2), s["label"],
+                     None if s["energy"] is None else round(s["energy"], 3),
+                     None if s["vocal_presence"] is None else round(s["vocal_presence"], 3)]
+                    for s in secs] for sid, secs in shape.items()}
+    return out, shapes
+
+
+# Outside this band a dance-mashup tempo is more often an octave error than a
+# real tempo; inside it, only the analyser's own alternative votes can say so.
+TEMPO_LOW, TEMPO_HIGH = 80.0, 175.0
+
+
+def tempo_hint(full: Optional[dict]) -> Optional[dict]:
+    """A suspected half/double-time error in the stored BPM, or None.
+
+    The evidence, best first: Essentia's own alternative tempo votes
+    (bpm_candidates_json — Percival, the BPM histogram peaks) landing at ×2 or
+    ÷2 of the stored tempo; failing that, a tempo outside TEMPO_LOW..HIGH.
+    Advisory only — the Library offers the one-click fix, nothing is changed."""
+    import json
+    bpm = (full or {}).get("bpm")
+    if not bpm or bpm <= 0:
+        return None
+    try:
+        cands = json.loads(full.get("bpm_candidates_json") or "null") or {}
+    except (TypeError, ValueError):
+        cands = {}
+    votes = [float(v) for v in (cands.values() if isinstance(cands, dict) else cands)
+             if isinstance(v, (int, float)) and v > 0]
+    for mul, label in ((2.0, "×2"), (0.5, "÷2")):
+        if any(abs(v / (bpm * mul) - 1.0) <= 0.04 for v in votes):
+            return {"suggest": round(bpm * mul, 2), "label": label,
+                    "why": f"the analyser's alternative tempo votes include {bpm * mul:.1f} BPM"}
+    if bpm < TEMPO_LOW and bpm * 2 <= TEMPO_HIGH + 5:
+        return {"suggest": round(bpm * 2, 2), "label": "×2",
+                "why": f"{bpm:.1f} BPM is slow for dance material — often a half-time read"}
+    if bpm > TEMPO_HIGH and bpm / 2 >= TEMPO_LOW - 5:
+        return {"suggest": round(bpm / 2, 2), "label": "÷2",
+                "why": f"{bpm:.1f} BPM is fast for dance material — often a double-time read"}
+    return None
+
+
 def _dominant_class(classes: dict) -> Optional[str]:
     """Which of vocal / instrumental / mixed this track mostly is.
 
@@ -148,6 +238,7 @@ def list_tracks() -> dict:
     features_vocals = _features_by_song("vocals", raw_vocals)
     features_inst   = _features_by_song("instrumental", raw_inst)
     section_counts  = _section_counts_by_song()
+    mash, shapes    = _mash_summary_by_song()
 
     # How many uploads of the same work each track has (A.2). Sent as a count
     # rather than the raw cluster id so the UI can say "3 versions" without a
@@ -188,6 +279,9 @@ def list_tracks() -> dict:
             "section_classes": section_counts.get(sid, {}).get("classes", {}),
             "track_class": _dominant_class(section_counts.get(sid, {}).get("classes")),
             "variant_count": variant_sizes.get(s.get("variant_cluster"), 0),
+            "mash": mash.get(sid),
+            "tempo_hint": tempo_hint(raw_full.get(sid)),
+            "shape": shapes.get(sid),
             "audio_provenance": _provenance(s.get("audio_provenance")),
             # Every captured attribute, from the one catalogue the Analysis
             # panel reads (analysis/attributes.py): the Library shows the ones
@@ -641,19 +735,52 @@ def list_sections(song_id: int) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="song not found")
     sections = get_sections(song_id)
+    from database.models import section_lines_for
+    for s, line in zip(sections, section_lines_for(song_id, sections)):
+        s["line"] = line
     return {"count": len(sections), "sections": sections}
+
+
+class SectionLine(BaseModel):
+    start_sec: float
+    end_sec: float
+    text: str = ""
+
+
+@router.post("/{song_id}/section-line")
+def save_section_line(song_id: int, body: SectionLine) -> dict:
+    """The lyric cue of one vocal section ("Shout it out — 1st chorus"),
+    typed by you; an empty text clears it. Anchored to the section's
+    midpoint in seconds so it survives a structure re-cut."""
+    if body.end_sec <= body.start_sec:
+        raise HTTPException(status_code=400, detail="end_sec must be after start_sec")
+    from database.models import set_section_line
+    set_section_line(song_id, body.start_sec, body.end_sec, body.text[:300])
+    return {"ok": True}
+
+
+def _tempo_agrees(stem_bpm, full_bpm, tol: float = 0.03) -> bool:
+    """A stem's tempo is consistent with the full mix's: within `tol`, or no
+    full-mix tempo to disagree with."""
+    if not full_bpm:
+        return True
+    if not stem_bpm:
+        return False
+    return abs(stem_bpm / full_bpm - 1.0) <= tol
 
 
 @router.get("/{song_id}/waveform")
 def get_waveform(song_id: int, stem: str = "vocals") -> dict:
     """Waveform envelope (360 normalized RMS points) and beat timestamps for alignment.
 
-    Beat grid source — stems-first with fallback: the instrumental stem's own
-    beats are always used (percussive content tracks reliably). The vocal
-    stem's beats are used only when its bpm_confidence clears
-    VOCAL_BEAT_CONFIDENCE_MIN; below that, vocals aren't percussive enough for
-    librosa's beat tracker to trust, so we fall back to the full-mix grid.
-    The 'full' stem always uses its own beats."""
+    Beat grid source — stems-first with fallback. A stem's own beats are used
+    only when its tempo agrees with the full mix's (within 3%, see
+    _tempo_agrees); the vocal stem's additionally need a bpm_confidence above
+    VOCAL_BEAT_CONFIDENCE_MIN. Otherwise the full-mix grid is used: separation
+    adds octave and onset errors to stem beat tracking, and a vocal stem can be
+    tracked confidently at a quarter of the tempo (one onset per sung bar).
+    The matcher and Studio both take tempo from the full mix for the same
+    reason. The 'full' stem always uses its own beats."""
     if stem not in _STEM_TYPES:
         raise HTTPException(status_code=400, detail=f"stem must be one of {sorted(_STEM_TYPES)}")
     conn = get_conn()
@@ -670,19 +797,19 @@ def get_waveform(song_id: int, stem: str = "vocals") -> dict:
     # points at the wrong beat and moves every bar line.
     beat_times, beat_source = [], stem
     beat_feat = feat_stem
-    if stem == "vocals":
-        confidence = (feat_stem or {}).get("bpm_confidence") or 0.0
+    if stem == "full":
+        beat_times = (feat_stem or {}).get("beat_times") or []
+    else:
+        feat_full = get_features_for_song(song_id, stem_type="full")
         stem_beats = (feat_stem or {}).get("beat_times") or []
-        if stem_beats and confidence >= VOCAL_BEAT_CONFIDENCE_MIN:
+        trusted = bool(stem_beats) and _tempo_agrees(
+            (feat_stem or {}).get("bpm"), (feat_full or {}).get("bpm"))
+        if stem == "vocals":
+            confidence = (feat_stem or {}).get("bpm_confidence") or 0.0
+            trusted = trusted and confidence >= VOCAL_BEAT_CONFIDENCE_MIN
+        if trusted or (stem_beats and not feat_full):
             beat_times = stem_beats
         else:
-            feat_full = get_features_for_song(song_id, stem_type="full")
-            beat_times = feat_full.get("beat_times", []) if feat_full else []
-            beat_source, beat_feat = "full", feat_full
-    else:
-        beat_times = (feat_stem or {}).get("beat_times") or []
-        if not beat_times and stem == "instrumental":
-            feat_full = get_features_for_song(song_id, stem_type="full")
             beat_times = feat_full.get("beat_times", []) if feat_full else []
             beat_source, beat_feat = "full", feat_full
 

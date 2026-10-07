@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { StarRating } from "./StarRating";
 
 // The 340px adjustments rail.
@@ -26,6 +27,11 @@ function positions(value, min, max, suggest) {
     edited: suggest != null && Math.abs(value - suggest) > 1e-6,
   };
 }
+
+const LOW_CUTS = [[0, "off"], [60, "60 Hz"], [120, "120 Hz — bass swap"], [250, "250 Hz"],
+                  [500, "500 Hz — thin"]];
+const HIGH_CUTS = [[0, "off"], [12000, "12 kHz"], [6000, "6 kHz"], [3000, "3 kHz"],
+                   [1200, "1.2 kHz — muffled"], [500, "500 Hz — underwater"]];
 
 function Knob({ label, value, min, max, step, suggest = null, format, hint,
                 onChange, disabled = false }) {
@@ -57,13 +63,20 @@ export function StudioRail({
   soloId, setSoloId, referenceLane, matchKeyToReference, alignLaneToGrid,
   resetLane, clearTrim, trimOf, syncRateFor, projectBpm,
   buildRating, onRateBuild, onSaveSnapshot, onNextPair, hasNextPair, dirty,
+  snapshots = [], onLoadSnapshot = () => {}, onDeleteSnapshot = () => {},
+  onAppendNext = null, onAddToSet = null, setName = null, nudgeBase = 0,
+  pairNote = null,
 }) {
+  const [noteDraft, setNoteDraft] = useState(null);
+  const [showSnaps, setShowSnaps] = useState(false);
   const bedRate = bedLane?.rate ?? 1;
   const bedPitch = bedLane?.semitones ?? 0;
   // Nudge is expressed where a person can act on it: milliseconds of bed
   // against vocal, not an absolute position on the timeline.
+  // Measured from the sections-aligned placement (nudgeBase) when a timing
+  // option is armed; from the vocal lane's start otherwise.
   const nudgeMs = bedLane && vocalLane
-    ? Math.round((bedLane.offsetSec - vocalLane.offsetSec) * 1000) : 0;
+    ? Math.round((bedLane.offsetSec - vocalLane.offsetSec - nudgeBase) * 1000) : 0;
 
   const suggestNudgeMs = suggested.nudgeSec == null
     ? null : Math.round(suggested.nudgeSec * 1000);
@@ -100,7 +113,7 @@ export function StudioRail({
                 : "Slides the bed against the vocal"}
               disabled={!vocalLane}
               onChange={(v) => vocalLane && patchLane(bedLane.id, {
-                offsetSec: vocalLane.offsetSec + v / 1000,
+                offsetSec: vocalLane.offsetSec + nudgeBase + v / 1000,
               })} />
           </>
         ) : (
@@ -184,6 +197,31 @@ export function StudioRail({
             )}
           </div>
 
+          <Knob label="Fade in" value={selected.fadeIn || 0} min={0} max={8} step={0.1}
+            format={(v) => (v ? `${v.toFixed(1)} s` : "none")}
+            hint="Ramps the lane in from its clip's first sound"
+            onChange={(v) => patchLane(selected.id, { fadeIn: v })} />
+          <Knob label="Fade out" value={selected.fadeOut || 0} min={0} max={8} step={0.1}
+            format={(v) => (v ? `${v.toFixed(1)} s` : "none")}
+            hint="Ramps it out into the clip's last sound"
+            onChange={(v) => patchLane(selected.id, { fadeOut: v })} />
+          <div className="rail-filters">
+            <label title="High-pass: cut the bass under this lane — the bass swap, and the fix for a bass clash">
+              <span className="micro-label">LOW CUT</span>
+              <select value={selected.hpHz || 0}
+                onChange={(e) => patchLane(selected.id, { hpHz: Number(e.target.value) })}>
+                {LOW_CUTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </label>
+            <label title="Low-pass: darken the lane — a filtered breakdown or build">
+              <span className="micro-label">HIGH CUT</span>
+              <select value={selected.lpHz || 0}
+                onChange={(e) => patchLane(selected.id, { lpHz: Number(e.target.value) })}>
+                {HIGH_CUTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </label>
+          </div>
+
           <div className="rail-row">
             <button className="lh-btn" onClick={() => moveLane(selected.id, -1)}
               title="Move up">▲</button>
@@ -197,6 +235,33 @@ export function StudioRail({
       )}
 
       <div className="rail-foot">
+        {showSnaps && snapshots.length > 0 && (
+          <div className="snap-list">
+            {snapshots.map((sn) => (
+              <div key={sn.at} className="snap-row">
+                <button className="snap-load" title="Load this arrangement (the current one is snapshotted first)"
+                  onClick={() => { onLoadSnapshot(sn); setShowSnaps(false); }}>
+                  <span className="snap-name">{sn.name}</span>
+                  <span className="snap-meta mono">{(sn.lanes || []).length} lanes
+                    {sn.projectBpm ? ` · ${Math.round(sn.projectBpm)} BPM` : ""}</span>
+                </button>
+                <button className="snap-x" title="Delete this snapshot"
+                  onClick={() => onDeleteSnapshot(sn.at)}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+        {pairNote && (
+          <input className="rail-note" placeholder="Note on this pair — opener, needs a riser…"
+            value={noteDraft ?? pairNote.value}
+            onChange={(e) => setNoteDraft(e.target.value)}
+            onBlur={() => {
+              if (noteDraft != null && noteDraft !== pairNote.value) pairNote.save(noteDraft.trim());
+              setNoteDraft(null);
+            }}
+            onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") e.currentTarget.blur(); }}
+            title="Saved on the pair at the armed timing; shows on its dock card and in sets. Never training data." />
+        )}
         <div className="rail-rate">
           <span className="hint">Rate this build</span>
           <StarRating value={buildRating} onRate={onRateBuild} size={16}
@@ -208,11 +273,27 @@ export function StudioRail({
             title="Keep this arrangement so you can come back to it">
             Save snapshot
           </button>
+          <button className={`head-btn${showSnaps ? " on" : ""}`}
+            onClick={() => setShowSnaps((v) => !v)} disabled={!snapshots.length}
+            title={snapshots.length ? "Open a saved arrangement" : "No snapshots saved yet"}>
+            Snapshots {snapshots.length ? `(${snapshots.length})` : ""}
+          </button>
           <button className="rail-next" onClick={onNextPair} disabled={!hasNextPair}
             title={hasNextPair
               ? "Open the next pair from the dock"
               : "No next pair — the dock has not been opened on a list yet"}>
             Next pair ⏎
+          </button>
+        </div>
+        <div className="rail-buttons">
+          <button className="head-btn" onClick={onAddToSet || undefined} disabled={!onAddToSet}
+            title={onAddToSet ? `Add this pair, at the armed timing, to the set “${setName || "My set"}”`
+              : "Arm a timing option to add this pair to a set"}>
+            + Set
+          </button>
+          <button className="head-btn" onClick={onAppendNext || undefined} disabled={!onAppendNext}
+            title="Lay the dock's next pair AFTER this arrangement, to hear the transition between the two">
+            Append next ⇥
           </button>
         </div>
       </div>

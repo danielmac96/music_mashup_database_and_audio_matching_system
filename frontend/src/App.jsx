@@ -9,6 +9,8 @@ import { PlayerBar } from "./components/PlayerBar";
 import { TrackDetail } from "./components/TrackDetail";
 import { Discovery } from "./components/Discovery";
 import { MixStudio } from "./components/MixStudio";
+import { SetScreen } from "./components/SetScreen";
+import { HelpPanel } from "./components/HelpPanel";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { TuningPanel } from "./components/TuningPanel";
 import { MlPanel } from "./components/MlPanel";
@@ -20,6 +22,8 @@ import { useLibraryGroups } from "./hooks/useLibraryGroups";
 import { useRatings } from "./hooks/useRatings";
 import { useAttributes } from "./hooks/useAttributes";
 import { usePairDock } from "./hooks/usePairDock";
+import { useSets } from "./hooks/useSets";
+import { usePairNotes } from "./hooks/usePairNotes";
 import { usePlayer } from "./hooks/usePlayer";
 import { isActiveJob } from "./hooks/useQueue";
 import { api } from "./api";
@@ -64,6 +68,25 @@ export default function App() {
   // Right-side header status readout — each screen reports its own.
   const [headerStatus, setHeaderStatus] = useState(null); // { locked, text }
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  // "New here?" shows until help has been opened once.
+  const [helpSeen, setHelpSeen] = useState(() => {
+    try { return localStorage.getItem("mashup.helpSeen.v1") === "1"; } catch { return true; }
+  });
+  const openHelp = useCallback(() => {
+    setHelpOpen(true); setHelpSeen(true);
+    try { localStorage.setItem("mashup.helpSeen.v1", "1"); } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    const onKey = (e) => {
+      const el = e.target;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT"
+        || el.isContentEditable)) return;
+      if (e.key === "?") { e.preventDefault(); openHelp(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openHelp]);
   // The library row the pair dock is scoped to, and the track the detail view
   // is open on. Selecting re-scopes; opening is a separate, deliberate act.
   const [selectedTrackId, setSelectedTrackId] = useState(null);
@@ -74,6 +97,13 @@ export default function App() {
   // What the rail's per-route slot is showing. Each screen registers its own
   // block here rather than the rail knowing every screen's internals.
   const [railSlot, setRailSlot] = useState(null);
+  // A SoundCloud search handed to Discover from elsewhere (Track detail's
+  // "Find acapella / instrumental").
+  const [discoverNav, setDiscoverNav] = useState(null);
+  const discoverSearch = (q, role = "") => {
+    setDiscoverNav({ kind: "search", q, role, at: Date.now() });
+    setRoute("discovery");
+  };
 
   // ONE player for the whole app, and it lives here for the same reason the
   // library and the judgements do: every screen starts audio, and four
@@ -96,6 +126,10 @@ export default function App() {
   // narrowed by one and the row menu writes to them. A second copy would still
   // be showing the old shelf after the first one added a track to it.
   const groups = useLibraryGroups();
+  // Sets (mashups in running order) — the dock, Studio and the Sets screen all
+  // add to the same active set.
+  const sets = useSets();
+  const notes = usePairNotes();
 
   useEffect(() => {
     if (!settingsOpen) return undefined;
@@ -151,18 +185,34 @@ export default function App() {
 
   const dock = usePairDock({
     selectedTrackId, role: dockRole, ratings, onOpenStudio: pairToStudio, player,
+    onAddToSet: sets.addPair,
+  });
+
+  // A whole set on one Studio timeline, back to back — what "Next pair" could
+  // never do, because it replaces the arrangement.
+  const chainToStudio = (items) => sendToStudio({
+    chain: items.map((c) => ({
+      vocalId: c.vocal_song_id, instId: c.inst_song_id,
+      semitoneShift: c.semitone_shift ?? 0, scoredOption: scoredOptionOf(c),
+    })),
   });
 
   // "Next pair" in Studio walks the DOCK's list, so the order you are working
   // through is the order you chose there — Studio has no list of its own and
   // inventing a second one would give the two screens different ideas about
   // what comes next.
-  const nextPair = () => {
+  const nextPair = (append = false) => {
     const at = Math.min(dock.rows.length - 1, dock.cursor + 1);
     const next = dock.rows[at];
     if (!next) return;
     dock.setCursor(at);
-    pairToStudio(next);
+    if (!append) { pairToStudio(next); return; }
+    // Append: lay the next pair after what is already arranged, to hear the
+    // transition between two mashups instead of replacing the first.
+    sendToStudio({ chain: [{
+      vocalId: next.vocal_song_id, instId: next.inst_song_id,
+      semitoneShift: next.semitone_shift ?? 0, scoredOption: scoredOptionOf(next),
+    }], append: true });
   };
 
   // The dock owns the keyboard only while the Library screen is the one you are
@@ -243,24 +293,34 @@ export default function App() {
       <Sidebar route={route === "track" ? "library" : route}
         onRoute={setRoute} counts={counts}
         settingsOpen={settingsOpen}
-        onOpenSettings={() => setSettingsOpen((v) => !v)}>
-        {railSlot}
-      </Sidebar>
-
-      <div className="app-main">
-        {headerStatus?.text ? (
+        onOpenSettings={() => setSettingsOpen((v) => !v)}
+        judged={ratings.count}
+        onHelp={openHelp} helpSeen={helpSeen}
+        status={headerStatus?.text ? (
+          // The screen's status readout lives in the rail, not floating over
+          // the top-right of the screen — there it covered the pair dock's
+          // header and Studio's export buttons.
           <div className={`float-status${headerStatus.locked ? " locked" : ""}`
               + `${headerStatus.onClick ? " clickable" : ""}`}
             onClick={headerStatus.onClick || undefined}
-            title={headerStatus.onClick ? "Open the queue" : undefined}>
+            title={headerStatus.onClick ? "Open the queue" : headerStatus.text}>
             {headerStatus.locked && <span className="dot pulse" />}
             <span className="txt">
               {headerStatus.locked ? `◈ ${headerStatus.text}` : headerStatus.text}
             </span>
           </div>
-        ) : null}
+        ) : null}>
+        {railSlot}
+      </Sidebar>
 
-        {route === "mixes" && <MixImporter />}
+      <div className="app-main">
+
+        {route === "mixes" && (
+          <MixImporter player={player} onOpenStudio={pairToStudio}
+            onFindSimilar={(vocalId) => {
+              setSelectedTrackId(vocalId); setDockRole("vocal"); setRoute("library");
+            }} />
+        )}
         {route === "library" && (
           <div className="lib-layout">
             <main className="lib-main">
@@ -279,6 +339,8 @@ export default function App() {
               />
             </main>
             <PairDock dock={dock} ratings={ratings}
+              onAddToSet={sets.addPair} setName={sets.active?.name || null}
+              notes={notes}
               scopeTitle={selectedTrack?.title || null}
               role={dockRole} onRole={setDockRole} />
           </div>
@@ -291,7 +353,8 @@ export default function App() {
           />
         )}
         {route === "analysis" && (
-          <AnalysisScreen attributes={attributes} onRailSlot={setRailSlot} />
+          <AnalysisScreen attributes={attributes} onRailSlot={setRailSlot}
+            tracks={library.tracks} />
         )}
         {route === "track" && (
           <TrackDetail
@@ -308,6 +371,8 @@ export default function App() {
             onOpenTrack={setSelectedTrackId}
             onStatus={setHeaderStatus}
             onChanged={() => library.refresh(true)}
+            onDiscover={discoverSearch}
+            onLinesChanged={dock.reload}
           />
         )}
         {route === "discovery" && (
@@ -317,14 +382,22 @@ export default function App() {
             onStatus={setHeaderStatus}
             onOpenLibrary={() => setRoute("library")}
             onRailSlot={setRailSlot}
+            externalNav={discoverNav}
           />
+        )}
+        {route === "sets" && (
+          <SetScreen sets={sets} player={player}
+            onOpenStudio={pairToStudio} onOpenChain={chainToStudio}
+            onRailSlot={setRailSlot} onOpenLibrary={() => setRoute("library")} />
         )}
         {route === "studio" && (
           <MixStudio
             seed={studioSeed}
             onSeedConsumed={() => setStudioSeed({ vocalId: null, instId: null })}
             onStatus={setHeaderStatus}
-            onNextPair={dock.rows.length > 1 ? nextPair : null}
+            onNextPair={dock.rows.length > 1 ? () => nextPair(false) : null}
+            onAppendNext={dock.rows.length > 1 ? () => nextPair(true) : null}
+            onAddToSet={sets.addPair} notes={notes} setName={sets.active?.name || null}
           />
         )}
 
@@ -393,6 +466,7 @@ export default function App() {
       )}
 
       <Toast />
+      {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }

@@ -13,6 +13,10 @@ import { ProfileShelf } from "./ProfileShelf";
 // Search is on Enter, and paging is a button. Both layers share one scraped
 // client_id with the mixes auto-resolver, so search-as-you-type or infinite
 // scroll would spend someone else's rate limit as well as ours.
+// What you are digging FOR. A mashup is built from acapellas and
+// instrumentals; the word is added to the search unless it is already there.
+const ROLES = [["", "Any"], ["acapella", "Acapella"], ["instrumental", "Instrumental"]];
+
 const KINDS = [
   ["tracks", "Tracks"],
   ["playlists", "Sets"],
@@ -29,6 +33,7 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
                                     onNavDone, onGroupsChanged }) {
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("tracks");
+  const [role, setRole] = useState("");
   // Where we are. A breadcrumb rather than a single view, because the useful
   // path is search → artist → their likes → a set inside it, and losing your
   // place on every step makes that unusable.
@@ -119,9 +124,11 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
     }
   }, [clear, resetFilters]);
 
-  const search = () => {
-    const q = query.trim();
+  const search = (preset = null, want = role) => {
+    let q = (preset ?? query).trim();
     if (!q) return;
+    if (want && !/^https?:\/\//i.test(q) && !new RegExp(want === "acapella"
+      ? "a\\s?cap+el+a" : "instrumental", "i").test(q)) q = `${q} ${want}`;
     // A pasted link is a resolve, not a search — no one wants SoundCloud's
     // full-text opinion of a URL they already have.
     if (/^https?:\/\//i.test(q)) return resolve(q);
@@ -163,6 +170,15 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
   useEffect(() => {
     if (!nav) return;
     setCrumbs([]);
+    // A search handed over from elsewhere — Track detail's "Find acapella",
+    // a Library gap — runs as if typed.
+    if (nav.kind === "search") {
+      setQuery(nav.q); setKind("tracks");
+      if (nav.role != null) setRole(nav.role);
+      setTimeout(() => search(nav.q, nav.role ?? role), 0);
+      onNavDone?.();
+      return;
+    }
     if (nav.kind === "user") openUser(nav.id, nav.label);
     else openPlaylist(nav.id, nav.label);
     onNavDone?.();
@@ -243,7 +259,7 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
             <span className="disc-or mono">or paste a profile / set / track URL</span>
-            <button className="head-btn" onClick={search}
+            <button className="head-btn" onClick={() => search()}
               disabled={loading || !query.trim()}>
               {loading ? "Searching…" : "Search"}
             </button>
@@ -254,6 +270,12 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
               {KINDS.map(([id, label]) => (
                 <button key={id} className={kind === id ? "on" : ""}
                   onClick={() => setKind(id)}>{label}</button>
+              ))}
+            </div>
+            <div className="pd-seg" title="What you are digging for — added to the search">
+              {ROLES.map(([id, label]) => (
+                <button key={id || "any"} className={role === id ? "on" : ""}
+                  onClick={() => setRole(id)}>{label}</button>
               ))}
             </div>
 
