@@ -735,7 +735,28 @@ def list_sections(song_id: int) -> dict:
     if not row:
         raise HTTPException(status_code=404, detail="song not found")
     sections = get_sections(song_id)
+    from database.models import section_lines_for
+    for s, line in zip(sections, section_lines_for(song_id, sections)):
+        s["line"] = line
     return {"count": len(sections), "sections": sections}
+
+
+class SectionLine(BaseModel):
+    start_sec: float
+    end_sec: float
+    text: str = ""
+
+
+@router.post("/{song_id}/section-line")
+def save_section_line(song_id: int, body: SectionLine) -> dict:
+    """The lyric cue of one vocal section ("Shout it out — 1st chorus"),
+    typed by you; an empty text clears it. Anchored to the section's
+    midpoint in seconds so it survives a structure re-cut."""
+    if body.end_sec <= body.start_sec:
+        raise HTTPException(status_code=400, detail="end_sec must be after start_sec")
+    from database.models import set_section_line
+    set_section_line(song_id, body.start_sec, body.end_sec, body.text[:300])
+    return {"ok": True}
 
 
 def _tempo_agrees(stem_bpm, full_bpm, tol: float = 0.03) -> bool:

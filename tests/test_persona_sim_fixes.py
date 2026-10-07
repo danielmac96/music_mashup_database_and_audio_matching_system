@@ -603,3 +603,47 @@ def test_discover_has_roles_gaps_and_a_search_hand_off():
     assert '["gaps", "Library gaps"]' in disc and "function GapsPane" in disc
     assert "sc-fit" in _read("components/ScRows.jsx")
     assert "onDiscover(" in _read("components/TrackDetail.jsx")
+
+
+# ── 18 / 19. help, Analysis compare, section lines ──────────────────────────
+
+def test_help_opens_from_the_rail_and_the_question_mark():
+    app, rail = _read("App.jsx"), _read("shell/Sidebar.jsx")
+    assert "<HelpPanel" in app and 'e.key === "?"' in app
+    assert "rail-help" in rail and "New here" in rail
+    help_ = _read("components/HelpPanel.jsx")
+    assert "Your first mashup" in help_ and "Reading a pair" in help_
+
+
+def test_analysis_compares_two_tracks():
+    a = _read("components/AnalysisScreen.jsx")
+    assert "function TrackCompare" in a and "an-compare-table" in a
+    assert "tracks={library.tracks}" in _read("App.jsx")
+
+
+def test_section_lines_follow_the_music_through_a_recut(db_path):
+    from database import models
+    models.init_db(db_path)
+    sid = models.upsert_song("T", "A", "https://sc/t", 120, "", db_path=db_path)
+    models.set_section_line(sid, 30.0, 60.0, "Shout it out", db_path=db_path)
+    first = [{"start_sec": 0, "end_sec": 30}, {"start_sec": 30, "end_sec": 60}]
+    assert models.section_lines_for(sid, first, db_path=db_path) == [None, "Shout it out"]
+    # A re-cut renumbers sections; the line stays with the music at 0:45.
+    recut = [{"start_sec": 0, "end_sec": 20}, {"start_sec": 20, "end_sec": 40},
+             {"start_sec": 40, "end_sec": 64}]
+    assert models.section_lines_for(sid, recut, db_path=db_path) == [None, None, "Shout it out"]
+    models.set_section_line(sid, 40.0, 64.0, "", db_path=db_path)
+    assert models.section_lines_for(sid, recut, db_path=db_path) == [None, None, None]
+
+
+def test_pair_rows_carry_the_vocal_sections_line(one_vocal_many_beds):
+    from database import models
+    db, vocal, beds = one_vocal_many_beds
+    conn = models.get_conn(db)
+    conn.execute("UPDATE mashup_candidates SET vocal_section_start=30, vocal_section_end=60")
+    conn.commit(); conn.close()
+    models.set_section_line(vocal, 30.0, 60.0, "Shout it out", db_path=db)
+    rows = models.get_candidates_enriched(vocal_song_id=vocal, limit=5, db_path=db)
+    assert rows[0]["vocal_section_line"] == "Shout it out"
+    assert "pc-line" in _read("components/PairCard.jsx")
+    assert "function SectionLine" in _read("components/SectionTable.jsx")

@@ -6,7 +6,7 @@ import { fmtAttr } from "../attributes";
 // and what its values look like, and two switches: show it as a Library column,
 // show it on Track detail. Show/hide only — nothing is recomputed from here
 // (readme §9, C).
-export function AnalysisScreen({ attributes, onRailSlot }) {
+export function AnalysisScreen({ attributes, onRailSlot, tracks = [] }) {
   const { catalogue, categories, visibility, toggle, refresh } = attributes;
   // Which analyser is actually running, whether its models are installed, and
   // how often librosa and Essentia agree where both measured (GET
@@ -28,6 +28,7 @@ export function AnalysisScreen({ attributes, onRailSlot }) {
           title="Re-read coverage">↻</button>
       </div>
       <AnalyzerStatus status={status} error={statusError} />
+      <TrackCompare tracks={tracks} catalogue={catalogue} categories={categories} />
       {categories.map((cat) => (
         <section key={cat} className="an-cat">
           <h3>{cat}</h3>
@@ -140,5 +141,61 @@ function AnalyzerStatus({ status, error }) {
         </span>
       )}
     </div>
+  );
+}
+
+
+// Two tracks side by side over every attribute the catalogue defines — "why
+// does this pair score like that?" answered from the measurements, not the
+// summary. The core columns (tempo, key, mash summary) lead, then each
+// category; a row where the two differ most is easy to see.
+function TrackCompare({ tracks, catalogue, categories }) {
+  const analysed = tracks.filter((t) => t.features?.full);
+  const [a, setA] = useState("");
+  const [b, setB] = useState("");
+  const ta = analysed.find((t) => String(t.id) === String(a));
+  const tb = analysed.find((t) => String(t.id) === String(b));
+  const pick = (value, set) => (
+    <select value={value} onChange={(e) => set(e.target.value)}>
+      <option value="">Choose a track…</option>
+      {analysed.map((t) => <option key={t.id} value={t.id}>{t.title} — {t.artist || "?"}</option>)}
+    </select>
+  );
+  const core = [
+    ["BPM", (t) => t.features?.full?.bpm?.toFixed(1)],
+    ["Key", (t) => t.features?.full?.camelot],
+    ["Sung share", (t) => (t.mash?.vocal_coverage != null ? `${Math.round(t.mash.vocal_coverage * 100)}%` : null)],
+    ["Partners (vocal / bed)", (t) => (t.mash ? `${t.mash.as_vocal} / ${t.mash.as_bed}` : null)],
+    ["Best pair", (t) => (t.mash?.best_pct != null ? `${Math.round(t.mash.best_pct * 100)}th pct` : null)],
+    ["Sections", (t) => t.section_count || null],
+  ];
+  return (
+    <section className="an-cat an-compare">
+      <h3>Compare two tracks</h3>
+      <div className="an-compare-pick">{pick(a, setA)}<span className="faint">vs</span>{pick(b, setB)}</div>
+      {(ta || tb) && (
+        <table className="an-compare-table">
+          <tbody>
+            {core.map(([label, get]) => (
+              <tr key={label}><th>{label}</th><td className="mono">{(ta && get(ta)) ?? "—"}</td>
+                <td className="mono">{(tb && get(tb)) ?? "—"}</td></tr>
+            ))}
+            {categories.map((cat) => [
+              <tr key={cat} className="an-compare-cat"><th colSpan={3}>{cat}</th></tr>,
+              ...catalogue.filter((x) => x.category === cat).map((x) => {
+                const va = ta ? fmtAttr(x, ta.attrs?.[x.id]) : "—";
+                const vb = tb ? fmtAttr(x, tb.attrs?.[x.id]) : "—";
+                return (
+                  <tr key={x.id} className={va !== vb && va !== "—" && vb !== "—" ? "differs" : ""}>
+                    <th title={x.description}>{x.label}</th>
+                    <td className="mono">{va}</td><td className="mono">{vb}</td>
+                  </tr>
+                );
+              }),
+            ])}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }

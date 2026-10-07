@@ -10,6 +10,7 @@ import { TrackDetail } from "./components/TrackDetail";
 import { Discovery } from "./components/Discovery";
 import { MixStudio } from "./components/MixStudio";
 import { SetScreen } from "./components/SetScreen";
+import { HelpPanel } from "./components/HelpPanel";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { TuningPanel } from "./components/TuningPanel";
 import { MlPanel } from "./components/MlPanel";
@@ -67,6 +68,25 @@ export default function App() {
   // Right-side header status readout — each screen reports its own.
   const [headerStatus, setHeaderStatus] = useState(null); // { locked, text }
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  // "New here?" shows until help has been opened once.
+  const [helpSeen, setHelpSeen] = useState(() => {
+    try { return localStorage.getItem("mashup.helpSeen.v1") === "1"; } catch { return true; }
+  });
+  const openHelp = useCallback(() => {
+    setHelpOpen(true); setHelpSeen(true);
+    try { localStorage.setItem("mashup.helpSeen.v1", "1"); } catch { /* ignore */ }
+  }, []);
+  useEffect(() => {
+    const onKey = (e) => {
+      const el = e.target;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT"
+        || el.isContentEditable)) return;
+      if (e.key === "?") { e.preventDefault(); openHelp(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openHelp]);
   // The library row the pair dock is scoped to, and the track the detail view
   // is open on. Selecting re-scopes; opening is a separate, deliberate act.
   const [selectedTrackId, setSelectedTrackId] = useState(null);
@@ -275,6 +295,7 @@ export default function App() {
         settingsOpen={settingsOpen}
         onOpenSettings={() => setSettingsOpen((v) => !v)}
         judged={ratings.count}
+        onHelp={openHelp} helpSeen={helpSeen}
         status={headerStatus?.text ? (
           // The screen's status readout lives in the rail, not floating over
           // the top-right of the screen — there it covered the pair dock's
@@ -333,7 +354,8 @@ export default function App() {
           />
         )}
         {route === "analysis" && (
-          <AnalysisScreen attributes={attributes} onRailSlot={setRailSlot} />
+          <AnalysisScreen attributes={attributes} onRailSlot={setRailSlot}
+            tracks={library.tracks} />
         )}
         {route === "track" && (
           <TrackDetail
@@ -351,6 +373,7 @@ export default function App() {
             onStatus={setHeaderStatus}
             onChanged={() => library.refresh(true)}
             onDiscover={discoverSearch}
+            onLinesChanged={dock.reload}
           />
         )}
         {route === "discovery" && (
@@ -444,6 +467,7 @@ export default function App() {
       )}
 
       <Toast />
+      {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }

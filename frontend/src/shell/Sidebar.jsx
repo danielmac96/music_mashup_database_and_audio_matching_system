@@ -25,7 +25,7 @@ const fmtCount = (n) =>
 
 export function Sidebar({ route, onRoute, counts = {}, children,
                           onOpenSettings, settingsOpen, status = null,
-                          judged = null }) {
+                          judged = null, onHelp = null, helpSeen = true }) {
   // The footer says which scorer is ranking pairs and how many judgements it
   // has, because "why is this list ordered like that" is otherwise unanswerable
   // from inside the app.
@@ -75,6 +75,12 @@ export function Sidebar({ route, onRoute, counts = {}, children,
           {judged != null || scorer
             ? `${fmtCount(judged ?? scorer?.n_judgments ?? 0)} judged` : ""}
         </span>
+        {onHelp && (
+          <button className={`rail-help${helpSeen ? "" : " new"}`} onClick={onHelp}
+            title="How it works — first mashup, what a pair's numbers mean, keys (?)">
+            {helpSeen ? "?" : "? New here"}
+          </button>
+        )}
         <button className={`rail-gear${settingsOpen ? " on" : ""}`}
           onClick={onOpenSettings}
           title="Settings, tuning and the database browser">⚙</button>

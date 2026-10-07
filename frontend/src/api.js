@@ -680,6 +680,13 @@ export const api = {
   getDbTable: (table, limit = 100, offset = 0) =>
     jsonFetch(`/api/db/tables/${table}?limit=${limit}&offset=${offset}`),
 
+  // The lyric cue of one vocal section; empty text clears it.
+  saveSectionLine: (songId, s, text) =>
+    jsonFetch(`/api/tracks/${songId}/section-line`, {
+      method: "POST",
+      body: JSON.stringify({ start_sec: s.start_sec, end_sec: s.end_sec, text }),
+    }),
+
   // ── Sets: chosen mashups in running order ──────────────────────────────────
   getSets: () => jsonFetch("/api/sets"),
   createSet: (name) =>

@@ -89,6 +89,10 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     });
   }, []);
   const clearCompare = useCallback(() => setCompare([]), []);
+  // Re-fetch the same list — after something it shows changed elsewhere (a
+  // section line typed on Track detail).
+  const [nonce, setNonce] = useState(0);
+  const reload = useCallback(() => setNonce((n) => n + 1), []);
   const [loadingMore, setLoadingMore] = useState(false);
   const setFilters = useCallback(
     (patch) => setFiltersState((f) => ({ ...f, ...patch })), []);
@@ -134,7 +138,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [selectedTrackId, role, order, filters, perVocal]);
+  }, [selectedTrackId, role, order, filters, perVocal, nonce]);
 
   // The next page of the same server-side list. The offset is applied after
   // the per-song cap, so page two continues exactly where page one stopped.
@@ -288,6 +292,6 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     exportBatch,
     cursor, setCursor, current, armedKey,
     play, move, openStudio, hide, bindKeys, audio,
-    compare, toggleCompare, clearCompare,
+    compare, toggleCompare, clearCompare, reload,
   };
 }

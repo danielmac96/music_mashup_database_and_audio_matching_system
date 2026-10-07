@@ -57,7 +57,7 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
         <Side role="VOX" songId={c.vocal_song_id} title={c.vocal_title} artist={c.vocal_artist}
           span={spanLabel(c.vocal_section_label, c.vocal_section_start,
             c.vocal_section_end)}
-          bars={c.section_bars_vocal}
+          bars={c.section_bars_vocal} line={c.vocal_section_line}
           camelot={c.vocal_camelot} bpm={c.vocal_bpm} />
         <Side role="BED" songId={c.inst_song_id} title={c.inst_title} artist={c.inst_artist}
           span={spanLabel(c.inst_section_label, c.inst_section_start,
@@ -161,7 +161,7 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
 // One song of the pair: what it is, which stretch of it plays, and the key and
 // tempo it brings before any adjustment. A null bpm is unanalysed, drawn as a
 // dash like the key chip, never as 0.
-function Side({ role, songId, title, artist, span, bars, camelot, bpm }) {
+function Side({ role, songId, title, artist, span, bars, camelot, bpm, line = null }) {
   const barText = bars != null && Number.isFinite(Number(bars))
     ? ` · ${Math.round(bars)} bars` : "";
   return (
@@ -173,6 +173,7 @@ function Side({ role, songId, title, artist, span, bars, camelot, bpm }) {
           {title}{artist && <span className="pc-artist"> · {artist}</span>}
         </div>
         <div className="pc-span mono">{span}{barText}</div>
+        {line && <div className="pc-line" title="The line this vocal section sings">“{line}”</div>}
       </div>
       {camelot
         ? <span className="pc-key mono" style={{ background: camelotColor(camelot) }}>

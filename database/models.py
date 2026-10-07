@@ -420,6 +420,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_set_items_pair
     ON set_items(set_id, vocal_song_id, inst_song_id,
                  COALESCE(vocal_section, -1), COALESCE(inst_section, -1));
 
+-- ── Section lines: the lyric cue of a vocal section ───────────────────────────
+-- "Shout it out — 1st chorus". Typed once, shown wherever that section plays.
+-- Anchored to a TIME in the song (the section's midpoint), not to a section
+-- index: a structure re-cut renumbers sections, but the music at 1:02 is still
+-- the music at 1:02, so the line follows whichever section now holds it.
+CREATE TABLE IF NOT EXISTS section_lines (
+    song_id     INTEGER NOT NULL,
+    anchor_sec  REAL NOT NULL,
+    text        TEXT NOT NULL,
+    updated_at  TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_section_lines_song ON section_lines(song_id, anchor_sec);
+
 -- ── Notes on a pair ──────────────────────────────────────────────────────────
 -- "Opener", "needs a riser", "use the 2nd chorus". Keyed like pair_feedback
 -- (sections included, COALESCEd) but kept apart from it: a note is not a
@@ -2748,6 +2761,11 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                    si.plays        AS inst_plays,
                    si.likes        AS inst_likes,
                    pi.popularity   AS inst_popularity,
+                   (SELECT sl.text FROM section_lines sl
+                     WHERE sl.song_id = mc.vocal_song_id
+                       AND sl.anchor_sec >= mc.vocal_section_start
+                       AND sl.anchor_sec < mc.vocal_section_end
+                     ORDER BY sl.anchor_sec LIMIT 1) AS vocal_section_line,
                    (SELECT COUNT(*) FROM sections WHERE song_id = mc.vocal_song_id)
                        AS vocal_section_count,
                    (SELECT COUNT(*) FROM sections WHERE song_id = mc.inst_song_id)
@@ -3986,3 +4004,39 @@ def get_set(set_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
         })
         out.append(row)
     return {**dict(s), "items": out}
+
+
+# ── Section lines ────────────────────────────────────────────────────────────
+
+def set_section_line(song_id: int, start_sec: float, end_sec: float, text: str,
+                     db_path: Path = DB_PATH) -> None:
+    """Write (or, with empty text, clear) the line of the section spanning
+    [start_sec, end_sec): any line anchored inside it is replaced by one
+    anchored at its midpoint."""
+    conn = get_conn(db_path)
+    try:
+        conn.execute("DELETE FROM section_lines WHERE song_id=? AND anchor_sec>=? AND anchor_sec<?",
+                     (song_id, start_sec, end_sec))
+        if (text or "").strip():
+            conn.execute("INSERT INTO section_lines(song_id, anchor_sec, text) VALUES (?,?,?)",
+                         (song_id, round((start_sec + end_sec) / 2.0, 3), text.strip()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def section_lines_for(song_id: int, sections: List[Dict],
+                      db_path: Path = DB_PATH) -> List[Optional[str]]:
+    """Each section's line: the first one anchored inside it, else None."""
+    conn = get_conn(db_path)
+    try:
+        lines = conn.execute("SELECT anchor_sec, text FROM section_lines WHERE song_id=? "
+                             "ORDER BY anchor_sec", (song_id,)).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for s in sections:
+        hit = next((r["text"] for r in lines
+                    if s["start_sec"] <= r["anchor_sec"] < s["end_sec"]), None)
+        out.append(hit)
+    return out
