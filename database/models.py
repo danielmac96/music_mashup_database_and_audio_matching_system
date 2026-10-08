@@ -483,6 +483,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
             _migrate_mixtracks_columns(conn)
             _migrate_mashuppairs_columns(conn)
             _migrate_crates_columns(conn)
+            _migrate_sets_columns(conn)
             _migrate_pair_feedback_key(conn)
             conn.commit()
         except BaseException:
@@ -709,6 +710,14 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("score_label", "REAL"),
     ("score_duration", "REAL"),
     ("score_voice", "REAL"),
+    # Phase 3 (2026-10-08) — per-section measurements the analysis already
+    # stored and nothing scored: section-level spectral room (band_energy_vocal
+    # vs band_energy_bed), how much of the vocal section is actually sung
+    # (vocal_activity), and how close the two sections' energies sit. Stored at
+    # weight 0 so they can be checked against verdicts before they rank.
+    ("score_room_section", "REAL"),
+    ("score_coverage", "REAL"),
+    ("score_energy_match", "REAL"),
     # P2.4 — what building this pair actually involves. Computed at
     # scoring time from the stored per-section downbeats, so the ranked list can
     # say it without the export step having to be reached first.
@@ -878,6 +887,10 @@ _PAIR_FEEDBACK_OPTIONAL_COLUMNS = (
     # structure (remap_feedback_sections): the row is kept exactly as it was,
     # but its indexes may now point at different music.
     ("sections_stale", "INTEGER DEFAULT 0"),
+    # Why the pair got its star: a JSON list of FEEDBACK_REASONS keys, chosen
+    # on the card after rating. Never part of the verdict, never training input
+    # yet — it is what Phase 3 measures the section terms against.
+    ("reasons_json", "TEXT"),
 )
 
 
@@ -976,6 +989,25 @@ _CRATES_OPTIONAL_COLUMNS = (
     # OAuth write path, so it stays NULL for everyone without app credentials.
     ("synced_at", "TEXT"),
 )
+
+
+# A set's tempo curve and each item's chosen way in (phase 4). Both JSON; NULL
+# means "not set": no curve (every mashup at its vocal's tempo, as before) and
+# the suggested transition.
+_SETS_OPTIONAL_COLUMNS = (("tempo_plan_json", "TEXT"),)
+_SET_ITEMS_OPTIONAL_COLUMNS = (("transition_json", "TEXT"),)
+
+
+def _migrate_sets_columns(conn: sqlite3.Connection) -> None:
+    for table, cols in (("sets", _SETS_OPTIONAL_COLUMNS),
+                        ("set_items", _SET_ITEMS_OPTIONAL_COLUMNS)):
+        existing = {row[1] for row in conn.execute(
+            f"PRAGMA table_info({table})").fetchall()}
+        if not existing:
+            continue
+        for col, decl in cols:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 def _migrate_crates_columns(conn: sqlite3.Connection) -> None:
@@ -1926,6 +1958,30 @@ def update_features_manual(song_id: int, *, bpm: Optional[float] = None,
     return updated
 
 
+def get_stem_facts(song_ids, db_path: Path = DB_PATH) -> Dict:
+    """What a pair's recipe needs about each side, for a page of songs in one
+    query: {(song_id, stem_type): {lufs, true_peak, quality, bleed, bpm,
+    bpm_candidates_json}} for the full mix and the two-stem view. Missing rows
+    are simply absent — the recipe reads absence as unmeasured."""
+    ids = sorted({int(i) for i in song_ids if i is not None})
+    if not ids:
+        return {}
+    conn = get_conn(db_path)
+    try:
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""SELECT f.song_id, f.stem_type, f.lufs, f.true_peak, f.bpm,
+                       f.bpm_candidates_json, st.quality, st.bleed
+                FROM features f
+                LEFT JOIN stems st ON st.song_id=f.song_id AND st.stem_type=f.stem_type
+                WHERE f.song_id IN ({marks})
+                  AND f.stem_type IN ('full', 'vocals', 'instrumental')""",
+            ids).fetchall()
+    finally:
+        conn.close()
+    return {(r["song_id"], r["stem_type"]): dict(r) for r in rows}
+
+
 def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[Dict]:
     conn = get_conn(db_path)
     rows = conn.execute(
@@ -2202,6 +2258,7 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        section_loop_repeats, section_note,
        score_phrase, score_rhythm, score_structure,
        score_label, score_duration, score_voice,
+       score_room_section, score_coverage, score_energy_match,
        alignment_downbeat, alignment_offset, target_bpm,
        tempo_adjustment, pitch_adjustment, reason,
        score_effort, effort_stretch, effort_pitch,
@@ -2210,7 +2267,7 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -2234,6 +2291,9 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_label=excluded.score_label,
        score_duration=excluded.score_duration,
        score_voice=excluded.score_voice,
+       score_room_section=excluded.score_room_section,
+       score_coverage=excluded.score_coverage,
+       score_energy_match=excluded.score_energy_match,
        alignment_downbeat=excluded.alignment_downbeat,
        alignment_offset=excluded.alignment_offset,
        target_bpm=excluded.target_bpm,
@@ -2282,6 +2342,7 @@ SECTION_PAIR_COLUMNS = (
     "section_loop_repeats", "section_note",
     "score_phrase", "score_rhythm", "score_structure",
     "score_label", "score_duration", "score_voice",
+    "score_room_section", "score_coverage", "score_energy_match",
     "alignment_downbeat", "alignment_offset", "target_bpm",
     "tempo_adjustment", "pitch_adjustment", "reason",
 )
@@ -2438,6 +2499,51 @@ def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int,
     conn.close()
 
 
+# Why a pair got its star — picked on the card after rating. `good` reasons are
+# offered on 3-5 stars, `bad` on 1-3. The keys are stored; the labels are the
+# UI's (pairModel.VERDICT_REASONS, pinned equal by a test). Renaming a key
+# orphans every stored use of it, like the verdict names (§7).
+FEEDBACK_REASONS = {
+    "vocal_sits": "good", "groove": "good", "energy_lift": "good",
+    "contrast": "good", "harmony": "good",
+    "key_clash": "bad", "timing_off": "bad", "vocal_buried": "bad",
+    "bass_mud": "bad", "energy_mismatch": "bad", "bad_separation": "bad",
+    "boring": "bad",
+}
+
+
+def set_pair_feedback_reasons(vocal_song_id: int, inst_song_id: int,
+                              vocal_section: Optional[int],
+                              inst_section: Optional[int],
+                              reasons: Sequence[str],
+                              db_path: Path = DB_PATH) -> int:
+    """Attach the reasons for one judgement. Returns rows updated: 0 when the
+    pair has no judgement, because a reason is about a verdict and never
+    stands in for one. An empty list clears them. Unknown keys raise.
+
+    The WHERE mirrors ux_pair_feedback_section (see delete_pair_feedback)."""
+    clean = []
+    for r in reasons:
+        if r not in FEEDBACK_REASONS:
+            raise ValueError(f"unknown reason {r!r}")
+        if r not in clean:
+            clean.append(r)
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            """UPDATE pair_feedback SET reasons_json = ?
+                WHERE vocal_song_id = ?
+                  AND inst_song_id = ?
+                  AND COALESCE(vocal_section, -1) = COALESCE(?, -1)
+                  AND COALESCE(inst_section, -1) = COALESCE(?, -1)""",
+            (json.dumps(clean) if clean else None, vocal_song_id, inst_song_id,
+             vocal_section, inst_section))
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        conn.close()
+
+
 def delete_pair_feedback(vocal_song_id: int, inst_song_id: int,
                          vocal_section: Optional[int] = None,
                          inst_section: Optional[int] = None,
@@ -2487,6 +2593,10 @@ def get_pair_feedback(verdict: str = "", db_path: Path = DB_PATH) -> List[Dict]:
         # rather than in the UI means every caller sees one shape.
         if row.get("rating") is None:
             row["rating"] = rating_for_verdict(row.get("verdict"))
+        try:
+            row["reasons"] = json.loads(row.pop("reasons_json", None) or "[]")
+        except (TypeError, ValueError):
+            row["reasons"] = []
         out.append(row)
     return out
 
@@ -3868,10 +3978,20 @@ def list_sets(db_path: Path = DB_PATH) -> List[Dict]:
         conn.close()
 
 
+_UNSET = object()
+
+
 def update_set(set_id: int, *, name: Optional[str] = None,
-               note: Optional[str] = None, db_path: Path = DB_PATH) -> Optional[Dict]:
+               note: Optional[str] = None, tempo_plan=_UNSET,
+               db_path: Path = DB_PATH) -> Optional[Dict]:
+    """Rename, re-note, or set the tempo curve ({start_bpm, end_bpm}; None
+    clears it). Omitted arguments are left alone."""
     conn = get_conn(db_path)
     try:
+        if tempo_plan is not _UNSET:
+            conn.execute(
+                "UPDATE sets SET tempo_plan_json=?, updated_at=datetime('now') WHERE id=?",
+                (json.dumps(tempo_plan) if tempo_plan else None, set_id))
         if name is not None and name.strip():
             conn.execute("UPDATE sets SET name=?, updated_at=datetime('now') WHERE id=?",
                          (name.strip(), set_id))
@@ -3882,6 +4002,21 @@ def update_set(set_id: int, *, name: Optional[str] = None,
     finally:
         conn.close()
     return get_set(set_id, db_path=db_path)
+
+
+def set_item_transition(set_id: int, item_id: int, transition: Optional[Dict],
+                        db_path: Path = DB_PATH) -> bool:
+    """Choose how an item comes in ({type, bars}); None returns it to the
+    suggestion. False when the item is not in this set."""
+    conn = get_conn(db_path)
+    try:
+        n = conn.execute(
+            "UPDATE set_items SET transition_json=? WHERE id=? AND set_id=?",
+            (json.dumps(transition) if transition else None, item_id, set_id)).rowcount
+        conn.commit()
+        return n > 0
+    finally:
+        conn.close()
 
 
 def delete_set(set_id: int, db_path: Path = DB_PATH) -> bool:
@@ -4001,9 +4136,14 @@ def get_set(set_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
             "stale": live is None,
             "note": notes.get((it["vocal_song_id"], it["inst_song_id"],
                                it["vocal_section"], it["inst_section"]), ""),
+            "transition": json.loads(it["transition_json"]) if it.get("transition_json") else None,
         })
         out.append(row)
-    return {**dict(s), "items": out}
+    out_set = dict(s)
+    out_set["tempo_plan"] = (json.loads(out_set.pop("tempo_plan_json"))
+                             if out_set.get("tempo_plan_json") else None)
+    out_set.pop("tempo_plan_json", None)
+    return {**out_set, "items": out}
 
 
 # ── Section lines ────────────────────────────────────────────────────────────

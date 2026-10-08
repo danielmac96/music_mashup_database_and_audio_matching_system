@@ -44,6 +44,11 @@ _BASS_CLASH_INTERVALS = (1, 6, 11)
 BASS_CLASH_PENALTY = 0.25
 
 
+# _ROTATIONS[k, j] = (j - k) mod 12, so b[_ROTATIONS][k] == np.roll(b, k).
+_ROTATIONS = (np.arange(N_PITCH_CLASSES)[None, :]
+              - np.arange(N_PITCH_CLASSES)[:, None]) % N_PITCH_CLASSES
+
+
 def _vec(chroma: Optional[Sequence[float]]) -> Optional[np.ndarray]:
     """A finite, L2-normalised 12-vector, or None when unusable."""
     if chroma is None:
@@ -83,9 +88,10 @@ def harmonic_fit(vocal_chroma: Optional[Sequence[float]],
         return {"fit": 0.5, "shift": 0, "confidence": 0.0, "known": False}
 
     # Correlation of the vocal against the bed rotated by every semitone. Both
-    # are unit vectors, so each dot product is a cosine in [-1, 1].
-    scores = np.array([float(np.dot(v, np.roll(b, k)))
-                       for k in range(N_PITCH_CLASSES)])
+    # are unit vectors, so each dot product is a cosine in [-1, 1]. Row k of
+    # b[_ROTATIONS] is np.roll(b, k): one gather instead of twelve rolls, which
+    # was most of the cost of a re-score's harmony pass.
+    scores = b[_ROTATIONS] @ v
     best = int(np.argmax(scores))
     peak = float(scores[best])
 

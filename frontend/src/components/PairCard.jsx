@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
+import { RecipeStrip } from "./pairs/RecipeStrip";
 import {
   BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, nudgeLabel, pctOf, rawPctOf,
-  songTermsOf, spanLabel, termsOf, tierOf,
+  reasonsFor, songTermsOf, spanLabel, termsOf, tierOf,
 } from "./pairs/pairModel";
 import { bpmTag, camelotColor, keyRel } from "../theme";
 
@@ -21,7 +22,8 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
                            onSelect, onPlay, onStudio, onHide = null,
                            onAddToSet = null, setName = null,
                            note = "", onNote = null,
-                           comparing = false, onCompare = null }) {
+                           comparing = false, onCompare = null,
+                           reasons = [], onReason = null }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note);
   const tier = tierOf(c);
@@ -78,15 +80,24 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
           {h.known ? `${c.vocal_camelot || "?"}/${c.inst_camelot || "?"} wheel` : rel.tag}
           {!h.known && rel.suggest ? ` · ${rel.suggest > 0 ? "+" : ""}${rel.suggest} st` : ""}
         </span>
-        <span className="pc-tag mono neutral">
-          {bpmTag(c.vocal_bpm, c.inst_bpm)}
-        </span>
-        <span className="pc-tag mono muted"
-          title={c.alignment_offset == null
-            ? "Neither side has a stored downbeat grid, so there is no measured offset — not a measured zero."
-            : "How far to slide the bed so the two bar lines land together."}>
-          {nudgeLabel(c.alignment_offset)}
-        </span>
+        {/* The tempo move is a recipe step ("bed tempo −1.5%", "bed at half
+            time"); this older tag measured it the other way round, so the two
+            printed one stretch with opposite signs. */}
+        {!c.recipe && (
+          <span className="pc-tag mono neutral">
+            {bpmTag(c.vocal_bpm, c.inst_bpm)}
+          </span>
+        )}
+        {/* Nudge and loop are recipe steps: drawn here only for a row that
+            arrived without a recipe. */}
+        {!c.recipe && (
+          <span className="pc-tag mono muted"
+            title={c.alignment_offset == null
+              ? "Neither side has a stored downbeat grid, so there is no measured offset — not a measured zero."
+              : "How far to slide the bed so the two bar lines land together."}>
+            {nudgeLabel(c.alignment_offset)}
+          </span>
+        )}
         {/* The measured harmony: the two sections' notes cross-correlated over
             all twelve transpositions, not the Camelot lookup beside it. */}
         {h.known && (
@@ -101,13 +112,15 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
         {h.bassClash && (
           <span className="pc-tag mono clash" title={BASS_CLASH_ADVICE}>bass clash</span>
         )}
-        {(c.section_loop_repeats ?? 1) > 1 && (
+        {!c.recipe && (c.section_loop_repeats ?? 1) > 1 && (
           <span className="pc-tag mono neutral"
             title={c.section_note || "The bed section is shorter than the vocal's: loop it to cover"}>
             loop bed ×{c.section_loop_repeats}
           </span>
         )}
       </div>
+
+      <RecipeStrip recipe={c.recipe} compact={compact} />
 
       {!compact && <ScoreBars candidate={c} />}
 
@@ -125,6 +138,19 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
           ) : (
             <span title="Click to edit" onClick={() => { setDraft(note); setEditing(true); }}>✎ {note}</span>
           )}
+        </div>
+      )}
+
+      {/* Why the star: offered on the focused card once it is rated. */}
+      {focused && rating && onReason && (
+        <div className="pc-why" onClick={(e) => e.stopPropagation()}
+          title="Why this rating? Never changes the verdict — it is what the scorer's terms get checked against">
+          <span className="pc-recipe-label mono">WHY</span>
+          {reasonsFor(rating).map((r) => (
+            <button key={r.key}
+              className={`pc-reason ${r.tone}${reasons.includes(r.key) ? " on" : ""}`}
+              onClick={() => onReason(r.key)}>{r.label}</button>
+          ))}
         </div>
       )}
 

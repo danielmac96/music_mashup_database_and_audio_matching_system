@@ -178,6 +178,7 @@ export default function App() {
     vocalId: c.vocal_song_id,
     instId: c.inst_song_id,
     semitoneShift: c.semitone_shift ?? 0,
+    recipe: c.recipe ?? null,
     vocalSectionStart: c.vocal_section_start ?? 0,
     instSectionStart: c.inst_section_start ?? 0,
     scoredOption: scoredOptionOf(c),
@@ -193,7 +194,10 @@ export default function App() {
   const chainToStudio = (items) => sendToStudio({
     chain: items.map((c) => ({
       vocalId: c.vocal_song_id, instId: c.inst_song_id,
-      semitoneShift: c.semitone_shift ?? 0, scoredOption: scoredOptionOf(c),
+      semitoneShift: c.semitone_shift ?? 0, recipe: c.recipe ?? null,
+      // On a set's tempo curve, each mashup lands at its own point on it.
+      targetBpm: c.set_bpm ?? null,
+      scoredOption: scoredOptionOf(c),
     })),
   });
 
@@ -211,7 +215,8 @@ export default function App() {
     // transition between two mashups instead of replacing the first.
     sendToStudio({ chain: [{
       vocalId: next.vocal_song_id, instId: next.inst_song_id,
-      semitoneShift: next.semitone_shift ?? 0, scoredOption: scoredOptionOf(next),
+      semitoneShift: next.semitone_shift ?? 0, recipe: next.recipe ?? null,
+      scoredOption: scoredOptionOf(next),
     }], append: true });
   };
 

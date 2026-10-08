@@ -8,7 +8,7 @@ import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
 import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
 import { usePlan } from "../hooks/usePlan";
-import { BASS_CLASH_ADVICE } from "./pairs/pairModel";
+import { BASS_CLASH_ADVICE, harmonyOf } from "./pairs/pairModel";
 import { fmtTime, keyRel, parseCamelot } from "../theme";
 import { toast } from "../toast";
 
@@ -693,7 +693,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
 
     const place = placementFor(opt, vocal.rate, bed.rate);
     patchLane(vocal.id, place.vocal);
-    patchLane(bed.id, place.bed);
+    // The best transpose belongs to the SECTION pair: another chorus over
+    // another drop can want another shift, so a pill carries its own.
+    patchLane(bed.id, opt.semitone_shift != null
+      ? { ...place.bed, semitones: opt.semitone_shift } : place.bed);
     setLoop(place.loop);
     // The playhead goes to the loop head, which is later than base when the
     // bed is nudged in: parked at base it would sit outside the loop and jump.
@@ -1041,7 +1044,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     if (!resolved.length) { toast("Those pairs have no analysed sections to place"); return; }
     let bpm = append ? projectBpm : null;
     if (!bpm) {
-      const v0 = laneBpmFor(resolved[0].v, "vocals");
+      const v0 = resolved[0].p.targetBpm || laneBpmFor(resolved[0].v, "vocals");
       bpm = v0 ? Math.round(v0) : projectBpm;
     }
     let cursor = 0;
@@ -1061,8 +1064,11 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       const vStem = v.stems?.vocals ? "vocals" : "full";
       const bStem = b.stems?.instrumental ? "instrumental" : "full";
       const vBpm = laneBpmFor(v, vStem), bBpm = laneBpmFor(b, bStem);
-      const vRate = (bpm && vBpm && syncRateFor(vBpm, bpm)) || 1;
-      const bRate = (bpm && bBpm && syncRateFor(bBpm, bpm)) || 1;
+      // A set on a tempo curve sends each mashup's own landing tempo; the
+      // project tempo (the grid) stays the first one's.
+      const at = p.targetBpm || bpm;
+      const vRate = (at && vBpm && syncRateFor(vBpm, at)) || 1;
+      const bRate = (at && bBpm && syncRateFor(bBpm, at)) || 1;
       const place = placementFor(p.scoredOption, vRate, bRate);
       const off = p.scoredOption.alignment_offset ?? 0;
       const vLen = (p.scoredOption.vocal_section_end - p.scoredOption.vocal_section_start) / vRate;
@@ -1071,11 +1077,14 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       const shift = cursor - startsAt;
       addLane(v, vStem, { offsetSec: place.vocal.offsetSec + shift,
         clipStart: place.vocal.clipStart, clipEnd: place.vocal.clipEnd,
-        rate: vRate, semitones: 0, gain: 0.85, synced: Boolean(bpm && vBpm), colorIdx: color++ });
+        rate: vRate, semitones: 0, gain: p.recipe?.vocal_lane_gain ?? 0.85,
+        // A lane at its own curve tempo must not be re-synced to the project's.
+        synced: Boolean(bpm && vBpm) && !p.targetBpm, colorIdx: color++ });
       addLane(b, bStem, { offsetSec: place.bed.offsetSec + shift,
         clipStart: place.bed.clipStart, clipEnd: place.bed.clipEnd,
-        rate: bRate, semitones: p.semitoneShift ?? 0, gain: 0.8,
-        synced: Boolean(bpm && bBpm), colorIdx: color++ });
+        rate: bRate, semitones: p.semitoneShift ?? 0,
+        gain: p.recipe?.bed_lane_gain ?? 0.8, hpHz: p.recipe?.bed_highpass_hz ?? 0,
+        synced: Boolean(bpm && bBpm) && !p.targetBpm, colorIdx: color++ });
       cursor = shift + Math.max(place.base + vLen, place.base + off + bLen);
     }
     if (bpm) setProjectBpm(bpm);
@@ -1175,13 +1184,17 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                              clipStart: place ? place.vocal.clipStart : 0,
                              clipEnd: place ? place.vocal.clipEnd : null,
                              rate: vRate, semitones: 0,
-                             gain: 0.85, synced: Boolean(bpm && vBpm), colorIdx: 0 });
+                             gain: seed.recipe?.vocal_lane_gain ?? 0.85,
+                             synced: Boolean(bpm && vBpm), colorIdx: 0 });
     addLane(bTrack, bStem, { offsetSec: place ? place.bed.offsetSec : base - bAt,
                              clipStart: place ? place.bed.clipStart : 0,
                              clipEnd: place ? place.bed.clipEnd : null,
                              rate: bRate,
                              semitones: seed.semitoneShift ?? 0,
-                             gain: 0.8, synced: Boolean(bpm && bBpm), colorIdx: 1 });
+                             // The recipe's level and bass-clash high-pass.
+                             gain: seed.recipe?.bed_lane_gain ?? 0.8,
+                             hpHz: seed.recipe?.bed_highpass_hz ?? 0,
+                             synced: Boolean(bpm && bBpm), colorIdx: 1 });
     setRestored(true);
     // Hand the seed back: leaving it live would re-seed — and throw away the
     // user's edits — every time they leave Studio and come back.
@@ -1614,8 +1627,15 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     if (!sessionPair) return;
     setError(null);
     try {
+      // The armed timing is what gets exported — the sections you are
+      // hearing, not whatever the plan would pick for these two songs.
+      const armed = pairCtx && activeOption
+        && sessionPair.vocalId === pairCtx.vocalSongId
+        && sessionPair.instId === pairCtx.instSongId
+        ? { vocal: activeOption.vocal_section_idx, inst: activeOption.inst_section_idx }
+        : null;
       const { job_id } = await api.startSessionExport(
-        sessionPair.vocalId, sessionPair.instId);
+        sessionPair.vocalId, sessionPair.instId, armed);
       setSessionToken(null);
       setSessionJobId(job_id);
       toast("Rendering FL session (conformed stems + click)…");
@@ -1673,11 +1693,25 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   const suggested = {
     targetBpm: pairPlan?.target_bpm ?? activeOption?.target_bpm ?? null,
     stretch: pairPlan?.stretch_factor ?? null,
-    semitones: pairPlan?.semitone_shift ?? null,
+    // The armed timing's own transpose first; the plan's is for its top pick.
+    semitones: activeOption?.semitone_shift ?? pairPlan?.semitone_shift ?? null,
+    // Levels from the recipe (matcher/recipe.py: the two stems' loudness).
+    vocalGain: pairPlan?.vocal_lane_gain ?? null,
+    bedGain: pairPlan?.bed_lane_gain ?? null,
+    bedGainDb: pairPlan?.bed_gain_db ?? null,
     // null is NO STORED GRID, not a measured zero — the rail says so rather
     // than drawing a tick at 0 ms that nothing measured.
     nudgeSec: activeOption?.alignment_offset ?? null,
   };
+  const armedHarmony = (() => {
+    const h = harmonyOf(activeOption);
+    if (h.known) return { ...h, armed: true, advice: activeOption.harmony_advice };
+    const ph = pairPlan?.harmony?.known ? pairPlan.harmony : null;
+    if (!ph) return { known: false };
+    return { ...harmonyOf({ harmonic_shift: ph.shift, score_key: ph.harmonic_fit,
+                            harmonic_confidence: ph.confidence, bass_clash: ph.bass_clash }),
+             armed: false, advice: ph.advice };
+  })();
   const bedLane = pairLanes?.bed ?? null;
   const vocalLane = pairLanes?.vocal ?? null;
   const selectedLane = lanes.find((l) => l.id === selectedId) || null;
@@ -1877,20 +1911,24 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
             : "Both sides have a measured downbeat grid"}>
           {suggested.nudgeSec == null ? "no grid" : "downbeat locked"}
         </span>
-        {/* The plan's MEASURED harmony for its top section pairing (chroma
-            cross-correlated, matcher/harmony.py) and its bass-clash advice —
-            the same words the FL README carries. Absent when either section
-            has no stored chroma: then the Camelot shift is all there is. */}
-        {bedLane && vocalLane && pairPlan?.harmony?.known && (
-          <span className={`align-chip mono${pairPlan.harmony.is_clash ? " clash" : ""}`}
-            title={`Measured harmonic fit of the matcher's top section pairing, at ${pairPlan.harmony.shift > 0 ? "+" : ""}${pairPlan.harmony.shift} st on the bed`
-              + (pairPlan.harmony.is_clash ? " — below 55%, the notes clash" : "")}>
-            ♪ fit {Math.round(pairPlan.harmony.harmonic_fit * 100)}%
+        {/* The MEASURED harmony (chroma cross-correlated, matcher/harmony.py)
+            of the ARMED timing — read through the card's harmonyOf, so Studio
+            and the dock cannot describe one pair two ways — else the plan's
+            top pairing, and its bass-clash advice in the FL README's words.
+            Absent when neither has stored chroma: then the Camelot shift is
+            all there is. */}
+        {bedLane && vocalLane && armedHarmony.known && (
+          <span className={`align-chip mono${armedHarmony.clash ? " clash" : ""}`}
+            title={`Measured harmonic fit of ${armedHarmony.armed ? "the armed timing" : "the matcher's top section pairing"}, at ${armedHarmony.shift > 0 ? "+" : ""}${armedHarmony.shift} st on the bed`
+              + (armedHarmony.sure ? "" : " — low confidence: another transposition fits almost as well")
+              + (armedHarmony.clash ? " — below 55%, the notes clash" : "")}>
+            ♪ fit {armedHarmony.fitPct != null ? `${armedHarmony.fitPct}%` : "?"}
+            {armedHarmony.shift ? ` · ${armedHarmony.shift > 0 ? "+" : ""}${armedHarmony.shift} st` : ""}
           </span>
         )}
-        {bedLane && vocalLane && pairPlan?.harmony?.bass_clash && (
+        {bedLane && vocalLane && armedHarmony.bassClash && (
           <span className="align-chip mono clash"
-            title={pairPlan.harmony.advice || BASS_CLASH_ADVICE}>
+            title={armedHarmony.advice || BASS_CLASH_ADVICE}>
             bass clash — high-pass the bed
           </span>
         )}

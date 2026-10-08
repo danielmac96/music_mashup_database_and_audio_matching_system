@@ -62,6 +62,8 @@ export function useHookAudition() {
   const [stemMode, setStemModeState] = useState("both");
   const lastPos = useRef(0);
   const stemModeRef = useRef("both");
+  // The armed pair's levels (its recipe's), so un-soloing restores them.
+  const levels = useRef({ vocal: VOCAL_GAIN, bed: BED_GAIN });
   // Monotonic token: a late-arriving decode from a row you have already moved
   // past must not hijack the transport. Compared on every await boundary.
   const armToken = useRef(0);
@@ -86,8 +88,8 @@ export function useHookAudition() {
   const applyStems = useCallback((mode) => {
     const e = engineRef.current;
     if (!e) return;
-    e.setVoiceGain("vocal", mode === "bed" ? 0 : VOCAL_GAIN);
-    e.setVoiceGain("inst", mode === "vox" ? 0 : BED_GAIN);
+    e.setVoiceGain("vocal", mode === "bed" ? 0 : levels.current.vocal);
+    e.setVoiceGain("inst", mode === "vox" ? 0 : levels.current.bed);
   }, []);
 
   const setStemMode = useCallback((mode) => {
@@ -147,20 +149,31 @@ export function useHookAudition() {
       if (armToken.current !== token) return;   // user moved on mid-decode
 
       e.stop();
-      e.setVoice("vocal", { buffer: vocalBuf, offsetSec: 0, rate: 1, semitones: 0, gain: 0.95 });
+      // Levels and the bass-clash high-pass come from the pair's recipe
+      // (matcher/recipe.py), as in Studio and the FL export.
+      const recipe = candidate.recipe || {};
+      levels.current = { vocal: recipe.vocal_lane_gain ?? VOCAL_GAIN,
+                         bed: recipe.bed_lane_gain ?? BED_GAIN };
+      // On a set's tempo curve the vocal is stretched too (recipe.vocal_rate);
+      // everywhere else it plays native.
+      const vocalRate = recipe.vocal_rate || 1;
+      const bedRate = recipe.bed_rate || candidate.stretch_factor || 1;
+      e.setVoice("vocal", { buffer: vocalBuf, offsetSec: 0, rate: vocalRate, semitones: 0,
+                            gain: levels.current.vocal });
       e.setVoice("inst", {
         buffer: bedBuf,
         offsetSec: 0,
         // rate > 1 reads the bed faster, i.e. conforms it up to the vocal's
         // tempo; the worklet compensates pitch so only the shift below moves it.
-        rate: candidate.stretch_factor || 1,
+        rate: bedRate,
         semitones: candidate.semitone_shift || 0,
-        gain: 0.8,
+        gain: levels.current.bed,
+        hpHz: recipe.bed_highpass_hz ?? 0,
       });
 
       // Loop the shorter of the two so the cycle never runs into silence.
-      const bedDisplay = bedBuf.duration / (candidate.stretch_factor || 1);
-      const len = Math.max(1, Math.min(vocalBuf.duration, bedDisplay));
+      const bedDisplay = bedBuf.duration / bedRate;
+      const len = Math.max(1, Math.min(vocalBuf.duration / vocalRate, bedDisplay));
       e.setLoop({ start: 0, end: len });
       applyStems(stemModeRef.current);
 

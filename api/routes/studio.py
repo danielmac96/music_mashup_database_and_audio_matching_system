@@ -112,6 +112,10 @@ def stream_mixdown(token: str):
 class SessionRequest(BaseModel):
     vocal_song_id: int
     inst_song_id: int
+    # The section pairing to export (Studio's armed timing). Omitted: the
+    # plan's own pick, as before.
+    vocal_section_idx: Optional[int] = None
+    inst_section_idx: Optional[int] = None
 
 
 @router.post("/session")
@@ -119,7 +123,8 @@ def queue_session(req: SessionRequest, background: BackgroundTasks) -> dict:
     _require_songs([req.vocal_song_id, req.inst_song_id])
     job_id = jobs.new_job(kind="session", message="Queued for FL session export")
     background.add_task(session_worker.run, job_id,
-                        req.vocal_song_id, req.inst_song_id)
+                        req.vocal_song_id, req.inst_song_id,
+                        req.vocal_section_idx, req.inst_section_idx)
     return {"job_id": job_id,
             "archive_url": f"/api/studio/session/{job_id}/archive"}
 

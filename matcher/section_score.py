@@ -207,3 +207,60 @@ def section_components(vocal: Dict, inst: Dict, stretch: float = 1.0,
         "score_rhythm": rhythm_score(vocal, inst),
         "score_structure": section_structure_score(vocal, inst, patterns),
     }
+
+
+# ── Phase 3: measured, stored, weighted 0 until they earn it ─────────────────
+# Each reads a per-section measurement analysis/structure.py and
+# analysis/vocals.py already store, and returns None when it is missing — an
+# unmeasured term is unmeasured, never a zero (§5 conventions).
+
+def room_section_score(vocal: Dict, inst: Dict) -> Optional[float]:
+    """Spectral room at SECTION level: 1 − Σ min(vocal band, bed band) over the
+    8-band occupancy of the vocal stem inside the vocal section and the bed
+    stem inside the bed section. The track-level ROOM averages a whole song; a
+    chorus over a drop is a specific 30 seconds."""
+    a = vocal.get("band_energy_vocal")
+    b = inst.get("band_energy_bed")
+    if not a or not b or len(a) != len(b):
+        return None
+    try:
+        sa, sb = float(sum(a)), float(sum(b))
+        if sa <= 0 or sb <= 0:
+            return None
+        overlap = sum(min(float(x) / sa, float(y) / sb) for x, y in zip(a, b))
+    except (TypeError, ValueError):
+        return None
+    return round(max(0.0, min(1.0, 1.0 - overlap)), 4)
+
+
+def coverage_score(vocal: Dict) -> Optional[float]:
+    """How much of the vocal section is actually sung (vocal_activity, the share
+    of frames the vocal stem is active). vocal_presence is a mean level, so a
+    loud 8-bar hook in a 16-bar section and a quiet line sung throughout used
+    to score alike."""
+    v = vocal.get("vocal_activity")
+    try:
+        return None if v is None else round(max(0.0, min(1.0, float(v))), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def energy_match_score(vocal: Dict, inst: Dict) -> Optional[float]:
+    """How close the two sections' energies sit, each relative to its own track
+    (1 = the vocal's moment and the bed's moment are equally big)."""
+    a, b = vocal.get("energy"), inst.get("energy")
+    try:
+        if a is None or b is None:
+            return None
+        return round(max(0.0, 1.0 - abs(float(a) - float(b))), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def measured_terms(vocal: Dict, inst: Dict) -> Dict[str, Optional[float]]:
+    """The Phase 3 terms for one section pair, in their stored column names."""
+    return {
+        "score_room_section": room_section_score(vocal, inst),
+        "score_coverage": coverage_score(vocal),
+        "score_energy_match": energy_match_score(vocal, inst),
+    }

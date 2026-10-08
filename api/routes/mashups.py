@@ -2,6 +2,7 @@
 and fetch an actionable section-level plan for a pair."""
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -15,12 +16,14 @@ from database.models import (
     delete_pair_feedback, get_pair_feedback, hide_pair, include_track,
     list_hidden, unhide_pair,
     SECTION_TERM_ORDERS, upsert_pair_feedback, verdict_for_rating,
+    FEEDBACK_REASONS, set_pair_feedback_reasons,
 )
 
 from api import jobs
 from api.workers import candidate_preview_worker, match_worker
 from matcher.effort import dominant_component, effort_label
-from matcher.match import compute_semitone_shift, compute_stretch_factor
+from matcher.match import compute_stretch_factor
+from matcher.recipe import bed_shift, pair_recipe
 from matcher.plan import build_mashup_plan
 
 router = APIRouter()
@@ -130,8 +133,9 @@ def _with_playback_terms(rows: list) -> list:
     math — recomputing it in JS would silently drift from the T1.2 fix — and
     costs the browser no extra round-trip per row."""
     for r in rows:
-        r["semitone_shift"] = compute_semitone_shift(
-            r.get("vocal_camelot") or "", r.get("inst_camelot") or "")
+        # The shift the card prints is the shift that plays: measured harmony
+        # first, Camelot only without it (matcher/recipe.py).
+        r["semitone_shift"] = bed_shift(r)
         r["stretch_factor"] = compute_stretch_factor(
             r.get("vocal_bpm") or 0.0, r.get("inst_bpm") or 0.0)
         # Phase C: the effort bucket and the cost that dominates it, derived
@@ -150,7 +154,28 @@ def _with_playback_terms(rows: list) -> list:
             "key_certainty_cost": r.get("effort_key_certainty") or 0.0,
         }
         r["effort_reason"] = _EFFORT_REASONS.get(dominant_component(parts))
+    _with_recipes(rows)
     return rows
+
+
+def _with_recipes(rows: list, target_of=None) -> None:
+    """Attach matcher.recipe.pair_recipe to every row: what is done to the pair
+    (stretch, fold, transpose, nudge, loop, level, high-pass) and what to watch
+    for. One query for the page's stem facts; a recipe is a description, so a
+    failure here leaves the rows without one rather than failing the list."""
+    if not rows:
+        return
+    try:
+        from database import models as _models
+        ids = {r.get(k) for r in rows for k in ("vocal_song_id", "inst_song_id")}
+        facts = _models.get_stem_facts(ids, db_path=_models.DB_PATH)
+    except Exception:  # noqa: BLE001 — degrade, don't 500
+        logging.getLogger(__name__).warning("could not read stem facts for recipes",
+                                            exc_info=True)
+        facts = {}
+    for r in rows:
+        r["recipe"] = pair_recipe(r, facts,
+                                  target_bpm=target_of(r) if target_of else None)
 
 
 @router.get("")
@@ -359,6 +384,55 @@ def clear_feedback(body: PairKey) -> dict:
     return {"ok": True, "deleted": n}
 
 
+class PairReasons(PairKey):
+    reasons: List[str] = []
+
+
+@router.post("/feedback/reasons")
+def save_feedback_reasons(body: PairReasons) -> dict:
+    """Why a judged pair got its star (models.FEEDBACK_REASONS). A reason is
+    about a verdict, so a pair with none answers 404 rather than inventing one."""
+    try:
+        n = set_pair_feedback_reasons(
+            body.vocal_song_id, body.inst_song_id, body.vocal_section,
+            body.inst_section, body.reasons)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not n:
+        raise HTTPException(status_code=404,
+                            detail="rate the pair first — a reason explains a rating")
+    return {"ok": True, "reasons": list(dict.fromkeys(body.reasons))}
+
+
+@router.get("/feedback/reasons")
+def feedback_reason_vocabulary() -> dict:
+    """The reason keys and which ratings they explain (good / bad)."""
+    return {"reasons": FEEDBACK_REASONS}
+
+
+@router.get("/term-report")
+def term_report_route() -> dict:
+    """Does each scored term agree with your ratings? (matcher/term_report.py)
+    Read-only evidence for the Tuning panel: AUC of loved vs rejected pairs,
+    Spearman against the stars, and each reason chip against the term it
+    should move. Nothing is re-weighted here."""
+    from config import current_match_weights, current_section_weights
+    from matcher.term_report import term_report
+    conn = get_conn()
+    try:
+        cands = [dict(r) for r in conn.execute(
+            """SELECT mc.* FROM mashup_candidates mc
+               WHERE mc.combo_type = 'vocal_over_instrumental'
+                 AND EXISTS (SELECT 1 FROM pair_feedback f
+                             WHERE f.vocal_song_id = mc.vocal_song_id
+                               AND f.inst_song_id = mc.inst_song_id)""").fetchall()]
+    finally:
+        conn.close()
+    return term_report(get_pair_feedback(), cands,
+                       section_weights=current_section_weights(),
+                       match_weights=current_match_weights("vocal_over_instrumental"))
+
+
 @router.get("/feedback")
 def list_feedback(verdict: str = "") -> dict:
     """Every judgment so far, so the ranked list can render ✓/✗ on reload."""
@@ -408,8 +482,11 @@ def queue_candidate_preview(candidate_id: int, background: BackgroundTasks) -> d
 
 
 @router.get("/plan")
-def get_plan(vocal_id: int, inst_id: int) -> dict:
-    plan = build_mashup_plan(vocal_id, inst_id)
+def get_plan(vocal_id: int, inst_id: int,
+             vocal_section: Optional[int] = None,
+             inst_section: Optional[int] = None) -> dict:
+    plan = build_mashup_plan(vocal_id, inst_id, vocal_section_idx=vocal_section,
+                             inst_section_idx=inst_section)
     if plan is None:
         raise HTTPException(status_code=404, detail="song not found")
     return plan
@@ -460,8 +537,12 @@ def queue_session_batch(req: BatchSessionRequest,
         raise HTTPException(status_code=404,
                             detail="no candidates match those filters")
 
+    # The section pairing each row IS — exporting only the song ids let the
+    # plan pick its own sections, so the folder need not hold the listed pair.
     pairs = [{"vocal_song_id": r["vocal_song_id"],
-              "inst_song_id": r["inst_song_id"]} for r in rows]
+              "inst_song_id": r["inst_song_id"],
+              "vocal_section_idx": r.get("vocal_section_idx"),
+              "inst_section_idx": r.get("inst_section_idx")} for r in rows]
     job_id = jobs.new_job(kind="session",
                           message=f"Queued {len(pairs)} FL session exports")
     background.add_task(session_worker.run_batch, job_id, pairs)

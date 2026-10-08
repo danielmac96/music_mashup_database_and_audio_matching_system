@@ -33,6 +33,10 @@ const LOW_CUTS = [[0, "off"], [60, "60 Hz"], [120, "120 Hz — bass swap"], [250
 const HIGH_CUTS = [[0, "off"], [12000, "12 kHz"], [6000, "6 kHz"], [3000, "3 kHz"],
                    [1200, "1.2 kHz — muffled"], [500, "500 Hz — underwater"]];
 
+// A lane's gain is LINEAR (MashupEngine's gain node), so its level in dB is
+// 20·log10. It used to print v×24−12, which read 0.8 as +7.2 dB.
+export const gainDb = (v) => (v > 0 ? `${(20 * Math.log10(v)).toFixed(1)} dB` : "−∞ dB");
+
 function Knob({ label, value, min, max, step, suggest = null, format, hint,
                 onChange, disabled = false }) {
   const p = positions(value, min, max, suggest);
@@ -124,14 +128,16 @@ export function StudioRail({
 
         {vocalLane && (
           <Knob label="Vocal gain" value={vocalLane.gain} min={0} max={1.25} step={0.01}
-            suggest={0.95} format={(v) => `${(v * 24 - 12).toFixed(1)} dB`}
-            hint="The level the audition arms this stem at"
+            suggest={suggested.vocalGain ?? 0.85} format={gainDb}
+            hint="The vocal is the level reference: it arms where the recipe puts it"
             onChange={(v) => patchLane(vocalLane.id, { gain: v })} />
         )}
         {bedLane && (
           <Knob label="Bed gain" value={bedLane.gain} min={0} max={1.25} step={0.01}
-            suggest={0.8} format={(v) => `${(v * 24 - 12).toFixed(1)} dB`}
-            hint="Beds sit under vocals, so they arm lower"
+            suggest={suggested.bedGain ?? 0.8} format={gainDb}
+            hint={suggested.bedGainDb != null
+              ? `The recipe sets the bed ${suggested.bedGainDb > 0 ? "+" : ""}${suggested.bedGainDb.toFixed(1)} dB from the two stems' loudness, so the vocal sits on top`
+              : "Beds sit under vocals, so they arm lower (no loudness measured)"}
             onChange={(v) => patchLane(bedLane.id, { gain: v })} />
         )}
         {lanes.length >= 2 && (

@@ -284,6 +284,8 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
             <PairCard key={k} candidate={c}
               rating={ratings.ratingOf(c)}
               onRate={(n) => ratings.rate(c, n)}
+              reasons={ratings.reasonsOf ? ratings.reasonsOf(c) : []}
+              onReason={ratings.toggleReason ? (r) => ratings.toggleReason(c, r) : null}
               focused={i === cursor}
               playing={armedKey === k && audio.playing}
               onSelect={() => setCursor(i)}

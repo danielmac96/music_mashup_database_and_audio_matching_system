@@ -152,6 +152,72 @@ function Knob({ spec, setting, value, onChange }) {
   );
 }
 
+// What your ratings say about each scored term (GET /api/mashups/term-report,
+// matcher/term_report.py). Evidence, not a control: a term earns a weight by
+// separating the pairs you loved from the ones you rejected on THIS library —
+// AUC 0.5 is a coin flip — and a reason chip should pull down the term it
+// names. Nothing here changes a weight.
+const REASON_WORDS = {
+  key_clash: "key clash", harmony: "keys sing", timing_off: "timing off",
+  groove: "groove locks", vocal_buried: "vocal buried", vocal_sits: "vocal sits",
+  bass_mud: "bass mud", energy_mismatch: "energy mismatch", energy_lift: "energy lift",
+  boring: "boring", contrast: "great contrast", bad_separation: "bad separation",
+};
+const fmt2 = (v) => (v == null ? "—" : v.toFixed(2));
+
+export function TermReport() {
+  const [rep, setRep] = useState(null);
+  const [error, setError] = useState(null);
+  const load = useCallback(async () => {
+    try { setRep(await api.getTermReport()); setError(null); }
+    catch (e) { setError(e.message); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (error) return <div className="error-text">{error}</div>;
+  if (!rep) return <div className="faint" style={{ fontSize: 11 }}>Reading your ratings…</div>;
+  const short = rep.n_good < rep.min_per_class || rep.n_bad < rep.min_per_class;
+  return (
+    <div className="term-report">
+      <div className="faint" style={{ fontSize: 11, marginBottom: 6 }}>
+        {rep.rated} rated pairs still scored — {rep.n_good} rated 4–5, {rep.n_bad} rated 1–2.
+        {short && ` A term needs ${rep.min_per_class} of each before its AUC means anything: keep rating, and tag why.`}
+        {" "}AUC is the chance a pair you loved beats one you rejected on that term (0.50 = no signal).
+        <button className="mini-btn" style={{ marginLeft: 6 }} onClick={load}>refresh</button>
+      </div>
+      <table className="term-table mono">
+        <thead>
+          <tr><th>term</th><th title="Its weight in the ranking today">weight</th>
+            <th title="Loved (4–5) vs rejected (1–2)">AUC</th>
+            <th title="Spearman ρ against the stars">ρ</th>
+            <th title="Mean on loved / rejected pairs">loved / rejected</th><th /></tr>
+        </thead>
+        <tbody>
+          {rep.terms.map((t) => (
+            <tr key={t.key} className={t.kind}>
+              <td title={t.key}>{t.label}</td>
+              <td>{t.kind === "total" || t.kind === "effort" ? "" : t.weight == null ? "—" : t.weight === 0 ? "0" : t.weight.toFixed(2)}</td>
+              <td className={t.enough ? (t.auc >= 0.65 ? "good" : t.auc <= 0.4 ? "bad" : "") : "faint"}>{fmt2(t.auc)}</td>
+              <td>{fmt2(t.spearman)}</td>
+              <td>{fmt2(t.mean_good)} / {fmt2(t.mean_bad)}</td>
+              <td className="term-verdict">{t.verdict}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rep.reasons.length > 0 && (
+        <div className="term-reasons">
+          {rep.reasons.map((r) => (
+            <div key={r.reason}>
+              <b>{REASON_WORDS[r.reason] || r.reason}</b> ×{r.n}:{" "}
+              {r.suspects.map((x) => `${x.key.replace("score_", "")} ${fmt2(x.mean_tagged)} vs ${fmt2(x.mean_rest)}`).join(" · ") || "—"}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function TuningPanel() {
   const [settings, setSettings] = useState(null);
   const [open, setOpen] = useState(false);
@@ -338,6 +404,11 @@ export function TuningPanel() {
           </div>
           <WeightSliders specs={SECTION_WEIGHTS} weights={sw} disabled={busy}
             onChange={setSecWeights} />
+
+          <h4 style={{ margin: "14px 0 2px", fontSize: 12 }}>
+            What your ratings say
+          </h4>
+          <TermReport />
 
           <h4 style={{ margin: "14px 0 2px", fontSize: 12 }}>Candidate gate</h4>
           <div className="faint" style={{ fontSize: 11, marginBottom: 4 }}>

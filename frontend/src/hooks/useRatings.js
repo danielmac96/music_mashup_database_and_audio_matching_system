@@ -17,18 +17,21 @@ import { toast } from "../toast";
 export function useRatings() {
   const [byPair, setByPair] = useState({});     // pair key -> 1..5
   const [verdicts, setVerdicts] = useState({}); // pair key -> love|ok|no
+  const [reasons, setReasonsMap] = useState({}); // pair key -> [reason key]
   const [rows, setRows] = useState([]);
 
   const load = useCallback(async () => {
     try {
       const { feedback } = await api.getPairFeedback();
-      const r = {}, v = {};
+      const r = {}, v = {}, why = {};
       for (const f of feedback) {
         r[feedbackKey(f)] = f.rating ?? null;
         v[feedbackKey(f)] = f.verdict;
+        if (f.reasons?.length) why[feedbackKey(f)] = f.reasons;
       }
       setByPair(r);
       setVerdicts(v);
+      setReasonsMap(why);
       setRows(feedback);
     } catch { /* a missing verdict list is not worth blocking the screen for */ }
   }, []);
@@ -73,6 +76,8 @@ export function useRatings() {
     if (stars === prevR) {
       setByPair((m) => { const o = { ...m }; delete o[k]; return o; });
       setVerdicts((m) => { const o = { ...m }; delete o[k]; return o; });
+      // The row goes, and its reasons with it.
+      setReasonsMap((m) => { const o = { ...m }; delete o[k]; return o; });
       setRows((rs) => rs.filter((f) => feedbackKey(f) !== k));
       try {
         await api.clearPairFeedback({
@@ -116,6 +121,29 @@ export function useRatings() {
     }
   }, [byPair, verdicts, load]);
 
+  const reasonsOf = useCallback((c) => (c ? reasons[keyOf(c)] ?? [] : []), [reasons]);
+
+  // Toggle one reason on a rated pair. Optimistic with a revert, like `rate`.
+  const toggleReason = useCallback(async (candidate, reason) => {
+    if (!candidate) return;
+    const k = keyOf(candidate);
+    const prev = reasons[k] ?? [];
+    const next = prev.includes(reason) ? prev.filter((r) => r !== reason) : [...prev, reason];
+    setReasonsMap((m) => ({ ...m, [k]: next }));
+    try {
+      await api.savePairReasons({
+        vocalSongId: candidate.vocal_song_id,
+        instSongId: candidate.inst_song_id,
+        vocalSection: candidate.vocal_section_idx ?? null,
+        instSection: candidate.inst_section_idx ?? null,
+        reasons: next,
+      });
+    } catch (e) {
+      setReasonsMap((m) => ({ ...m, [k]: prev }));
+      toast(`Could not save that reason: ${e.message}`);
+    }
+  }, [reasons]);
+
   return { byPair, bySong, ratingOf, verdictOf, rate, refresh: load,
-           count: rows.length };
+           reasonsOf, toggleReason, count: rows.length };
 }

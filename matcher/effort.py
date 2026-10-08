@@ -76,6 +76,35 @@ def _num(value, default: float = 0.0) -> float:
     return f if math.isfinite(f) else default
 
 
+def transpose_cost(semitones: Optional[int], pitch_side: str = "bed") -> float:
+    """pitch_cost for one transpose: 0 within ±PITCH_FREE, 1 at ±PITCH_MAX,
+    doubled on the vocal. Unknown is maximal — an unknown transpose is not a
+    free one."""
+    if semitones is None:
+        return 1.0
+    raw = _ramp(_num(semitones), PITCH_FREE, PITCH_MAX)
+    if pitch_side == "top":
+        raw = min(1.0, raw * VOCAL_PITCH_MULTIPLIER)
+    return raw
+
+
+# The stored effort columns, by component — what effort_total reads back.
+EFFORT_COLUMNS = {
+    "stretch_cost": "effort_stretch",
+    "pitch_cost": "effort_pitch",
+    "tempo_fold_cost": "effort_tempo_fold",
+    "grid_cost": "effort_grid",
+    "key_certainty_cost": "effort_key_certainty",
+}
+
+
+def effort_total_from_columns(row: dict) -> float:
+    """The weighted effort of a row's stored effort_* columns (missing = 0)."""
+    total = sum(_num(row.get(col)) * EFFORT_WEIGHTS[k]
+                for k, col in EFFORT_COLUMNS.items())
+    return float(np.clip(total, 0.0, 1.0))
+
+
 def is_tempo_fold(top_bpm: float, bed_bpm: float) -> bool:
     """Whether reaching the target tempo required reading the bed at half or
     double time, rather than as written."""
@@ -116,13 +145,7 @@ def effort_components(top: dict, bed: dict, stretch: Optional[float],
     else:
         stretch_cost = _ramp(_num(stretch, 1.0) - 1.0, STRETCH_FREE, STRETCH_MAX)
 
-    if semitones is None:
-        pitch_cost = 1.0
-    else:
-        raw = _ramp(_num(semitones), PITCH_FREE, PITCH_MAX)
-        if pitch_side == "top":
-            raw = min(1.0, raw * VOCAL_PITCH_MULTIPLIER)
-        pitch_cost = raw
+    pitch_cost = transpose_cost(semitones, pitch_side)
 
     fold = TEMPO_FOLD_COST if is_tempo_fold(top.get("bpm"), bed.get("bpm")) else 0.0
 

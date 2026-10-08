@@ -91,7 +91,7 @@ def test_an_option_is_exactly_a_pair_row(models):
     """The Studio treats a plan option and the seeded candidate pair as the same
     kind of thing. That only works while both speak _pair_row's vocabulary, so
     pin the key set against the function itself rather than listing names."""
-    from matcher.plan import build_mashup_plan
+    from matcher.plan import OPTION_HARMONY_KEYS, build_mashup_plan
     from matcher.sections import top_section_pairs
 
     plan = build_mashup_plan(*_pair(models))
@@ -99,8 +99,11 @@ def test_an_option_is_exactly_a_pair_row(models):
         plan["vocal_sections"], plan["inst_sections"],
         plan["stretch_factor"] or 1.0, bpm=plan["target_bpm"], limit=1)[0]
 
+    # A pair row, plus the option's own harmony (in the candidate row's column
+    # names) and the shift it plays — so a pill transposes like the card says.
     for opt in plan["section_options"]:
-        assert set(opt) == set(reference)
+        assert set(opt) - set(OPTION_HARMONY_KEYS) == set(reference)
+        assert {"harmonic_shift", "semitone_shift"} <= set(opt)
 
     # The fields the pills actually place and label with, spelled out once so a
     # rename upstream fails here rather than silently emptying the toolbar.

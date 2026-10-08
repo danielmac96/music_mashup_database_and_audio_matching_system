@@ -178,39 +178,9 @@ def _mash_summary_by_song() -> tuple[dict, dict]:
     return out, shapes
 
 
-# Outside this band a dance-mashup tempo is more often an octave error than a
-# real tempo; inside it, only the analyser's own alternative votes can say so.
-TEMPO_LOW, TEMPO_HIGH = 80.0, 175.0
-
-
-def tempo_hint(full: Optional[dict]) -> Optional[dict]:
-    """A suspected half/double-time error in the stored BPM, or None.
-
-    The evidence, best first: Essentia's own alternative tempo votes
-    (bpm_candidates_json — Percival, the BPM histogram peaks) landing at ×2 or
-    ÷2 of the stored tempo; failing that, a tempo outside TEMPO_LOW..HIGH.
-    Advisory only — the Library offers the one-click fix, nothing is changed."""
-    import json
-    bpm = (full or {}).get("bpm")
-    if not bpm or bpm <= 0:
-        return None
-    try:
-        cands = json.loads(full.get("bpm_candidates_json") or "null") or {}
-    except (TypeError, ValueError):
-        cands = {}
-    votes = [float(v) for v in (cands.values() if isinstance(cands, dict) else cands)
-             if isinstance(v, (int, float)) and v > 0]
-    for mul, label in ((2.0, "×2"), (0.5, "÷2")):
-        if any(abs(v / (bpm * mul) - 1.0) <= 0.04 for v in votes):
-            return {"suggest": round(bpm * mul, 2), "label": label,
-                    "why": f"the analyser's alternative tempo votes include {bpm * mul:.1f} BPM"}
-    if bpm < TEMPO_LOW and bpm * 2 <= TEMPO_HIGH + 5:
-        return {"suggest": round(bpm * 2, 2), "label": "×2",
-                "why": f"{bpm:.1f} BPM is slow for dance material — often a half-time read"}
-    if bpm > TEMPO_HIGH and bpm / 2 >= TEMPO_LOW - 5:
-        return {"suggest": round(bpm / 2, 2), "label": "÷2",
-                "why": f"{bpm:.1f} BPM is fast for dance material — often a double-time read"}
-    return None
+# The half/double-time suspicion is part of a pair's recipe too, so it lives
+# with it (matcher/recipe.py); re-exported here for the Library's rows.
+from matcher.recipe import TEMPO_HIGH, TEMPO_LOW, tempo_hint  # noqa: E402,F401
 
 
 def _dominant_class(classes: dict) -> Optional[str]:

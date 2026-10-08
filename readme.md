@@ -361,9 +361,14 @@ reprocesses), add to a group, or delete the track and its files.
   rekordbox** export the same top N as files (§5.11).
 - Each pair card gives one line per song — title · artist, section span and
   bars, the vocal section's line when you have typed one, key, BPM — then the
-  adjustments (key relation + semitones — drawn neutral as `8A/9B wheel` when a
-  measured harmony exists, because then it is context, not the verdict — tempo
-  change, nudge, `loop bed ×2` when the bed section must loop),
+  key relation (drawn neutral as `8A/9B wheel` when a measured harmony exists,
+  because then it is context, not the verdict), the **recipe** (§5.7) — a
+  **DO** row of what building it takes, each chip graded free / light / heavy
+  like the effort chip and explained on hover (`bed at half time`, `bed tempo
+  −1.5%`, `bed +3 st`, `nudge bed +12 ms`, `loop bed ×2`, `bed −6.0 dB`, `bed
+  high-pass 120 Hz`; "nothing — drop both in" when there is nothing to do), and
+  a **WATCH** row of what the numbers cannot promise (a suspected half/double
+  BPM, a coin-flip transpose, clashing notes, no beat grid, rough separation) —
   the **measured harmony** (`♪ 92% · +2 st` — the two sections' notes
   cross-correlated, §5.7; `?` when another transposition fits almost as well;
   red below 55%), a red **bass clash** tag with the high-pass advice,
@@ -375,7 +380,13 @@ reprocesses), add to a group, or delete the track and its files.
   label for its meaning. A **hatched** bar is not
   measured (the pair was scored before that term was stored) — **Score
   library** fills it. Clicking the star you already set **clears** the rating,
-  which removes the judgement entirely (§7).
+  which removes the judgement entirely (§7). Once the focused card is rated, a
+  **WHY** row offers reasons — praise for 4–5 stars (vocal sits, groove locks,
+  energy lift, keys sing, great contrast), faults for 1–2 (key clash, timing
+  off, vocal buried, bass mud, energy mismatch, bad separation, boring), both
+  for a 3. They sit beside the verdict (`pair_feedback.reasons_json`), never
+  change it and do not train anything yet: they are what phase 3 checks the
+  section terms against (§9).
 
 ### Queue
 
@@ -568,9 +579,12 @@ A pair sent from the dock arrives conformed and placed, with a
 **TIMING** pill row — one pill per suggested overlay, named by its start times
 (`chorus 1:39 ▸ drop 1:16`; `[` `]` cycle, `1–6` jump), each with ✓/~/✗. The
 rail's **offset nudge** is measured from the two sections lined up, so it reads
-the few ms you slid it. The ALIGN bar also carries the plan's **measured harmonic
-fit** and, when the bed's bass root fights the vocal's tonic, a **bass clash —
-high-pass the bed** chip (the same advice the FL README writes).
+the few ms you slid it. Each pill carries its own transpose — another chorus
+over another drop can want another shift — and arming it sets the bed's pitch.
+The ALIGN bar also carries the armed timing's **measured harmonic fit** (the
+plan's top pairing when the timing has none) and, when the bed's bass root
+fights the vocal's tonic, a **bass clash — high-pass the bed** chip (the same
+advice the FL README writes). **FL session** exports the armed timing.
 "Next pair" walks the dock's list; **Append next ⇥** lays it *after* the
 arrangement instead, to hear the transition. **+ Set** adds the pair at the
 armed timing to the active set, and a note field writes the pair's note. The
@@ -586,15 +600,27 @@ A set is a mix's running order — **pairs**, not tracks (that is a crate). Pair
 arrive from the dock (**+ Set** or `a`) and from Studio into the set
 highlighted under SETS in the rail (the first one is made for you). Each row is
 one mashup: its start time in the running order, both sides and sections, the
-**landing** tempo and key (the vocal's — the bed is conformed to it), the bed's
-transpose, the measured harmony, and the pair's note. Between rows, the move is
-graded **smooth** (≤1 Camelot step and ≤3% tempo), **workable** (≤2, ≤6%) or a
-**key/tempo jump** (§5.12). Drag to reorder; **Auto-order** keeps each move
+**landing** tempo and key, the bed's transpose, the measured harmony, the
+pair's note and its recipe (DO row). **Tempo** (start → end BPM) puts the set
+on a **tempo curve**: each mashup lands at its point on it, vocal and bed both
+stretched there, and its recipe is re-priced at that tempo (a vocal stretched
+more than 4% reads heavy); blank start = off, every mashup at its vocal's own
+tempo, the key always the vocal's. Between rows, the move is graded
+**smooth** (≤1 Camelot step and ≤3% tempo), **workable** (≤2, ≤6%) or a
+**key/tempo jump**, and carries **how** to make it — a **bed swap** when the
+two share a vocal, a **vocal swap** when they share a bed, an 8- or 4-bar
+**blend** for a smooth or workable move, **echo out** for a key jump, else a
+**cut** — which you can change (type and bars) or reset to the suggestion
+(§5.12). A **timeline** above the list shows the mix: each mashup a block on
+alternating A/B decks at its start time, coloured by key, overlaps visible.
+**What comes next**, under the list, ranks pairs that are good on their own
+*and* an easy move from the last landing (a shared record counts in their
+favour); **+ add** appends one. Drag to reorder; **Auto-order** keeps each move
 small from the current first mashup; **Open in Studio** lays the whole set back
-to back on one timeline at the first mashup's tempo; **Export** writes a timed
-**cue sheet**, a **CSV**, or a **rekordbox XML** (§5.11). An item is frozen
-when added, so a re-score that drops its pair leaves it in the set marked
-`stale`.
+to back, each mashup at its own curve tempo; **Export** writes a timed **cue
+sheet** (with each move), a **CSV** (`move_in`, `overlap_bars`,
+`vocal_tempo_pct`) or a **rekordbox XML** (§5.11). An item is frozen when
+added, so a re-score that drops its pair leaves it in the set marked `stale`.
 
 ### ⚙ Settings drawer
 
@@ -603,7 +629,8 @@ Tight/Balanced/Wide **match width** preset and, when anything is suppressed,
 **restore N hidden** (hidden pairs and excluded tracks). Then **Bulk
 reprocess** (staleness per feature generation; re-analyse or re-separate only
 what needs it), **Refresh metadata** (below), **Tuning** (match and section
-weights, effort weight, gates, separator, stem mode), **Train from imported mixes** (build dataset → train →
+weights, effort weight, gates, separator, stem mode, and *What your ratings
+say* — the term report, §5.7), **Train from imported mixes** (build dataset → train →
 activate), and a read-only **database browser**.
 
 **⟳ Refresh metadata N** appears when tracks are missing genre, year and play
@@ -915,6 +942,21 @@ separate candidates. The section fit has six terms, weights normalised:
 | `rhythm` | 0 | 0 | cosine of per-bar onset profiles from stored beat grids |
 | `structure` | 0 | 0 | does the pairing match a configured mashup pattern (`matcher/patterns.py`, editable in settings.json) |
 
+**Measured, stored, weighted 0** (`section_score.measured_terms`, phase 3): on
+every row so they can be checked before they rank — `score_room_section`
+(spectral room inside *these two sections*: 1 − Σ min of the vocal stem's and
+the bed stem's 8-band occupancy), `score_coverage` (the vocal section's
+`vocal_activity`, how much of it is sung) and `score_energy_match` (1 − the gap
+between the two sections' relative energies). NULL when unmeasured.
+
+**Term report** (`matcher/term_report.py`, `GET /api/mashups/term-report`,
+Settings → Tuning → *What your ratings say*): for every stored term, its weight
+today, the AUC of pairs you rated 4–5 against those rated 1–2 (0.5 = no
+signal), Spearman ρ against the stars, and the two means; and for each reason
+chip, the term it should pull down on the tagged pairs against the rest. Below
+10 loved and 10 rejected a term reads "not enough ratings yet". Read-only: it
+is the evidence for moving a weight, not a mover.
+
 The section fit is blended into the total with `SECTION_WEIGHT = 0.25`. The live
 weights were **measured** on a backfilled library (30 tracks, 308 sections, 1197
 pairs): `phrase` carries independent signal (stdev 0.31, ρ +0.37 vs duration);
@@ -931,6 +973,29 @@ chroma. **Bass clash** checks the bed's bass root against the vocal tonic after
 the shift and returns advice ("high-pass the bed" / mute `bed_bass.wav`), not a
 veto.
 
+**The bed's transpose** has one definition, `matcher/recipe.bed_shift`: the
+measured shift when the section pair had chroma, else the Camelot estimate. The
+listing sends it as `semitone_shift`, so the card, the dock's loop, Studio, a
+set's landing and the FL export all play the shift the card prints (§7).
+The block pass prices `pitch_cost` on the Camelot shift (the section pair is
+not known yet); once it is, `_apply_measured_harmony` re-prices it on the
+measured shift (`effort.transpose_cost`), so a "Free" chip never sits beside a
+−5 st transpose.
+
+**The recipe** (`matcher/recipe.pair_recipe`, on every listing row as
+`recipe`): everything done to a pair to build it — fold, stretch, transpose
+(and whether it was measured), nudge, loop, the bed's level, the bass-clash
+high-pass — and what to watch for. It describes a scored row and never changes
+a rank. **Level**: the bed is brought to the integrated loudness (EBU R128) of
+the **vocal's own instrumental**, so the vocal sits over it as it was mixed in
+its own record (`bed_gain_db`, ±12 dB clamp, half-dB steps). A fixed "vocal N
+LU above the bed" rule gets this backwards: in a finished record the vocal stem
+measures several LU *below* its instrumental. The recipe also carries the
+linear lane gains (`vocal_lane_gain` 0.85, `bed_lane_gain`) that the dock's
+loop, Studio's lanes and the FL `session.json` arm at; with nothing measured
+the bed keeps its old 0.8. The plan carries the same level and a recipe step;
+the FL export writes it in the README and leaves it unbaked.
+
 **Alignment** (`matcher/alignment.py`), from stored grids only: the vocal
 section's first downbeat is the anchor; `alignment_offset` is how far to move
 the bed (after stretching) so its downbeat lands under it — `None` when either
@@ -939,7 +1004,12 @@ adjustments, and a one-line `reason`.
 
 **Plan** (`matcher/plan.py`): target BPM, stretch factor, semitone shift, key
 relation, ranked section pairings and `section_options` (the same
-`top_section_pairs` Studio's timing pills use), plus a numbered DAW recipe.
+`top_section_pairs` Studio's timing pills use, each annotated with its own
+measured harmony and the shift it plays — `OPTION_HARMONY_KEYS`), plus a
+numbered DAW recipe. Given a section pair (`vocal_section_idx` /
+`inst_section_idx`; `GET /api/mashups/plan?vocal_section=&inst_section=`), that
+pairing leads `pairings` and the harmony and shift are its own; an index that no
+longer names a section falls back to the label-priority pick.
 
 **Listing** (`get_candidates_enriched`): SQL filters (genre, era, energy, BPM
 band, vocal-forward, max effort, rated/loved/unrated, landing key ± n Camelot
@@ -1122,8 +1192,12 @@ caches responses, and opens a breaker after repeated failures.
   drums/bass/other in four-stem mode; a click track (downbeats pitched higher);
   ID3 BPM/key tags; `README.txt` with the recipe and a **grid check** — the
   cross-correlated offset between the two rendered onset envelopes, in ms;
-  `session.json` that round-trips into Studio. Batches zip, and skip a pair
-  that cannot render rather than failing the rest.
+  `session.json` that round-trips into Studio. The folder holds the section
+  pair it was asked for — Studio sends the armed timing, the dock's batch each
+  row's indexes — and `session.json` records them; with none, the plan's pick.
+  Lane edits in Studio (a hand-set transpose, nudge, gains, fades, filters) are
+  not in the session yet — the WAV mixdown carries them (§9). Batches zip, and
+  skip a pair that cannot render rather than failing the rest.
 - **Pair lists** (`render/exports.py`), from a set or the dock's top N, one
   module so the two cannot disagree: **CSV** (both sides, sections, landing
   tempo and key, bed transpose, harmony, nudge, loop, note, start time), a
@@ -1137,13 +1211,29 @@ caches responses, and opens a breaker after repeated failures.
 ### 5.12 Sets and transitions
 
 `matcher/setflow.py`. A set item plays at the vocal's tempo with the bed
-conformed and transposed to it, so it **lands** at the vocal's tempo and key.
+conformed and transposed to it, so it **lands** at the vocal's tempo and key —
+unless the set has a **tempo curve** (`sets.tempo_plan_json`: `start_bpm`,
+`end_bpm`; `tempo_targets` interpolates linearly by position, no end holds the
+start), when each item's `set_bpm` is its point on the curve, both sides are
+stretched to it (fold-aware, `recipe.pair_recipe(target_bpm=)`) and the vocal
+section lasts `vocal_bpm / landing_bpm` as long.
 The move between consecutive items is graded on the tempo change (read at
 half/double time when closer — 87 → 174 is no change) and the Camelot wheel
 distance between the two landings (`features._camelot_distance`: hour steps,
 +0.5 for a letter change): **smooth** ≤1 step and ≤3%, **workable** ≤2 and
-≤6%, else a **jump**; unknown when either side is unmeasured. Running time is
-the sum of the vocal sections. **Auto-order** is greedy from a start item —
+≤6%, else a **jump**; unknown when either side is unmeasured. Each transition
+carries a **move** (`TRANSITIONS`, `suggest_move`): a shared vocal → bed swap,
+a shared bed → vocal swap (8 bars each), smooth → 8-bar blend, workable →
+4-bar blend, a jump of more than two key steps → echo out, else cut. The user's
+choice is stored on the **incoming** item (`set_items.transition_json`,
+`PUT /api/sets/{id}/items/{item}/transition`; an empty body resets) and the
+suggestion is kept beside it. Running time is the sum of the vocal sections
+minus each move's overlap (its bars at the incoming landing tempo), capped at
+half the shorter of the two — an 8-bar blend out of an 8-bar section would
+swallow it. **What comes next** (`next_candidates`, `GET /api/sets/{id}/next`):
+the top 400 scored pairs ranked by percentile − 0.06 × key steps − 0.02 ×
+|tempo %| (+0.05 for a shared record), landed at the curve's end tempo when
+there is one. **Auto-order** is greedy from a start item —
 take the cheapest next move, cost = steps + tempo% / 3 (one wheel step weighs
 about a 3% tempo move, both what "smooth" allows) — which is what a DJ does by
 hand; it is advisory until posted to `/reorder`.
@@ -1164,7 +1254,7 @@ hand; it is advisory until posted to `/reorder`.
 | `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
 | `stems/separate.py` | Demucs / MDX-Net, two or four stems |
 | `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`; `essentia_groups.py` (the Essentia analyser), `ml_models.py` (the EffNet models: catalogue, download, predictors), `project.py` (payloads → `features` columns); `decode.py` (one decode per file + per-signal memo; ffprobe/FFmpeg decode for Essentia), `frames.py` (the shared transforms), `registry.py` (feature groups + versions), `cache.py` (content hash → cached group results); `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
-| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py`, `setflow.py` (set transitions, §5.12) |
+| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py`, `setflow.py` (set transitions, §5.12), `recipe.py` (the bed's transpose, one definition — §7) |
 | `render/` | `dsp.py`, `mixdown.py`, `session.py`, `exports.py` (CSV, cue sheet, rekordbox XML) |
 | `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen`, `AnalysisScreen` + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, `useSets`, `usePairNotes`, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`, `attributes.js` (attribute formatting + `attr:` columns); `public/soundtouch-processor.js` |
 | `scripts/` | `bench_analyzers.py` — librosa vs Essentia timing + agreement on library tracks (§8) |
@@ -1192,7 +1282,8 @@ candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
 (JSON key/value) · `analysis_runs` (append-only pipeline timings, §3) ·
 `feature_cache` (per content hash and feature group: version, params hash,
 payload — disposable, §3) · `sets` / `set_items` (a set's pairs in order,
-keyed by the four pair ids, each with the scored row frozen as it was added)
+keyed by the four pair ids, each with the scored row frozen as it was added;
+`sets.tempo_plan_json`, `set_items.transition_json`)
 · `pair_notes` (a note per pair, keyed like `pair_feedback`; never training
 data) · `section_lines` (a vocal section's lyric cue, anchored to a time in
 the song).
@@ -1210,6 +1301,17 @@ Existing databases migrate on start.
   `pair_notes` (`COALESCE`d sections, like the feedback index). A set item
   freezes its scored row (`_SET_PAYLOAD_KEYS`) and prefers the live one when
   the pair is still scored.
+- **One transpose per pair: `matcher/recipe.bed_shift`.** The card printed the
+  measured shift while the audition and Studio played the Camelot one, so
+  "♪ 92% · +2 st" looped at +5; the FL export re-picked its own sections and
+  harmony. Anything that sets a bed's semitones reads `semitone_shift` from the
+  listing, a timing option's own `semitone_shift`, or `bed_shift` — never
+  `keyRel`'s suggestion (a label on an unmeasured card) or a fresh Camelot sum.
+  A pair's section indexes travel with it to the export
+  (`tests/test_pair_recipe_consistency.py`).
+- **Studio's lane gain is linear** (`MashupEngine`'s gain node), so the rail
+  prints `20·log10(gain)` dB (`StudioRail.gainDb`). It printed `gain×24−12`,
+  reading 0.8 as +7.2 dB.
 - **The per-song cap never counts the scoped track** (`_cap_per_song`
   `exempt`). It is on every row of "beds for this vocal", so counting it ended
   the list at three — every dock scoped to a track showed three pairs.
@@ -1229,6 +1331,17 @@ Existing databases migrate on start.
   `COALESCE` included; match the index loosely and a NULL-sectioned row
   survives a clear that reported success. Sending `rating: null` to the POST
   does **not** clear — the upsert `COALESCE`s it into the star already stored.
+- **A set's move lives on the incoming item**, and the stored one is only the
+  user's choice — a NULL `transition_json` means "the suggestion", which is
+  recomputed every read, so reordering a set re-suggests every move it was not
+  told. `matcher/setflow.TRANSITIONS` and `SetScreen.MOVES` name the same keys
+  (test-pinned).
+- **Reasons sit beside a verdict, never in place of one.** `POST
+  /api/mashups/feedback/reasons` answers 404 for an unrated pair; the star
+  upsert never touches `reasons_json`, and clearing the star deletes the row
+  and its reasons. The keys are `models.FEEDBACK_REASONS` and
+  `pairModel.VERDICT_REASONS` (pinned equal); renaming one orphans its stored
+  uses, like a verdict name.
 - **Stars sit alongside the verdict.** 5,4→love · 3→ok · 2,1→no on write;
   love→5 · ok→3 · no→1 on read; ✓/~/✗ `COALESCE`s rather than blanking a star.
   **Do not repoint training at `rating`.** Verdict names map to an older
@@ -1316,8 +1429,11 @@ Existing databases migrate on start.
   still reads `plan["pairings"][0]`.
 - A track's star is the best any pairing it appears in has earned; there is no
   per-song rating store.
-- Turning on a section weight removed a short-circuit in `matcher/sections.py`
-  (re-score 4.9s → 10.8s at 30 tracks). Watch it at scale. Four-stem separation
+- **Nothing in the section search reads settings.** `score_all_pairs` reads
+  the section weights and patterns once and passes them to
+  `top_section_pairs` / `score_section_pair`; a term is computed only when it
+  carries weight. A settings read inside that loop is a file read per section
+  pair (§9: it made a 204-track re-score take an hour). Four-stem separation
   moved the ranking more than any weight change did.
 
 ### SoundCloud
@@ -1620,11 +1736,15 @@ driven by the 100-persona browser simulation (§9) against a synthesised
      (92.7%) as under Essentia (93.7%), so it was never a real gate; z-scoring
      rejects random pairs but also the known variants. Not a regression of
      the flip. Fix with the EffNet embedding (slice 2).
-   - **Score library is slow at 204 tracks and silent while it is.** The
-     section-pair emit (`matcher/match.py` `_emit(..., with_sections=True)`)
-     is a single-threaded Python loop with no progress updates: the job sits
-     at 55% for over an hour of CPU. Needs progress reporting and a faster
-     section search before the library grows further (§7 predicted this).
+   - ~~**Score library is slow at 204 tracks and silent while it is.**~~
+     Fixed 2026-10-08. The cause was not the loop but what it called:
+     `score_section_pair` read `settings.json` (stat + read + JSON parse) for
+     every section pair — 624k times at 204 tracks — and every stored row
+     re-read the mashup patterns. The run now reads both once, computes a
+     section term only when it carries weight, and does the harmony rotation
+     as one gather; the section pass reports progress (40–85%). On a
+     synthetic 204-track library with the live weights: 155.6 s → 24.5 s,
+     every one of 61,780 rows identical (`tests/test_score_run_cost.py`).
    - **A restart between analysis and structure strands a track**: `status`
      is `analysed` before structure runs, so the resume skips it and only the
      staleness badge / a bulk re-analyse repairs it (seen once, after a
@@ -1687,9 +1807,46 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    - **The Library scrolls sideways below ~1440 px** (the table needs ~820 px
      beside the 404 px dock). Pre-existing; the mashup columns hide below 940 px
      of table rather than widen it further.
-   - **Set transitions in Studio share one tempo** — "Open in Studio" conforms
-     every mashup to the first one's; tempo ramps between mashups are not
-     modelled.
+   - ~~**Set transitions in Studio share one tempo**~~ — each mashup now lands
+     at its own point on the set's tempo curve (§9 item 8, phase 4); ramps
+     between them are still not modelled.
+
+8. **From ranked pairs to a finished set in FL Studio (planned 2026-10-08).**
+   Decided: native `.flp` export, a tempo curve across a set (both sides may
+   stretch), and trust first. Phases, each shippable alone:
+   1. **One recipe per pair** — the bed's transpose and the chosen section pair
+      are the same on the card, the loop, Studio, the set and the FL export;
+      `pair_recipe` with the bed's level from stem loudness and the bass-clash
+      high-pass, armed by the loop, Studio and the FL session; effort priced
+      on the measured transpose (done, §5.7, §7). Still open: the FL session
+      taking Studio's lane state.
+   2. **A legible pair** — the recipe's DO / WATCH rows on the card and Set
+      rows (done, §4). Still open: the strip in Studio's ALIGN bar, the vocal
+      out of register (needs `f0` after the shift, phase 3), plain-language
+      top reasons, and a recipe on ↔ off A/B in the audition. Reason chips on
+      a verdict are done (§4, `pair_feedback.reasons_json`).
+   3. **Better suggestions** — done: Score library progress and a faster
+      section search (6.4×, above); section room, vocal coverage and section
+      energy match stored at weight 0; the term report in Tuning (§5.7). Next,
+      and only once the report has 10+ loved and 10+ rejected pairs: weight
+      what it says agrees with your ears (a weight-fitting job can then fit
+      them). Not built yet: register (`f0` after the shift, for a split
+      transpose) and stem quality as terms; check `tonal`, `dissonance` and
+      tuning before any of them is used.
+   4. **Sets with a tempo curve and real transitions** — done (§4 Sets,
+      §5.12): the curve with every recipe re-priced on it, suggested and
+      overridable moves with overlaps in the running time, the A/B timeline,
+      what comes next, curve tempos in Studio's chain and the exports. Not
+      done: effort (the ranking's) re-priced at the curve tempo — the recipe
+      is, the score is not; tempo *ramps* between mashups (Studio plays each
+      at a constant tempo; ramps need server renders, phase 6).
+   5. **Studio as the set's arrangement** — several clips per lane on A/B
+      decks, per-clip rate from the curve, transitions as overlapping clips.
+   6. **Native FL project** — a PyFLP (GPL-3.0) spike first: it edits but
+      cannot create a project, so it needs a blank template `.flp` saved from
+      the user's FL version. Stretch and pitch baked into the rendered clips;
+      gain, fades and EQ left to FL as channel settings and markers; WAVs and a
+      README beside the `.flp` so nothing is lost if FL refuses the file.
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in
 Discover (nothing external is analysed — rows show the tempo an upload prints,

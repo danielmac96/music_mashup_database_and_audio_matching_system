@@ -254,3 +254,17 @@ def test_endpoint_records_sections(env, monkeypatch):
     assert body["count"] == 2
     assert {(f["vocal_section"], f["inst_section"], f["verdict"])
             for f in body["feedback"]} == {(0, 3, "love"), (1, 4, "no")}
+
+
+def test_migration_adds_reasons_and_keeps_every_verdict(env):
+    """reasons_json is additive: a legacy table gains the column and loses
+    nothing (pair_feedback is irreplaceable, readme §7)."""
+    models, db_path = env
+    _legacy_db(db_path, [(1, 2, 0, 3, "love"), (3, 4, 1, 1, "no")])
+    models.init_db()
+    conn = models.get_conn()
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(pair_feedback)").fetchall()}
+    assert "reasons_json" in cols
+    assert conn.execute("SELECT COUNT(*) FROM pair_feedback").fetchone()[0] == 2
+    conn.close()
+    assert all(f["reasons"] == [] for f in models.get_pair_feedback())

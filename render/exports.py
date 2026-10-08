@@ -32,7 +32,7 @@ CSV_COLUMNS = (
     "vocal_end", "bed_artist", "bed_title", "bed_section", "bed_start", "bed_end",
     "landing_bpm", "landing_key", "bed_shift_st", "bed_bpm", "bed_key",
     "harmony_pct", "bass_clash", "nudge_ms", "loop_bed_x", "score_pct",
-    "set_start", "note",
+    "set_start", "note", "move_in", "overlap_bars", "vocal_tempo_pct",
 )
 
 
@@ -46,7 +46,14 @@ def mmss(secs: Optional[float]) -> str:
 def _rows(items: Sequence[Dict]) -> List[Dict]:
     f = flow(items)
     out = []
+    moves = [None] + [t["move"] for t in f["transitions"]]
     for k, (it, land) in enumerate(zip(items, f["landings"])):
+        move = moves[k]
+        v_pct = None
+        if it.get("set_bpm") and it.get("vocal_bpm"):
+            from matcher.match import effective_bpm
+            v_pct = (float(it["set_bpm"]) / effective_bpm(float(it["set_bpm"]),
+                                                          float(it["vocal_bpm"])) - 1) * 100
         fit = it.get("score_key") if it.get("harmonic_shift") is not None else None
         out.append({
             "position": k + 1,
@@ -75,6 +82,11 @@ def _rows(items: Sequence[Dict]) -> List[Dict]:
                          else str(round(float(it["score_percentile"]) * 100)),
             "set_start": mmss(f["starts"][k]),
             "note": it.get("note") or "",
+            # How this mashup comes in (matcher/setflow: suggested or chosen),
+            # and — on a tempo curve — how far the vocal is stretched to land.
+            "move_in": move["label"] if move else "",
+            "overlap_bars": str(move["bars"]) if move and move["bars"] else "",
+            "vocal_tempo_pct": "" if v_pct is None or abs(v_pct) < 0.05 else f"{v_pct:+.1f}",
         })
     return out
 
@@ -101,8 +113,12 @@ def cue_sheet(items: Sequence[Dict], title: str = "") -> str:
         if t is not None:
             tempo = "" if t["tempo_pct"] is None else f"{t['tempo_pct']:+.1f}% tempo"
             key = "" if t["key_steps"] is None else f"{t['key_steps']:g} key steps"
+            mv = t.get("move")
+            how = ""
+            if mv:
+                how = f" — {mv['label']}" + (f" {mv['bars']} bars" if mv["bars"] else "")
             lines.append(f"      ↓ {t['grade']}" + (f" ({', '.join(x for x in (tempo, key) if x)})"
-                                                    if tempo or key else ""))
+                                                    if tempo or key else "") + how)
         head = (f"[{r['set_start']:>5}] {r['position']:>2}. "
                 f"{r['vocal_artist']} - {r['vocal_title']} ({r['vocal_section']} {r['vocal_start']}–{r['vocal_end']})")
         lines.append(head)

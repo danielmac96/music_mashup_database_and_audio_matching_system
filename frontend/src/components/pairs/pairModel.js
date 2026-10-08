@@ -117,6 +117,14 @@ export function scoredOptionOf(c) {
     section_bars_vocal: c.section_bars_vocal,
     alignment_offset: c.alignment_offset ?? null,
     reason: c.reason,
+    // The transpose this section pair plays (matcher/recipe.bed_shift, sent as
+    // semitone_shift) and the measured harmony behind it — the same fields the
+    // plan's own options carry, so Studio reads one shape whichever it holds.
+    semitone_shift: c.semitone_shift ?? null,
+    harmonic_shift: c.harmonic_shift ?? null,
+    harmonic_confidence: c.harmonic_confidence ?? null,
+    score_key: c.score_key ?? null,
+    bass_clash: c.bass_clash ?? null,
   };
 }
 
@@ -170,4 +178,31 @@ export function harmonyOf(c) {
     clash: fit != null && fit < HARMONY_CLASH_FIT,
     bassClash: !!c.bass_clash,
   };
+}
+
+/* ── why a pair got its star ──────────────────────────────────────────────── */
+// Keys are database.models.FEEDBACK_REASONS (a test pins the two equal); the
+// words are the UI's. `good` reasons explain 3–5 stars, `bad` ones 1–3. They
+// never change a verdict — they are what the section terms get measured
+// against, so a "1 star" says WHICH term failed.
+export const VERDICT_REASONS = [
+  { key: "vocal_sits", label: "vocal sits", tone: "good" },
+  { key: "groove", label: "groove locks", tone: "good" },
+  { key: "energy_lift", label: "energy lift", tone: "good" },
+  { key: "harmony", label: "keys sing", tone: "good" },
+  { key: "contrast", label: "great contrast", tone: "good" },
+  { key: "key_clash", label: "key clash", tone: "bad" },
+  { key: "timing_off", label: "timing off", tone: "bad" },
+  { key: "vocal_buried", label: "vocal buried", tone: "bad" },
+  { key: "bass_mud", label: "bass mud", tone: "bad" },
+  { key: "energy_mismatch", label: "energy mismatch", tone: "bad" },
+  { key: "bad_separation", label: "bad separation", tone: "bad" },
+  { key: "boring", label: "boring", tone: "bad" },
+];
+
+/** The reasons worth offering for a star: praise for 4–5, faults for 1–2,
+ * both for a 3. None without a rating — a reason explains a rating. */
+export function reasonsFor(rating) {
+  if (!rating) return [];
+  return VERDICT_REASONS.filter((r) => (r.tone === "good" ? rating >= 3 : rating <= 3));
 }

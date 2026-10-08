@@ -124,6 +124,21 @@ export const api = {
       }),
     }),
 
+  // Does each scored term agree with the ratings? (matcher/term_report.py)
+  getTermReport: () => jsonFetch("/api/mashups/term-report"),
+
+  // Why a judged pair got its star — keys of models.FEEDBACK_REASONS
+  // (pairModel.VERDICT_REASONS). 404 when the pair is not rated.
+  savePairReasons: ({ vocalSongId, instSongId, vocalSection = null,
+                      instSection = null, reasons = [] }) =>
+    jsonFetch("/api/mashups/feedback/reasons", {
+      method: "POST",
+      body: JSON.stringify({
+        vocal_song_id: vocalSongId, inst_song_id: instSongId,
+        vocal_section: vocalSection, inst_section: instSection, reasons,
+      }),
+    }),
+
   // Forget a judgement — the star, and the verdict it implied, together. The
   // four ids are the key; there is no "rating: 0", because the POST above
   // COALESCEs a null rating into the one already stored.
@@ -354,10 +369,16 @@ export const api = {
   // target tempo and key and padded so bar 1 is at 0:00, plus a click, the
   // recipe, and a session.json in the mixdown clip shape. A mixdown is a bounce;
   // this is something you can actually mix.
-  startSessionExport: (vocalSongId, instSongId) =>
+  // `sections` ({ vocal, inst } section indexes) names the pairing to export —
+  // Studio's armed timing; without it the server falls back to its own pick.
+  startSessionExport: (vocalSongId, instSongId, sections = null) =>
     jsonFetch("/api/studio/session", {
       method: "POST",
-      body: JSON.stringify({ vocal_song_id: vocalSongId, inst_song_id: instSongId }),
+      body: JSON.stringify({
+        vocal_song_id: vocalSongId, inst_song_id: instSongId,
+        vocal_section_idx: sections?.vocal ?? null,
+        inst_section_idx: sections?.inst ?? null,
+      }),
     }),
 
   sessionArchiveUrl: (token) => `/api/studio/session/${token}/archive`,
@@ -710,6 +731,14 @@ export const api = {
     jsonFetch(`/api/sets/${id}/reorder`, {
       method: "POST", body: JSON.stringify({ item_ids: itemIds }),
     }),
+  // How an item comes in from the one before (matcher/setflow.TRANSITIONS);
+  // null returns it to the suggestion.
+  setItemTransition: (id, itemId, move) =>
+    jsonFetch(`/api/sets/${id}/items/${itemId}/transition`, {
+      method: "PUT", body: JSON.stringify(move || {}),
+    }),
+  // Pairs worth adding after the set's last mashup, ranked by fit AND move.
+  getSetNext: (id, limit = 8) => jsonFetch(`/api/sets/${id}/next?limit=${limit}`),
   suggestSetOrder: (id, start = null) =>
     jsonFetch(`/api/sets/${id}/suggest-order${start != null ? `?start=${start}` : ""}`),
   setExportUrl: (id, format, base = "") => {

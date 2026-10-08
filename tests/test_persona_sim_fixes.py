@@ -182,7 +182,11 @@ def test_transitions_are_graded_on_tempo_and_key():
 def test_flow_adds_up_running_time_and_start_times():
     from matcher.setflow import flow
     f = flow([_item(1, 128, "8A", 0, 15), _item(2, 128, "8A", 30, 60)])
-    assert f["total_secs"] == 45 and f["starts"] == [0, 15]
+    # A smooth move is an 8-bar blend (15 s at 128 BPM): the second mashup
+    # comes in under the first — capped at half the shorter one, 7.5 s.
+    assert f["transitions"][0]["move"]["type"] == "blend"
+    assert f["transitions"][0]["overlap_secs"] == 7.5
+    assert f["total_secs"] == 37.5 and f["starts"] == [0, 7.5]
     assert f["grades"]["smooth"] == 1
 
 
@@ -249,7 +253,7 @@ def test_exports_csv_cue_and_rekordbox():
     assert head.split(",") == list(CSV_COLUMNS)
     assert "Singer,Vox,chorus,0:30,0:45" in first and ",+2," in first and "opener" in first
     cue = cue_sheet(items, "Vol 1")
-    assert "[ 0:00]  1. Singer - Vox" in cue and "↓ smooth" in cue and "[ 0:15]" in cue
+    assert "[ 0:00]  1. Singer - Vox" in cue and "↓ smooth" in cue and "[ 0:08]" in cue
 
     def resolve(sid, stem):
         return {"path": f"/data/audio/{stem}/{sid}.wav", "title": f"T{sid}",
