@@ -158,7 +158,7 @@ def _with_playback_terms(rows: list) -> list:
     return rows
 
 
-def _with_recipes(rows: list) -> None:
+def _with_recipes(rows: list, target_of=None) -> None:
     """Attach matcher.recipe.pair_recipe to every row: what is done to the pair
     (stretch, fold, transpose, nudge, loop, level, high-pass) and what to watch
     for. One query for the page's stem facts; a recipe is a description, so a
@@ -174,7 +174,8 @@ def _with_recipes(rows: list) -> None:
                                             exc_info=True)
         facts = {}
     for r in rows:
-        r["recipe"] = pair_recipe(r, facts)
+        r["recipe"] = pair_recipe(r, facts,
+                                  target_bpm=target_of(r) if target_of else None)
 
 
 @router.get("")

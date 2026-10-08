@@ -600,15 +600,27 @@ A set is a mix's running order — **pairs**, not tracks (that is a crate). Pair
 arrive from the dock (**+ Set** or `a`) and from Studio into the set
 highlighted under SETS in the rail (the first one is made for you). Each row is
 one mashup: its start time in the running order, both sides and sections, the
-**landing** tempo and key (the vocal's — the bed is conformed to it), the bed's
-transpose, the measured harmony, and the pair's note. Between rows, the move is
-graded **smooth** (≤1 Camelot step and ≤3% tempo), **workable** (≤2, ≤6%) or a
-**key/tempo jump** (§5.12). Drag to reorder; **Auto-order** keeps each move
+**landing** tempo and key, the bed's transpose, the measured harmony, the
+pair's note and its recipe (DO row). **Tempo** (start → end BPM) puts the set
+on a **tempo curve**: each mashup lands at its point on it, vocal and bed both
+stretched there, and its recipe is re-priced at that tempo (a vocal stretched
+more than 4% reads heavy); blank start = off, every mashup at its vocal's own
+tempo, the key always the vocal's. Between rows, the move is graded
+**smooth** (≤1 Camelot step and ≤3% tempo), **workable** (≤2, ≤6%) or a
+**key/tempo jump**, and carries **how** to make it — a **bed swap** when the
+two share a vocal, a **vocal swap** when they share a bed, an 8- or 4-bar
+**blend** for a smooth or workable move, **echo out** for a key jump, else a
+**cut** — which you can change (type and bars) or reset to the suggestion
+(§5.12). A **timeline** above the list shows the mix: each mashup a block on
+alternating A/B decks at its start time, coloured by key, overlaps visible.
+**What comes next**, under the list, ranks pairs that are good on their own
+*and* an easy move from the last landing (a shared record counts in their
+favour); **+ add** appends one. Drag to reorder; **Auto-order** keeps each move
 small from the current first mashup; **Open in Studio** lays the whole set back
-to back on one timeline at the first mashup's tempo; **Export** writes a timed
-**cue sheet**, a **CSV**, or a **rekordbox XML** (§5.11). An item is frozen
-when added, so a re-score that drops its pair leaves it in the set marked
-`stale`.
+to back, each mashup at its own curve tempo; **Export** writes a timed **cue
+sheet** (with each move), a **CSV** (`move_in`, `overlap_bars`,
+`vocal_tempo_pct`) or a **rekordbox XML** (§5.11). An item is frozen when
+added, so a re-score that drops its pair leaves it in the set marked `stale`.
 
 ### ⚙ Settings drawer
 
@@ -1199,13 +1211,29 @@ caches responses, and opens a breaker after repeated failures.
 ### 5.12 Sets and transitions
 
 `matcher/setflow.py`. A set item plays at the vocal's tempo with the bed
-conformed and transposed to it, so it **lands** at the vocal's tempo and key.
+conformed and transposed to it, so it **lands** at the vocal's tempo and key —
+unless the set has a **tempo curve** (`sets.tempo_plan_json`: `start_bpm`,
+`end_bpm`; `tempo_targets` interpolates linearly by position, no end holds the
+start), when each item's `set_bpm` is its point on the curve, both sides are
+stretched to it (fold-aware, `recipe.pair_recipe(target_bpm=)`) and the vocal
+section lasts `vocal_bpm / landing_bpm` as long.
 The move between consecutive items is graded on the tempo change (read at
 half/double time when closer — 87 → 174 is no change) and the Camelot wheel
 distance between the two landings (`features._camelot_distance`: hour steps,
 +0.5 for a letter change): **smooth** ≤1 step and ≤3%, **workable** ≤2 and
-≤6%, else a **jump**; unknown when either side is unmeasured. Running time is
-the sum of the vocal sections. **Auto-order** is greedy from a start item —
+≤6%, else a **jump**; unknown when either side is unmeasured. Each transition
+carries a **move** (`TRANSITIONS`, `suggest_move`): a shared vocal → bed swap,
+a shared bed → vocal swap (8 bars each), smooth → 8-bar blend, workable →
+4-bar blend, a jump of more than two key steps → echo out, else cut. The user's
+choice is stored on the **incoming** item (`set_items.transition_json`,
+`PUT /api/sets/{id}/items/{item}/transition`; an empty body resets) and the
+suggestion is kept beside it. Running time is the sum of the vocal sections
+minus each move's overlap (its bars at the incoming landing tempo), capped at
+half the shorter of the two — an 8-bar blend out of an 8-bar section would
+swallow it. **What comes next** (`next_candidates`, `GET /api/sets/{id}/next`):
+the top 400 scored pairs ranked by percentile − 0.06 × key steps − 0.02 ×
+|tempo %| (+0.05 for a shared record), landed at the curve's end tempo when
+there is one. **Auto-order** is greedy from a start item —
 take the cheapest next move, cost = steps + tempo% / 3 (one wheel step weighs
 about a 3% tempo move, both what "smooth" allows) — which is what a DJ does by
 hand; it is advisory until posted to `/reorder`.
@@ -1254,7 +1282,8 @@ candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
 (JSON key/value) · `analysis_runs` (append-only pipeline timings, §3) ·
 `feature_cache` (per content hash and feature group: version, params hash,
 payload — disposable, §3) · `sets` / `set_items` (a set's pairs in order,
-keyed by the four pair ids, each with the scored row frozen as it was added)
+keyed by the four pair ids, each with the scored row frozen as it was added;
+`sets.tempo_plan_json`, `set_items.transition_json`)
 · `pair_notes` (a note per pair, keyed like `pair_feedback`; never training
 data) · `section_lines` (a vocal section's lyric cue, anchored to a time in
 the song).
@@ -1302,6 +1331,11 @@ Existing databases migrate on start.
   `COALESCE` included; match the index loosely and a NULL-sectioned row
   survives a clear that reported success. Sending `rating: null` to the POST
   does **not** clear — the upsert `COALESCE`s it into the star already stored.
+- **A set's move lives on the incoming item**, and the stored one is only the
+  user's choice — a NULL `transition_json` means "the suggestion", which is
+  recomputed every read, so reordering a set re-suggests every move it was not
+  told. `matcher/setflow.TRANSITIONS` and `SetScreen.MOVES` name the same keys
+  (test-pinned).
 - **Reasons sit beside a verdict, never in place of one.** `POST
   /api/mashups/feedback/reasons` answers 404 for an unrated pair; the star
   upsert never touches `reasons_json`, and clearing the star deletes the row
@@ -1773,9 +1807,9 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    - **The Library scrolls sideways below ~1440 px** (the table needs ~820 px
      beside the 404 px dock). Pre-existing; the mashup columns hide below 940 px
      of table rather than widen it further.
-   - **Set transitions in Studio share one tempo** — "Open in Studio" conforms
-     every mashup to the first one's; tempo ramps between mashups are not
-     modelled.
+   - ~~**Set transitions in Studio share one tempo**~~ — each mashup now lands
+     at its own point on the set's tempo curve (§9 item 8, phase 4); ramps
+     between them are still not modelled.
 
 8. **From ranked pairs to a finished set in FL Studio (planned 2026-10-08).**
    Decided: native `.flp` export, a tempo curve across a set (both sides may
@@ -1799,11 +1833,13 @@ driven by the 100-persona browser simulation (§9) against a synthesised
       them). Not built yet: register (`f0` after the shift, for a split
       transpose) and stem quality as terms; check `tonal`, `dissonance` and
       tuning before any of them is used.
-   4. **Sets with a tempo curve and real transitions** — `sets.tempo_plan`,
-      each item conformed to its point on the curve with effort re-priced
-      there; transitions as objects (cut, bed swap, vocal swap, N-bar overlap,
-      echo-out), "what comes next" ranked from the last landing, and a set
-      timeline.
+   4. **Sets with a tempo curve and real transitions** — done (§4 Sets,
+      §5.12): the curve with every recipe re-priced on it, suggested and
+      overridable moves with overlaps in the running time, the A/B timeline,
+      what comes next, curve tempos in Studio's chain and the exports. Not
+      done: effort (the ranking's) re-priced at the curve tempo — the recipe
+      is, the score is not; tempo *ramps* between mashups (Studio plays each
+      at a constant tempo; ramps need server renders, phase 6).
    5. **Studio as the set's arrangement** — several clips per lane on A/B
       decks, per-clip rate from the curve, transitions as overlapping clips.
    6. **Native FL project** — a PyFLP (GPL-3.0) spike first: it edits but

@@ -483,6 +483,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
             _migrate_mixtracks_columns(conn)
             _migrate_mashuppairs_columns(conn)
             _migrate_crates_columns(conn)
+            _migrate_sets_columns(conn)
             _migrate_pair_feedback_key(conn)
             conn.commit()
         except BaseException:
@@ -988,6 +989,25 @@ _CRATES_OPTIONAL_COLUMNS = (
     # OAuth write path, so it stays NULL for everyone without app credentials.
     ("synced_at", "TEXT"),
 )
+
+
+# A set's tempo curve and each item's chosen way in (phase 4). Both JSON; NULL
+# means "not set": no curve (every mashup at its vocal's tempo, as before) and
+# the suggested transition.
+_SETS_OPTIONAL_COLUMNS = (("tempo_plan_json", "TEXT"),)
+_SET_ITEMS_OPTIONAL_COLUMNS = (("transition_json", "TEXT"),)
+
+
+def _migrate_sets_columns(conn: sqlite3.Connection) -> None:
+    for table, cols in (("sets", _SETS_OPTIONAL_COLUMNS),
+                        ("set_items", _SET_ITEMS_OPTIONAL_COLUMNS)):
+        existing = {row[1] for row in conn.execute(
+            f"PRAGMA table_info({table})").fetchall()}
+        if not existing:
+            continue
+        for col, decl in cols:
+            if col not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 def _migrate_crates_columns(conn: sqlite3.Connection) -> None:
@@ -3958,10 +3978,20 @@ def list_sets(db_path: Path = DB_PATH) -> List[Dict]:
         conn.close()
 
 
+_UNSET = object()
+
+
 def update_set(set_id: int, *, name: Optional[str] = None,
-               note: Optional[str] = None, db_path: Path = DB_PATH) -> Optional[Dict]:
+               note: Optional[str] = None, tempo_plan=_UNSET,
+               db_path: Path = DB_PATH) -> Optional[Dict]:
+    """Rename, re-note, or set the tempo curve ({start_bpm, end_bpm}; None
+    clears it). Omitted arguments are left alone."""
     conn = get_conn(db_path)
     try:
+        if tempo_plan is not _UNSET:
+            conn.execute(
+                "UPDATE sets SET tempo_plan_json=?, updated_at=datetime('now') WHERE id=?",
+                (json.dumps(tempo_plan) if tempo_plan else None, set_id))
         if name is not None and name.strip():
             conn.execute("UPDATE sets SET name=?, updated_at=datetime('now') WHERE id=?",
                          (name.strip(), set_id))
@@ -3972,6 +4002,21 @@ def update_set(set_id: int, *, name: Optional[str] = None,
     finally:
         conn.close()
     return get_set(set_id, db_path=db_path)
+
+
+def set_item_transition(set_id: int, item_id: int, transition: Optional[Dict],
+                        db_path: Path = DB_PATH) -> bool:
+    """Choose how an item comes in ({type, bars}); None returns it to the
+    suggestion. False when the item is not in this set."""
+    conn = get_conn(db_path)
+    try:
+        n = conn.execute(
+            "UPDATE set_items SET transition_json=? WHERE id=? AND set_id=?",
+            (json.dumps(transition) if transition else None, item_id, set_id)).rowcount
+        conn.commit()
+        return n > 0
+    finally:
+        conn.close()
 
 
 def delete_set(set_id: int, db_path: Path = DB_PATH) -> bool:
@@ -4091,9 +4136,14 @@ def get_set(set_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
             "stale": live is None,
             "note": notes.get((it["vocal_song_id"], it["inst_song_id"],
                                it["vocal_section"], it["inst_section"]), ""),
+            "transition": json.loads(it["transition_json"]) if it.get("transition_json") else None,
         })
         out.append(row)
-    return {**dict(s), "items": out}
+    out_set = dict(s)
+    out_set["tempo_plan"] = (json.loads(out_set.pop("tempo_plan_json"))
+                             if out_set.get("tempo_plan_json") else None)
+    out_set.pop("tempo_plan_json", None)
+    return {**out_set, "items": out}
 
 
 # ── Section lines ────────────────────────────────────────────────────────────

@@ -34,6 +34,9 @@ BASS_HPF_HZ = 120
 
 # Adjustment weights, for the chip tone: free / light / heavy.
 STRETCH_FREE_PCT, STRETCH_HEAVY_PCT = 0.5, 6.0
+# A voice smears sooner than a beat does: stretching the vocal turns heavy
+# earlier. Only a set's tempo curve ever moves the vocal (phase 4).
+VOCAL_STRETCH_HEAVY_PCT = 4.0
 STRETCH_WARN_PCT = 8.0
 SHIFT_HEAVY_ST = 4
 NUDGE_MIN_MS = 5
@@ -135,7 +138,22 @@ def _signed(v: float, unit: str, digits: int = 0) -> str:
     return f"{'+' if v > 0 else '−' if v < 0 else ''}{abs(v):.{digits}f}{unit}"
 
 
-def pair_recipe(row: Dict, facts: Optional[Dict] = None) -> Dict:
+def _rate_to(target: float, bpm: Optional[float]):
+    """(rate, fold) to play a side at `target`, read at half/double time when
+    closer — rate > 1 plays it faster. (None, None) when its tempo is unknown."""
+    if not target or not bpm:
+        return None, None
+    eff = effective_bpm(target, bpm)
+    fold = None
+    if abs(eff - bpm * 2) < 1e-6:
+        fold = "double"
+    elif abs(eff - bpm / 2) < 1e-6:
+        fold = "half"
+    return round(target / eff, 4), fold
+
+
+def pair_recipe(row: Dict, facts: Optional[Dict] = None,
+                target_bpm: Optional[float] = None) -> Dict:
     """Everything done to a scored pair to build it, and what to watch for.
 
     `row` is a listing row after _with_playback_terms (semitone_shift and
@@ -146,6 +164,11 @@ def pair_recipe(row: Dict, facts: Optional[Dict] = None) -> Dict:
     adjustments: [{key, text, level, why}] — level is free / light / heavy,
     the same words as the effort chip; only things a producer must actually do.
     warnings:    [{key, text}] — what the numbers cannot promise.
+
+    `target_bpm` lands the pair at another tempo — a point on a set's tempo
+    curve — so the VOCAL is stretched too (fold-aware), and priced as heavy
+    sooner than the bed. Without it the pair lands at the vocal's own tempo,
+    the vocal plays native, and the bed rate is the listing's stretch factor.
     """
     facts = facts or {}
     v_id, i_id = row.get("vocal_song_id"), row.get("inst_song_id")
@@ -158,26 +181,45 @@ def pair_recipe(row: Dict, facts: Optional[Dict] = None) -> Dict:
 
     # ── tempo ────────────────────────────────────────────────────────────
     v_bpm, i_bpm = _num(row.get("vocal_bpm")), _num(row.get("inst_bpm"))
-    rate = _num(row.get("stretch_factor"))
-    fold = None
-    if v_bpm and i_bpm:
-        eff = effective_bpm(v_bpm, i_bpm)
-        if abs(eff - i_bpm * 2) < 1e-6:
-            fold = "double"
-        elif abs(eff - i_bpm / 2) < 1e-6:
-            fold = "half"
+    target = _num(target_bpm)
+    if target:
+        vocal_rate, vocal_fold = _rate_to(target, v_bpm)
+        rate, fold = _rate_to(target, i_bpm)
+        where = f"the set's {target:.1f} BPM here"
+    else:
+        target = v_bpm
+        vocal_rate, vocal_fold = (1.0 if v_bpm else None), None
+        rate = _num(row.get("stretch_factor"))
+        fold = _rate_to(v_bpm, i_bpm)[1] if v_bpm and i_bpm else None
+        where = f"the vocal's {v_bpm:.1f} BPM" if v_bpm else "the vocal's tempo"
+
+    if vocal_fold:
+        adjustments.append({
+            "key": "vocal_fold", "level": "light", "text": f"vocal at {vocal_fold} time",
+            "why": f"the vocal's {v_bpm:.1f} BPM is read as {v_bpm * (2 if vocal_fold == 'double' else 0.5):.1f} to meet {where}"})
+    vocal_pct = (vocal_rate - 1.0) * 100.0 if vocal_rate else None
+    if vocal_pct is not None and abs(vocal_pct) >= STRETCH_FREE_PCT:
+        adjustments.append({
+            "key": "vocal_stretch",
+            "level": "heavy" if abs(vocal_pct) > VOCAL_STRETCH_HEAVY_PCT else "light",
+            "text": f"vocal tempo {_signed(vocal_pct, '%', 1)}",
+            "why": f"time-stretch the vocal ×{vocal_rate:.4f} to {where}; pitch is kept"})
+        if abs(vocal_pct) > VOCAL_STRETCH_HEAVY_PCT:
+            warnings.append({"key": "vocal_stretch",
+                             "text": f"vocal stretched {abs(vocal_pct):.0f}% — listen for a robotic edge"})
     if fold:
         adjustments.append({
             "key": "fold", "level": "light",
             "text": f"bed at {fold} time",
-            "why": f"the bed's {i_bpm:.1f} BPM is read as {i_bpm * (2 if fold == 'double' else 0.5):.1f} to meet the vocal's {v_bpm:.1f}"})
+            "why": f"the bed's {i_bpm:.1f} BPM is read as {i_bpm * (2 if fold == 'double' else 0.5):.1f} to meet {where}"})
     stretch_pct = (rate - 1.0) * 100.0 if rate else None
     if stretch_pct is not None and abs(stretch_pct) >= STRETCH_FREE_PCT:
         adjustments.append({
             "key": "stretch",
             "level": "heavy" if abs(stretch_pct) > STRETCH_HEAVY_PCT else "light",
             "text": f"bed tempo {_signed(stretch_pct, '%', 1)}",
-            "why": f"time-stretch the bed ×{rate:.4f} to the vocal's {v_bpm:.1f} BPM; the vocal plays native"})
+            "why": (f"time-stretch the bed ×{rate:.4f} to {where}"
+                    + ("" if target_bpm else "; the vocal plays native"))})
         if abs(stretch_pct) > STRETCH_WARN_PCT:
             warnings.append({"key": "stretch",
                              "text": f"{abs(stretch_pct):.0f}% stretch — listen for smeared transients"})
@@ -247,6 +289,10 @@ def pair_recipe(row: Dict, facts: Optional[Dict] = None) -> Dict:
                              "text": f"{side} stem separation is rough (quality {q:.2f}) — expect bleed"})
 
     return {
+        "target_bpm": None if not target else round(target, 2),
+        "vocal_rate": vocal_rate,
+        "vocal_stretch_pct": None if vocal_pct is None else round(vocal_pct, 2),
+        "vocal_fold": vocal_fold,
         "bed_rate": rate,
         "stretch_pct": None if stretch_pct is None else round(stretch_pct, 2),
         "tempo_fold": fold,

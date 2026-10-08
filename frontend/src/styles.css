@@ -3079,6 +3079,31 @@ input, select { font-family: inherit; }
   padding: 4px 0 4px 60px;
 }
 .set-trans-line { width: 2px; height: 14px; border-radius: 1px; opacity: 0.7; }
+/* How each mashup comes in: the suggested move, overridable. */
+.set-move { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; color: var(--text-2); }
+.set-move select { background: var(--inset); border: 1px solid var(--border); border-radius: 5px;
+  color: var(--text-2); font: 10.5px var(--font-mono, monospace); padding: 1px 4px; }
+.set-move-text { color: var(--muted); font-family: var(--font-ui); }
+/* Tempo curve control. */
+.set-tempo { display: flex; gap: 6px; align-items: center; font-size: 11px; }
+.set-tempo input { width: 52px; background: var(--inset); border: 1px solid var(--border);
+  border-radius: 5px; color: var(--text); font: 11px var(--font-mono, monospace); padding: 2px 5px; }
+/* The set as a mix: blocks on A/B decks over time. */
+.set-timeline { margin: 4px 0 14px; display: flex; flex-direction: column; gap: 3px; }
+.set-tl-deck { position: relative; height: 20px; margin-left: 18px; background: var(--inset);
+  border-radius: 4px; }
+.set-tl-deckname { position: absolute; left: -16px; top: 3px; font-size: 10px; color: var(--faint); }
+.set-tl-block { position: absolute; top: 0; height: 100%; border-radius: 4px; opacity: 0.85;
+  font-size: 10px; color: #0b0d12; padding: 3px 5px; overflow: hidden; white-space: nowrap;
+  box-sizing: border-box; border: 1px solid rgba(0, 0, 0, 0.35); }
+.set-tl-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--faint);
+  margin-left: 18px; }
+/* What comes next. */
+.set-next { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 12px; }
+.set-next h3 { font-size: 13px; margin: 0 0 4px; }
+.set-next-row { display: grid; grid-template-columns: 34px minmax(240px, 1fr) minmax(160px, auto) auto auto;
+  gap: 10px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.set-next-why { font-size: 10.5px; }
 .set-empty { max-width: 560px; margin: 60px auto; color: var(--text-2); line-height: 1.6; }
 .set-empty h2 { font-size: 18px; color: var(--text); }
 .set-empty.small { margin: 30px 0; max-width: none; color: var(--muted); }

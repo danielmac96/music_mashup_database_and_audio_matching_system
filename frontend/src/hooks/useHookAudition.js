@@ -154,22 +154,26 @@ export function useHookAudition() {
       const recipe = candidate.recipe || {};
       levels.current = { vocal: recipe.vocal_lane_gain ?? VOCAL_GAIN,
                          bed: recipe.bed_lane_gain ?? BED_GAIN };
-      e.setVoice("vocal", { buffer: vocalBuf, offsetSec: 0, rate: 1, semitones: 0,
+      // On a set's tempo curve the vocal is stretched too (recipe.vocal_rate);
+      // everywhere else it plays native.
+      const vocalRate = recipe.vocal_rate || 1;
+      const bedRate = recipe.bed_rate || candidate.stretch_factor || 1;
+      e.setVoice("vocal", { buffer: vocalBuf, offsetSec: 0, rate: vocalRate, semitones: 0,
                             gain: levels.current.vocal });
       e.setVoice("inst", {
         buffer: bedBuf,
         offsetSec: 0,
         // rate > 1 reads the bed faster, i.e. conforms it up to the vocal's
         // tempo; the worklet compensates pitch so only the shift below moves it.
-        rate: candidate.stretch_factor || 1,
+        rate: bedRate,
         semitones: candidate.semitone_shift || 0,
         gain: levels.current.bed,
         hpHz: recipe.bed_highpass_hz ?? 0,
       });
 
       // Loop the shorter of the two so the cycle never runs into silence.
-      const bedDisplay = bedBuf.duration / (candidate.stretch_factor || 1);
-      const len = Math.max(1, Math.min(vocalBuf.duration, bedDisplay));
+      const bedDisplay = bedBuf.duration / bedRate;
+      const len = Math.max(1, Math.min(vocalBuf.duration / vocalRate, bedDisplay));
       e.setLoop({ start: 0, end: len });
       applyStems(stemModeRef.current);
 

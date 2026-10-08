@@ -731,6 +731,14 @@ export const api = {
     jsonFetch(`/api/sets/${id}/reorder`, {
       method: "POST", body: JSON.stringify({ item_ids: itemIds }),
     }),
+  // How an item comes in from the one before (matcher/setflow.TRANSITIONS);
+  // null returns it to the suggestion.
+  setItemTransition: (id, itemId, move) =>
+    jsonFetch(`/api/sets/${id}/items/${itemId}/transition`, {
+      method: "PUT", body: JSON.stringify(move || {}),
+    }),
+  // Pairs worth adding after the set's last mashup, ranked by fit AND move.
+  getSetNext: (id, limit = 8) => jsonFetch(`/api/sets/${id}/next?limit=${limit}`),
   suggestSetOrder: (id, start = null) =>
     jsonFetch(`/api/sets/${id}/suggest-order${start != null ? `?start=${start}` : ""}`),
   setExportUrl: (id, format, base = "") => {

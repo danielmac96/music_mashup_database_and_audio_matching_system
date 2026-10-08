@@ -195,6 +195,8 @@ export default function App() {
     chain: items.map((c) => ({
       vocalId: c.vocal_song_id, instId: c.inst_song_id,
       semitoneShift: c.semitone_shift ?? 0, recipe: c.recipe ?? null,
+      // On a set's tempo curve, each mashup lands at its own point on it.
+      targetBpm: c.set_bpm ?? null,
       scoredOption: scoredOptionOf(c),
     })),
   });

@@ -1044,7 +1044,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     if (!resolved.length) { toast("Those pairs have no analysed sections to place"); return; }
     let bpm = append ? projectBpm : null;
     if (!bpm) {
-      const v0 = laneBpmFor(resolved[0].v, "vocals");
+      const v0 = resolved[0].p.targetBpm || laneBpmFor(resolved[0].v, "vocals");
       bpm = v0 ? Math.round(v0) : projectBpm;
     }
     let cursor = 0;
@@ -1064,8 +1064,11 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       const vStem = v.stems?.vocals ? "vocals" : "full";
       const bStem = b.stems?.instrumental ? "instrumental" : "full";
       const vBpm = laneBpmFor(v, vStem), bBpm = laneBpmFor(b, bStem);
-      const vRate = (bpm && vBpm && syncRateFor(vBpm, bpm)) || 1;
-      const bRate = (bpm && bBpm && syncRateFor(bBpm, bpm)) || 1;
+      // A set on a tempo curve sends each mashup's own landing tempo; the
+      // project tempo (the grid) stays the first one's.
+      const at = p.targetBpm || bpm;
+      const vRate = (at && vBpm && syncRateFor(vBpm, at)) || 1;
+      const bRate = (at && bBpm && syncRateFor(bBpm, at)) || 1;
       const place = placementFor(p.scoredOption, vRate, bRate);
       const off = p.scoredOption.alignment_offset ?? 0;
       const vLen = (p.scoredOption.vocal_section_end - p.scoredOption.vocal_section_start) / vRate;
@@ -1075,12 +1078,13 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       addLane(v, vStem, { offsetSec: place.vocal.offsetSec + shift,
         clipStart: place.vocal.clipStart, clipEnd: place.vocal.clipEnd,
         rate: vRate, semitones: 0, gain: p.recipe?.vocal_lane_gain ?? 0.85,
-        synced: Boolean(bpm && vBpm), colorIdx: color++ });
+        // A lane at its own curve tempo must not be re-synced to the project's.
+        synced: Boolean(bpm && vBpm) && !p.targetBpm, colorIdx: color++ });
       addLane(b, bStem, { offsetSec: place.bed.offsetSec + shift,
         clipStart: place.bed.clipStart, clipEnd: place.bed.clipEnd,
         rate: bRate, semitones: p.semitoneShift ?? 0,
         gain: p.recipe?.bed_lane_gain ?? 0.8, hpHz: p.recipe?.bed_highpass_hz ?? 0,
-        synced: Boolean(bpm && bBpm), colorIdx: color++ });
+        synced: Boolean(bpm && bBpm) && !p.targetBpm, colorIdx: color++ });
       cursor = shift + Math.max(place.base + vLen, place.base + off + bLen);
     }
     if (bpm) setProjectBpm(bpm);
