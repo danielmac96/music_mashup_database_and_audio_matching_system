@@ -409,6 +409,29 @@ def feedback_reason_vocabulary() -> dict:
     return {"reasons": FEEDBACK_REASONS}
 
 
+@router.get("/term-report")
+def term_report_route() -> dict:
+    """Does each scored term agree with your ratings? (matcher/term_report.py)
+    Read-only evidence for the Tuning panel: AUC of loved vs rejected pairs,
+    Spearman against the stars, and each reason chip against the term it
+    should move. Nothing is re-weighted here."""
+    from config import current_match_weights, current_section_weights
+    from matcher.term_report import term_report
+    conn = get_conn()
+    try:
+        cands = [dict(r) for r in conn.execute(
+            """SELECT mc.* FROM mashup_candidates mc
+               WHERE mc.combo_type = 'vocal_over_instrumental'
+                 AND EXISTS (SELECT 1 FROM pair_feedback f
+                             WHERE f.vocal_song_id = mc.vocal_song_id
+                               AND f.inst_song_id = mc.inst_song_id)""").fetchall()]
+    finally:
+        conn.close()
+    return term_report(get_pair_feedback(), cands,
+                       section_weights=current_section_weights(),
+                       match_weights=current_match_weights("vocal_over_instrumental"))
+
+
 @router.get("/feedback")
 def list_feedback(verdict: str = "") -> dict:
     """Every judgment so far, so the ranked list can render ✓/✗ on reload."""

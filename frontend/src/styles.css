@@ -3291,3 +3291,13 @@ input, select { font-family: inherit; }
 }
 .pc-line { font: italic 11px var(--font-ui); color: var(--violet); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
+
+/* Settings → Tuning: what your ratings say about each scored term. */
+.term-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
+.term-table th { text-align: left; color: var(--faint); font-weight: 600; padding: 2px 4px; }
+.term-table td { padding: 2px 4px; border-top: 1px solid var(--border); white-space: nowrap; }
+.term-table td.good { color: var(--green); }
+.term-table td.bad { color: var(--red); }
+.term-table tr.measured td:first-child { color: var(--cyan); }
+.term-table .term-verdict { color: var(--muted); white-space: normal; }
+.term-reasons { margin-top: 6px; font-size: 11px; color: var(--muted); display: grid; gap: 2px; }

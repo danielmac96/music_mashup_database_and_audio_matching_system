@@ -26,7 +26,8 @@ from matcher.plan import (
 )
 from matcher.alignment import align, describe
 from matcher.section_score import (
-    phrase_score, rhythm_score, section_components, section_structure_score,
+    measured_terms, phrase_score, rhythm_score, section_components,
+    section_structure_score,
 )
 
 # What a section pair is judged on. Deliberately only the three things a
@@ -284,6 +285,9 @@ def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
     # until now, so three of the four bars the pair card draws had no value to
     # draw. Cheap here: this runs per STORED row, not per scored pair.
     parts.update(section_terms(v, i, stretch, bpm))
+    # Phase 3: stored at weight 0, so they can be checked against verdicts
+    # (matcher/term_report.py) before they are allowed to rank anything.
+    parts.update(measured_terms(v, i))
     # Spec §8: the ranked list should say what building this involves, not just
     # that it is worth building. Computed from the stored per-section downbeats,
     # so it costs no audio and runs for every candidate rather than only for the

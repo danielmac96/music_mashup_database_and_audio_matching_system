@@ -617,7 +617,8 @@ Tight/Balanced/Wide **match width** preset and, when anything is suppressed,
 **restore N hidden** (hidden pairs and excluded tracks). Then **Bulk
 reprocess** (staleness per feature generation; re-analyse or re-separate only
 what needs it), **Refresh metadata** (below), **Tuning** (match and section
-weights, effort weight, gates, separator, stem mode), **Train from imported mixes** (build dataset → train →
+weights, effort weight, gates, separator, stem mode, and *What your ratings
+say* — the term report, §5.7), **Train from imported mixes** (build dataset → train →
 activate), and a read-only **database browser**.
 
 **⟳ Refresh metadata N** appears when tracks are missing genre, year and play
@@ -928,6 +929,21 @@ separate candidates. The section fit has six terms, weights normalised:
 | `phrase` | 0 | 0.15 | equal phrase lengths best, clean multiples high, partial phrases low |
 | `rhythm` | 0 | 0 | cosine of per-bar onset profiles from stored beat grids |
 | `structure` | 0 | 0 | does the pairing match a configured mashup pattern (`matcher/patterns.py`, editable in settings.json) |
+
+**Measured, stored, weighted 0** (`section_score.measured_terms`, phase 3): on
+every row so they can be checked before they rank — `score_room_section`
+(spectral room inside *these two sections*: 1 − Σ min of the vocal stem's and
+the bed stem's 8-band occupancy), `score_coverage` (the vocal section's
+`vocal_activity`, how much of it is sung) and `score_energy_match` (1 − the gap
+between the two sections' relative energies). NULL when unmeasured.
+
+**Term report** (`matcher/term_report.py`, `GET /api/mashups/term-report`,
+Settings → Tuning → *What your ratings say*): for every stored term, its weight
+today, the AUC of pairs you rated 4–5 against those rated 1–2 (0.5 = no
+signal), Spearman ρ against the stars, and the two means; and for each reason
+chip, the term it should pull down on the tagged pairs against the rest. Below
+10 loved and 10 rejected a term reads "not enough ratings yet". Read-only: it
+is the evidence for moving a weight, not a mover.
 
 The section fit is blended into the total with `SECTION_WEIGHT = 0.25`. The live
 weights were **measured** on a backfilled library (30 tracks, 308 sections, 1197
@@ -1775,12 +1791,14 @@ driven by the 100-persona browser simulation (§9) against a synthesised
       out of register (needs `f0` after the shift, phase 3), plain-language
       top reasons, and a recipe on ↔ off A/B in the audition. Reason chips on
       a verdict are done (§4, `pair_feedback.reasons_json`).
-   3. **Better suggestions** — Score library progress and a faster section
-      search are done (6.4×, §9 above); next, section terms at weight 0 until measured against
-      verdicts: section-level spectral room (`band_energy_vocal/bed`), vocal
-      coverage (`vocal_activity`), register (`f0` after the shift, enabling a
-      split transpose), stem quality, energy arc. Check `tonal`, `dissonance`
-      and tuning first.
+   3. **Better suggestions** — done: Score library progress and a faster
+      section search (6.4×, above); section room, vocal coverage and section
+      energy match stored at weight 0; the term report in Tuning (§5.7). Next,
+      and only once the report has 10+ loved and 10+ rejected pairs: weight
+      what it says agrees with your ears (a weight-fitting job can then fit
+      them). Not built yet: register (`f0` after the shift, for a split
+      transpose) and stem quality as terms; check `tonal`, `dissonance` and
+      tuning before any of them is used.
    4. **Sets with a tempo curve and real transitions** — `sets.tempo_plan`,
       each item conformed to its point on the curve with effort re-priced
       there; transitions as objects (cut, bed swap, vocal swap, N-bar overlap,

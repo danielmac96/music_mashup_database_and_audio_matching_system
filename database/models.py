@@ -709,6 +709,14 @@ _CANDIDATES_OPTIONAL_COLUMNS = (
     ("score_label", "REAL"),
     ("score_duration", "REAL"),
     ("score_voice", "REAL"),
+    # Phase 3 (2026-10-08) — per-section measurements the analysis already
+    # stored and nothing scored: section-level spectral room (band_energy_vocal
+    # vs band_energy_bed), how much of the vocal section is actually sung
+    # (vocal_activity), and how close the two sections' energies sit. Stored at
+    # weight 0 so they can be checked against verdicts before they rank.
+    ("score_room_section", "REAL"),
+    ("score_coverage", "REAL"),
+    ("score_energy_match", "REAL"),
     # P2.4 — what building this pair actually involves. Computed at
     # scoring time from the stored per-section downbeats, so the ranked list can
     # say it without the export step having to be reached first.
@@ -2230,6 +2238,7 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        section_loop_repeats, section_note,
        score_phrase, score_rhythm, score_structure,
        score_label, score_duration, score_voice,
+       score_room_section, score_coverage, score_energy_match,
        alignment_downbeat, alignment_offset, target_bpm,
        tempo_adjustment, pitch_adjustment, reason,
        score_effort, effort_stretch, effort_pitch,
@@ -2238,7 +2247,7 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -2262,6 +2271,9 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_label=excluded.score_label,
        score_duration=excluded.score_duration,
        score_voice=excluded.score_voice,
+       score_room_section=excluded.score_room_section,
+       score_coverage=excluded.score_coverage,
+       score_energy_match=excluded.score_energy_match,
        alignment_downbeat=excluded.alignment_downbeat,
        alignment_offset=excluded.alignment_offset,
        target_bpm=excluded.target_bpm,
@@ -2310,6 +2322,7 @@ SECTION_PAIR_COLUMNS = (
     "section_loop_repeats", "section_note",
     "score_phrase", "score_rhythm", "score_structure",
     "score_label", "score_duration", "score_voice",
+    "score_room_section", "score_coverage", "score_energy_match",
     "alignment_downbeat", "alignment_offset", "target_bpm",
     "tempo_adjustment", "pitch_adjustment", "reason",
 )

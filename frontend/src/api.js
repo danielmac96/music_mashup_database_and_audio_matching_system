@@ -124,6 +124,9 @@ export const api = {
       }),
     }),
 
+  // Does each scored term agree with the ratings? (matcher/term_report.py)
+  getTermReport: () => jsonFetch("/api/mashups/term-report"),
+
   // Why a judged pair got its star — keys of models.FEEDBACK_REASONS
   // (pairModel.VERDICT_REASONS). 404 when the pair is not rated.
   savePairReasons: ({ vocalSongId, instSongId, vocalSection = null,
