@@ -25,7 +25,9 @@ from matcher.plan import (
     _INST_LABEL_PRIORITY, _VOCAL_LABEL_PRIORITY, _pick_sections,
 )
 from matcher.alignment import align, describe
-from matcher.section_score import section_components
+from matcher.section_score import (
+    phrase_score, rhythm_score, section_components, section_structure_score,
+)
 
 # What a section pair is judged on. Deliberately only the three things a
 # `sections` row can actually answer:
@@ -162,12 +164,19 @@ def section_terms(vocal: Dict, inst: Dict, stretch: float,
 
 
 def score_section_pair(vocal: Dict, inst: Dict, stretch: float,
-                       bpm: Optional[float] = None) -> float:
+                       bpm: Optional[float] = None,
+                       weights: Optional[Dict[str, float]] = None,
+                       patterns: Optional[List[Dict]] = None) -> float:
     """Fit of one (vocal section, bed section) pair, 0-1.
 
     `stretch` is the factor the bed is played at to reach the vocal's tempo
     (matcher.match.compute_stretch_factor), so the bed's duration is divided by
     it — the same convention build_pairings uses.
+
+    `weights` / `patterns`: the scorer reads them ONCE per run and passes them
+    in. Read here they cost a stat, a file read and a JSON parse of
+    settings.json per call — and this runs for every section pair in the
+    library (624k at 204 tracks), which is what made Score library take an hour.
     """
     v_dur = _duration(vocal)
     i_dur = _duration(inst) / max(float(stretch or 1.0), 1e-6)
@@ -182,18 +191,20 @@ def score_section_pair(vocal: Dict, inst: Dict, stretch: float,
     # move, and charging full price for it hides good pairs.
     fit = phrase_fit(v_dur, i_dur, bpm)["fit"] if bpm else duration_fit(v_dur, i_dur)
 
-    w = _weights()
+    w = weights if weights is not None else _weights()
     total = (w["label"] * label
              + w["duration"] * fit
              + w["voice"] * min(max(voice, 0.0), 1.0))
-    # Spec §7's three. Skipped entirely when their weights are zero — the
-    # default until the library carries P2.1's per-section grid — so this costs
-    # nothing on a run that is not using them.
-    if w["phrase"] or w["rhythm"] or w["structure"]:
-        parts = section_components(vocal, inst, stretch)
-        total += (w["phrase"] * parts["score_phrase"]
-                  + w["rhythm"] * parts["score_rhythm"]
-                  + w["structure"] * parts["score_structure"])
+    # Spec §7's three — each computed only when it carries weight (the same
+    # functions section_components calls, so the numbers are identical). A
+    # live library weights phrase alone; computing rhythm and the pattern match
+    # for every section pair only to multiply them by zero was most of a run.
+    if w["phrase"]:
+        total += w["phrase"] * phrase_score(vocal, inst, stretch)
+    if w["rhythm"]:
+        total += w["rhythm"] * rhythm_score(vocal, inst)
+    if w["structure"]:
+        total += w["structure"] * section_structure_score(vocal, inst, patterns)
     return total
 
 
@@ -216,7 +227,9 @@ def _index_of(section: Dict, fallback: int) -> int:
 def top_section_pairs(vocal_sections: List[Dict], inst_sections: List[Dict],
                       stretch: float = 1.0, prefiltered: bool = False,
                       bpm: Optional[float] = None,
-                      limit: int = 3) -> List[Dict]:
+                      limit: int = 3,
+                      weights: Optional[Dict[str, float]] = None,
+                      patterns: Optional[List[Dict]] = None) -> List[Dict]:
     """The best `limit` (vocal section x bed section) pairs, best first (E.3).
 
     The candidate row is the section pair now, not the song pair: "chorus over
@@ -233,31 +246,40 @@ def top_section_pairs(vocal_sections: List[Dict], inst_sections: List[Dict],
     if not v_use or not i_use:
         return []
 
+    # Read once per call (the scorer passes them once per RUN): see
+    # score_section_pair for what reading them per pair cost.
+    if weights is None:
+        weights = _weights()
+    if patterns is None:     # _pair_row's structure term reads them too
+        from matcher.patterns import current_patterns
+        patterns = current_patterns()
+
     scored = []
     for vi, v in enumerate(v_use):
         best, best_score = None, -1.0
         for ii, i in enumerate(i_use):
-            sc = score_section_pair(v, i, stretch, bpm)
+            sc = score_section_pair(v, i, stretch, bpm, weights, patterns)
             if sc > best_score:
                 best, best_score = (v, i, vi, ii), sc
         if best is not None:
             scored.append((best_score, best))
 
     scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [_pair_row(v, i, vi, ii, sc, stretch, bpm)
+    return [_pair_row(v, i, vi, ii, sc, stretch, bpm, patterns=patterns)
             for sc, (v, i, vi, ii) in scored[:max(1, limit)]]
 
 
 def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
               stretch: float, bpm: Optional[float],
-              semitones: Optional[int] = None) -> Dict:
+              semitones: Optional[int] = None,
+              patterns: Optional[List[Dict]] = None) -> Dict:
     """The stored shape of one section pair. Shared by both entry points so a
     row means the same thing however it was chosen."""
     pf = phrase_fit(
         float(v.get("end_sec") or 0) - float(v.get("start_sec") or 0),
         (float(i.get("end_sec") or 0) - float(i.get("start_sec") or 0))
         / max(float(stretch or 1.0), 1e-6), bpm)
-    parts = section_components(v, i, stretch)
+    parts = section_components(v, i, stretch, patterns)
     # label / duration / voice were computed and thrown away on every write
     # until now, so three of the four bars the pair card draws had no value to
     # draw. Cheap here: this runs per STORED row, not per scored pair.

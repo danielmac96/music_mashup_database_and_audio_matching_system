@@ -1379,8 +1379,11 @@ Existing databases migrate on start.
   still reads `plan["pairings"][0]`.
 - A track's star is the best any pairing it appears in has earned; there is no
   per-song rating store.
-- Turning on a section weight removed a short-circuit in `matcher/sections.py`
-  (re-score 4.9s → 10.8s at 30 tracks). Watch it at scale. Four-stem separation
+- **Nothing in the section search reads settings.** `score_all_pairs` reads
+  the section weights and patterns once and passes them to
+  `top_section_pairs` / `score_section_pair`; a term is computed only when it
+  carries weight. A settings read inside that loop is a file read per section
+  pair (§9: it made a 204-track re-score take an hour). Four-stem separation
   moved the ranking more than any weight change did.
 
 ### SoundCloud
@@ -1683,11 +1686,15 @@ driven by the 100-persona browser simulation (§9) against a synthesised
      (92.7%) as under Essentia (93.7%), so it was never a real gate; z-scoring
      rejects random pairs but also the known variants. Not a regression of
      the flip. Fix with the EffNet embedding (slice 2).
-   - **Score library is slow at 204 tracks and silent while it is.** The
-     section-pair emit (`matcher/match.py` `_emit(..., with_sections=True)`)
-     is a single-threaded Python loop with no progress updates: the job sits
-     at 55% for over an hour of CPU. Needs progress reporting and a faster
-     section search before the library grows further (§7 predicted this).
+   - ~~**Score library is slow at 204 tracks and silent while it is.**~~
+     Fixed 2026-10-08. The cause was not the loop but what it called:
+     `score_section_pair` read `settings.json` (stat + read + JSON parse) for
+     every section pair — 624k times at 204 tracks — and every stored row
+     re-read the mashup patterns. The run now reads both once, computes a
+     section term only when it carries weight, and does the harmony rotation
+     as one gather; the section pass reports progress (40–85%). On a
+     synthetic 204-track library with the live weights: 155.6 s → 24.5 s,
+     every one of 61,780 rows identical (`tests/test_score_run_cost.py`).
    - **A restart between analysis and structure strands a track**: `status`
      is `analysed` before structure runs, so the resume skips it and only the
      staleness badge / a bulk re-analyse repairs it (seen once, after a
@@ -1768,8 +1775,8 @@ driven by the 100-persona browser simulation (§9) against a synthesised
       out of register (needs `f0` after the shift, phase 3), plain-language
       top reasons, and a recipe on ↔ off A/B in the audition. Reason chips on
       a verdict are done (§4, `pair_feedback.reasons_json`).
-   3. **Better suggestions** — first, Score library progress and a faster
-      section search; then section terms at weight 0 until measured against
+   3. **Better suggestions** — Score library progress and a faster section
+      search are done (6.4×, §9 above); next, section terms at weight 0 until measured against
       verdicts: section-level spectral room (`band_energy_vocal/bed`), vocal
       coverage (`vocal_activity`), register (`f0` after the shift, enabling a
       split transpose), stem quality, energy arc. Check `tonal`, `dissonance`

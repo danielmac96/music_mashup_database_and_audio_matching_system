@@ -926,6 +926,14 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     KEY_MIN_SCORE = cfg["key_min_score"]
     BPM_MAX_DIFF_MODEL = cfg["bpm_max_diff_model"]
     MAX_SECTION_PAIRS_PER_SONG_PAIR = cfg["max_section_pairs"]
+    # The section weights and the mashup patterns, read ONCE for the run and
+    # handed to every section search. Read per section pair (the old default)
+    # they cost a stat + read + JSON parse of settings.json each — 624k of them
+    # at 204 tracks, the bulk of an hour-long re-score.
+    from config import current_section_weights
+    from matcher.patterns import current_patterns
+    SECTION_WEIGHTS_RUN = current_section_weights()
+    PATTERNS_RUN = current_patterns()
 
     db = db_path or DB_PATH
     bpm_max = float(bpm_max_diff) if bpm_max_diff is not None else BPM_MAX_DIFF
@@ -1050,7 +1058,9 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         # The vocal sets the target tempo, so bars are counted at its BPM.
         out = top_section_pairs(v_use, i_use, stretch, prefiltered=True,
                                 bpm=top.get("bpm"),
-                                limit=MAX_SECTION_PAIRS_PER_SONG_PAIR)
+                                limit=MAX_SECTION_PAIRS_PER_SONG_PAIR,
+                                weights=SECTION_WEIGHTS_RUN,
+                                patterns=PATTERNS_RUN)
         _section_pair_cache[key] = out
         return out
 
@@ -1066,10 +1076,16 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         return pairs[0].get("vocal_section_idx"), pairs[0].get("inst_section_idx")
 
     def _emit(pairs, combo_type, row_scorer, row_version, weights,
-              with_sections=False):
+              with_sections=False, on_pair=None):
         nonlocal scored
         heap = heaps[combo_type]
-        for top, bed, scores in pairs:
+        n_pairs = len(pairs)
+        # The section search is per song pair and was the silent half of a
+        # run: the bar sat at 55% for the whole of it. Report every ~1%.
+        tick = max(1, n_pairs // 100)
+        for k, (top, bed, scores) in enumerate(pairs):
+            if on_pair and k % tick == 0:
+                on_pair(k, n_pairs)
             # One row per section pair (E.3): "chorus over drop" and "verse over
             # breakdown" are different ideas about the same two records.
             section_pairs = _section_pairs(top, bed) if with_sections else []
@@ -1110,13 +1126,18 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     voi = _run(v_block, i_block,
                key_gate=None if use_model else key_min, upper_triangle=False,
                bpm_gate=model_bpm_gate, weights=VOCAL_WEIGHTS,
-               on_block=_report(0, 55, "Scoring vocal over instrumental"))
+               on_block=_report(0, 30, "Scoring vocal over instrumental"))
     if use_model:
         _apply_model_scores(voi, bundle, _sections, lib_stats,
-                            _report(55, 10, "Applying the learned model"),
+                            _report(30, 10, "Applying the learned model"),
                             pinned_sections=_best_section_idx)
+
+    def _on_section_pair(done: int, total: int) -> None:
+        if progress:
+            progress(40 + int(45 * done / max(total, 1)),
+                     f"Choosing sections: {done}/{total} pairs")
     _emit(voi, "vocal_over_instrumental", active_scorer, model_version,
-          VOCAL_WEIGHTS, with_sections=True)
+          VOCAL_WEIGHTS, with_sections=True, on_pair=_on_section_pair)
     voi = None                      # release before the second pass allocates
 
     # ── instrumental over instrumental ────────────────────────────────────────
@@ -1128,7 +1149,7 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     # filter (vocal_presence ≥ 0.25) would be asking the wrong question of it.
     _emit(_run(i_block, i_block, key_gate=key_min, upper_triangle=True,
                weights=MATCH_WEIGHTS,
-               on_block=_report(65, 25, "Scoring instrumental over instrumental")),
+               on_block=_report(85, 5, "Scoring instrumental over instrumental")),
           "instrumental_over_instrumental", "heuristic", None, MATCH_WEIGHTS)
 
     # Drain the heaps in ranked order. Sorting on (-total, seq) rather than
