@@ -22,6 +22,9 @@ from matcher.match import (
 )
 
 from matcher.patterns import priority_for
+from matcher.recipe import (
+    GAIN_MIN_DB, VOCAL_LANE_GAIN, bed_gain_db, bed_lane_gain,
+)
 
 # Section label priority when choosing what to mash — now DERIVED from the
 # configured mashup patterns (matcher/patterns.py) rather than hard-coded here.
@@ -310,6 +313,11 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
             "camelot": feat.get("camelot"),
         }
 
+    # The level the recipe arms the bed at: the loudness of the vocal record's
+    # own instrumental (matcher/recipe.bed_gain_db).
+    v_own_bed = get_features_for_song(vocal_song_id, "instrumental", db_path=db) or {}
+    gain_db = bed_gain_db(v_own_bed.get("lufs"), i_feat.get("lufs"))
+
     steps = []
     steps.append(
         f"1. Import vocal stem of \"{v_song.get('title')}\" and instrumental "
@@ -333,6 +341,11 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
         steps.append(f"3. Keys already align — no pitch shift needed{measured}.")
     if harmony and harmony.get("advice"):
         steps.append(f"3b. {harmony['advice'].capitalize()}.")
+    if gain_db is not None and abs(gain_db) >= GAIN_MIN_DB:
+        steps.append(
+            f"3c. Set the instrumental {gain_db:+.1f} dB — the loudness of the "
+            f"vocal's own instrumental ({v_own_bed.get('lufs'):.1f} LUFS, this one "
+            f"{i_feat.get('lufs'):.1f}), so the vocal sits as it was mixed.")
     if pairings:
         for n, p in enumerate(pairings, start=4):
             steps.append(f"{n}. {p['note']} "
@@ -352,6 +365,9 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
         "key_relation": _key_relation(v_feat.get("camelot") or "",
                                       i_feat.get("camelot") or ""),
         "harmony": harmony,
+        "bed_gain_db": gain_db,
+        "vocal_lane_gain": VOCAL_LANE_GAIN,
+        "bed_lane_gain": bed_lane_gain(gain_db),
         "vocal_sections": v_sections,
         "inst_sections": i_sections,
         "pairings": pairings,

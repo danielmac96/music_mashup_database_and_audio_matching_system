@@ -424,9 +424,11 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
         "inst_section_idx": (pairing or {}).get("inst_section_idx"),
         "clips": [
             {"song_id": vocal_song_id, "stem": "vocals", "offset_sec": 0.0,
-             "rate": rate_vocal, "semitones": 0, "gain": 0.8},
+             "rate": rate_vocal, "semitones": 0,
+             "gain": plan.get("vocal_lane_gain", 0.8)},
             {"song_id": inst_song_id, "stem": "instrumental", "offset_sec": 0.0,
-             "rate": rate_inst, "semitones": semis_inst, "gain": 0.8},
+             "rate": rate_inst, "semitones": semis_inst,
+             "gain": plan.get("bed_lane_gain", 0.8)},
         ],
     }, indent=2), encoding="utf-8")
 
@@ -493,6 +495,7 @@ def _readme(plan: dict, v_info: dict, i_info: dict,
         f"–{_fmt(i_info.get('section_end'))}"
         f"{'  (snapped to a downbeat)' if i_info.get('snapped_to_downbeat') else ''}",
         f"  key relation : {plan.get('key_relation')}",
+        _level_note(plan.get("bed_gain_db")),
         "",
         "=" * 68,
         "THE FULL RECIPE",
@@ -509,6 +512,16 @@ def _readme(plan: dict, v_info: dict, i_info: dict,
         "",
     ]
     return "\n".join(lines)
+
+
+def _level_note(gain_db) -> str:
+    """The recipe's level, which the export leaves for the mix (§5.11)."""
+    if gain_db is None:
+        return "  level        : not baked in — no loudness measured to suggest one"
+    if abs(gain_db) < 1.0:
+        return "  level        : not baked in — the stems already sit about right"
+    return (f"  level        : not baked in — set the instrumental {gain_db:+.1f} dB "
+            "(the vocal's loudness is the reference)")
 
 
 def _fmt(secs) -> str:

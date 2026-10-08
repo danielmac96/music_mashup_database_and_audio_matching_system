@@ -361,9 +361,14 @@ reprocesses), add to a group, or delete the track and its files.
   rekordbox** export the same top N as files (§5.11).
 - Each pair card gives one line per song — title · artist, section span and
   bars, the vocal section's line when you have typed one, key, BPM — then the
-  adjustments (key relation + semitones — drawn neutral as `8A/9B wheel` when a
-  measured harmony exists, because then it is context, not the verdict — tempo
-  change, nudge, `loop bed ×2` when the bed section must loop),
+  key relation (drawn neutral as `8A/9B wheel` when a measured harmony exists,
+  because then it is context, not the verdict), the **recipe** (§5.7) — a
+  **DO** row of what building it takes, each chip graded free / light / heavy
+  like the effort chip and explained on hover (`bed at half time`, `bed tempo
+  −1.5%`, `bed +3 st`, `nudge bed +12 ms`, `loop bed ×2`, `bed −6.0 dB`, `bed
+  high-pass 120 Hz`; "nothing — drop both in" when there is nothing to do), and
+  a **WATCH** row of what the numbers cannot promise (a suspected half/double
+  BPM, a coin-flip transpose, clashing notes, no beat grid, rough separation) —
   the **measured harmony** (`♪ 92% · +2 st` — the two sections' notes
   cross-correlated, §5.7; `?` when another transposition fits almost as well;
   red below 55%), a red **bass clash** tag with the high-pass advice,
@@ -938,8 +943,24 @@ veto.
 measured shift when the section pair had chroma, else the Camelot estimate. The
 listing sends it as `semitone_shift`, so the card, the dock's loop, Studio, a
 set's landing and the FL export all play the shift the card prints (§7).
-`effort.pitch_cost` still prices the Camelot shift — the scorer's block pass
-runs before the section pair is known.
+The block pass prices `pitch_cost` on the Camelot shift (the section pair is
+not known yet); once it is, `_apply_measured_harmony` re-prices it on the
+measured shift (`effort.transpose_cost`), so a "Free" chip never sits beside a
+−5 st transpose.
+
+**The recipe** (`matcher/recipe.pair_recipe`, on every listing row as
+`recipe`): everything done to a pair to build it — fold, stretch, transpose
+(and whether it was measured), nudge, loop, the bed's level, the bass-clash
+high-pass — and what to watch for. It describes a scored row and never changes
+a rank. **Level**: the bed is brought to the integrated loudness (EBU R128) of
+the **vocal's own instrumental**, so the vocal sits over it as it was mixed in
+its own record (`bed_gain_db`, ±12 dB clamp, half-dB steps). A fixed "vocal N
+LU above the bed" rule gets this backwards: in a finished record the vocal stem
+measures several LU *below* its instrumental. The recipe also carries the
+linear lane gains (`vocal_lane_gain` 0.85, `bed_lane_gain`) that the dock's
+loop, Studio's lanes and the FL `session.json` arm at; with nothing measured
+the bed keeps its old 0.8. The plan carries the same level and a recipe step;
+the FL export writes it in the README and leaves it unbaked.
 
 **Alignment** (`matcher/alignment.py`), from stored grids only: the vocal
 section's first downbeat is the anchor; `alignment_offset` is how far to move
@@ -1237,6 +1258,9 @@ Existing databases migrate on start.
   `keyRel`'s suggestion (a label on an unmeasured card) or a fresh Camelot sum.
   A pair's section indexes travel with it to the export
   (`tests/test_pair_recipe_consistency.py`).
+- **Studio's lane gain is linear** (`MashupEngine`'s gain node), so the rail
+  prints `20·log10(gain)` dB (`StudioRail.gainDb`). It printed `gain×24−12`,
+  reading 0.8 as +7.2 dB.
 - **The per-song cap never counts the scoped track** (`_cap_per_song`
   `exempt`). It is on every row of "beds for this vocal", so counting it ended
   the list at three — every dock scoped to a track showed three pairs.
@@ -1722,16 +1746,16 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    Decided: native `.flp` export, a tempo curve across a set (both sides may
    stretch), and trust first. Phases, each shippable alone:
    1. **One recipe per pair** — the bed's transpose and the chosen section pair
-      are the same on the card, the loop, Studio, the set and the FL export
-      (done, §5.7, §7). Still open in this phase: a full `pair_recipe` with
-      per-side gain from stem LUFS (measured, never used), filter and fade
-      defaults; and the FL session taking Studio's lane state.
-   2. **A legible pair** — a recipe strip on the card / Studio / Sets (*what* is
-      mashed, *what was done* to it — stretch, shift, gain, HPF, nudge, loop —
-      and *what to watch*: octave suspects, coin-flip keys, low stem quality,
-      vocal out of register), the score bars behind a "why", plain-language
-      top reasons, a raw ↔ conformed A/B in the audition, and reason chips on a
-      verdict (`pair_feedback.reasons_json`, migrated under the §7 rules).
+      are the same on the card, the loop, Studio, the set and the FL export;
+      `pair_recipe` with the bed's level from stem loudness and the bass-clash
+      high-pass, armed by the loop, Studio and the FL session; effort priced
+      on the measured transpose (done, §5.7, §7). Still open: the FL session
+      taking Studio's lane state.
+   2. **A legible pair** — the recipe's DO / WATCH rows on the card and Set
+      rows (done, §4). Still open: the strip in Studio's ALIGN bar, the vocal
+      out of register (needs `f0` after the shift, phase 3), plain-language
+      top reasons, a recipe on ↔ off A/B in the audition, and reason chips on
+      a verdict (`pair_feedback.reasons_json`, migrated under the §7 rules).
    3. **Better suggestions** — first, Score library progress and a faster
       section search; then section terms at weight 0 until measured against
       verdicts: section-level spectral room (`band_energy_vocal/bed`), vocal

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
 
@@ -41,11 +41,22 @@ export function useSets() {
   }, [refresh, setActiveId]);
 
   // Add a pair to the active set, making a first set if there is none, so the
-  // first press of "+ Set" never asks a question.
+  // first press of "+ Set" never asks a question. Two quick presses before the
+  // first set exists share ONE creation: `active` is still null for the second
+  // until the refresh lands, which used to make "My set" and "My set 2".
+  const creating = useRef(null);
+  // Once a set is active the pending creation has done its job; clearing it
+  // here (not after the await) also covers a press that lands before the
+  // re-render that makes the new set `active`.
+  useEffect(() => { if (active) creating.current = null; }, [active]);
   const addPair = useCallback(async (c) => {
     if (!c) return null;
     try {
-      const target = active || await create("My set");
+      let target = active;
+      if (!target) {
+        creating.current = creating.current || create("My set");
+        target = await creating.current;
+      }
       const res = await api.addToSet(target.id, c);
       setActiveId(target.id);
       refresh();

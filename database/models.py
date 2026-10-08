@@ -1926,6 +1926,30 @@ def update_features_manual(song_id: int, *, bpm: Optional[float] = None,
     return updated
 
 
+def get_stem_facts(song_ids, db_path: Path = DB_PATH) -> Dict:
+    """What a pair's recipe needs about each side, for a page of songs in one
+    query: {(song_id, stem_type): {lufs, true_peak, quality, bleed, bpm,
+    bpm_candidates_json}} for the full mix and the two-stem view. Missing rows
+    are simply absent — the recipe reads absence as unmeasured."""
+    ids = sorted({int(i) for i in song_ids if i is not None})
+    if not ids:
+        return {}
+    conn = get_conn(db_path)
+    try:
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""SELECT f.song_id, f.stem_type, f.lufs, f.true_peak, f.bpm,
+                       f.bpm_candidates_json, st.quality, st.bleed
+                FROM features f
+                LEFT JOIN stems st ON st.song_id=f.song_id AND st.stem_type=f.stem_type
+                WHERE f.song_id IN ({marks})
+                  AND f.stem_type IN ('full', 'vocals', 'instrumental')""",
+            ids).fetchall()
+    finally:
+        conn.close()
+    return {(r["song_id"], r["stem_type"]): dict(r) for r in rows}
+
+
 def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[Dict]:
     conn = get_conn(db_path)
     rows = conn.execute(

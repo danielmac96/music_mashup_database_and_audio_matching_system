@@ -1074,10 +1074,12 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       const shift = cursor - startsAt;
       addLane(v, vStem, { offsetSec: place.vocal.offsetSec + shift,
         clipStart: place.vocal.clipStart, clipEnd: place.vocal.clipEnd,
-        rate: vRate, semitones: 0, gain: 0.85, synced: Boolean(bpm && vBpm), colorIdx: color++ });
+        rate: vRate, semitones: 0, gain: p.recipe?.vocal_lane_gain ?? 0.85,
+        synced: Boolean(bpm && vBpm), colorIdx: color++ });
       addLane(b, bStem, { offsetSec: place.bed.offsetSec + shift,
         clipStart: place.bed.clipStart, clipEnd: place.bed.clipEnd,
-        rate: bRate, semitones: p.semitoneShift ?? 0, gain: 0.8,
+        rate: bRate, semitones: p.semitoneShift ?? 0,
+        gain: p.recipe?.bed_lane_gain ?? 0.8, hpHz: p.recipe?.bed_highpass_hz ?? 0,
         synced: Boolean(bpm && bBpm), colorIdx: color++ });
       cursor = shift + Math.max(place.base + vLen, place.base + off + bLen);
     }
@@ -1178,13 +1180,17 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                              clipStart: place ? place.vocal.clipStart : 0,
                              clipEnd: place ? place.vocal.clipEnd : null,
                              rate: vRate, semitones: 0,
-                             gain: 0.85, synced: Boolean(bpm && vBpm), colorIdx: 0 });
+                             gain: seed.recipe?.vocal_lane_gain ?? 0.85,
+                             synced: Boolean(bpm && vBpm), colorIdx: 0 });
     addLane(bTrack, bStem, { offsetSec: place ? place.bed.offsetSec : base - bAt,
                              clipStart: place ? place.bed.clipStart : 0,
                              clipEnd: place ? place.bed.clipEnd : null,
                              rate: bRate,
                              semitones: seed.semitoneShift ?? 0,
-                             gain: 0.8, synced: Boolean(bpm && bBpm), colorIdx: 1 });
+                             // The recipe's level and bass-clash high-pass.
+                             gain: seed.recipe?.bed_lane_gain ?? 0.8,
+                             hpHz: seed.recipe?.bed_highpass_hz ?? 0,
+                             synced: Boolean(bpm && bBpm), colorIdx: 1 });
     setRestored(true);
     // Hand the seed back: leaving it live would re-seed — and throw away the
     // user's edits — every time they leave Studio and come back.
@@ -1685,6 +1691,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     stretch: pairPlan?.stretch_factor ?? null,
     // The armed timing's own transpose first; the plan's is for its top pick.
     semitones: activeOption?.semitone_shift ?? pairPlan?.semitone_shift ?? null,
+    // Levels from the recipe (matcher/recipe.py: the two stems' loudness).
+    vocalGain: pairPlan?.vocal_lane_gain ?? null,
+    bedGain: pairPlan?.bed_lane_gain ?? null,
+    bedGainDb: pairPlan?.bed_gain_db ?? null,
     // null is NO STORED GRID, not a measured zero — the rail says so rather
     // than drawing a tick at 0 ms that nothing measured.
     nudgeSec: activeOption?.alignment_offset ?? null,

@@ -1208,6 +1208,14 @@ def _apply_measured_harmony(top: dict, bed: dict, scores: dict,
     scores["harmonic_confidence"] = round(h["confidence"], 4)
     scores["bass_clash"] = 1 if h["bass_clash"] else 0
 
+    # Effort priced the Camelot transpose; the pair now plays the measured one
+    # (matcher/recipe.bed_shift), so the cost is re-priced on it — a "Free"
+    # chip beside a −5 st transpose was a contradiction on one card.
+    if "effort_pitch" in scores:
+        from matcher.effort import effort_total_from_columns, transpose_cost
+        scores["effort_pitch"] = round(transpose_cost(h["shift"]), 4)
+        scores["score_effort"] = round(effort_total_from_columns(scores), 4)
+
     fit = sum(scores[k] * weights.get(k, 0) for k in weights)
     effort = scores.get("score_effort") or 0.0
     scores["total"] = round(fit * (1.0 - effort_weight * effort), 4)

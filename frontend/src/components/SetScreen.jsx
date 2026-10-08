@@ -8,6 +8,7 @@ import { camelotColor } from "../theme";
 import { ScreenHeader } from "../shell/ScreenHeader";
 import { RailRow, RailSection } from "../shell/Sidebar";
 import { keyOf, spanLabel } from "./pairs/pairModel";
+import { RecipeStrip } from "./pairs/RecipeStrip";
 
 // The Sets screen: chosen mashups in running order — what a Big Bootie-style
 // mix is planned in. Pairs arrive from the dock ("+ Set", or A) and from
@@ -97,6 +98,8 @@ function ItemRow({ item, index, start, landing, playing, onPlay, onStudio, onRem
         <button className="pc-studio" onClick={() => onStudio(item)}>Studio</button>
         <button className="pc-hide" title="Remove from this set" onClick={() => onRemove(item)}>✕</button>
       </div>
+      {/* Last in the row so it wraps onto a line of its own under the sides. */}
+      <div className="set-recipe"><RecipeStrip recipe={item.recipe} compact /></div>
     </div>
   );
 }

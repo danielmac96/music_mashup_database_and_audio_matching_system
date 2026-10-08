@@ -2,6 +2,7 @@
 and fetch an actionable section-level plan for a pair."""
 from __future__ import annotations
 
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -21,7 +22,7 @@ from api import jobs
 from api.workers import candidate_preview_worker, match_worker
 from matcher.effort import dominant_component, effort_label
 from matcher.match import compute_stretch_factor
-from matcher.recipe import bed_shift
+from matcher.recipe import bed_shift, pair_recipe
 from matcher.plan import build_mashup_plan
 
 router = APIRouter()
@@ -152,7 +153,27 @@ def _with_playback_terms(rows: list) -> list:
             "key_certainty_cost": r.get("effort_key_certainty") or 0.0,
         }
         r["effort_reason"] = _EFFORT_REASONS.get(dominant_component(parts))
+    _with_recipes(rows)
     return rows
+
+
+def _with_recipes(rows: list) -> None:
+    """Attach matcher.recipe.pair_recipe to every row: what is done to the pair
+    (stretch, fold, transpose, nudge, loop, level, high-pass) and what to watch
+    for. One query for the page's stem facts; a recipe is a description, so a
+    failure here leaves the rows without one rather than failing the list."""
+    if not rows:
+        return
+    try:
+        from database import models as _models
+        ids = {r.get(k) for r in rows for k in ("vocal_song_id", "inst_song_id")}
+        facts = _models.get_stem_facts(ids, db_path=_models.DB_PATH)
+    except Exception:  # noqa: BLE001 — degrade, don't 500
+        logging.getLogger(__name__).warning("could not read stem facts for recipes",
+                                            exc_info=True)
+        facts = {}
+    for r in rows:
+        r["recipe"] = pair_recipe(r, facts)
 
 
 @router.get("")

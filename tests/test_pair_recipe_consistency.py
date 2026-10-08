@@ -191,3 +191,154 @@ def test_no_screen_derives_a_transpose_from_camelot_for_playback():
     assert "semitones: candidate.semitone_shift" in audition
     app = _read("App.jsx")
     assert app.count("semitoneShift: c.semitone_shift") >= 2
+
+
+# ── the recipe: what is done to a pair, and what to watch for ────────────────
+
+def _row(**kw):
+    base = {"vocal_song_id": 1, "inst_song_id": 2, "vocal_bpm": 124.0,
+            "inst_bpm": 124.0, "vocal_camelot": "8B", "inst_camelot": "8B",
+            "alignment_offset": 0.0, "section_loop_repeats": 1}
+    base.update(kw)
+    from matcher.match import compute_stretch_factor
+    base.setdefault("stretch_factor",
+                    compute_stretch_factor(base["vocal_bpm"], base["inst_bpm"]))
+    return base
+
+
+def _keys(items):
+    return [a["key"] for a in items]
+
+
+def test_a_free_pair_asks_for_nothing():
+    from matcher.recipe import pair_recipe
+    r = pair_recipe(_row())
+    assert r["adjustments"] == [] and r["warnings"] == []
+    assert r["bed_semitones"] == 0 and r["bed_rate"] == 1.0
+
+
+def test_each_adjustment_is_named_and_graded():
+    from matcher.recipe import pair_recipe
+    r = pair_recipe(_row(inst_bpm=63.0, harmonic_shift=-5, harmonic_confidence=0.6,
+                         score_key=0.8, alignment_offset=0.012,
+                         section_loop_repeats=2, bass_clash=1))
+    by = {a["key"]: a for a in r["adjustments"]}
+    assert set(by) == {"fold", "stretch", "shift", "nudge", "loop", "hpf"}
+    assert r["tempo_fold"] == "double"
+    assert by["stretch"]["text"] == "bed tempo −1.6%" and by["stretch"]["level"] == "light"
+    assert by["shift"]["text"] == "bed −5 st" and by["shift"]["level"] == "heavy"
+    assert "measured" in by["shift"]["why"]
+    assert by["nudge"]["text"] == "nudge bed +12 ms"
+    assert r["bed_highpass_hz"] == 120
+
+
+def test_level_matches_the_vocals_own_instrumental():
+    """The bed comes to the loudness the vocal's own record had under it, so
+    the vocal sits as it was mixed — the vocal stem itself is quieter than its
+    instrumental in a finished record, and that is not a problem to fix."""
+    from matcher.recipe import VOCAL_LANE_GAIN, bed_gain_db, bed_lane_gain, pair_recipe
+    facts = {(1, "vocals"): {"lufs": -16.0}, (1, "instrumental"): {"lufs": -11.0},
+             (2, "instrumental"): {"lufs": -8.0}}
+    r = pair_recipe(_row(), facts)
+    assert r["bed_gain_db"] == -3.0
+    assert "bed −3.0 dB" in [a["text"] for a in r["adjustments"]]
+    assert r["bed_lane_gain"] == pytest.approx(VOCAL_LANE_GAIN * 10 ** (-3 / 20), abs=1e-3)
+    # Unmeasured is not 0 dB: the lane keeps its old default.
+    assert bed_gain_db(None, -9.0) is None and bed_lane_gain(None) == 0.8
+    assert bed_gain_db(-30.0, 0.0) == -12.0, "clamped"
+
+
+def test_warnings_say_what_the_numbers_cannot_promise():
+    from matcher.recipe import pair_recipe
+    facts = {(1, "full"): {"bpm": 62.0}, (2, "instrumental"): {"quality": 0.3}}
+    r = pair_recipe(_row(harmonic_shift=2, harmonic_confidence=0.05,
+                         score_key=0.4, alignment_offset=None,
+                         vocal_camelot=None), facts)
+    assert set(_keys(r["warnings"])) == {"key_unsure", "clash", "no_grid",
+                                         "vocal_octave", "bed_quality"}
+    # The measured shift is still the answer when the wheel has nothing.
+    assert r["bed_semitones"] == 2 and r["shift_source"] == "measured"
+
+
+def test_every_listing_row_carries_its_recipe(models):
+    from api.routes.mashups import _with_playback_terms
+    v, i = _pair(models)
+    rows = _with_playback_terms([_row(vocal_song_id=v, inst_song_id=i,
+                                      harmonic_shift=-2)])
+    assert rows[0]["recipe"]["bed_semitones"] == rows[0]["semitone_shift"] == -2
+
+
+def test_the_plan_and_the_fl_session_take_the_recipes_level(models):
+    from matcher.plan import build_mashup_plan
+    from matcher.recipe import bed_lane_gain
+    v, i = _pair(models)
+    models.update_features_extras(v, "instrumental", {"lufs": -11.0})
+    models.update_features_extras(i, "instrumental", {"lufs": -8.0})
+    plan = build_mashup_plan(v, i)
+    assert plan["bed_gain_db"] == -3.0
+    assert plan["bed_lane_gain"] == bed_lane_gain(-3.0)
+    assert any("-3.0 dB" in s for s in plan["steps"])
+    src = (ROOT / "render" / "session.py").read_text(encoding="utf-8")
+    assert 'plan.get("bed_lane_gain"' in src and 'plan.get("vocal_lane_gain"' in src
+
+
+# ── the recipe on screen, and in the audio ───────────────────────────────────
+
+def test_the_card_and_the_set_show_the_recipe():
+    strip = _read("components/pairs/RecipeStrip.jsx")
+    assert "recipe.adjustments" in strip and "recipe.warnings" in strip
+    assert "title={a.why}" in strip, "every adjustment explains itself"
+    card = _read("components/PairCard.jsx")
+    assert "<RecipeStrip recipe={c.recipe}" in card
+    assert "<RecipeStrip recipe={item.recipe} compact" in _read("components/SetScreen.jsx")
+    css = (FRONT / "styles.css").read_text(encoding="utf-8")
+    for cls in (".pc-recipe", ".pc-adj.free", ".pc-adj.light", ".pc-adj.heavy",
+                ".pc-warn", ".set-recipe"):
+        assert cls in css, cls
+
+
+def test_the_loop_and_studio_arm_the_recipes_levels():
+    audition = _read("hooks/useHookAudition.js")
+    assert "recipe.bed_lane_gain" in audition and "recipe.bed_highpass_hz" in audition
+    # Un-soloing restores the pair's levels, not fixed constants.
+    assert "levels.current.vocal" in audition and "levels.current.bed" in audition
+    studio = _read("components/MixStudio.jsx")
+    assert "seed.recipe?.bed_lane_gain" in studio and "seed.recipe?.bed_highpass_hz" in studio
+    assert "p.recipe?.bed_lane_gain" in studio
+    app = _read("App.jsx")
+    assert app.count("recipe: c.recipe") >= 2 and "recipe: next.recipe" in app
+
+
+def test_lane_gain_reads_in_real_decibels():
+    """MashupEngine's gain is linear, so 0.8 is −1.9 dB — not the +7.2 dB the
+    rail printed with v×24−12."""
+    rail = _read("components/StudioRail.jsx")
+    assert "20 * Math.log10(v)" in rail
+    assert "v * 24 - 12" not in rail
+    assert "suggested.bedGain" in rail and "suggested.vocalGain" in rail
+
+
+def test_effort_prices_the_transpose_the_pair_plays():
+    """Effort was priced on the Camelot shift before the section pair was
+    known; once the measured shift replaces it, so does its cost."""
+    from matcher.effort import effort_total_from_columns, transpose_cost
+    from matcher.match import _apply_measured_harmony
+    secs = {1: [{"section_index": 0, "chroma_vocal": _chroma(0)}],
+            2: [{"section_index": 0, "chroma_bed": _chroma(5)}]}
+    scores = {"bpm_score": 1.0, "key_score": 1.0, "energy_score": 1.0,
+              "timbre_score": 1.0, "collision_score": 1.0,
+              "effort_stretch": 0.0, "effort_pitch": 0.0, "effort_tempo_fold": 0.0,
+              "effort_grid": 0.0, "effort_key_certainty": 0.0, "score_effort": 0.0}
+    _apply_measured_harmony({"song_id": 1}, {"song_id": 2}, scores,
+                            {"vocal_section_idx": 0, "inst_section_idx": 0},
+                            lambda sid: secs[sid],
+                            {"bpm_score": 1.0}, 0.25)
+    assert scores["harmonic_shift"] == -5
+    assert scores["effort_pitch"] == pytest.approx(transpose_cost(-5), abs=1e-4)
+    assert scores["score_effort"] == pytest.approx(effort_total_from_columns(scores), abs=1e-4)
+    assert scores["score_effort"] > 0.2, "a −5 st transpose is not Free"
+
+
+def test_the_card_does_not_print_the_stretch_twice():
+    card = _read("components/PairCard.jsx")
+    assert "{!c.recipe && (\n          <span className=\"pc-tag mono neutral\">\n            {bpmTag(" in card
