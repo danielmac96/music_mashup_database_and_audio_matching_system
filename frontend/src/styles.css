@@ -1928,6 +1928,12 @@ input, select { font-family: inherit; }
 .pc-warn { font-size: 10.5px; color: var(--amber-light); }
 .pc-warn + .pc-warn::before { content: "·"; margin-right: 4px; color: var(--faint); }
 .pc-recipe.compact .pc-watch { display: none; }
+.pc-why { padding: 0 11px 9px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.pc-reason { font-size: 10.5px; padding: 2px 7px; border-radius: 10px; cursor: pointer;
+  background: transparent; border: 1px solid var(--border); color: var(--muted); }
+.pc-reason.good:hover, .pc-reason.good.on { border-color: rgba(46, 204, 113, 0.5); color: var(--green); }
+.pc-reason.bad:hover, .pc-reason.bad.on { border-color: rgba(248, 113, 113, 0.5); color: var(--red); }
+.pc-reason.on { background: rgba(138, 147, 166, 0.12); font-weight: 600; }
 
 .pc-bars {
   padding: 0 11px 9px;

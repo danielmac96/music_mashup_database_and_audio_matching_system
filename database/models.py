@@ -878,6 +878,10 @@ _PAIR_FEEDBACK_OPTIONAL_COLUMNS = (
     # structure (remap_feedback_sections): the row is kept exactly as it was,
     # but its indexes may now point at different music.
     ("sections_stale", "INTEGER DEFAULT 0"),
+    # Why the pair got its star: a JSON list of FEEDBACK_REASONS keys, chosen
+    # on the card after rating. Never part of the verdict, never training input
+    # yet — it is what Phase 3 measures the section terms against.
+    ("reasons_json", "TEXT"),
 )
 
 
@@ -2462,6 +2466,51 @@ def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int,
     conn.close()
 
 
+# Why a pair got its star — picked on the card after rating. `good` reasons are
+# offered on 3-5 stars, `bad` on 1-3. The keys are stored; the labels are the
+# UI's (pairModel.VERDICT_REASONS, pinned equal by a test). Renaming a key
+# orphans every stored use of it, like the verdict names (§7).
+FEEDBACK_REASONS = {
+    "vocal_sits": "good", "groove": "good", "energy_lift": "good",
+    "contrast": "good", "harmony": "good",
+    "key_clash": "bad", "timing_off": "bad", "vocal_buried": "bad",
+    "bass_mud": "bad", "energy_mismatch": "bad", "bad_separation": "bad",
+    "boring": "bad",
+}
+
+
+def set_pair_feedback_reasons(vocal_song_id: int, inst_song_id: int,
+                              vocal_section: Optional[int],
+                              inst_section: Optional[int],
+                              reasons: Sequence[str],
+                              db_path: Path = DB_PATH) -> int:
+    """Attach the reasons for one judgement. Returns rows updated: 0 when the
+    pair has no judgement, because a reason is about a verdict and never
+    stands in for one. An empty list clears them. Unknown keys raise.
+
+    The WHERE mirrors ux_pair_feedback_section (see delete_pair_feedback)."""
+    clean = []
+    for r in reasons:
+        if r not in FEEDBACK_REASONS:
+            raise ValueError(f"unknown reason {r!r}")
+        if r not in clean:
+            clean.append(r)
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            """UPDATE pair_feedback SET reasons_json = ?
+                WHERE vocal_song_id = ?
+                  AND inst_song_id = ?
+                  AND COALESCE(vocal_section, -1) = COALESCE(?, -1)
+                  AND COALESCE(inst_section, -1) = COALESCE(?, -1)""",
+            (json.dumps(clean) if clean else None, vocal_song_id, inst_song_id,
+             vocal_section, inst_section))
+        conn.commit()
+        return cur.rowcount or 0
+    finally:
+        conn.close()
+
+
 def delete_pair_feedback(vocal_song_id: int, inst_song_id: int,
                          vocal_section: Optional[int] = None,
                          inst_section: Optional[int] = None,
@@ -2511,6 +2560,10 @@ def get_pair_feedback(verdict: str = "", db_path: Path = DB_PATH) -> List[Dict]:
         # rather than in the UI means every caller sees one shape.
         if row.get("rating") is None:
             row["rating"] = rating_for_verdict(row.get("verdict"))
+        try:
+            row["reasons"] = json.loads(row.pop("reasons_json", None) or "[]")
+        except (TypeError, ValueError):
+            row["reasons"] = []
         out.append(row)
     return out
 

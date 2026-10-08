@@ -16,6 +16,7 @@ from database.models import (
     delete_pair_feedback, get_pair_feedback, hide_pair, include_track,
     list_hidden, unhide_pair,
     SECTION_TERM_ORDERS, upsert_pair_feedback, verdict_for_rating,
+    FEEDBACK_REASONS, set_pair_feedback_reasons,
 )
 
 from api import jobs
@@ -380,6 +381,32 @@ def clear_feedback(body: PairKey) -> dict:
         vocal_section=body.vocal_section, inst_section=body.inst_section,
     )
     return {"ok": True, "deleted": n}
+
+
+class PairReasons(PairKey):
+    reasons: List[str] = []
+
+
+@router.post("/feedback/reasons")
+def save_feedback_reasons(body: PairReasons) -> dict:
+    """Why a judged pair got its star (models.FEEDBACK_REASONS). A reason is
+    about a verdict, so a pair with none answers 404 rather than inventing one."""
+    try:
+        n = set_pair_feedback_reasons(
+            body.vocal_song_id, body.inst_song_id, body.vocal_section,
+            body.inst_section, body.reasons)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not n:
+        raise HTTPException(status_code=404,
+                            detail="rate the pair first — a reason explains a rating")
+    return {"ok": True, "reasons": list(dict.fromkeys(body.reasons))}
+
+
+@router.get("/feedback/reasons")
+def feedback_reason_vocabulary() -> dict:
+    """The reason keys and which ratings they explain (good / bad)."""
+    return {"reasons": FEEDBACK_REASONS}
 
 
 @router.get("/feedback")

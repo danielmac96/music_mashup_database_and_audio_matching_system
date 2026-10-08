@@ -4,7 +4,7 @@ import { StarRating } from "./StarRating";
 import { RecipeStrip } from "./pairs/RecipeStrip";
 import {
   BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, nudgeLabel, pctOf, rawPctOf,
-  songTermsOf, spanLabel, termsOf, tierOf,
+  reasonsFor, songTermsOf, spanLabel, termsOf, tierOf,
 } from "./pairs/pairModel";
 import { bpmTag, camelotColor, keyRel } from "../theme";
 
@@ -22,7 +22,8 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
                            onSelect, onPlay, onStudio, onHide = null,
                            onAddToSet = null, setName = null,
                            note = "", onNote = null,
-                           comparing = false, onCompare = null }) {
+                           comparing = false, onCompare = null,
+                           reasons = [], onReason = null }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note);
   const tier = tierOf(c);
@@ -137,6 +138,19 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
           ) : (
             <span title="Click to edit" onClick={() => { setDraft(note); setEditing(true); }}>✎ {note}</span>
           )}
+        </div>
+      )}
+
+      {/* Why the star: offered on the focused card once it is rated. */}
+      {focused && rating && onReason && (
+        <div className="pc-why" onClick={(e) => e.stopPropagation()}
+          title="Why this rating? Never changes the verdict — it is what the scorer's terms get checked against">
+          <span className="pc-recipe-label mono">WHY</span>
+          {reasonsFor(rating).map((r) => (
+            <button key={r.key}
+              className={`pc-reason ${r.tone}${reasons.includes(r.key) ? " on" : ""}`}
+              onClick={() => onReason(r.key)}>{r.label}</button>
+          ))}
         </div>
       )}
 

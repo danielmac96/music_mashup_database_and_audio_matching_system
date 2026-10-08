@@ -380,7 +380,13 @@ reprocesses), add to a group, or delete the track and its files.
   label for its meaning. A **hatched** bar is not
   measured (the pair was scored before that term was stored) — **Score
   library** fills it. Clicking the star you already set **clears** the rating,
-  which removes the judgement entirely (§7).
+  which removes the judgement entirely (§7). Once the focused card is rated, a
+  **WHY** row offers reasons — praise for 4–5 stars (vocal sits, groove locks,
+  energy lift, keys sing, great contrast), faults for 1–2 (key clash, timing
+  off, vocal buried, bass mud, energy mismatch, bad separation, boring), both
+  for a 3. They sit beside the verdict (`pair_feedback.reasons_json`), never
+  change it and do not train anything yet: they are what phase 3 checks the
+  section terms against (§9).
 
 ### Queue
 
@@ -1280,6 +1286,12 @@ Existing databases migrate on start.
   `COALESCE` included; match the index loosely and a NULL-sectioned row
   survives a clear that reported success. Sending `rating: null` to the POST
   does **not** clear — the upsert `COALESCE`s it into the star already stored.
+- **Reasons sit beside a verdict, never in place of one.** `POST
+  /api/mashups/feedback/reasons` answers 404 for an unrated pair; the star
+  upsert never touches `reasons_json`, and clearing the star deletes the row
+  and its reasons. The keys are `models.FEEDBACK_REASONS` and
+  `pairModel.VERDICT_REASONS` (pinned equal); renaming one orphans its stored
+  uses, like a verdict name.
 - **Stars sit alongside the verdict.** 5,4→love · 3→ok · 2,1→no on write;
   love→5 · ok→3 · no→1 on read; ✓/~/✗ `COALESCE`s rather than blanking a star.
   **Do not repoint training at `rating`.** Verdict names map to an older
@@ -1754,8 +1766,8 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    2. **A legible pair** — the recipe's DO / WATCH rows on the card and Set
       rows (done, §4). Still open: the strip in Studio's ALIGN bar, the vocal
       out of register (needs `f0` after the shift, phase 3), plain-language
-      top reasons, a recipe on ↔ off A/B in the audition, and reason chips on
-      a verdict (`pair_feedback.reasons_json`, migrated under the §7 rules).
+      top reasons, and a recipe on ↔ off A/B in the audition. Reason chips on
+      a verdict are done (§4, `pair_feedback.reasons_json`).
    3. **Better suggestions** — first, Score library progress and a faster
       section search; then section terms at weight 0 until measured against
       verdicts: section-level spectral room (`band_energy_vocal/bed`), vocal

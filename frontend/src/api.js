@@ -124,6 +124,18 @@ export const api = {
       }),
     }),
 
+  // Why a judged pair got its star — keys of models.FEEDBACK_REASONS
+  // (pairModel.VERDICT_REASONS). 404 when the pair is not rated.
+  savePairReasons: ({ vocalSongId, instSongId, vocalSection = null,
+                      instSection = null, reasons = [] }) =>
+    jsonFetch("/api/mashups/feedback/reasons", {
+      method: "POST",
+      body: JSON.stringify({
+        vocal_song_id: vocalSongId, inst_song_id: instSongId,
+        vocal_section: vocalSection, inst_section: instSection, reasons,
+      }),
+    }),
+
   // Forget a judgement — the star, and the verdict it implied, together. The
   // four ids are the key; there is no "rating: 0", because the POST above
   // COALESCEs a null rating into the one already stored.
