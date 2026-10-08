@@ -311,3 +311,29 @@ def test_batch_with_nothing_renderable_fails_cleanly(env):
                               db_path=db_path)
     assert out is None
     assert any("check the tracks have stems" in m for m in seen)
+
+
+def test_export_uses_the_section_pair_it_was_given(env):
+    """The FL folder holds the pairing the user exported — a dock card, a set
+    item, Studio's armed timing — not the plan's own label-priority pick. Before
+    the indexes were passed, exporting "chorus over chorus" wrote chorus over
+    the drop, because the plan always reached for the drop."""
+    from matcher.plan import build_mashup_plan
+    from render.session import build_session
+    tmp_path, db_path = env
+    vocal = _seed_song(tmp_path, db_path, 1, bpm=120.0, camelot="8A",
+                       stems=("full", "vocals", "instrumental"))
+    inst = _seed_song(tmp_path, db_path, 2, bpm=120.0, camelot="8A",
+                      stems=("full", "vocals", "instrumental"))
+
+    default = build_mashup_plan(vocal, inst, db_path=db_path)
+    assert default["pairings"][0]["inst_start"] == 24.0, "the plan's own pick is the drop"
+
+    out = build_session("abcdef10", vocal, inst, db_path=db_path,
+                        vocal_section_idx=1, inst_section_idx=1)
+    assert out is not None
+    meta = json.loads((out / "session.json").read_text(encoding="utf-8"))
+    assert (meta["vocal_section_idx"], meta["inst_section_idx"]) == (1, 1)
+    # The bed was cut from its chorus (8–24 s, snapped onto a downbeat), not
+    # from the drop at 24 s.
+    assert 8.0 <= meta["inst"]["conformed"]["section_start"] < 24.0

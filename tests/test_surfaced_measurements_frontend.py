@@ -82,10 +82,16 @@ def test_measured_harmony_is_drawn_and_unmeasured_is_not():
     assert ".pc-tag.harmony" in CSS and ".pc-tag.clash" in CSS
 
 
-def test_studio_shows_the_plans_harmony_and_bass_advice():
+def test_studio_shows_the_armed_timings_harmony_and_bass_advice():
+    """The ALIGN bar describes the timing you are hearing: the armed option's
+    own measured harmony, read through the card's harmonyOf, and the plan's
+    top pairing only when the option has none."""
     studio = _read("components/MixStudio.jsx")
-    assert "pairPlan?.harmony?.known" in studio
-    assert "pairPlan?.harmony?.bass_clash" in studio
+    block = studio[studio.index("const armedHarmony"):]
+    block = block[:block.index("})();")]
+    assert "harmonyOf(activeOption)" in block
+    assert "pairPlan?.harmony?.known" in block
+    assert "armedHarmony.known" in studio and "armedHarmony.bassClash" in studio
     assert ".align-chip.clash" in CSS
 
 

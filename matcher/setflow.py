@@ -13,7 +13,8 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Sequence
 
 from matcher.features import _camelot_distance
-from matcher.match import _parse_camelot, compute_semitone_shift
+from matcher.match import _parse_camelot
+from matcher.recipe import bed_shift
 
 # Transition grades: (max Camelot wheel distance, max tempo change %).
 SMOOTH = (1.0, 3.0)
@@ -25,13 +26,9 @@ def landing(item: Dict) -> Dict:
     bpm = item.get("target_bpm") or item.get("vocal_bpm")
     start, end = item.get("vocal_section_start"), item.get("vocal_section_end")
     dur = (end - start) if start is not None and end is not None and end > start else None
-    shift = compute_semitone_shift(item.get("vocal_camelot") or "",
-                                   item.get("inst_camelot") or "")
-    if item.get("harmonic_shift") is not None:
-        shift = int(item["harmonic_shift"])
     return {"bpm": float(bpm) if bpm else None,
             "camelot": item.get("vocal_camelot") or None,
-            "secs": dur, "bed_shift": shift}
+            "secs": dur, "bed_shift": bed_shift(item)}
 
 
 def _tempo_change(a: Optional[float], b: Optional[float]) -> Optional[float]:

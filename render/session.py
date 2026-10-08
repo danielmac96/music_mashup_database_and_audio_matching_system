@@ -281,9 +281,16 @@ def _write_tags(path: Path, bpm: Optional[float], key: Optional[str]) -> None:
 
 def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
                   on_progress: ProgressCb = None,
-                  db_path=None) -> Optional[Path]:
+                  db_path=None,
+                  vocal_section_idx: Optional[int] = None,
+                  inst_section_idx: Optional[int] = None) -> Optional[Path]:
     """Write one mashup's FL session folder. Returns the folder, or None on a
-    caller-fixable problem (reported through on_progress)."""
+    caller-fixable problem (reported through on_progress).
+
+    The section indexes name the pairing the user chose — a dock card, a set
+    item, Studio's armed timing. Without them the export used the plan's own
+    label-priority pick, so the folder could hold a verse over a breakdown while
+    the card that was exported said chorus over drop."""
     def _tick(pct, msg):
         if on_progress:
             on_progress(pct, msg)
@@ -303,7 +310,9 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     from matcher.plan import build_mashup_plan
 
     _tick(5, "Building the plan…")
-    plan = build_mashup_plan(vocal_song_id, inst_song_id, db_path=db_path)
+    plan = build_mashup_plan(vocal_song_id, inst_song_id, db_path=db_path,
+                             vocal_section_idx=vocal_section_idx,
+                             inst_section_idx=inst_section_idx)
     if not plan:
         _tick(None, f"No such pair: {vocal_song_id} over {inst_song_id}")
         return None
@@ -411,6 +420,8 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
         "inst": {**i_side, "conformed": i_info},
         "bed_stems": {n: info for n, (_y, info) in components.items()},
         "lock_offset_ms": None if lock_ms is None else round(lock_ms, 1),
+        "vocal_section_idx": (pairing or {}).get("vocal_section_idx"),
+        "inst_section_idx": (pairing or {}).get("inst_section_idx"),
         "clips": [
             {"song_id": vocal_song_id, "stem": "vocals", "offset_sec": 0.0,
              "rate": rate_vocal, "semitones": 0, "gain": 0.8},
@@ -529,7 +540,8 @@ def build_session_batch(token: str, pairs: list[dict],
                         on_exported=None) -> Optional[Path]:
     """Export several mashups into one parent folder, then zip it.
 
-    `pairs`: [{vocal_song_id, inst_song_id}, …]. A pair that cannot be rendered
+    `pairs`: [{vocal_song_id, inst_song_id, vocal_section_idx?,
+    inst_section_idx?}, …] — with the indexes, that section pairing. A pair that cannot be rendered
     is skipped with a note in the folder rather than failing the batch — one
     un-separated track should not cost the other nine exports.
 
@@ -560,17 +572,19 @@ def build_session_batch(token: str, pairs: list[dict],
     made = 0
     for idx, p in enumerate(pairs, start=1):
         v_id, i_id = int(p["vocal_song_id"]), int(p["inst_song_id"])
+        v_sec, i_sec = p.get("vocal_section_idx"), p.get("inst_section_idx")
         lo = int(5 + 90 * (idx - 1) / len(pairs))
         _tick(lo, f"Pair {idx}/{len(pairs)}…")
 
         # Render into a per-pair token folder, then move it under the parent
         # with a readable name.
         sub_token = f"{token}{idx:02x}"
-        plan = build_mashup_plan(v_id, i_id, db_path=db_path)
+        plan = build_mashup_plan(v_id, i_id, db_path=db_path,
+                                 vocal_section_idx=v_sec, inst_section_idx=i_sec)
         made_path = build_session(
             sub_token, v_id, i_id,
             on_progress=lambda pct, msg, _lo=lo: _tick(_lo, msg),
-            db_path=db_path)
+            db_path=db_path, vocal_section_idx=v_sec, inst_section_idx=i_sec)
         if made_path is None:
             skipped.append(f"{v_id} over {i_id}")
             continue

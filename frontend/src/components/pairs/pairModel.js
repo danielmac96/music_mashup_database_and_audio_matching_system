@@ -117,6 +117,14 @@ export function scoredOptionOf(c) {
     section_bars_vocal: c.section_bars_vocal,
     alignment_offset: c.alignment_offset ?? null,
     reason: c.reason,
+    // The transpose this section pair plays (matcher/recipe.bed_shift, sent as
+    // semitone_shift) and the measured harmony behind it — the same fields the
+    // plan's own options carry, so Studio reads one shape whichever it holds.
+    semitone_shift: c.semitone_shift ?? null,
+    harmonic_shift: c.harmonic_shift ?? null,
+    harmonic_confidence: c.harmonic_confidence ?? null,
+    score_key: c.score_key ?? null,
+    bass_clash: c.bass_clash ?? null,
   };
 }
 

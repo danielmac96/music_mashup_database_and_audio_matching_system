@@ -21,12 +21,15 @@ def _progress_sink(job_id: str, last_msg: dict):
     return _on_progress
 
 
-def run(job_id: str, vocal_song_id: int, inst_song_id: int) -> None:
+def run(job_id: str, vocal_song_id: int, inst_song_id: int,
+        vocal_section_idx=None, inst_section_idx=None) -> None:
     jobs.update(job_id, status="running", message="Exporting FL session…")
     last_msg = {"text": ""}
     try:
         out = build_session(job_id, vocal_song_id, inst_song_id,
-                            on_progress=_progress_sink(job_id, last_msg))
+                            on_progress=_progress_sink(job_id, last_msg),
+                            vocal_section_idx=vocal_section_idx,
+                            inst_section_idx=inst_section_idx)
     except Exception as exc:  # noqa: BLE001
         log.exception("build_session raised")
         jobs.fail(job_id, f"Session export error: {type(exc).__name__}: {exc}")

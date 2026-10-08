@@ -8,7 +8,7 @@ import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
 import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
 import { usePlan } from "../hooks/usePlan";
-import { BASS_CLASH_ADVICE } from "./pairs/pairModel";
+import { BASS_CLASH_ADVICE, harmonyOf } from "./pairs/pairModel";
 import { fmtTime, keyRel, parseCamelot } from "../theme";
 import { toast } from "../toast";
 
@@ -693,7 +693,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
 
     const place = placementFor(opt, vocal.rate, bed.rate);
     patchLane(vocal.id, place.vocal);
-    patchLane(bed.id, place.bed);
+    // The best transpose belongs to the SECTION pair: another chorus over
+    // another drop can want another shift, so a pill carries its own.
+    patchLane(bed.id, opt.semitone_shift != null
+      ? { ...place.bed, semitones: opt.semitone_shift } : place.bed);
     setLoop(place.loop);
     // The playhead goes to the loop head, which is later than base when the
     // bed is nudged in: parked at base it would sit outside the loop and jump.
@@ -1614,8 +1617,15 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     if (!sessionPair) return;
     setError(null);
     try {
+      // The armed timing is what gets exported — the sections you are
+      // hearing, not whatever the plan would pick for these two songs.
+      const armed = pairCtx && activeOption
+        && sessionPair.vocalId === pairCtx.vocalSongId
+        && sessionPair.instId === pairCtx.instSongId
+        ? { vocal: activeOption.vocal_section_idx, inst: activeOption.inst_section_idx }
+        : null;
       const { job_id } = await api.startSessionExport(
-        sessionPair.vocalId, sessionPair.instId);
+        sessionPair.vocalId, sessionPair.instId, armed);
       setSessionToken(null);
       setSessionJobId(job_id);
       toast("Rendering FL session (conformed stems + click)…");
@@ -1673,11 +1683,21 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   const suggested = {
     targetBpm: pairPlan?.target_bpm ?? activeOption?.target_bpm ?? null,
     stretch: pairPlan?.stretch_factor ?? null,
-    semitones: pairPlan?.semitone_shift ?? null,
+    // The armed timing's own transpose first; the plan's is for its top pick.
+    semitones: activeOption?.semitone_shift ?? pairPlan?.semitone_shift ?? null,
     // null is NO STORED GRID, not a measured zero — the rail says so rather
     // than drawing a tick at 0 ms that nothing measured.
     nudgeSec: activeOption?.alignment_offset ?? null,
   };
+  const armedHarmony = (() => {
+    const h = harmonyOf(activeOption);
+    if (h.known) return { ...h, armed: true, advice: activeOption.harmony_advice };
+    const ph = pairPlan?.harmony?.known ? pairPlan.harmony : null;
+    if (!ph) return { known: false };
+    return { ...harmonyOf({ harmonic_shift: ph.shift, score_key: ph.harmonic_fit,
+                            harmonic_confidence: ph.confidence, bass_clash: ph.bass_clash }),
+             armed: false, advice: ph.advice };
+  })();
   const bedLane = pairLanes?.bed ?? null;
   const vocalLane = pairLanes?.vocal ?? null;
   const selectedLane = lanes.find((l) => l.id === selectedId) || null;
@@ -1877,20 +1897,24 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
             : "Both sides have a measured downbeat grid"}>
           {suggested.nudgeSec == null ? "no grid" : "downbeat locked"}
         </span>
-        {/* The plan's MEASURED harmony for its top section pairing (chroma
-            cross-correlated, matcher/harmony.py) and its bass-clash advice —
-            the same words the FL README carries. Absent when either section
-            has no stored chroma: then the Camelot shift is all there is. */}
-        {bedLane && vocalLane && pairPlan?.harmony?.known && (
-          <span className={`align-chip mono${pairPlan.harmony.is_clash ? " clash" : ""}`}
-            title={`Measured harmonic fit of the matcher's top section pairing, at ${pairPlan.harmony.shift > 0 ? "+" : ""}${pairPlan.harmony.shift} st on the bed`
-              + (pairPlan.harmony.is_clash ? " — below 55%, the notes clash" : "")}>
-            ♪ fit {Math.round(pairPlan.harmony.harmonic_fit * 100)}%
+        {/* The MEASURED harmony (chroma cross-correlated, matcher/harmony.py)
+            of the ARMED timing — read through the card's harmonyOf, so Studio
+            and the dock cannot describe one pair two ways — else the plan's
+            top pairing, and its bass-clash advice in the FL README's words.
+            Absent when neither has stored chroma: then the Camelot shift is
+            all there is. */}
+        {bedLane && vocalLane && armedHarmony.known && (
+          <span className={`align-chip mono${armedHarmony.clash ? " clash" : ""}`}
+            title={`Measured harmonic fit of ${armedHarmony.armed ? "the armed timing" : "the matcher's top section pairing"}, at ${armedHarmony.shift > 0 ? "+" : ""}${armedHarmony.shift} st on the bed`
+              + (armedHarmony.sure ? "" : " — low confidence: another transposition fits almost as well")
+              + (armedHarmony.clash ? " — below 55%, the notes clash" : "")}>
+            ♪ fit {armedHarmony.fitPct != null ? `${armedHarmony.fitPct}%` : "?"}
+            {armedHarmony.shift ? ` · ${armedHarmony.shift > 0 ? "+" : ""}${armedHarmony.shift} st` : ""}
           </span>
         )}
-        {bedLane && vocalLane && pairPlan?.harmony?.bass_clash && (
+        {bedLane && vocalLane && armedHarmony.bassClash && (
           <span className="align-chip mono clash"
-            title={pairPlan.harmony.advice || BASS_CLASH_ADVICE}>
+            title={armedHarmony.advice || BASS_CLASH_ADVICE}>
             bass clash — high-pass the bed
           </span>
         )}

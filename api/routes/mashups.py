@@ -20,7 +20,8 @@ from database.models import (
 from api import jobs
 from api.workers import candidate_preview_worker, match_worker
 from matcher.effort import dominant_component, effort_label
-from matcher.match import compute_semitone_shift, compute_stretch_factor
+from matcher.match import compute_stretch_factor
+from matcher.recipe import bed_shift
 from matcher.plan import build_mashup_plan
 
 router = APIRouter()
@@ -130,8 +131,9 @@ def _with_playback_terms(rows: list) -> list:
     math — recomputing it in JS would silently drift from the T1.2 fix — and
     costs the browser no extra round-trip per row."""
     for r in rows:
-        r["semitone_shift"] = compute_semitone_shift(
-            r.get("vocal_camelot") or "", r.get("inst_camelot") or "")
+        # The shift the card prints is the shift that plays: measured harmony
+        # first, Camelot only without it (matcher/recipe.py).
+        r["semitone_shift"] = bed_shift(r)
         r["stretch_factor"] = compute_stretch_factor(
             r.get("vocal_bpm") or 0.0, r.get("inst_bpm") or 0.0)
         # Phase C: the effort bucket and the cost that dominates it, derived
@@ -408,8 +410,11 @@ def queue_candidate_preview(candidate_id: int, background: BackgroundTasks) -> d
 
 
 @router.get("/plan")
-def get_plan(vocal_id: int, inst_id: int) -> dict:
-    plan = build_mashup_plan(vocal_id, inst_id)
+def get_plan(vocal_id: int, inst_id: int,
+             vocal_section: Optional[int] = None,
+             inst_section: Optional[int] = None) -> dict:
+    plan = build_mashup_plan(vocal_id, inst_id, vocal_section_idx=vocal_section,
+                             inst_section_idx=inst_section)
     if plan is None:
         raise HTTPException(status_code=404, detail="song not found")
     return plan
@@ -460,8 +465,12 @@ def queue_session_batch(req: BatchSessionRequest,
         raise HTTPException(status_code=404,
                             detail="no candidates match those filters")
 
+    # The section pairing each row IS — exporting only the song ids let the
+    # plan pick its own sections, so the folder need not hold the listed pair.
     pairs = [{"vocal_song_id": r["vocal_song_id"],
-              "inst_song_id": r["inst_song_id"]} for r in rows]
+              "inst_song_id": r["inst_song_id"],
+              "vocal_section_idx": r.get("vocal_section_idx"),
+              "inst_section_idx": r.get("inst_section_idx")} for r in rows]
     job_id = jobs.new_job(kind="session",
                           message=f"Queued {len(pairs)} FL session exports")
     background.add_task(session_worker.run_batch, job_id, pairs)

@@ -120,10 +120,81 @@ def build_pairings(vocal_sections: List[Dict], inst_sections: List[Dict],
     return pairings
 
 
+def _section_at(sections: List[Dict], idx: Optional[int]) -> Optional[Dict]:
+    if idx is None:
+        return None
+    return next((s for s in sections if s.get("section_index") == idx), None)
+
+
+def _chosen_pairing(vocal_sections: List[Dict], inst_sections: List[Dict],
+                    vocal_idx: Optional[int], inst_idx: Optional[int],
+                    stretch_factor: float) -> Optional[Dict]:
+    """One pairing, in build_pairings' shape, for an explicit section pair."""
+    v = _section_at(vocal_sections, vocal_idx)
+    i = _section_at(inst_sections, inst_idx)
+    if not v or not i or v.get("start_sec") is None or i.get("start_sec") is None:
+        return None
+    v_dur = v["end_sec"] - v["start_sec"]
+    i_dur_stretched = (i["end_sec"] - i["start_sec"]) / max(stretch_factor, 1e-6)
+    return {
+        "vocal_label": v.get("label"),
+        "vocal_start": v["start_sec"],
+        "vocal_end": v["end_sec"],
+        "vocal_duration": round(v_dur, 1),
+        "inst_label": i.get("label"),
+        "inst_start": i["start_sec"],
+        "inst_end": i["end_sec"],
+        "inst_duration_stretched": round(i_dur_stretched, 1),
+        "vocal_section_idx": vocal_idx,
+        "inst_section_idx": inst_idx,
+        "note": (
+            f"Lay vocal {v.get('label')} ({_fmt_ts(v['start_sec'])}–{_fmt_ts(v['end_sec'])}) "
+            f"over instrumental {i.get('label')} "
+            f"({_fmt_ts(i['start_sec'])}–{_fmt_ts(i['end_sec'])})"
+        ),
+    }
+
+
+# What _with_option_harmony adds to a top_section_pairs row: the option's own
+# measured harmony, in the candidate row's column names, and the shift it plays.
+OPTION_HARMONY_KEYS = ("harmonic_shift", "score_key", "harmonic_confidence",
+                       "bass_clash", "harmony_advice", "semitone_shift")
+
+
+def _with_option_harmony(opt: Dict, vocal_sections: List[Dict],
+                         inst_sections: List[Dict],
+                         camelot_shift: Optional[int]) -> None:
+    """Annotate one timing option with its own measured harmony, in the column
+    names a scored candidate row uses, plus the shift it plays."""
+    from matcher.harmony import section_harmony
+
+    h = section_harmony(_section_at(vocal_sections, opt.get("vocal_section_idx")),
+                        _section_at(inst_sections, opt.get("inst_section_idx")))
+    if h["known"]:
+        opt["harmonic_shift"] = h["shift"]
+        opt["score_key"] = round(h["harmonic_fit"], 4)
+        opt["harmonic_confidence"] = round(h["confidence"], 4)
+        opt["bass_clash"] = 1 if h["bass_clash"] else 0
+        opt["harmony_advice"] = h["advice"]
+    else:
+        opt["harmonic_shift"] = None
+    # recipe.bed_shift's rule, applied to an option (which carries no keys).
+    opt["semitone_shift"] = (opt["harmonic_shift"]
+                             if opt["harmonic_shift"] is not None else camelot_shift)
+
+
 def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
-                      db_path=None) -> Optional[Dict]:
+                      db_path=None,
+                      vocal_section_idx: Optional[int] = None,
+                      inst_section_idx: Optional[int] = None) -> Optional[Dict]:
     """Full actionable plan for one vocal-over-instrumental pair.
-    Returns None when either song is missing."""
+    Returns None when either song is missing.
+
+    With both section indexes — the section pair a dock card, a set item or
+    Studio's armed timing is about — that pairing comes first, so the harmony,
+    the recipe and the FL export describe the moment the user chose rather than
+    the label-priority pick below. Without them (or when either index no longer
+    names a section), the plan is exactly what it was."""
     from database.models import (
         DB_PATH, get_conn, get_features_for_song, get_sections, get_song,
     )
@@ -164,6 +235,13 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     v_sections = get_sections(vocal_song_id, db_path=db)
     i_sections = get_sections(inst_song_id, db_path=db)
     pairings = build_pairings(v_sections, i_sections, stretch or 1.0)
+    chosen = _chosen_pairing(v_sections, i_sections, vocal_section_idx,
+                             inst_section_idx, stretch or 1.0)
+    if chosen:
+        pairings = [chosen] + [
+            p for p in pairings
+            if (p["vocal_start"], p["inst_start"])
+            != (chosen["vocal_start"], chosen["inst_start"])][:3]
 
     # The SCORED timing options — the same ranked section pairs the candidate
     # row itself is built from, so Discover's plan table, the Studio's timing
@@ -181,6 +259,13 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
         v_sections, i_sections, stretch or 1.0, bpm=v_bpm or None,
         limit=SECTION_OPTION_LIMIT,
     )
+
+    # Each timing option carries its own measured harmony: the best transpose
+    # belongs to a SECTION pair, so Studio's pills must not all borrow the
+    # first pairing's. semitone_shift is what the option plays (recipe.bed_shift).
+    camelot_shift = shift
+    for opt in section_options:
+        _with_option_harmony(opt, v_sections, i_sections, camelot_shift)
 
     # Phase E: prefer the MEASURED transpose over the Camelot-derived one.
     # Camelot says whether two scales are compatible; cross-correlating the two

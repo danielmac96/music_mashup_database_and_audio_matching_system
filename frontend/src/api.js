@@ -354,10 +354,16 @@ export const api = {
   // target tempo and key and padded so bar 1 is at 0:00, plus a click, the
   // recipe, and a session.json in the mixdown clip shape. A mixdown is a bounce;
   // this is something you can actually mix.
-  startSessionExport: (vocalSongId, instSongId) =>
+  // `sections` ({ vocal, inst } section indexes) names the pairing to export —
+  // Studio's armed timing; without it the server falls back to its own pick.
+  startSessionExport: (vocalSongId, instSongId, sections = null) =>
     jsonFetch("/api/studio/session", {
       method: "POST",
-      body: JSON.stringify({ vocal_song_id: vocalSongId, inst_song_id: instSongId }),
+      body: JSON.stringify({
+        vocal_song_id: vocalSongId, inst_song_id: instSongId,
+        vocal_section_idx: sections?.vocal ?? null,
+        inst_section_idx: sections?.inst ?? null,
+      }),
     }),
 
   sessionArchiveUrl: (token) => `/api/studio/session/${token}/archive`,
