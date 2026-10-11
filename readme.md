@@ -346,8 +346,9 @@ reprocesses), add to a group, or delete the track and its files.
   `songs.pairs_input_at`), a strip under the dock's header says so with
   **↻ Re-score · N changed** (**Score library** when nothing has been scored);
   it shows the job's progress and reloads the dock and the library's MASH /
-  PAIRS columns when it lands (`GET /api/mashups/freshness`). Fixing a BPM's
-  ×2/÷2 offers **Re-score now** on its toast.
+  PAIRS columns when it lands (`GET /api/mashups/freshness`, polled every 20 s
+  and re-checked at once after a BPM/key edit or a bar-1 fix). Fixing a BPM
+  offers **Re-score now** on its toast.
 - **★ Keepers** lists the pairs you rated 4–5, every section pairing of them,
   uncapped. **⇄** (or `c`) holds two pairs side by side above the list: every
   term aligned, the better value green, A/B loop buttons. **✎** puts a note on
@@ -358,7 +359,8 @@ reprocesses), add to a group, or delete the track and its files.
   the library; Effort re-sorts the page already fetched and says so. An
   unmeasured term sorts last, never as zero.
 - **Find and filter the dock.** Filters opens over the list (it used to push
-  the list down to a sliver) and closes with **Done**; each active filter then
+  the list down to a sliver) and closes with **Done**, `esc` or a click on the
+  list below it; each active filter then
   shows as a pill under the search box, ✕ to drop it. Two songs as **`A + B`**
   (or `A w/ B`) find the pairs of exactly those two, either way round — "does
   this vocal work on that bed?" (`models._two_track_query`; `x`, `with` and

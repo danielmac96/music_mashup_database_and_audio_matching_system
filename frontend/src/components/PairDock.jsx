@@ -95,6 +95,22 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
     } catch (e) { toast(`Export failed: ${e.message}`); }
   };
 
+  // The filter panel lies over the list, so it must be easy to put away: Esc,
+  // or a click on the part of the list it leaves showing. Left open, it sat
+  // over the cards and swallowed the next click (the 2026-10-10 re-run).
+  useEffect(() => {
+    if (!open) return undefined;
+    // Capture phase, stopped: this Esc closes the panel and nothing else (the
+    // Library's Esc would also clear the selected track).
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setOpen(false);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open]);
+
   // Keep the keyboard cursor on screen. Without this, arrowing past the fold
   // moves a selection you cannot see, which reads as the keys having stopped
   // working.
@@ -369,7 +385,8 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
             </div>
           </div>
         )}
-      <div className="pd-list" ref={listRef}>
+      <div className="pd-list" ref={listRef}
+        onClickCapture={open ? (e) => { e.stopPropagation(); setOpen(false); } : undefined}>
         {error && <div className="error-text pd-msg">{error}</div>}
         {!error && !loading && rows.length === 0 && (nActive > 0 || filters.search) && (
           <div className="pd-msg">

@@ -11,3 +11,17 @@ export function onRescoreRequest(cb) {
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
+
+// Something a pair's score reads just changed here (a BPM or key edit, a bar 1
+// fix): the freshness check runs now rather than at its next poll, so the
+// dock's Re-score strip appears with the edit.
+const changed = new Set();
+
+export function notifyPairsInputChanged() {
+  for (const cb of changed) cb();
+}
+
+export function onPairsInputChanged(cb) {
+  changed.add(cb);
+  return () => changed.delete(cb);
+}

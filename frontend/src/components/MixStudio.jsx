@@ -10,6 +10,7 @@ import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
 import { usePlan } from "../hooks/usePlan";
 import { BASS_CLASH_ADVICE, harmonyOf, nudgeText } from "./pairs/pairModel";
 import { startDownload } from "../download";
+import { notifyPairsInputChanged } from "../rescore";
 import { fmtTime, keyRel, parseCamelot } from "../theme";
 import { toast } from "../toast";
 
@@ -1463,7 +1464,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     const phase = phaseForDownbeatAt(nearest);
     patchLane(lane.id, { beatPhase: phase });
     api.setBeatPhase(lane.songId, lane.stem, phase)
-      .then(() => toast(`Bar 1 set to beat ${nearest + 1} (phase ${phase})`))
+      .then(() => { notifyPairsInputChanged();
+                    toast(`Bar 1 set to beat ${nearest + 1} (phase ${phase})`); })
       .catch((err) => toast(err.message || "Could not save downbeat"));
   };
 

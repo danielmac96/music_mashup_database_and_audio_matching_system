@@ -211,3 +211,13 @@ def test_auto_advance_is_optional_and_remembered():
 def test_settings_shows_one_learned_scorer_panel():
     assert "MlPanel" not in _read("components/DatabaseBrowser.jsx")
     assert _read("App.jsx").count("<MlPanel />") == 1
+
+
+def test_an_edit_refreshes_freshness_at_once():
+    """The strip appeared only at the next 20 s poll after a BPM fix."""
+    bus = _read("rescore.js")
+    assert "export function notifyPairsInputChanged" in bus
+    assert "onPairsInputChanged(refresh)" in _read("hooks/useFreshness.js")
+    for rel in ("components/LibraryScreen.jsx", "components/TrackEditor.jsx",
+                "components/MixStudio.jsx"):
+        assert "notifyPairsInputChanged()" in _read(rel), rel

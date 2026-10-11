@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { isAnalysed } from "../theme";
 import { toast } from "../toast";
+import { notifyPairsInputChanged, requestRescore } from "../rescore";
 
 // Correcting what the analysis got wrong: the tempo, the key, or the URL the
 // track was downloaded from. Lifted out of TrackList unchanged so the library
@@ -30,7 +31,9 @@ export function TrackEditor({ track, onSaved, onCancel }) {
       const bpmNum = parseFloat(bpm);
       if (!Number.isNaN(bpmNum) && bpmNum > 0) payload.bpm = bpmNum;
       await api.correctFeatures(track.id, payload);
-      toast("Features corrected — re-score to update matches");
+      notifyPairsInputChanged();
+      toast("Features corrected — its pairs are stale until a re-score",
+        { label: "Re-score now", onClick: requestRescore });
       onSaved();
     } catch (e) {
       setError(e.message);

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
 import { MATCH_PRESETS, loadPresetIdx } from "../matchPresets";
-import { onRescoreRequest } from "../rescore";
+import { onPairsInputChanged, onRescoreRequest } from "../rescore";
 
 // Whether the scored pairs still describe the library, and the one way to
 // bring them up to date from where you work. GET /api/mashups/freshness counts
@@ -45,6 +45,7 @@ export function useFreshness({ onScored = null } = {}) {
   }, [jobId]);
 
   useEffect(() => onRescoreRequest(rescore), [rescore]);
+  useEffect(() => onPairsInputChanged(refresh), [refresh]);
 
   const onJobDone = useCallback((job) => {
     setJobId(null);

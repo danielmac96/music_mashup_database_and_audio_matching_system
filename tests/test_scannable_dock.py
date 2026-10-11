@@ -180,3 +180,14 @@ def test_filters_overlay_the_list_and_show_as_pills():
     assert "pd-filterdone" in dock
     css = _read("styles.css")
     assert ".pd-listwrap > .pd-filters {" in css and "position: absolute" in css
+
+
+def test_the_filter_overlay_is_easy_to_put_away():
+    """Left open over the list it swallowed the next click on a card (found by
+    the re-run): Esc closes it — and only it — and so does a click on the list."""
+    dock = _read("components/PairDock.jsx")
+    esc = dock[dock.index("if (!open) return undefined;"):]
+    esc = esc[:esc.index("}, [open]);")]
+    assert 'e.key !== "Escape"' in esc and "e.stopPropagation()" in esc
+    assert 'addEventListener("keydown", onKey, true)' in esc
+    assert "onClickCapture={open ?" in dock
