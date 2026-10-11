@@ -359,7 +359,10 @@ reprocesses), add to a group, or delete the track and its files.
   unmeasured term sorts last, never as zero.
 - **Find and filter the dock.** Filters opens over the list (it used to push
   the list down to a sliver) and closes with **Done**; each active filter then
-  shows as a pill under the search box, ✕ to drop it. The search box matches either side's title or
+  shows as a pill under the search box, ✕ to drop it. Two songs as **`A + B`**
+  (or `A w/ B`) find the pairs of exactly those two, either way round — "does
+  this vocal work on that bed?" (`models._two_track_query`; `x`, `with` and
+  `vs` stay part of a title). Otherwise the search box matches either side's title or
   artist across every scored pair. **Filters** narrow by min match
   (percentile), build effort (free / free or light), genre and era (either
   side), BPM band (the vocal's), bed energy, vocal-forward, and **adventure**
@@ -462,7 +465,11 @@ median says nearly every track is atonal; §9).
 
 **Compare two tracks** puts any two analysed tracks side by side over every
 catalogued attribute, plus tempo, key, sung share, partners and best pair; a
-row where they differ reads brighter.
+row where they differ reads brighter. Above the table, **the two as a pair**,
+both ways round: each direction's best scored section pairing (percentile,
+sections, the bed's transpose, effort) with **▶ loop** and **Studio**, or why
+it was never scored (outside the tempo gate, two cuts of one record, or no
+re-score since one arrived).
 
 ### Track detail
 

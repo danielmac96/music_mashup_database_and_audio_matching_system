@@ -269,3 +269,23 @@ def test_search_and_offset_reach_the_route(library):
     assert rows and all(ids[4] in (x["vocal_song_id"], x["inst_song_id"]) for x in rows)
     assert c.get("/api/mashups?offset=-1").status_code == 400
     assert c.get("/api/mashups?offset=2&limit=2").json()["offset"] == 2
+
+
+# ── "A + B": does this pair work? (2026-10-10 persona simulation) ───────────
+
+def test_two_songs_joined_by_plus_find_only_their_pairs(library):
+    from database.models import get_candidates_enriched
+    db, ids = library
+    rows = get_candidates_enriched(search="S1 + S4", limit=50, db_path=db)
+    assert rows
+    assert all({r["vocal_song_id"], r["inst_song_id"]} == {ids[1], ids[4]} for r in rows)
+    flipped = get_candidates_enriched(search="S4 w/ S1", limit=50, db_path=db)
+    assert {r["id"] for r in flipped} == {r["id"] for r in rows}
+
+
+def test_x_and_with_stay_inside_a_title():
+    from database.models import _two_track_query
+    assert _two_track_query("Weightless + Fireproof") == ("Weightless", "Fireproof")
+    assert _two_track_query("Fireproof w/ Siren Song") == ("Fireproof", "Siren Song")
+    for one_song in ("Calvin Harris x Dua Lipa", "Dancing with a Stranger", "Fire +", "C++"):
+        assert _two_track_query(one_song) is None, one_song

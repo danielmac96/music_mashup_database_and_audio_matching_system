@@ -183,10 +183,10 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
       </div>
 
       <div className="pd-filterbar">
-        <input className="pd-search" value={search} placeholder="Find a song…"
+        <input className="pd-search" value={search} placeholder="Find a song, or A + B"
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Escape") { setSearch(""); e.currentTarget.blur(); } }}
-          title="Title or artist, on either side — searched across every scored pair, not just this page" />
+          title="Title or artist, on either side — searched across every scored pair, not just this page. Two songs as &quot;A + B&quot; (or &quot;A w/ B&quot;) finds the pairs of exactly those two, either way round." />
         <button className={`pd-keepers mono${filters.rated === "loved" ? " on" : ""}`}
           onClick={() => setFilters({ rated: filters.rated === "loved" ? "" : "loved" })}
           title="Your keepers: only the pairs you rated 4–5 stars, every section pairing of them, uncapped">

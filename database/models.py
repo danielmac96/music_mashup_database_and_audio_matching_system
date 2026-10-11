@@ -2645,6 +2645,21 @@ SECTION_TERM_ORDERS = {
 }
 
 
+# Only "+" and the tracklist's own "w/": "x", "with" and "vs" live inside real
+# credits and titles ("Calvin Harris x Dua Lipa", "Dancing with a Stranger").
+_TWO_TRACK_RE = re.compile(r"\s*\+\s*|\s+w/\s+", re.IGNORECASE)
+
+
+def _two_track_query(search: str) -> Optional[tuple[str, str]]:
+    """("A", "B") for a pair search written "A + B" or "A w/ B", else None.
+    Only a split that leaves two non-empty terms counts, so "Fire +" is still a
+    one-song search."""
+    parts = _TWO_TRACK_RE.split(search.strip(), maxsplit=1)
+    if len(parts) == 2 and all(re.search(r"\w", p) for p in parts):
+        return parts[0].strip(), parts[1].strip()
+    return None
+
+
 def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             limit: int = 100, vocal_song_id: Optional[int] = None,
                             inst_song_id: Optional[int] = None,
@@ -2806,10 +2821,20 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         where.append("mc.inst_section_label = ?")
         params.append(inst_label)
     if search and search.strip():
-        like = f"%{search.strip()}%"
-        where.append("(sv.title LIKE ? OR sv.artist LIKE ? "
-                     " OR si.title LIKE ? OR si.artist LIKE ?)")
-        params += [like] * 4
+        both = _two_track_query(search)
+        if both:
+            # "A + B": one side matches A and the other B, either way round —
+            # "does Weightless work with Fireproof?" asked of the whole library.
+            la, lb = (f"%{t}%" for t in both)
+            side = "({t}.title LIKE ? OR {t}.artist LIKE ?)"
+            where.append(f"(({side.format(t='sv')} AND {side.format(t='si')}) OR "
+                         f"({side.format(t='sv')} AND {side.format(t='si')}))")
+            params += [la, la, lb, lb, lb, lb, la, la]
+        else:
+            like = f"%{search.strip()}%"
+            where.append("(sv.title LIKE ? OR sv.artist LIKE ? "
+                         " OR si.title LIKE ? OR si.artist LIKE ?)")
+            params += [like] * 4
     if vocal_forward:
         # The vocal presence of the section that will actually play, falling
         # back to the track's most vocal section when no pair was stored.

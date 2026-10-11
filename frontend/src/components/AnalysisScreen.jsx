@@ -6,7 +6,8 @@ import { fmtAttr } from "../attributes";
 // and what its values look like, and two switches: show it as a Library column,
 // show it on Track detail. Show/hide only — nothing is recomputed from here
 // (readme §9, C).
-export function AnalysisScreen({ attributes, onRailSlot, tracks = [] }) {
+export function AnalysisScreen({ attributes, onRailSlot, tracks = [],
+                                onPlayPair = null, onOpenPair = null }) {
   const { catalogue, categories, visibility, toggle, refresh } = attributes;
   // Which analyser is actually running, whether its models are installed, and
   // how often librosa and Essentia agree where both measured (GET
@@ -28,7 +29,8 @@ export function AnalysisScreen({ attributes, onRailSlot, tracks = [] }) {
           title="Re-read coverage">↻</button>
       </div>
       <AnalyzerStatus status={status} error={statusError} />
-      <TrackCompare tracks={tracks} catalogue={catalogue} categories={categories} />
+      <TrackCompare tracks={tracks} catalogue={catalogue} categories={categories}
+        onPlayPair={onPlayPair} onOpenPair={onOpenPair} />
       {categories.map((cat) => (
         <section key={cat} className="an-cat">
           <h3>{cat}</h3>
@@ -149,10 +151,54 @@ function AnalyzerStatus({ status, error }) {
 // does this pair score like that?" answered from the measurements, not the
 // summary. The core columns (tempo, key, mash summary) lead, then each
 // category; a row where the two differ most is easy to see.
-function TrackCompare({ tracks, catalogue, categories }) {
+// One direction of the pair: its best scored section pairing, or why there is
+// none (outside the tempo gate, two cuts of one record, or not re-scored since
+// one of them arrived).
+function PairVerdict({ c, vocal, bed, onPlay, onOpen }) {
+  const names = `${vocal?.title || "?"} over ${bed?.title || "?"}`;
+  if (!c) {
+    return (
+      <div className="an-pair none">
+        <span className="an-pair-names">{names}</span>
+        <span className="faint">not scored together — outside the tempo gate, the same
+          record, or not re-scored since one of them arrived</span>
+      </div>
+    );
+  }
+  const pct = Math.round((c.score_percentile ?? 0) * 1000) / 10;
+  const shift = c.semitone_shift ?? 0;
+  return (
+    <div className="an-pair">
+      <span className="an-pair-score mono" title="Library percentile">{pct}</span>
+      <span className="an-pair-names">{names}
+        <span className="faint"> · {c.vocal_section_label || "?"} over {c.inst_section_label || "?"}
+          {" · "}bed {shift > 0 ? "+" : ""}{shift} st{c.effort_label ? ` · ${c.effort_label}` : ""}</span>
+      </span>
+      {onPlay && <button className="mini-btn" onClick={() => onPlay(c)}>▶ loop</button>}
+      {onOpen && <button className="mini-btn" onClick={() => onOpen(c)}>Studio</button>}
+    </div>
+  );
+}
+
+function TrackCompare({ tracks, catalogue, categories, onPlayPair = null,
+                        onOpenPair = null }) {
   const analysed = tracks.filter((t) => t.features?.full);
   const [a, setA] = useState("");
   const [b, setB] = useState("");
+  // The question behind comparing two tracks is "do they mash?": the scored
+  // pair, both ways round, with a loop and a Studio hand-off. Comparing used to
+  // stop at the attributes.
+  const [pairs, setPairs] = useState(null);
+  useEffect(() => {
+    if (!a || !b || a === b) { setPairs(null); return undefined; }
+    let live = true;
+    const one = (v, i) => api.getMashups({ comboType: "vocal_over_instrumental",
+                                           vocalSongId: Number(v), instSongId: Number(i),
+                                           limit: 1, maxPerSong: 0 })
+      .then((d) => (d.candidates || [])[0] || null).catch(() => null);
+    Promise.all([one(a, b), one(b, a)]).then(([ab, ba]) => { if (live) setPairs({ ab, ba }); });
+    return () => { live = false; };
+  }, [a, b]);
   const ta = analysed.find((t) => String(t.id) === String(a));
   const tb = analysed.find((t) => String(t.id) === String(b));
   const pick = (value, set) => (
@@ -173,6 +219,12 @@ function TrackCompare({ tracks, catalogue, categories }) {
     <section className="an-cat an-compare">
       <h3>Compare two tracks</h3>
       <div className="an-compare-pick">{pick(a, setA)}<span className="faint">vs</span>{pick(b, setB)}</div>
+      {pairs && (
+        <div className="an-pairs">
+          <PairVerdict c={pairs.ab} vocal={ta} bed={tb} onPlay={onPlayPair} onOpen={onOpenPair} />
+          <PairVerdict c={pairs.ba} vocal={tb} bed={ta} onPlay={onPlayPair} onOpen={onOpenPair} />
+        </div>
+      )}
       {(ta || tb) && (
         <table className="an-compare-table">
           <tbody>
