@@ -870,6 +870,31 @@ def _with_full_bpm(feat: dict, full_by_song: Dict[int, dict]) -> dict:
     return out
 
 
+def _record_harmony_threshold(db) -> None:
+    """Store the confidence below which a measured transpose is a close call in
+    this library: the HARMONY_UNSURE_QUANTILE of the stored vocal-over-bed
+    confidences (matcher.recipe.harmony_unsure_below reads it). Measure, then
+    rank against the library — the confidence's absolute scale says little."""
+    from database.models import get_conn, set_pref
+    from matcher.recipe import HARMONY_UNSURE_QUANTILE
+    conn = get_conn(db)
+    try:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM mashup_candidates WHERE harmonic_confidence IS NOT NULL "
+            "AND combo_type='vocal_over_instrumental'").fetchone()[0]
+        if not n:
+            return
+        row = conn.execute(
+            "SELECT harmonic_confidence FROM mashup_candidates "
+            "WHERE harmonic_confidence IS NOT NULL AND combo_type='vocal_over_instrumental' "
+            "ORDER BY harmonic_confidence LIMIT 1 OFFSET ?",
+            (int(n * HARMONY_UNSURE_QUANTILE),)).fetchone()
+    finally:
+        conn.close()
+    set_pref("harmony_unsure_below", {"value": float(row[0]), "pairs": int(n),
+                                      "quantile": HARMONY_UNSURE_QUANTILE}, db_path=db)
+
+
 def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                     key_min_score: Optional[float] = None,
                     scorer: str = "auto", progress=None) -> dict:
@@ -1183,6 +1208,7 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     from database.models import set_pref
     set_pref("last_score", {"started_at": run_started, "scorer": active_scorer},
              db_path=db)
+    _record_harmony_threshold(db)
     return {**results, "_scorer": active_scorer, "_model_version": model_version}
 
 

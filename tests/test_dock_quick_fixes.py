@@ -185,7 +185,7 @@ def test_a_click_selects_and_the_scope_line_clears():
 def test_exports_have_their_own_menu_outside_the_filters():
     dock = _read("components/PairDock.jsx")
     filters = dock[dock.index('<div className="pd-filters">'):]
-    filters = filters[:filters.index("{exportOpen && (")]
+    filters = filters[:filters.index("pd-filterdone")]
     for gone in ("api.exportPairs", "startExport", "FL sessions"):
         assert gone not in filters, gone
     menu = dock[dock.index("{exportOpen && ("):]

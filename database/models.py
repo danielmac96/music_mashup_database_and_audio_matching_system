@@ -3931,6 +3931,38 @@ def analysis_timing_summary(since: Optional[str] = None,
 
 # ── Pair lookup by its four ids ──────────────────────────────────────────────
 
+def partner_ranks(song_id: int, side: str = "vocal",
+                  combo_type: str = "vocal_over_instrumental",
+                  db_path: Path = DB_PATH) -> tuple[Dict[int, int], int]:
+    """Where each partner of one track ranks among all of its partners, by the
+    best score of any section pairing — ({partner_song_id: rank}, how many).
+
+    The dock's headline when it is scoped to a track: "#3 of 20 beds" says
+    which bed is best for THIS vocal, where the library percentile reads 99 or
+    100 for every row of a good track's list. Hidden pairs and excluded tracks
+    are left out, as the listing leaves them out. `side` is the scoped track's
+    role: "vocal" ranks its beds, "instrumental" its vocals."""
+    me, other = (("vocal_song_id", "inst_song_id") if side == "vocal"
+                 else ("inst_song_id", "vocal_song_id"))
+    conn = get_conn(db_path)
+    try:
+        rows = conn.execute(
+            f"""SELECT mc.{other} AS partner, MAX(mc.score_total) AS best
+                FROM mashup_candidates mc
+                WHERE mc.{me} = ? AND mc.combo_type = ?
+                  AND NOT EXISTS (SELECT 1 FROM pair_hidden h
+                                  WHERE h.vocal_song_id = mc.vocal_song_id
+                                    AND h.inst_song_id = mc.inst_song_id)
+                  AND NOT EXISTS (SELECT 1 FROM track_excluded x
+                                  WHERE x.song_id IN (mc.vocal_song_id, mc.inst_song_id))
+                GROUP BY mc.{other}
+                ORDER BY best DESC, partner""",
+            (song_id, combo_type)).fetchall()
+    finally:
+        conn.close()
+    return {r["partner"]: i + 1 for i, r in enumerate(rows)}, len(rows)
+
+
 def candidate_for_pair(vocal_song_id: int, inst_song_id: int,
                        vocal_section: Optional[int] = None,
                        inst_section: Optional[int] = None,

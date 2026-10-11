@@ -25,7 +25,7 @@ export const ORDERS = [
   ["effort", "Effort", "Cheapest to build first, within the rows already loaded."],
   ["uncertain", "Uncertain",
    "Where the learned scorer is least sure — a verdict here teaches it the most."],
-  ...SCORE_TERMS.map((t) => [t.order, t.label, `Best ${t.what}`, t.color]),
+  ...SCORE_TERMS.map((t) => [t.order, t.name, `Best ${t.what}`, t.color]),
 ];
 
 // The one order the server does not do. Everything else is sent as-is.

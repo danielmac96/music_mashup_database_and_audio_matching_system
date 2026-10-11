@@ -114,11 +114,13 @@ def test_the_card_draws_the_four_weighted_terms():
 
 
 def test_every_score_term_explains_its_abbreviation():
-    """LBL / DUR / VOI / PHR mean nothing on their own; each carries hover text."""
+    """The bars print a plain name (Section / Length / Vocal / Phrase); the
+    abbreviation and the meaning stay on hover. LBL/DUR/VOI/PHR alone were
+    unreadable to 31 of 100 simulated users."""
     terms = MODEL[MODEL.index("export const SCORE_TERMS"):]
     terms = terms[:terms.index("];")]
-    assert terms.count("what:") == terms.count("key:") == 4
-    assert "title={t.what}" in CARD
+    assert terms.count("what:") == terms.count("key:") == terms.count("name:") == 4
+    assert "title={`${t.label} — ${t.what}`}>{t.name}" in CARD
 
 
 def test_each_side_shows_its_own_key_and_bpm():

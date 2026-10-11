@@ -161,12 +161,14 @@ def _chosen_pairing(vocal_sections: List[Dict], inst_sections: List[Dict],
 # What _with_option_harmony adds to a top_section_pairs row: the option's own
 # measured harmony, in the candidate row's column names, and the shift it plays.
 OPTION_HARMONY_KEYS = ("harmonic_shift", "score_key", "harmonic_confidence",
-                       "bass_clash", "harmony_advice", "semitone_shift")
+                       "harmonic_sure", "bass_clash", "harmony_advice",
+                       "semitone_shift")
 
 
 def _with_option_harmony(opt: Dict, vocal_sections: List[Dict],
                          inst_sections: List[Dict],
-                         camelot_shift: Optional[int]) -> None:
+                         camelot_shift: Optional[int],
+                         unsure_below: Optional[float] = None) -> None:
     """Annotate one timing option with its own measured harmony, in the column
     names a scored candidate row uses, plus the shift it plays."""
     from matcher.harmony import section_harmony
@@ -177,10 +179,14 @@ def _with_option_harmony(opt: Dict, vocal_sections: List[Dict],
         opt["harmonic_shift"] = h["shift"]
         opt["score_key"] = round(h["harmonic_fit"], 4)
         opt["harmonic_confidence"] = round(h["confidence"], 4)
+        from matcher.recipe import HARMONY_SURE, harmony_sure
+        opt["harmonic_sure"] = harmony_sure(
+            h["confidence"], HARMONY_SURE if unsure_below is None else unsure_below)
         opt["bass_clash"] = 1 if h["bass_clash"] else 0
         opt["harmony_advice"] = h["advice"]
     else:
         opt["harmonic_shift"] = None
+        opt["harmonic_sure"] = None
     # recipe.bed_shift's rule, applied to an option (which carries no keys).
     opt["semitone_shift"] = (opt["harmonic_shift"]
                              if opt["harmonic_shift"] is not None else camelot_shift)
@@ -267,8 +273,10 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     # belongs to a SECTION pair, so Studio's pills must not all borrow the
     # first pairing's. semitone_shift is what the option plays (recipe.bed_shift).
     camelot_shift = shift
+    from matcher.recipe import harmony_unsure_below
+    unsure_below = harmony_unsure_below(db_path)
     for opt in section_options:
-        _with_option_harmony(opt, v_sections, i_sections, camelot_shift)
+        _with_option_harmony(opt, v_sections, i_sections, camelot_shift, unsure_below)
 
     # Phase E: prefer the MEASURED transpose over the Camelot-derived one.
     # Camelot says whether two scales are compatible; cross-correlating the two

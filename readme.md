@@ -353,11 +353,13 @@ reprocesses), add to a group, or delete the track and its files.
   term aligned, the better value green, A/B loop buttons. **✎** puts a note on
   a pair ("opener", "use the 2nd chorus") — shown on the card, in Studio and in
   sets, and never training data. **+ Set** adds the pair to the active set.
-- **Sort the dock** by Score, Effort, Uncertain, or by one section term —
-  LBL / DUR / VOI / PHR. Every order but Effort is the server's, so it ranks
+- **Sort the dock** by Score, Effort, Uncertain, or by one section term from
+  the **By…** menu — Section / Length / Vocal / Phrase. Every order but Effort is the server's, so it ranks
   the library; Effort re-sorts the page already fetched and says so. An
   unmeasured term sorts last, never as zero.
-- **Find and filter the dock.** The search box matches either side's title or
+- **Find and filter the dock.** Filters opens over the list (it used to push
+  the list down to a sliver) and closes with **Done**; each active filter then
+  shows as a pill under the search box, ✕ to drop it. The search box matches either side's title or
   artist across every scored pair. **Filters** narrow by min match
   (percentile), build effort (free / free or light), genre and era (either
   side), BPM band (the vocal's), bed energy, vocal-forward, and **adventure**
@@ -373,7 +375,18 @@ reprocesses), add to a group, or delete the track and its files.
   as **CSV / cue sheet / rekordbox** files, or **⤓ FL sessions** as one zip of
   FL session folders (§5.11). It used to sit at the bottom of the Filters
   panel.
-- Each pair card gives one line per song — title · artist, section span and
+- **Rows, then a card.** Every pair but the focused one is a two-line row:
+  the headline, vocal and bed with their sections (on a list scoped to a track,
+  only the partner's title — the track is on every row), then the landing key
+  and tempo, the bed's transpose, the measured fit, the effort chip, ▶ and the
+  stars. Click a row (or `↑↓`) to open it as the full card below;
+  double-click opens Studio. A laptop-height dock shows five pairs where it
+  showed one card.
+- **The headline.** On a list scoped to a track: the pair's rank among that
+  track's partners, `#3` with "of 20 beds · 96.1%" beside it (`scope_rank` /
+  `scope_total`, §5.7); library-wide: the percentile to one decimal (`99.6`).
+  Integers read 100, 100, 100, 99 down a good library's first page.
+- The full card gives one line per song — title · artist, section span and
   bars, the vocal section's line when you have typed one, key, BPM — then the
   key relation (drawn neutral as `8A/9B wheel` when a measured harmony exists,
   because then it is context, not the verdict), the **recipe** (§5.7) — a
@@ -384,14 +397,15 @@ reprocesses), add to a group, or delete the track and its files.
   a **WATCH** row of what the numbers cannot promise (a suspected half/double
   BPM, a coin-flip transpose, clashing notes, no beat grid, rough separation) —
   the **measured harmony** (`♪ 92% · +2 st` — the two sections' notes
-  cross-correlated, §5.7; `?` when another transposition fits almost as well;
+  cross-correlated, §5.7; `?` when the transpose is a closer call than most
+  pairs in your library;
   red below 55%), a red **bass clash** tag with the high-pass advice,
-  the four **section fit** bars, the **track fit** bars and the rating. **LBL**
-  label priority, **DUR** bars covered (looping allowed), **VOI** vocal
-  presence, **PHR** phrase-length agreement; **BPM** tempo closeness, **KEY**
-  the measured harmonic fit, **NRG** loudness match, **ROOM** spectral room
-  (§5.7; **TIM** timbre only on bed-over-bed, where it is weighted); hover a
-  label for its meaning. A **hatched** bar is not
+  the four **section fit** bars, the **track fit** bars and the rating.
+  **Section** label priority, **Length** bars covered (looping allowed),
+  **Vocal** vocal presence, **Phrase** phrase-length agreement; **Tempo**
+  tempo closeness, **Harmony** the measured harmonic fit, **Energy** loudness
+  match, **Room** spectral room (§5.7; **Timbre** only on bed-over-bed, where
+  it is weighted); hover a name for its abbreviation and meaning. A **hatched** bar is not
   measured (the pair was scored before that term was stored) — **Score
   library** fills it. Clicking the star you already set **clears** the rating,
   which removes the judgement entirely (§7). Once the focused card is rated, a
@@ -991,7 +1005,14 @@ shipped values; the right weights belong to a library, stored in settings.json.
 `chroma_vocal` with the bed section's `chroma_bed` over all 12 rotations: the
 argmax is the transposition (folded to [-6, +6]), the peak is the fit, and
 peak/runner-up is the confidence. This replaces `key_score` when both sides have
-chroma. **Bass clash** checks the bed's bass root against the vocal tonic after
+chroma. **When the transpose is a close call** is ranked against the library:
+confidence is `1 − runner-up/peak` on correlations mapped to 0–1, so a clear
+gap (0.90 vs 0.80) is only ~0.05 and the old fixed 0.15 flagged every pair (200
+of 200 in the 2026-10-10 simulation; 35 of 200 after). Each Score library run
+stores the 20th percentile of the library's confidences
+(`app_prefs.harmony_unsure_below`); `recipe.harmony_sure` decides it once,
+server-side, as `harmonic_sure` on listing rows and plan options, so the
+card's `?`, the WATCH row and Studio agree (0.15 only before a first run). **Bass clash** checks the bed's bass root against the vocal tonic after
 the shift and returns advice ("high-pass the bed" / mute `bed_bass.wav`), not a
 veto.
 
@@ -1042,7 +1063,10 @@ same two songs (both lifted for your own keepers), a 0–1 popularity percentile
 **surprise reordering** (cross-genre/era contrast, applied only among pairs that
 already fit) and an **uncertain-first** order (closest to a coin flip, where a
 verdict teaches most). Min-match filters the displayed percentile, not the raw
-composite (which clusters near 0.78).
+composite (which clusters near 0.78). A list scoped to one track also carries
+each row's **partner rank** (`models.partner_ranks`: best score per partner
+within the row's combo type, hidden pairs and excluded tracks left out), the
+dock's headline there.
 
 ### 5.8 Learned scorer
 

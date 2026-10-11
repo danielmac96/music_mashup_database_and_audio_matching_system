@@ -185,9 +185,43 @@ def _with_recipes(rows: list, target_of=None) -> None:
         logging.getLogger(__name__).warning("could not read stem facts for recipes",
                                             exc_info=True)
         facts = {}
+    from matcher.recipe import harmony_unsure_below
+    unsure_below = harmony_unsure_below()
     for r in rows:
         r["recipe"] = pair_recipe(r, facts,
-                                  target_bpm=target_of(r) if target_of else None)
+                                  target_bpm=target_of(r) if target_of else None,
+                                  unsure_below=unsure_below)
+        # Decided once, server-side: the card's "?" and the WATCH row agree.
+        r["harmonic_sure"] = r["recipe"]["harmonic_sure"]
+
+
+def _with_scope_rank(rows: list, vocal_song_id: Optional[int],
+                     inst_song_id: Optional[int]) -> None:
+    """On a list scoped to one track, each row's partner rank among all of that
+    track's partners (scope_rank of scope_total) — the card's headline there.
+    Unscoped (or scoped to both sides) the rows carry nothing extra."""
+    if (vocal_song_id is None) == (inst_song_id is None):
+        return
+    from database.models import partner_ranks
+    side = "vocal" if vocal_song_id is not None else "instrumental"
+    me = vocal_song_id if vocal_song_id is not None else inst_song_id
+    other = "inst_song_id" if side == "vocal" else "vocal_song_id"
+    # Ranked within each combo type: a bed-over-bed row ranks among this
+    # track's bed partners, not among its vocal-over-bed ones.
+    by_combo: dict = {}
+    for r in rows:
+        combo = r.get("combo_type") or "vocal_over_instrumental"
+        if combo not in by_combo:
+            try:
+                by_combo[combo] = partner_ranks(me, side, combo_type=combo)
+            except Exception:  # noqa: BLE001 — a headline is never worth a 500
+                logging.getLogger(__name__).warning("could not rank partners",
+                                                    exc_info=True)
+                by_combo[combo] = ({}, 0)
+        ranks, total = by_combo[combo]
+        rank = ranks.get(r.get(other))
+        if rank is not None:
+            r["scope_rank"], r["scope_total"] = rank, total
 
 
 @router.get("")
@@ -257,6 +291,7 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     rows = _with_reasons(_with_playback_terms(rows))
     if adventure > 0 and order == "score":
         rows = _reorder_by_surprise(rows, adventure)
+    _with_scope_rank(rows, vocal_song_id, inst_song_id)
     return {"count": len(rows), "candidates": rows,
             "max_per_song": max_per_song, "order": order,
             "adventure": adventure, "offset": offset}

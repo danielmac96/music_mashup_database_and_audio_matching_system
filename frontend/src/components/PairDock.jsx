@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PairCard } from "./PairCard";
 import { JobBadge } from "./JobBadge";
-import { ORDERS, activeFilterCount } from "../hooks/usePairDock";
+import { DOCK_FILTERS, ORDERS, activeFilterCount } from "../hooks/usePairDock";
 import { SCORE_TERMS, SONG_TERMS, pctOf } from "./pairs/pairModel";
 import { keyOf } from "./pairs/pairModel";
 import { api } from "../api";
@@ -24,6 +24,33 @@ const RATED = [["", "Any"], ["rated", "Rated by you"], ["loved", "Loved (4–5�
                ["unrated", "Not rated yet"]];
 const CAMELOT = Array.from({ length: 12 }, (_, i) => [`${i + 1}A`, `${i + 1}B`]).flat();
 
+const EFFORT_PILL = { 0.25: "free builds", 0.5: "free or light" };
+const RATED_PILL = { rated: "rated by you", loved: "loved 4–5★", unrated: "not rated yet" };
+
+// The active filters as removable pills, so a narrowed list says why it is
+// narrow without opening the panel. One pill per filter that differs from its
+// default; clicking it puts that one back.
+function filterPills(f, setFilters) {
+  const out = [];
+  const add = (key, text, patch = { [key]: DOCK_FILTERS[key] }) =>
+    out.push({ key, text, clear: () => setFilters(patch) });
+  if (f.minScore) add("minScore", `top ${Math.round((1 - f.minScore) * 100)}%`);
+  if (f.maxEffort != null) add("maxEffort", EFFORT_PILL[f.maxEffort] || "effort");
+  if (f.genre) add("genre", `genre ${f.genre}`);
+  if (f.era) add("era", f.era);
+  if (f.bpmBand) add("bpmBand", `${f.bpmBand} BPM`);
+  if (f.energy) add("energy", `energy ${f.energy}`);
+  if (f.rated) add("rated", RATED_PILL[f.rated] || f.rated);
+  if (f.key) add("key", `lands in ${f.key}${f.keyTol ? ` ±${f.keyTol}` : ""}`,
+    { key: "", keyTol: DOCK_FILTERS.keyTol });
+  if (f.vocalLabel) add("vocalLabel", `vocal: ${f.vocalLabel}`);
+  if (f.instLabel) add("instLabel", `bed: ${f.instLabel}`);
+  if (f.vocalForward) add("vocalForward", "vocal-forward");
+  if (f.perVocal) add("perVocal", "best bed per vocal");
+  if (f.adventure) add("adventure", `adventure ${Math.round(f.adventure * 100)}%`);
+  return out;
+}
+
 export function PairDock({ dock, ratings, scopeTitle, role, onRole,
                           onClearScope = null, freshness = null,
                           onAddToSet = null, setName = null, notes = null }) {
@@ -42,6 +69,7 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
   const [exportJob, setExportJob] = useState(null);
   const [archive, setArchive] = useState(null);
   const nActive = activeFilterCount(filters);
+  const pills = filterPills(filters, setFilters);
 
   // Debounced into the filter set: a request per keystroke would race itself.
   useEffect(() => {
@@ -85,15 +113,29 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
         <span className="pd-title">Pairs</span>
         <span className="pd-count mono">{loading ? "…" : rows.length}</span>
         <div className="pd-seg">
-          {ORDERS.map(([id, label, why, color]) => (
+          {ORDERS.filter(([, , , color]) => !color).map(([id, label, why]) => (
             <button key={id} className={order === id ? "on" : ""}
-              title={why} onClick={() => setOrder(id)}
-              /* The four term buttons carry their bar's colour, so "sort by
-                 LBL" and the LBL bar on every card read as one thing. */
-              style={color && order === id ? { borderColor: color, color } : undefined}>
+              title={why} onClick={() => setOrder(id)}>
               {label}
             </button>
           ))}
+          {/* The four section terms, by name, in one menu: seven tabs did not
+              fit the dock once they stopped being three-letter codes. The
+              chosen term carries its bar's colour, as the bar on each card. */}
+          {(() => {
+            const term = ORDERS.find(([id, , , color]) => color && id === order);
+            return (
+              <select className={`pd-termsort${term ? " on" : ""}`}
+                value={term ? order : ""} title="Rank by one section term"
+                style={term ? { borderColor: term[3], color: term[3] } : undefined}
+                onChange={(e) => setOrder(e.target.value || "score")}>
+                <option value="">By…</option>
+                {ORDERS.filter(([, , , color]) => color).map(([id, label, why]) => (
+                  <option key={id} value={id} title={why}>{label}</option>
+                ))}
+              </select>
+            );
+          })()}
         </div>
       </div>
 
@@ -141,7 +183,7 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
       </div>
 
       <div className="pd-filterbar">
-        <input className="pd-search" value={search} placeholder="Find a song in the pairs…"
+        <input className="pd-search" value={search} placeholder="Find a song…"
           onChange={(e) => setSearch(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Escape") { setSearch(""); e.currentTarget.blur(); } }}
           title="Title or artist, on either side — searched across every scored pair, not just this page" />
@@ -162,100 +204,6 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
         </button>
       </div>
 
-      {open && (
-        <div className="pd-filters">
-          <label>Min match
-            <select value={filters.minScore}
-              onChange={(e) => setFilters({ minScore: Number(e.target.value) })}>
-              {MIN_MATCH.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-            </select>
-          </label>
-          <label title="How much stretching, transposing and grid uncertainty a pair costs">Effort
-            <select value={filters.maxEffort ?? ""}
-              onChange={(e) => setFilters({ maxEffort: e.target.value === "" ? null : Number(e.target.value) })}>
-              {EFFORT.map(([v, l]) => <option key={l} value={v ?? ""}>{l}</option>)}
-            </select>
-          </label>
-          <label title="Either side's genre">Genre
-            <select value={filters.genre} onChange={(e) => setFilters({ genre: e.target.value })}>
-              <option value="">Any</option>
-              {(options?.genres || []).map((g) => (
-                <option key={g.genre} value={g.genre}>{g.genre} ({g.n})</option>))}
-            </select>
-          </label>
-          <label title="Either side's release year">Era
-            <select value={filters.era} onChange={(e) => setFilters({ era: e.target.value })}>
-              <option value="">Any</option>
-              {(options?.eras || []).map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </label>
-          <label title="The vocal's tempo — the bed is conformed to it">BPM
-            <select value={filters.bpmBand} onChange={(e) => setFilters({ bpmBand: e.target.value })}>
-              <option value="">Any</option>
-              {(options?.bpm_bands || []).map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </label>
-          <label title="The bed's energy, ranked within your library">Energy
-            <select value={filters.energy} onChange={(e) => setFilters({ energy: e.target.value })}>
-              <option value="">Any</option>
-              {(options?.energy_bands || []).map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </label>
-          <label title="Your judgements: keepers (rated, or loved at 4–5 stars) or what you have not judged yet">Rated
-            <select value={filters.rated} onChange={(e) => setFilters({ rated: e.target.value })}>
-              {RATED.map(([v, l]) => <option key={l} value={v}>{l}</option>)}
-            </select>
-          </label>
-          <label title="The key the mashup lands in — the vocal's, since the bed is transposed to it. For a slot in a set: 'lands in 8A ±1'.">Lands in
-            <span className="pd-keypick">
-              <select value={filters.key} onChange={(e) => setFilters({ key: e.target.value })}>
-                <option value="">Any key</option>
-                {CAMELOT.map((c) => <option key={c} value={c}>{c}</option>)}
-              </select>
-              <select value={filters.keyTol} disabled={!filters.key}
-                onChange={(e) => setFilters({ keyTol: Number(e.target.value) })}
-                title="Camelot steps either way (relative major/minor count as the same place)">
-                {[0, 1, 2].map((n) => <option key={n} value={n}>{n ? `±${n}` : "exact"}</option>)}
-              </select>
-            </span>
-          </label>
-          <label title="Which section of the vocal plays">Vocal part
-            <select value={filters.vocalLabel} onChange={(e) => setFilters({ vocalLabel: e.target.value })}>
-              <option value="">Any</option>
-              {(options?.vocal_labels || []).map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </label>
-          <label title="Which section of the bed plays under it">Bed part
-            <select value={filters.instLabel} onChange={(e) => setFilters({ instLabel: e.target.value })}>
-              <option value="">Any</option>
-              {(options?.inst_labels || []).map((v) => <option key={v} value={v}>{v}</option>)}
-            </select>
-          </label>
-          <label className="pd-check" title="Only pairs whose vocal section has a strong, forward voice">
-            <input type="checkbox" checked={filters.vocalForward}
-              onChange={(e) => setFilters({ vocalForward: e.target.checked })} />
-            Vocal-forward
-          </label>
-          <label className="pd-check"
-            title={scopeTitle ? "A library-wide view — clear the selected track to use it"
-              : "One row per acapella: each vocal's best bed, best vocals first"}>
-            <input type="checkbox" checked={filters.perVocal} disabled={!!scopeTitle}
-              onChange={(e) => setFilters({ perVocal: e.target.checked })} />
-            Best bed per vocal
-          </label>
-          <label className="pd-wide"
-            title="Safest fit first at 0; at 1, cross-genre and cross-era contrast is pulled forward. Only re-orders pairs that already fit, and only under the Score order.">
-            Adventure {Math.round(filters.adventure * 100)}%
-            <input type="range" min="0" max="1" step="0.1" value={filters.adventure}
-              disabled={order !== "score"}
-              onChange={(e) => setFilters({ adventure: Number(e.target.value) })} />
-          </label>
-          <div className="pd-filteractions">
-            <button onClick={() => { resetFilters(); setSearch(""); }}
-              disabled={!nActive && !filters.search}>Reset</button>
-          </div>
-        </div>
-      )}
 
       {exportOpen && (
         <div className="pd-exportmenu">
@@ -309,6 +257,113 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
           onRemove={toggleCompare} />
       )}
 
+      {!open && pills.length > 0 && (
+        <div className="pd-pills">
+          {pills.map((p) => (
+            <button key={p.key} className="pd-pill mono" onClick={p.clear}
+              title="Remove this filter">{p.text} ✕</button>
+          ))}
+        </div>
+      )}
+
+      {/* The filter panel lies OVER the list rather than pushing it down: in
+          flow it left a 720px window 161px of pairs (7 of 100 simulated users). */}
+      <div className="pd-listwrap">
+        {open && (
+          <div className="pd-filters">
+            <label>Min match
+              <select value={filters.minScore}
+                onChange={(e) => setFilters({ minScore: Number(e.target.value) })}>
+                {MIN_MATCH.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </label>
+            <label title="How much stretching, transposing and grid uncertainty a pair costs">Effort
+              <select value={filters.maxEffort ?? ""}
+                onChange={(e) => setFilters({ maxEffort: e.target.value === "" ? null : Number(e.target.value) })}>
+                {EFFORT.map(([v, l]) => <option key={l} value={v ?? ""}>{l}</option>)}
+              </select>
+            </label>
+            <label title="Either side's genre">Genre
+              <select value={filters.genre} onChange={(e) => setFilters({ genre: e.target.value })}>
+                <option value="">Any</option>
+                {(options?.genres || []).map((g) => (
+                  <option key={g.genre} value={g.genre}>{g.genre} ({g.n})</option>))}
+              </select>
+            </label>
+            <label title="Either side's release year">Era
+              <select value={filters.era} onChange={(e) => setFilters({ era: e.target.value })}>
+                <option value="">Any</option>
+                {(options?.eras || []).map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </label>
+            <label title="The vocal's tempo — the bed is conformed to it">BPM
+              <select value={filters.bpmBand} onChange={(e) => setFilters({ bpmBand: e.target.value })}>
+                <option value="">Any</option>
+                {(options?.bpm_bands || []).map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </label>
+            <label title="The bed's energy, ranked within your library">Energy
+              <select value={filters.energy} onChange={(e) => setFilters({ energy: e.target.value })}>
+                <option value="">Any</option>
+                {(options?.energy_bands || []).map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </label>
+            <label title="Your judgements: keepers (rated, or loved at 4–5 stars) or what you have not judged yet">Rated
+              <select value={filters.rated} onChange={(e) => setFilters({ rated: e.target.value })}>
+                {RATED.map(([v, l]) => <option key={l} value={v}>{l}</option>)}
+              </select>
+            </label>
+            <label title="The key the mashup lands in — the vocal's, since the bed is transposed to it. For a slot in a set: 'lands in 8A ±1'.">Lands in
+              <span className="pd-keypick">
+                <select value={filters.key} onChange={(e) => setFilters({ key: e.target.value })}>
+                  <option value="">Any key</option>
+                  {CAMELOT.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select value={filters.keyTol} disabled={!filters.key}
+                  onChange={(e) => setFilters({ keyTol: Number(e.target.value) })}
+                  title="Camelot steps either way (relative major/minor count as the same place)">
+                  {[0, 1, 2].map((n) => <option key={n} value={n}>{n ? `±${n}` : "exact"}</option>)}
+                </select>
+              </span>
+            </label>
+            <label title="Which section of the vocal plays">Vocal part
+              <select value={filters.vocalLabel} onChange={(e) => setFilters({ vocalLabel: e.target.value })}>
+                <option value="">Any</option>
+                {(options?.vocal_labels || []).map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </label>
+            <label title="Which section of the bed plays under it">Bed part
+              <select value={filters.instLabel} onChange={(e) => setFilters({ instLabel: e.target.value })}>
+                <option value="">Any</option>
+                {(options?.inst_labels || []).map((v) => <option key={v} value={v}>{v}</option>)}
+              </select>
+            </label>
+            <label className="pd-check" title="Only pairs whose vocal section has a strong, forward voice">
+              <input type="checkbox" checked={filters.vocalForward}
+                onChange={(e) => setFilters({ vocalForward: e.target.checked })} />
+              Vocal-forward
+            </label>
+            <label className="pd-check"
+              title={scopeTitle ? "A library-wide view — clear the selected track to use it"
+                : "One row per acapella: each vocal's best bed, best vocals first"}>
+              <input type="checkbox" checked={filters.perVocal} disabled={!!scopeTitle}
+                onChange={(e) => setFilters({ perVocal: e.target.checked })} />
+              Best bed per vocal
+            </label>
+            <label className="pd-wide"
+              title="Safest fit first at 0; at 1, cross-genre and cross-era contrast is pulled forward. Only re-orders pairs that already fit, and only under the Score order.">
+              Adventure {Math.round(filters.adventure * 100)}%
+              <input type="range" min="0" max="1" step="0.1" value={filters.adventure}
+                disabled={order !== "score"}
+                onChange={(e) => setFilters({ adventure: Number(e.target.value) })} />
+            </label>
+            <div className="pd-filteractions">
+              <button onClick={() => { resetFilters(); setSearch(""); }}
+                disabled={!nActive && !filters.search}>Reset</button>
+              <button className="pd-filterdone" onClick={() => setOpen(false)}>Done</button>
+            </div>
+          </div>
+        )}
       <div className="pd-list" ref={listRef}>
         {error && <div className="error-text pd-msg">{error}</div>}
         {!error && !loading && rows.length === 0 && (nActive > 0 || filters.search) && (
@@ -336,6 +391,9 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
               reasons={ratings.reasonsOf ? ratings.reasonsOf(c) : []}
               onReason={ratings.toggleReason ? (r) => ratings.toggleReason(c, r) : null}
               focused={i === cursor}
+              row={i !== cursor}
+              scopeNoun={role === "instrumental" ? "vocals" : "beds"}
+              scopedSide={scopeTitle ? role : null}
               playing={armedKey === k && audio.playing}
               onSelect={() => setCursor(i)}
               onPlay={() => { setCursor(i); play(c); }}
@@ -355,6 +413,7 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
             {loadingMore ? "Loading…" : "Load more pairs"}
           </button>
         )}
+      </div>
       </div>
 
       <div className="pd-keys">
