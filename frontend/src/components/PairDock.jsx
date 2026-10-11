@@ -103,9 +103,11 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
     el?.scrollIntoView({ block: "nearest" });
   }, [cursor, rows]);
 
-  const scope = scopeTitle
-    ? (role === "instrumental" ? `Vocals over ${scopeTitle}` : `Beds for ${scopeTitle}`)
-    : "Best in library — nothing selected";
+  const scope = dock.nextFor
+    ? `What comes next in “${dock.nextFor.name || "the set"}” — easy moves from its last mashup`
+    : scopeTitle
+      ? (role === "instrumental" ? `Vocals over ${scopeTitle}` : `Beds for ${scopeTitle}`)
+      : "Best in library — nothing selected";
 
   return (
     <aside className="pair-dock">
@@ -164,7 +166,10 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
 
       <div className="pd-scope">
         <span className="pd-scopetext">{scope}</span>
-        {scopeTitle ? (
+        {dock.nextFor ? (
+          <button className="pd-scope-x" onClick={dock.clearNextFor}
+            title="Back to the pair list" aria-label="Close what comes next">✕</button>
+        ) : scopeTitle ? (
           <>
             <button className="pd-roleswap mono"
               title="Look at this track as the other side of the pair"

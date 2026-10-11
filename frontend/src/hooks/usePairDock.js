@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
+import { onNextForSet } from "../dockModes";
 import { keyOf, SCORE_TERMS } from "../components/pairs/pairModel";
 
 // The pair dock: what it shows, where the cursor is, and what the keyboard does.
@@ -95,6 +96,12 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   // section line typed on Track detail).
   const [nonce, setNonce] = useState(0);
   const reload = useCallback(() => setNonce((n) => n + 1), []);
+  // "What comes next" for a set: the list becomes that set's next candidates
+  // until it is closed (or the scope changes). { id, name } or null.
+  const [nextFor, setNextFor] = useState(null);
+  useEffect(() => onNextForSet((id, name) => setNextFor({ id, name })), []);
+  useEffect(() => { setNextFor(null); }, [selectedTrackId, role]);
+  const clearNextFor = useCallback(() => setNextFor(null), []);
   const [loadingMore, setLoadingMore] = useState(false);
   const setFilters = useCallback(
     (patch) => setFiltersState((f) => ({ ...f, ...patch })), []);
@@ -126,21 +133,23 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       else opts.vocalSongId = selectedTrackId;
     }
     if (order !== CLIENT_ORDER) opts.order = order;
-    const request = perVocal
-      ? api.getBestBedPerVocal({ limit: LIMIT, minScore: filters.minScore })
-      : api.getMashups(opts);
+    const request = nextFor
+      ? api.getSetNext(nextFor.id, 20)
+      : perVocal
+        ? api.getBestBedPerVocal({ limit: LIMIT, minScore: filters.minScore })
+        : api.getMashups(opts);
     request
       .then((d) => {
         if (cancelled) return;
         const got = d.candidates || [];
         setRows(got);
-        setHasMore(!perVocal && got.length >= LIMIT);
+        setHasMore(!perVocal && !nextFor && got.length >= LIMIT);
         setCursor(0);
       })
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [selectedTrackId, role, order, filters, perVocal, nonce]);
+  }, [selectedTrackId, role, order, filters, perVocal, nonce, nextFor]);
 
   // The next page of the same server-side list. The offset is applied after
   // the per-song cap, so page two continues exactly where page one stopped.
@@ -312,5 +321,6 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     cursor, setCursor, current, armedKey,
     play, move, openStudio, hide, bindKeys, audio,
     compare, toggleCompare, clearCompare, reload, autoAdvance, setAutoAdvance,
+    nextFor, clearNextFor,
   };
 }

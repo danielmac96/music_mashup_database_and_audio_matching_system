@@ -662,6 +662,11 @@ to back, each mashup at its own curve tempo; **Export** writes a timed **cue
 sheet** (with each move), a **CSV** (`move_in`, `overlap_bars`,
 `vocal_tempo_pct`) or a **rekordbox XML** (§5.11). An item is frozen when
 added, so a re-score that drops its pair leaves it in the set marked `stale`.
+Adding from the dock offers **What comes next →** on its toast: the dock then
+lists that set's next candidates (the same ranking as under the list) until
+its ✕, so a set does not fill with one track's beds. A set loads in one query
+whatever its length (`models.candidates_for_pairs`), and shows its name while
+it does.
 
 ### ⚙ Settings drawer
 
@@ -1364,7 +1369,10 @@ Existing databases migrate on start.
   and `ux_pair_feedback_section` use the same key, and so do `set_items` and
   `pair_notes` (`COALESCE`d sections, like the feedback index). A set item
   freezes its scored row (`_SET_PAYLOAD_KEYS`) and prefers the live one when
-  the pair is still scored.
+  the pair is still scored — looked up for every item in ONE listing query
+  (`candidates_for_pairs`, the `pairs` filter of `get_candidates_enriched`);
+  `candidate_for_pair` is that call with one key. A per-item lookup cost 19 ms
+  each and made a 72-item set take 1.4 s per load and per add.
 - **One transpose per pair: `matcher/recipe.bed_shift`.** The card printed the
   measured shift while the audition and Studio played the Camelot one, so
   "♪ 92% · +2 st" looped at +5; the FL export re-picked its own sections and
@@ -1888,6 +1896,26 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    - ~~**Set transitions in Studio share one tempo**~~ — each mashup now lands
      at its own point on the set's tempo curve (§9 item 8, phase 4); ramps
      between them are still not modelled.
+
+   **Second run (2026-10-10).** 100 new personas (mashup producers, club and
+   open-format DJs, bedroom producers, crate diggers, analysts, mix
+   archaeologists, set planners, remixers, radio editors; 1280×720 to
+   2560×1440) ran 555 goal-driven tasks against a synthesised 40-track library
+   (librosa analyser; SoundCloud replaced by a fake catalogue; imports
+   stubbed). The core loop held — pick a track → pairs 55/55, loop 34/34,
+   Studio 35/35, no console or API errors. What it found, and what was done:
+   the pair card was too dense to scan (compact rows, plain term names), the
+   headline read 100 down a good library's first page (partner rank when
+   scoped, one-decimal percentile), the close-call transpose warning fired on
+   200 of 200 pairs (ranked against the library: 35 of 200), Score library hid
+   in a collapsed Settings card (the dock's stale-pairs Re-score), a pasted
+   tracklist did not recognise owned tracks (library matching), there was no
+   way to ask "A with B?" (`A + B` search, a verdict in Compare), Studio
+   printed two different nudges (one nudge, in beats), a row click toggled
+   the selection, exports hid in Filters, and sets loaded per item behind a
+   blank screen (one query, a loading state, what comes next). Still open from
+   it: Studio as A/B decks for a whole set (item 8, phase 5) and a 3:2 tempo
+   hint (the ×2/÷2 hint misses a 126 read as 84).
 
 8. **From ranked pairs to a finished set in FL Studio (planned 2026-10-08).**
    Decided: native `.flp` export, a tempo curve across a set (both sides may

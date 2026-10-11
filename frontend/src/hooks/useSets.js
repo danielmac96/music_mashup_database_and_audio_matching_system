@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
+import { requestNextForSet } from "../dockModes";
 
 // Sets (chosen mashups in running order) live in App, like the library and the
 // judgements: the dock's "+ Set", Studio's "+ Set" and the Sets screen all
@@ -59,10 +60,15 @@ export function useSets() {
       }
       const res = await api.addToSet(target.id, c);
       setActiveId(target.id);
+      // The response is the whole set: take its count now rather than waiting
+      // for the list to be re-fetched.
+      setSets((prev) => prev.map((s) => (s.id === target.id
+        ? { ...s, item_count: res.items.length } : s)));
       refresh();
       toast(res.added?.duplicate
         ? `Already in “${target.name}”`
-        : `Added to “${target.name}” — ${res.items.length} mashup${res.items.length === 1 ? "" : "s"}`);
+        : `Added to “${target.name}” — ${res.items.length} mashup${res.items.length === 1 ? "" : "s"}`,
+        { label: "What comes next →", onClick: () => requestNextForSet(target.id, target.name) });
       return res;
     } catch (e) {
       toast(`Could not add to the set: ${e.message}`);

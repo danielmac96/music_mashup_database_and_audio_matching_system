@@ -4,7 +4,7 @@ Tables: songs, stems, features, sections, mashup_candidates, pair_feedback,
 pair_hidden, track_excluded, mixes, mix_tracks, mashup_pairs, datasets, models,
 crates, crate_items, app_prefs.
 """
-from typing import Optional, List, Dict, Sequence, Iterable
+from typing import Optional, List, Dict, Sequence, Iterable, Tuple
 import re
 import sqlite3
 import json
@@ -2674,6 +2674,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             search: str = "", offset: int = 0,
                             rated: str = "", key: str = "", key_tolerance: int = 0,
                             vocal_label: str = "", inst_label: str = "",
+                            pairs: Optional[Sequence[Tuple[int, int]]] = None,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -2748,6 +2749,14 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     if inst_song_id is not None:
         where.append("mc.inst_song_id = ?")
         params.append(inst_song_id)
+    if pairs is not None:
+        # Exactly these (vocal, bed) song pairs, in one query — a set's items.
+        uniq = sorted({(int(v), int(i)) for v, i in pairs})
+        if not uniq:
+            return []
+        where.append("(mc.vocal_song_id, mc.inst_song_id) IN (VALUES "
+                     + ",".join("(?,?)" for _ in uniq) + ")")
+        params += [x for pair in uniq for x in pair]
     if not include_hidden:
         where.append(
             "NOT EXISTS (SELECT 1 FROM pair_hidden h "
@@ -3988,6 +3997,36 @@ def partner_ranks(song_id: int, side: str = "vocal",
     return {r["partner"]: i + 1 for i, r in enumerate(rows)}, len(rows)
 
 
+def candidates_for_pairs(keys: Sequence[Tuple[int, int, Optional[int], Optional[int]]],
+                         db_path: Path = DB_PATH) -> Dict[tuple, Optional[Dict]]:
+    """candidate_for_pair for many pairs in ONE enriched query, keyed by the
+    four ids asked for. A set used to make one listing query per item — 19 ms
+    each, 1.4 s for 72 items (the 2026-10-10 profile) — on every load and add.
+
+    With sections, that section pairing; without (both None), the pair's best
+    row. None for a pair with no scored row (a gate, or no re-score yet)."""
+    keys = list(keys)
+    if not keys:
+        return {}
+    song_pairs = {(k[0], k[1]) for k in keys}
+    rows = get_candidates_enriched(
+        combo_type="vocal_over_instrumental", pairs=song_pairs,
+        max_per_song=0, max_per_song_pair=0,
+        limit=min(200 * len(song_pairs), 50000), include_hidden=True,
+        db_path=db_path)
+    best: Dict[tuple, Dict] = {}
+    exact: Dict[tuple, Dict] = {}
+    for r in rows:   # ranked best first, so the first row per pair is its best
+        sp = (r["vocal_song_id"], r["inst_song_id"])
+        best.setdefault(sp, r)
+        exact.setdefault(sp + (r.get("vocal_section_idx"), r.get("inst_section_idx")), r)
+    out: Dict[tuple, Optional[Dict]] = {}
+    for k in keys:
+        v, i, vs, ins = k
+        out[k] = best.get((v, i)) if vs is None and ins is None else exact.get((v, i, vs, ins))
+    return out
+
+
 def candidate_for_pair(vocal_song_id: int, inst_song_id: int,
                        vocal_section: Optional[int] = None,
                        inst_section: Optional[int] = None,
@@ -3995,17 +4034,8 @@ def candidate_for_pair(vocal_song_id: int, inst_song_id: int,
     """The scored vocal-over-bed row for one pair, enriched exactly as the dock
     lists it. With sections, that section pairing; without, the pair's best.
     None when the pair is not scored (it failed a gate, or no re-score yet)."""
-    rows = get_candidates_enriched(
-        combo_type="vocal_over_instrumental", vocal_song_id=vocal_song_id,
-        inst_song_id=inst_song_id, max_per_song=0, max_per_song_pair=0,
-        limit=200, include_hidden=True, db_path=db_path)
-    if vocal_section is None and inst_section is None:
-        return rows[0] if rows else None
-    for r in rows:
-        if (r.get("vocal_section_idx") == vocal_section
-                and r.get("inst_section_idx") == inst_section):
-            return r
-    return None
+    key = (vocal_song_id, inst_song_id, vocal_section, inst_section)
+    return candidates_for_pairs([key], db_path=db_path)[key]
 
 
 def _pair_where(vocal_song_id, inst_song_id, vocal_section, inst_section):
@@ -4233,11 +4263,13 @@ def get_set(set_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
     finally:
         conn.close()
     out = []
+    lives = candidates_for_pairs(
+        [(it["vocal_song_id"], it["inst_song_id"], it["vocal_section"], it["inst_section"])
+         for it in items], db_path=db_path)
     for it in items:
         frozen = json.loads(it.get("payload_json") or "{}")
-        live = candidate_for_pair(it["vocal_song_id"], it["inst_song_id"],
-                                  it["vocal_section"], it["inst_section"],
-                                  db_path=db_path)
+        live = lives[(it["vocal_song_id"], it["inst_song_id"],
+                      it["vocal_section"], it["inst_section"])]
         row = {**frozen, **({k: live.get(k) for k in _SET_PAYLOAD_KEYS} if live else {})}
         row.update({
             "item_id": it["id"], "position": it["position"],
