@@ -9,6 +9,7 @@ import { PlaylistImporter } from "./PlaylistImporter";
 import { useLibraryFilters, VIEWS, countView } from "../hooks/useLibraryFilters";
 import { isActiveJob, jobRunning, latestJobBySong } from "../hooks/useQueue";
 import { toast } from "../toast";
+import { notifyPairsInputChanged, requestRescore } from "../rescore";
 import { api } from "../api";
 
 // Screen 1a's left two thirds: the library, its filters, and the rail furniture
@@ -243,7 +244,9 @@ export function LibraryScreen({ library, attributes, ratings, groups, player, se
         onFixTempo={async (t, bpm) => {
           try {
             await api.correctFeatures(t.id, { bpm });
-            toast(`${t.title}: ${bpm} BPM — Score library to re-pair it`);
+            notifyPairsInputChanged();
+            toast(`${t.title}: ${bpm} BPM — its pairs are stale until a re-score`,
+              { label: "Re-score now", onClick: requestRescore });
             refresh();
           } catch (e) { toast(`Could not correct the tempo: ${e.message}`); }
         }}

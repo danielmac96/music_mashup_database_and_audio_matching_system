@@ -4,7 +4,7 @@ Tables: songs, stems, features, sections, mashup_candidates, pair_feedback,
 pair_hidden, track_excluded, mixes, mix_tracks, mashup_pairs, datasets, models,
 crates, crate_items, app_prefs.
 """
-from typing import Optional, List, Dict, Sequence, Iterable
+from typing import Optional, List, Dict, Sequence, Iterable, Tuple
 import re
 import sqlite3
 import json
@@ -507,6 +507,11 @@ _SONGS_OPTIONAL_COLUMNS = (
     # for the current audio: do_download clears it).
     ("quick_state", "TEXT"),
     ("quick_at", "TEXT"),
+    # When something the pair scorer reads last changed for this track —
+    # features, a manual BPM/key, the beat phase, the sections. Compared with
+    # the start of the last "Score library" run, it is what tells the dock its
+    # pairs are stale. Every writer of a scoring input bumps it (§7).
+    ("pairs_input_at", "TEXT"),
     ("artist_id", "TEXT"),
     ("track_id", "TEXT"),
     ("duration_str", "TEXT"),
@@ -1069,7 +1074,8 @@ def is_trusted_link(resolve_status: Optional[str],
 
     Manual links, page-scraped links (the exact URL 1001tracklists attributes to
     the track), and already-ingested tracks are trusted outright (a human chose
-    them, the page vouches for them, or they made it through ingest). An auto-linked
+    them, the page vouches for them, or they made it through ingest), as are rows
+    matched by name to exactly one library song (``library``). An auto-linked
     track (search) is trusted only when its match score clears AUTO_LINK_MIN_SCORE,
     its resolved upload is a full track rather than a ~30s Go+ preview
     (AUTO_LINK_MIN_DURATION), and the artist actually appears in the hit
@@ -1080,7 +1086,7 @@ def is_trusted_link(resolve_status: Optional[str],
     failed, low-confidence auto) is excluded from training but stays usable for
     ingest."""
     status = (resolve_status or "").lower()
-    if status in ("manual", "resolved", "scraped"):
+    if status in ("manual", "resolved", "scraped", "library"):
         return True
     if status == "auto":
         score = resolve_score if resolve_score is not None else 0.0
@@ -1343,6 +1349,14 @@ def update_stem_quality(song_id: int, stem_type: str, metrics: Dict,
     conn.close()
 
 
+def mark_pairs_input(conn: sqlite3.Connection, song_id: int) -> None:
+    """Note that a scoring input of this track changed, on the caller's
+    connection and inside its transaction. The dock's freshness check compares
+    it with the start of the last scoring run."""
+    conn.execute("UPDATE songs SET pairs_input_at=datetime('now') WHERE id=?",
+                 (song_id,))
+
+
 def upsert_features(song_id: int, stem_type: str, features: dict,
                     db_path: Path = DB_PATH):
     mfcc = features.pop("mfcc", None)
@@ -1391,6 +1405,7 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
          features.get("hook_start"), features.get("hook_end"),
          features.get("hook_role"))
     )
+    mark_pairs_input(conn, song_id)
     conn.commit()
     conn.close()
 
@@ -1953,6 +1968,8 @@ def update_features_manual(song_id: int, *, bpm: Optional[float] = None,
             params,
         )
         updated += 1
+    if updated:
+        mark_pairs_input(conn, song_id)
     conn.commit()
     conn.close()
     return updated
@@ -2183,6 +2200,7 @@ def replace_sections(song_id: int, sections: List[Dict],
         conn.rollback()
         conn.close()
         raise
+    mark_pairs_input(conn, song_id)
     conn.commit()
     conn.close()
     if outcome.get("moved") or outcome.get("flagged"):
@@ -2627,6 +2645,21 @@ SECTION_TERM_ORDERS = {
 }
 
 
+# Only "+" and the tracklist's own "w/": "x", "with" and "vs" live inside real
+# credits and titles ("Calvin Harris x Dua Lipa", "Dancing with a Stranger").
+_TWO_TRACK_RE = re.compile(r"\s*\+\s*|\s+w/\s+", re.IGNORECASE)
+
+
+def _two_track_query(search: str) -> Optional[tuple[str, str]]:
+    """("A", "B") for a pair search written "A + B" or "A w/ B", else None.
+    Only a split that leaves two non-empty terms counts, so "Fire +" is still a
+    one-song search."""
+    parts = _TWO_TRACK_RE.split(search.strip(), maxsplit=1)
+    if len(parts) == 2 and all(re.search(r"\w", p) for p in parts):
+        return parts[0].strip(), parts[1].strip()
+    return None
+
+
 def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             limit: int = 100, vocal_song_id: Optional[int] = None,
                             inst_song_id: Optional[int] = None,
@@ -2641,6 +2674,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             search: str = "", offset: int = 0,
                             rated: str = "", key: str = "", key_tolerance: int = 0,
                             vocal_label: str = "", inst_label: str = "",
+                            pairs: Optional[Sequence[Tuple[int, int]]] = None,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -2715,6 +2749,14 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     if inst_song_id is not None:
         where.append("mc.inst_song_id = ?")
         params.append(inst_song_id)
+    if pairs is not None:
+        # Exactly these (vocal, bed) song pairs, in one query — a set's items.
+        uniq = sorted({(int(v), int(i)) for v, i in pairs})
+        if not uniq:
+            return []
+        where.append("(mc.vocal_song_id, mc.inst_song_id) IN (VALUES "
+                     + ",".join("(?,?)" for _ in uniq) + ")")
+        params += [x for pair in uniq for x in pair]
     if not include_hidden:
         where.append(
             "NOT EXISTS (SELECT 1 FROM pair_hidden h "
@@ -2788,10 +2830,20 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         where.append("mc.inst_section_label = ?")
         params.append(inst_label)
     if search and search.strip():
-        like = f"%{search.strip()}%"
-        where.append("(sv.title LIKE ? OR sv.artist LIKE ? "
-                     " OR si.title LIKE ? OR si.artist LIKE ?)")
-        params += [like] * 4
+        both = _two_track_query(search)
+        if both:
+            # "A + B": one side matches A and the other B, either way round —
+            # "does Weightless work with Fireproof?" asked of the whole library.
+            la, lb = (f"%{t}%" for t in both)
+            side = "({t}.title LIKE ? OR {t}.artist LIKE ?)"
+            where.append(f"(({side.format(t='sv')} AND {side.format(t='si')}) OR "
+                         f"({side.format(t='sv')} AND {side.format(t='si')}))")
+            params += [la, la, lb, lb, lb, lb, la, la]
+        else:
+            like = f"%{search.strip()}%"
+            where.append("(sv.title LIKE ? OR sv.artist LIKE ? "
+                         " OR si.title LIKE ? OR si.artist LIKE ?)")
+            params += [like] * 4
     if vocal_forward:
         # The vocal presence of the section that will actually play, falling
         # back to the track's most vocal section when no pair was stored.
@@ -3224,6 +3276,41 @@ def set_pref(key: str, value: Dict, db_path: Path = DB_PATH) -> Dict:
     finally:
         conn.close()
     return dict(value)
+
+
+def pairs_freshness(db_path: Path = DB_PATH) -> Dict:
+    """Whether the scored pairs still describe the library.
+
+    changed_tracks counts analysed tracks whose scoring inputs changed after
+    the last successful "Score library" run started (songs.pairs_input_at).
+    never_scored is true when no run has finished and there is something to
+    pair; a library scored before this was recorded counts as scored, with no
+    change known."""
+    last = get_pref("last_score", db_path=db_path) or {}
+    started = last.get("started_at")
+    conn = get_conn(db_path)
+    try:
+        analysed = conn.execute(
+            "SELECT COUNT(*) FROM songs WHERE status='analysed'").fetchone()[0]
+        has_pairs = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM mashup_candidates)").fetchone()[0]
+        last_scored = conn.execute(
+            "SELECT MAX(scored_at) FROM mashup_candidates").fetchone()[0]
+        changed = 0
+        if started:
+            changed = conn.execute(
+                "SELECT COUNT(*) FROM songs WHERE status='analysed' "
+                "AND pairs_input_at IS NOT NULL AND pairs_input_at > ?",
+                (started,)).fetchone()[0]
+    finally:
+        conn.close()
+    return {
+        "last_score_started_at": started,
+        "last_scored_at": last_scored,
+        "changed_tracks": int(changed),
+        "never_scored": bool(not started and not has_pairs and analysed >= 2),
+        "analysed_tracks": int(analysed),
+    }
 
 
 def get_pref(key: str, db_path: Path = DB_PATH) -> Optional[Dict]:
@@ -3878,6 +3965,68 @@ def analysis_timing_summary(since: Optional[str] = None,
 
 # ── Pair lookup by its four ids ──────────────────────────────────────────────
 
+def partner_ranks(song_id: int, side: str = "vocal",
+                  combo_type: str = "vocal_over_instrumental",
+                  db_path: Path = DB_PATH) -> tuple[Dict[int, int], int]:
+    """Where each partner of one track ranks among all of its partners, by the
+    best score of any section pairing — ({partner_song_id: rank}, how many).
+
+    The dock's headline when it is scoped to a track: "#3 of 20 beds" says
+    which bed is best for THIS vocal, where the library percentile reads 99 or
+    100 for every row of a good track's list. Hidden pairs and excluded tracks
+    are left out, as the listing leaves them out. `side` is the scoped track's
+    role: "vocal" ranks its beds, "instrumental" its vocals."""
+    me, other = (("vocal_song_id", "inst_song_id") if side == "vocal"
+                 else ("inst_song_id", "vocal_song_id"))
+    conn = get_conn(db_path)
+    try:
+        rows = conn.execute(
+            f"""SELECT mc.{other} AS partner, MAX(mc.score_total) AS best
+                FROM mashup_candidates mc
+                WHERE mc.{me} = ? AND mc.combo_type = ?
+                  AND NOT EXISTS (SELECT 1 FROM pair_hidden h
+                                  WHERE h.vocal_song_id = mc.vocal_song_id
+                                    AND h.inst_song_id = mc.inst_song_id)
+                  AND NOT EXISTS (SELECT 1 FROM track_excluded x
+                                  WHERE x.song_id IN (mc.vocal_song_id, mc.inst_song_id))
+                GROUP BY mc.{other}
+                ORDER BY best DESC, partner""",
+            (song_id, combo_type)).fetchall()
+    finally:
+        conn.close()
+    return {r["partner"]: i + 1 for i, r in enumerate(rows)}, len(rows)
+
+
+def candidates_for_pairs(keys: Sequence[Tuple[int, int, Optional[int], Optional[int]]],
+                         db_path: Path = DB_PATH) -> Dict[tuple, Optional[Dict]]:
+    """candidate_for_pair for many pairs in ONE enriched query, keyed by the
+    four ids asked for. A set used to make one listing query per item — 19 ms
+    each, 1.4 s for 72 items (the 2026-10-10 profile) — on every load and add.
+
+    With sections, that section pairing; without (both None), the pair's best
+    row. None for a pair with no scored row (a gate, or no re-score yet)."""
+    keys = list(keys)
+    if not keys:
+        return {}
+    song_pairs = {(k[0], k[1]) for k in keys}
+    rows = get_candidates_enriched(
+        combo_type="vocal_over_instrumental", pairs=song_pairs,
+        max_per_song=0, max_per_song_pair=0,
+        limit=min(200 * len(song_pairs), 50000), include_hidden=True,
+        db_path=db_path)
+    best: Dict[tuple, Dict] = {}
+    exact: Dict[tuple, Dict] = {}
+    for r in rows:   # ranked best first, so the first row per pair is its best
+        sp = (r["vocal_song_id"], r["inst_song_id"])
+        best.setdefault(sp, r)
+        exact.setdefault(sp + (r.get("vocal_section_idx"), r.get("inst_section_idx")), r)
+    out: Dict[tuple, Optional[Dict]] = {}
+    for k in keys:
+        v, i, vs, ins = k
+        out[k] = best.get((v, i)) if vs is None and ins is None else exact.get((v, i, vs, ins))
+    return out
+
+
 def candidate_for_pair(vocal_song_id: int, inst_song_id: int,
                        vocal_section: Optional[int] = None,
                        inst_section: Optional[int] = None,
@@ -3885,17 +4034,8 @@ def candidate_for_pair(vocal_song_id: int, inst_song_id: int,
     """The scored vocal-over-bed row for one pair, enriched exactly as the dock
     lists it. With sections, that section pairing; without, the pair's best.
     None when the pair is not scored (it failed a gate, or no re-score yet)."""
-    rows = get_candidates_enriched(
-        combo_type="vocal_over_instrumental", vocal_song_id=vocal_song_id,
-        inst_song_id=inst_song_id, max_per_song=0, max_per_song_pair=0,
-        limit=200, include_hidden=True, db_path=db_path)
-    if vocal_section is None and inst_section is None:
-        return rows[0] if rows else None
-    for r in rows:
-        if (r.get("vocal_section_idx") == vocal_section
-                and r.get("inst_section_idx") == inst_section):
-            return r
-    return None
+    key = (vocal_song_id, inst_song_id, vocal_section, inst_section)
+    return candidates_for_pairs([key], db_path=db_path)[key]
 
 
 def _pair_where(vocal_song_id, inst_song_id, vocal_section, inst_section):
@@ -4123,11 +4263,13 @@ def get_set(set_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
     finally:
         conn.close()
     out = []
+    lives = candidates_for_pairs(
+        [(it["vocal_song_id"], it["inst_song_id"], it["vocal_section"], it["inst_section"])
+         for it in items], db_path=db_path)
     for it in items:
         frozen = json.loads(it.get("payload_json") or "{}")
-        live = candidate_for_pair(it["vocal_song_id"], it["inst_song_id"],
-                                  it["vocal_section"], it["inst_section"],
-                                  db_path=db_path)
+        live = lives[(it["vocal_song_id"], it["inst_song_id"],
+                      it["vocal_section"], it["inst_section"])]
         row = {**frozen, **({k: live.get(k) for k in _SET_PAYLOAD_KEYS} if live else {})}
         row.update({
             "item_id": it["id"], "position": it["position"],

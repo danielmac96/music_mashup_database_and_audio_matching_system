@@ -40,9 +40,15 @@ VOCAL_STRETCH_HEAVY_PCT = 4.0
 STRETCH_WARN_PCT = 8.0
 SHIFT_HEAVY_ST = 4
 NUDGE_MIN_MS = 5
-# Below this harmonic confidence another transposition fits about as well
-# (pairModel.harmonyOf uses the same number); below this fit the notes clash.
+# The fallback for "another transposition fits about as well": confidence is
+# 1 − runner-up/peak on correlations mapped to 0-1, so a clear gap (0.90 vs
+# 0.80) is only ~0.05 and a fixed 0.15 flagged every pair (200 of 200 in the
+# 2026-10-10 simulation). The live threshold is ranked against this library —
+# HARMONY_UNSURE_QUANTILE of its stored confidences, recorded by each Score
+# library run (harmony_unsure_below); this is used only before one has run.
+# Below HARMONY_CLASH the notes clash.
 HARMONY_SURE = 0.15
+HARMONY_UNSURE_QUANTILE = 0.2
 HARMONY_CLASH = 0.55
 # Separation quality (analysis/quality.py) below which bleed is audible.
 STEM_QUALITY_WARN = 0.5
@@ -138,6 +144,59 @@ def _signed(v: float, unit: str, digits: int = 0) -> str:
     return f"{'+' if v > 0 else '−' if v < 0 else ''}{abs(v):.{digits}f}{unit}"
 
 
+def harmony_unsure_below(db_path=None) -> float:
+    """The confidence under which a measured transpose is a close call in THIS
+    library (app_prefs.harmony_unsure_below, written by score_all_pairs), else
+    HARMONY_SURE. Read once per request, never per row."""
+    try:
+        from database.models import DB_PATH, get_pref
+        pref = get_pref("harmony_unsure_below",
+                        db_path=db_path if db_path is not None else DB_PATH) or {}
+        v = pref.get("value")
+        return float(v) if v is not None else HARMONY_SURE
+    except Exception:  # noqa: BLE001 — a threshold is never worth a 500
+        return HARMONY_SURE
+
+
+def harmony_sure(confidence: Optional[float], unsure_below: float) -> Optional[bool]:
+    """Whether a measured transpose is clear of the runner-up. None when there
+    is no measured harmony — unknown, not unsure."""
+    if confidence is None:
+        return None
+    return float(confidence) >= unsure_below
+
+
+def nudge_split(ms: Optional[float], bpm: Optional[float]):
+    """(beats, rest_ms) for an offset of at least one beat at `bpm`, else
+    (0, ms). An offset of 1437 ms at 84 BPM is the two sections' bar lines two
+    beats apart plus 9 ms, which is how a producer moves it; printed as
+    milliseconds it read as a timing error. rest_ms is what is left after the
+    nearest whole beat, so it can carry either sign.
+    (None, None) when there is no offset."""
+    if ms is None:
+        return None, None
+    ms = float(ms)
+    if not bpm or bpm <= 0:
+        return 0, round(ms)
+    beat = 60000.0 / float(bpm)
+    if abs(ms) < beat:
+        return 0, round(ms)
+    beats = int(round(ms / beat))
+    return beats, round(ms - beats * beat)
+
+
+def nudge_text(ms: Optional[float], bpm: Optional[float]) -> str:
+    """The nudge as the card prints it: "+12 ms", "−2 beats −9 ms"."""
+    beats, rest = nudge_split(ms, bpm)
+    if beats is None:
+        return ""
+    if not beats:
+        return _signed(rest, " ms")
+    word = "beat" if abs(beats) == 1 else "beats"
+    return (f"{_signed(beats, ' ' + word)}"
+            + (f" {_signed(rest, ' ms')}" if rest else ""))
+
+
 def _rate_to(target: float, bpm: Optional[float]):
     """(rate, fold) to play a side at `target`, read at half/double time when
     closer — rate > 1 plays it faster. (None, None) when its tempo is unknown."""
@@ -153,7 +212,8 @@ def _rate_to(target: float, bpm: Optional[float]):
 
 
 def pair_recipe(row: Dict, facts: Optional[Dict] = None,
-                target_bpm: Optional[float] = None) -> Dict:
+                target_bpm: Optional[float] = None,
+                unsure_below: Optional[float] = None) -> Dict:
     """Everything done to a scored pair to build it, and what to watch for.
 
     `row` is a listing row after _with_playback_terms (semitone_shift and
@@ -236,9 +296,11 @@ def pair_recipe(row: Dict, facts: Optional[Dict] = None,
                     if measured else
                     "from the Camelot wheel — the sections had no chroma to measure")})
     fit, conf = _num(row.get("score_key")), _num(row.get("harmonic_confidence"))
-    if measured and conf is not None and conf < HARMONY_SURE:
+    sure = harmony_sure(conf, HARMONY_SURE if unsure_below is None else unsure_below) \
+        if measured else None
+    if sure is False:
         warnings.append({"key": "key_unsure",
-                         "text": "another transpose fits almost as well — try both"})
+                         "text": "a closer transpose call than most of your library — try both"})
     if measured and fit is not None and fit < HARMONY_CLASH:
         warnings.append({"key": "clash",
                          "text": f"the notes clash (fit {round(fit * 100)}%)"})
@@ -254,7 +316,7 @@ def pair_recipe(row: Dict, facts: Optional[Dict] = None,
         if abs(ms) >= NUDGE_MIN_MS:
             adjustments.append({
                 "key": "nudge", "level": "free",
-                "text": f"nudge bed {_signed(ms, ' ms')}",
+                "text": f"nudge bed {nudge_text(ms, target)}",
                 "why": "slide the bed so its downbeat lands under the vocal's"})
     repeats = row.get("section_loop_repeats") or 1
     if repeats > 1:
@@ -299,11 +361,14 @@ def pair_recipe(row: Dict, facts: Optional[Dict] = None,
         "bed_semitones": shift,
         "shift_source": None if shift is None else ("measured" if measured else "camelot"),
         "nudge_ms": None if off is None else round(float(off) * 1000),
+        "nudge_beats": nudge_split(None if off is None else float(off) * 1000, target)[0],
+        "nudge_rest_ms": nudge_split(None if off is None else float(off) * 1000, target)[1],
         "loop_repeats": repeats,
         "bed_gain_db": gain,
         "vocal_lane_gain": VOCAL_LANE_GAIN,
         "bed_lane_gain": bed_lane_gain(gain),
         "bed_highpass_hz": hpf,
+        "harmonic_sure": sure,
         "adjustments": adjustments,
         "warnings": warnings,
     }

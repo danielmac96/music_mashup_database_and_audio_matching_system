@@ -3,7 +3,7 @@ import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
 import { RecipeStrip } from "./pairs/RecipeStrip";
 import {
-  BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, nudgeLabel, pctOf, rawPctOf,
+  BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, headlineOf, nudgeLabel, rawPctOf,
   reasonsFor, songTermsOf, spanLabel, termsOf, tierOf,
 } from "./pairs/pairModel";
 import { bpmTag, camelotColor, keyRel } from "../theme";
@@ -23,11 +23,22 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
                            onAddToSet = null, setName = null,
                            note = "", onNote = null,
                            comparing = false, onCompare = null,
-                           reasons = [], onReason = null }) {
+                           reasons = [], onReason = null,
+                           row = false, scopeNoun = "beds", scopedSide = null }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note);
   const tier = tierOf(c);
-  const pct = pctOf(c);
+  const head = headlineOf(c, scopeNoun);
+  // Unfocused pairs are a two-line row; the focused one is this full card.
+  // One card filled a laptop-height dock (20 of 100 simulated users scrolled
+  // once per pair), so scanning happens on rows and reading on the card.
+  if (row) {
+    return (
+      <PairRow c={c} tier={tier} head={head} rating={rating} onRate={onRate}
+        scopedSide={scopedSide}
+        playing={playing} onSelect={onSelect} onPlay={onPlay} onStudio={onStudio} />
+    );
+  }
   const rel = keyRel(c.vocal_camelot, c.inst_camelot);
   const effort = c.effort_label || null;
   const tempo = c.target_bpm != null ? `→ ${c.target_bpm.toFixed(1)} BPM` : null;
@@ -42,9 +53,11 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
 
       <div className="pc-head">
         <div className="pc-score mono" style={{ color: tier.color }}
-          title={`percentile ${pct} · raw score ${rawPctOf(c)}`}>{pct}</div>
+          title={`${head.why} · raw score ${rawPctOf(c)}`}>{head.big}</div>
         <div className="pc-headtext">
-          <div className="pc-tier mono" style={{ color: tier.color }}>{tier.tier}</div>
+          <div className="pc-tier mono" style={{ color: tier.color }}>
+            {tier.tier} <span className="pc-headsmall">{head.small}</span>
+          </div>
           <div className="pc-sub">{tempo || "—"}</div>
         </div>
         {effort && (
@@ -95,7 +108,7 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
             title={c.alignment_offset == null
               ? "Neither side has a stored downbeat grid, so there is no measured offset — not a measured zero."
               : "How far to slide the bed so the two bar lines land together."}>
-            {nudgeLabel(c.alignment_offset)}
+            {nudgeLabel(c.alignment_offset, c.target_bpm)}
           </span>
         )}
         {/* The measured harmony: the two sections' notes cross-correlated over
@@ -184,6 +197,72 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
   );
 }
 
+// A pair as a two-line row: who over whom and which moments, then where it
+// lands (key, tempo), what the bed needs (its transpose), the measured fit,
+// the build effort and the two things you do on every row — loop and rate.
+// Click focuses it (the full card), double-click opens Studio.
+function PairRow({ c, tier, head, rating, onRate, playing, onSelect, onPlay, onStudio,
+                   scopedSide = null }) {
+  const h = harmonyOf(c);
+  const shift = c.recipe?.bed_semitones ?? c.semitone_shift ?? 0;
+  const land = c.recipe?.target_bpm ?? c.target_bpm ?? c.vocal_bpm;
+  return (
+    <div className={`pair-card pc-row${playing ? " playing" : ""}`}
+      onClick={onSelect} onDoubleClick={onStudio}
+      title="Click for the full card · double-click opens Studio">
+      <div className="pcr-line">
+        <span className="pcr-score mono" style={{ color: tier.color }} title={head.why}>
+          {head.big}
+        </span>
+        <span className="pcr-pair">
+          {/* On a list scoped to one track, that track is on every row: its
+              title gives way to the partner's, which is what differs. */}
+          <span className="pc-role mono vox">VOX</span>
+          {scopedSide !== "vocal" && <b>{c.vocal_title}</b>}
+          <span className="pcr-sec mono">{c.vocal_section_label || "—"}</span>
+          <span className="pcr-over">over</span>
+          <span className="pc-role mono bed">BED</span>
+          {scopedSide !== "instrumental" && <b>{c.inst_title}</b>}
+          <span className="pcr-sec mono">{c.inst_section_label || "—"}</span>
+        </span>
+      </div>
+      <div className="pcr-line pcr-meta">
+        {c.vocal_camelot
+          ? <span className="pc-key mono" style={{ background: camelotColor(c.vocal_camelot) }}
+              title="The key it lands in — the vocal's; the bed is transposed to it">
+              {c.vocal_camelot}</span>
+          : <span className="pc-key mono none">—</span>}
+        <span className="mono pcr-dim" title="The tempo it lands at">
+          {land != null ? `${Math.round(land)} BPM` : "— BPM"}
+        </span>
+        <span className="mono pcr-dim" title="The bed's transpose">
+          bed {shift > 0 ? "+" : ""}{shift} st
+        </span>
+        {h.known && (
+          <span className={`mono ${h.clash ? "pcr-clash" : "pcr-dim"}`}
+            title="Measured harmonic fit of the two sections">
+            ♪ {h.fitPct}%{h.sure ? "" : " ?"}
+          </span>
+        )}
+        {c.effort_label && (
+          <span className={`pc-effort mono ${EFFORT_TONE[c.effort_label] || ""}`}
+            title={c.effort_reason || "How much work building this pair is"}>
+            {c.effort_label}
+          </span>
+        )}
+        <span className="pcr-spacer" />
+        <button className="pc-loop" onClick={(e) => { e.stopPropagation(); onPlay(); }}
+          title={playing ? "Stop (space)" : "Loop this pair (space)"}>
+          {playing ? "◍" : "▶"}
+        </button>
+        {/* Rating a row also opens it, so the WHY chips the full card offers
+            once rated are right there (they never showed for a row). */}
+        <StarRating value={rating} onRate={(n) => { onRate(n); onSelect?.(); }} size={13} />
+      </div>
+    </div>
+  );
+}
+
 // One song of the pair: what it is, which stretch of it plays, and the key and
 // tempo it brings before any adjustment. A null bpm is unanalysed, drawn as a
 // dash like the key chip, never as 0.
@@ -235,11 +314,11 @@ function Bars({ terms, group, song = false }) {
     <div className={`pc-bars${song ? " song" : ""}`} data-group={group}>
       {terms.map((t) => (
         <div key={t.key} className="pc-bar-row">
-          <span className="pc-bar-label mono" title={t.what}>{t.label}</span>
+          <span className="pc-bar-label" title={`${t.label} — ${t.what}`}>{t.name}</span>
           <span className={`pc-bar${t.known ? "" : " unmeasured"}`}
             title={t.known
-              ? `${t.label} ${(t.value * 100).toFixed(0)}% — ${t.what}`
-              : `${t.label} not measured — re-score the library to fill this in (${t.what})`}>
+              ? `${t.name} ${(t.value * 100).toFixed(0)}% — ${t.what}`
+              : `${t.name} not measured — re-score the library to fill this in (${t.what})`}>
             {t.known && (
               <span style={{ width: `${Math.round(t.value * 100)}%`,
                              background: t.color }} />

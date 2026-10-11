@@ -671,6 +671,12 @@ input, select { font-family: inherit; }
   display: flex; align-items: center; gap: 10px;
 }
 .toast .dot { color: var(--green); }
+.toast-action {
+  margin-left: 6px; cursor: pointer; border-radius: 7px; padding: 5px 10px;
+  border: 1px solid var(--border-accent); background: var(--raised);
+  color: var(--accent-light); font: 600 12px var(--font-ui);
+}
+.toast-action:hover { background: var(--accent); color: var(--text); }
 
 /* ── Setup Wizard ─────────────────────────────────────────────────────────── */
 .wizard-steps {
@@ -1818,6 +1824,12 @@ input, select { font-family: inherit; }
 .pd-head .pd-seg button { flex: 1; padding: 3px 6px; }
 .pd-seg button:hover { color: var(--text-2); }
 .pd-seg button.on { background: var(--raised); color: var(--text); font-weight: 600; }
+.pd-termsort {
+  cursor: pointer; border: 1px solid transparent; border-radius: 5px;
+  background: transparent; color: var(--muted); padding: 2px 4px;
+  font: 500 10.5px var(--font-ui);
+}
+.pd-termsort.on { background: var(--raised); font-weight: 600; }
 
 .pd-scope {
   flex: none; display: flex; align-items: center; gap: 7px;
@@ -1836,7 +1848,27 @@ input, select { font-family: inherit; }
   font-size: 10px; font-weight: 500; padding: 2px 7px; white-space: nowrap;
 }
 .pd-roleswap:hover { color: var(--accent-light); border-color: var(--border-accent); }
+.pd-scope-x {
+  flex: none; cursor: pointer; width: 22px; height: 22px;
+  border: 1px solid var(--border-ctrl); border-radius: 6px;
+  background: var(--panel); color: var(--muted); font-size: 11px; line-height: 1;
+}
+.pd-scope-x:hover { color: var(--text); border-color: var(--border-accent); }
 
+.pd-listwrap { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.pd-listwrap > .pd-filters {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 5;
+  max-height: 88%; overflow: auto; box-shadow: 0 14px 30px rgba(0, 0, 0, 0.45);
+}
+.pd-pills {
+  flex: none; display: flex; flex-wrap: wrap; gap: 5px; padding: 6px 14px;
+  border-bottom: 1px solid var(--hair); background: var(--inset);
+}
+.pd-pill {
+  cursor: pointer; border-radius: 999px; padding: 2px 8px; font-size: 10.5px;
+  border: 1px solid var(--accent); background: var(--accent-tint); color: var(--accent-light);
+}
+.pd-pill:hover { background: var(--raised); }
 .pd-list {
   flex: 1; min-height: 0; overflow: auto;
   padding: 10px; display: flex; flex-direction: column; gap: 8px;
@@ -1851,6 +1883,10 @@ input, select { font-family: inherit; }
 }
 .pd-keys span { font-size: 10px; font-weight: 500; color: var(--faint); }
 .pd-keys b { font-weight: 600; color: var(--muted); }
+.pd-advance {
+  margin-left: auto; display: flex; align-items: center; gap: 4px; cursor: pointer;
+  font-size: 10px; font-weight: 500; color: var(--muted);
+}
 
 /* ── one card ──────────────────────────────────────────────────────────── */
 /* flex:none so the list SCROLLS. Left to flex, six cards share the dock's
@@ -1941,7 +1977,7 @@ input, select { font-family: inherit; }
   align-items: center;
 }
 .pc-bar-row { display: contents; }
-.pc-bar-label { font-size: 9px; font-weight: 500; color: var(--faint); }
+.pc-bar-label { font: 500 10.5px var(--font-ui); color: var(--muted); }
 .pc-bar {
   height: 4px; border-radius: 2px; background: var(--raised);
   overflow: hidden; display: block;
@@ -2961,6 +2997,29 @@ input, select { font-family: inherit; }
   color: var(--muted); font-size: 11px;
 }
 .pd-filterbtn.on, .pd-filterbtn.active { color: var(--accent-light); border-color: var(--accent); }
+.pd-exportbtn {
+  flex: none; cursor: pointer; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--border-ctrl); background: transparent;
+  color: var(--muted); font-size: 11px;
+}
+.pd-exportbtn.on { color: var(--accent-light); border-color: var(--accent); }
+.pd-exportmenu {
+  flex: none; display: flex; flex-direction: column; gap: 7px;
+  padding: 9px 14px; border-bottom: 1px solid var(--hair); background: var(--inset);
+  font: 400 11px var(--font-ui); color: var(--muted);
+}
+.pd-exportrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pd-exportrow select {
+  background: var(--inset-2); color: var(--text-2); border: 1px solid var(--border-ctrl);
+  border-radius: 5px; padding: 3px 4px; font: 400 11.5px var(--font-ui);
+}
+.pd-exportrow button {
+  cursor: pointer; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--border-ctrl); background: transparent; color: var(--text-2);
+  font-size: 11px;
+}
+.pd-exportrow button:disabled { opacity: 0.5; cursor: default; }
+.pd-plainexport, .pd-export { border-top: 1px solid var(--hair); padding-top: 7px; }
 .pd-filters {
   flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px;
   padding: 9px 14px; border-bottom: 1px solid var(--hair); background: var(--inset);
@@ -2982,7 +3041,7 @@ input, select { font-family: inherit; }
   font-size: 11px;
 }
 .pd-filteractions button:disabled, .pd-more:disabled { opacity: 0.5; cursor: default; }
-.pd-export { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.pd-filteractions .pd-filterdone { margin-left: auto; border-color: var(--accent); color: var(--accent-light); }
 .pd-archive { color: var(--accent-light); font-size: 11px; }
 .pd-more { flex: none; display: block; margin: 8px auto 12px; }
 
@@ -3135,7 +3194,6 @@ input, select { font-family: inherit; }
 .pd-keepers.on { color: var(--amber); border-color: var(--amber); }
 .pd-keypick { display: flex; gap: 4px; }
 .pd-keypick select { flex: 1; min-width: 0; }
-.pd-plainexport { justify-content: flex-end; }
 
 /* ── Studio picker: fit to the timeline, and matcher-scored layers ───────── */
 .picker-fit { font-size: 10.5px; color: var(--faint); white-space: nowrap; }
@@ -3326,3 +3384,49 @@ input, select { font-family: inherit; }
 .term-table tr.measured td:first-child { color: var(--cyan); }
 .term-table .term-verdict { color: var(--muted); white-space: normal; }
 .term-reasons { margin-top: 6px; font-size: 11px; color: var(--muted); display: grid; gap: 2px; }
+
+/* The dock's freshness strip: stale pairs and the one-click re-score. */
+.pd-fresh {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; background: var(--raised);
+  border-bottom: 1px solid var(--border-accent);
+}
+.pd-fresh-text { flex: 1; min-width: 0; font: 400 12px var(--font-ui); color: var(--text); }
+.pd-fresh-btn {
+  flex: none; cursor: pointer; border-radius: 7px; padding: 5px 10px;
+  border: 1px solid var(--border-accent); background: var(--accent);
+  color: var(--text); font: 600 12px var(--font-ui); white-space: nowrap;
+}
+.pd-fresh-btn:hover { filter: brightness(1.1); }
+
+/* A pair as a two-line row (every pair but the focused one, which is the full
+   card). Same .pair-card box, so the list, focus scrolling and spacing hold. */
+.pc-row { padding: 7px 11px; display: flex; flex-direction: column; gap: 5px; }
+.pc-row:hover { border-color: var(--border-accent); }
+.pcr-line { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.pcr-score { flex: none; min-width: 38px; font-size: 15px; font-weight: 600; }
+.pcr-pair {
+  flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 5px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font: 400 12px var(--font-ui); color: var(--text-2);
+}
+.pcr-pair b { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.pcr-sec { font-size: 10px; color: var(--muted); }
+.pcr-over { font-size: 10.5px; color: var(--faint); }
+.pcr-meta { font-size: 11px; }
+.pcr-dim { color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+.pcr-clash { color: var(--red); font-size: 10.5px; }
+.pcr-spacer { flex: 1; }
+.pc-row .pc-loop { padding: 1px 7px; }
+.pc-headsmall { font-weight: 500; letter-spacing: 0; color: var(--muted); margin-left: 4px; }
+
+/* Analysis → Compare: the two tracks as a pair, both ways round. */
+.an-pairs { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 14px; }
+.an-pair {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: 1px solid var(--border-ctrl); border-radius: 8px; background: var(--panel);
+  font-size: 12.5px;
+}
+.an-pair.none { flex-direction: column; align-items: flex-start; gap: 3px; }
+.an-pair-score { font-size: 17px; font-weight: 600; color: var(--accent-light); min-width: 44px; }
+.an-pair-names { flex: 1; min-width: 0; color: var(--text); }

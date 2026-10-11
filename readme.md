@@ -174,7 +174,7 @@ browser reads `GET /api/settings`.
                                    └──────────► POST /api/playlists/ingest ◄───────────────┘
  2. PROCESS     per track, on bounded priority queues:
                 download → quick (mix: BPM, key, provisional sections) → stems → analyse → structure (+ hooks)
- 3. SCORE       ⚙ "Score library" → every vocal × bed section pair → mashup_candidates
+ 3. SCORE       dock "↻ Re-score" (or ⚙ Score library) → every vocal × bed section pair → mashup_candidates
  4. JUDGE       pair dock: loop the moment, rate 1–5 (again to clear), compare, note, hide, exclude
  5. BUILD       Studio: conformed lanes, timing pills, trim/loop/level/fades/filters → Export WAV or FL session
  6. PLAN        Sets: keepers in running order, graded transitions → Studio back to back, cue sheet, CSV, rekordbox
@@ -194,7 +194,8 @@ browser reads `GET /api/settings`.
    Demucs run and a couple of full analyses run concurrently; restarts resume
    mid-pipeline tracks; an `error_*` status waits for Retry.
 3. **Score.** A background job scores the whole library (heuristic, or the
-   active learned model) and rewrites `mashup_candidates`.
+   active learned model) and rewrites `mashup_candidates`. The dock says when
+   the pairs are stale (tracks changed since the last run) and starts it.
 4. **Judge.** Pairs are auditioned as loops of their winning sections on the
    shared player; verdicts land in `pair_feedback`, which survives every re-score.
 5. **Build.** Studio opens a pair already conformed and placed; exports render
@@ -329,23 +330,42 @@ reprocesses), add to a group, or delete the track and its files.
   double-click it to restore the default. Widths persist per column id in
   `localStorage`. Title/artist and genre both flex, so a wide window gives
   genre room instead of handing every spare pixel to the title.
-- Click a row to **scope the pair dock** to it; click anywhere in the
-  **title/artist column** to open the track detail screen.
+- Click a row to **scope the pair dock** to it (a click selects; it never
+  toggles — the ✕ on the dock's scope line, or `esc`, goes back to the whole
+  library); click anywhere in the **title/artist column** to open the track
+  detail screen.
 - The permanent **pair dock** lists the best pairs for the selected track (as
   vocal or as bed — every one of them: the per-song cap never counts the track
   the list is scoped to) or for the whole library. Keys: `↑↓` move · `space`
   loop · `1–5` rate · `V`/`B` solo · `h` hide · `a` add to the active set ·
-  `c` compare · `⏎` open in Studio.
+  `c` compare · `⏎` open in Studio. **auto-advance** (in the key strip, off by
+  default and remembered per browser) steps to the next pair after a rating,
+  still looping if it was.
+- **Stale pairs show on the dock.** When analysed tracks changed after the last
+  scoring run began (new analysis, a BPM/key fix, a beat-phase fix, a re-cut —
+  `songs.pairs_input_at`), a strip under the dock's header says so with
+  **↻ Re-score · N changed** (**Score library** when nothing has been scored);
+  it shows the job's progress and reloads the dock and the library's MASH /
+  PAIRS columns when it lands (`GET /api/mashups/freshness`, polled every 20 s
+  and re-checked at once after a BPM/key edit or a bar-1 fix). Fixing a BPM
+  offers **Re-score now** on its toast.
 - **★ Keepers** lists the pairs you rated 4–5, every section pairing of them,
   uncapped. **⇄** (or `c`) holds two pairs side by side above the list: every
   term aligned, the better value green, A/B loop buttons. **✎** puts a note on
   a pair ("opener", "use the 2nd chorus") — shown on the card, in Studio and in
   sets, and never training data. **+ Set** adds the pair to the active set.
-- **Sort the dock** by Score, Effort, Uncertain, or by one section term —
-  LBL / DUR / VOI / PHR. Every order but Effort is the server's, so it ranks
+- **Sort the dock** by Score, Effort, Uncertain, or by one section term from
+  the **By…** menu — Section / Length / Vocal / Phrase. Every order but Effort is the server's, so it ranks
   the library; Effort re-sorts the page already fetched and says so. An
   unmeasured term sorts last, never as zero.
-- **Find and filter the dock.** The search box matches either side's title or
+- **Find and filter the dock.** Filters opens over the list (it used to push
+  the list down to a sliver) and closes with **Done**, `esc` or a click on the
+  list below it; each active filter then
+  shows as a pill under the search box, ✕ to drop it. Two songs as **`A + B`**
+  (or `A w/ B`) find the pairs of exactly those two, either way round — "does
+  this vocal work on that bed?" (`models._two_track_query`; `x`, `with` and
+  `vs` stay part of a title). No result says they were never scored together
+  and why that usually is, rather than "loosen a filter". Otherwise the search box matches either side's title or
   artist across every scored pair. **Filters** narrow by min match
   (percentile), build effort (free / free or light), genre and era (either
   side), BPM band (the vocal's), bed energy, vocal-forward, and **adventure**
@@ -356,10 +376,23 @@ reprocesses), add to a group, or delete the track and its files.
   (section type). All of it runs in SQL, so it searches the library, not the
   40 rows on screen; **Load more pairs** pages the same list (offset applied
   after the per-song cap). **Best bed per vocal** swaps the list for one row
-  per acapella. **⤓ FL sessions** exports the top 5/10/16 under the current
-  filters as one zip of FL session folders, and **CSV / cue sheet /
-  rekordbox** export the same top N as files (§5.11).
-- Each pair card gives one line per song — title · artist, section span and
+  per acapella.
+- **Export** (beside Filters) takes the top 5/10/16 under the current filters
+  as **CSV / cue sheet / rekordbox** files, or **⤓ FL sessions** as one zip of
+  FL session folders (§5.11). It used to sit at the bottom of the Filters
+  panel.
+- **Rows, then a card.** Every pair but the focused one is a two-line row:
+  the headline, vocal and bed with their sections (on a list scoped to a track,
+  only the partner's title — the track is on every row), then the landing key
+  and tempo, the bed's transpose, the measured fit, the effort chip, ▶ and the
+  stars. Click a row (or `↑↓`) to open it as the full card below;
+  double-click opens Studio. A laptop-height dock shows five pairs where it
+  showed one card.
+- **The headline.** On a list scoped to a track: the pair's rank among that
+  track's partners, `#3` with "of 20 beds · 96.1%" beside it (`scope_rank` /
+  `scope_total`, §5.7); library-wide: the percentile to one decimal (`99.6`).
+  Integers read 100, 100, 100, 99 down a good library's first page.
+- The full card gives one line per song — title · artist, section span and
   bars, the vocal section's line when you have typed one, key, BPM — then the
   key relation (drawn neutral as `8A/9B wheel` when a measured harmony exists,
   because then it is context, not the verdict), the **recipe** (§5.7) — a
@@ -370,14 +403,15 @@ reprocesses), add to a group, or delete the track and its files.
   a **WATCH** row of what the numbers cannot promise (a suspected half/double
   BPM, a coin-flip transpose, clashing notes, no beat grid, rough separation) —
   the **measured harmony** (`♪ 92% · +2 st` — the two sections' notes
-  cross-correlated, §5.7; `?` when another transposition fits almost as well;
+  cross-correlated, §5.7; `?` when the transpose is a closer call than most
+  pairs in your library;
   red below 55%), a red **bass clash** tag with the high-pass advice,
-  the four **section fit** bars, the **track fit** bars and the rating. **LBL**
-  label priority, **DUR** bars covered (looping allowed), **VOI** vocal
-  presence, **PHR** phrase-length agreement; **BPM** tempo closeness, **KEY**
-  the measured harmonic fit, **NRG** loudness match, **ROOM** spectral room
-  (§5.7; **TIM** timbre only on bed-over-bed, where it is weighted); hover a
-  label for its meaning. A **hatched** bar is not
+  the four **section fit** bars, the **track fit** bars and the rating.
+  **Section** label priority, **Length** bars covered (looping allowed),
+  **Vocal** vocal presence, **Phrase** phrase-length agreement; **Tempo**
+  tempo closeness, **Harmony** the measured harmonic fit, **Energy** loudness
+  match, **Room** spectral room (§5.7; **Timbre** only on bed-over-bed, where
+  it is weighted); hover a name for its abbreviation and meaning. A **hatched** bar is not
   measured (the pair was scored before that term was stored) — **Score
   library** fills it. Clicking the star you already set **clears** the rating,
   which removes the judgement entirely (§7). Once the focused card is rated, a
@@ -434,7 +468,11 @@ median says nearly every track is atonal; §9).
 
 **Compare two tracks** puts any two analysed tracks side by side over every
 catalogued attribute, plus tempo, key, sung share, partners and best pair; a
-row where they differ reads brighter.
+row where they differ reads brighter. Above the table, **the two as a pair**,
+both ways round: each direction's best scored section pairing (percentile,
+sections, the bed's transpose, effort) with **▶ loop** and **Studio**, or why
+it was never scored (outside the tempo gate, two cuts of one record, or no
+re-score since one arrived).
 
 ### Track detail
 
@@ -512,7 +550,10 @@ live); **capture it from your own browser** with the bookmarklet (below); or
 **paste the tracklist text**. All three end in the same rows. Numbered entries
 are **beds**; `w/` lines are **vocal overlays**
 paired to the preceding bed. The match board lets you re-assign roles and
-pairings (reset to original any time) and reorder the set. **Auto-link** finds
+pairings (reset to original any time) and reorder the set. Rows naming a
+track **already in your library** are linked to it at import, offline (§5.9);
+**Find in library** does the same later, for older mixes or tracks that
+arrived since. **Auto-link** finds
 SoundCloud/YouTube links (§5.9), **Scrape link** pulls the exact link from a
 track's 1001tracklists page, **Confirm** trusts a flagged auto-link, and
 **Ingest** sends resolved tracks into the pipeline.
@@ -579,12 +620,15 @@ A pair sent from the dock arrives conformed and placed, with a
 **TIMING** pill row — one pill per suggested overlay, named by its start times
 (`chorus 1:39 ▸ drop 1:16`; `[` `]` cycle, `1–6` jump), each with ✓/~/✗. The
 rail's **offset nudge** is measured from the two sections lined up, so it reads
-the few ms you slid it. Each pill carries its own transpose — another chorus
+the few ms you slid it; the ALIGN bar's nudge chip and "edited" read the same
+number, and an offset of a beat or more prints as beats at the project tempo
+(`−2 beats −8 ms`), the slider covering a bar either way and the suggestion. Each pill carries its own transpose — another chorus
 over another drop can want another shift — and arming it sets the bed's pitch.
 The ALIGN bar also carries the armed timing's **measured harmonic fit** (the
 plan's top pairing when the timing has none) and, when the bed's bass root
 fights the vocal's tonic, a **bass clash — high-pass the bed** chip (the same
-advice the FL README writes). **FL session** exports the armed timing.
+advice the FL README writes). **FL session** exports the armed timing and
+downloads the zip as soon as it is built (the **↓ session** link stays).
 "Next pair" walks the dock's list; **Append next ⇥** lays it *after* the
 arrangement instead, to hear the transition. **+ Set** adds the pair at the
 armed timing to the active set, and a note field writes the pair's note. The
@@ -621,11 +665,18 @@ to back, each mashup at its own curve tempo; **Export** writes a timed **cue
 sheet** (with each move), a **CSV** (`move_in`, `overlap_bars`,
 `vocal_tempo_pct`) or a **rekordbox XML** (§5.11). An item is frozen when
 added, so a re-score that drops its pair leaves it in the set marked `stale`.
+Adding from the dock offers **What comes next →** on its toast: the dock then
+lists that set's next candidates (the same ranking as under the list) until
+its ✕, so a set does not fill with one track's beds. A set loads in one query
+whatever its length (`models.candidates_for_pairs`), and shows its name while
+it does.
 
 ### ⚙ Settings drawer
 
-**↻ Score library** — the one trigger for a re-score in the app — with its
-Tight/Balanced/Wide **match width** preset and, when anything is suppressed,
+**↻ Score library** — visible without opening Tuning — with its
+Tight/Balanced/Wide **match width** preset (remembered per browser, and used
+by the dock's Re-score too: both start the one scoring job, `requestRescore`
+→ `useFreshness`) and, when anything is suppressed,
 **restore N hidden** (hidden pairs and excluded tracks). Then **Bulk
 reprocess** (staleness per feature generation; re-analyse or re-separate only
 what needs it), **Refresh metadata** (below), **Tuning** (match and section
@@ -969,7 +1020,14 @@ shipped values; the right weights belong to a library, stored in settings.json.
 `chroma_vocal` with the bed section's `chroma_bed` over all 12 rotations: the
 argmax is the transposition (folded to [-6, +6]), the peak is the fit, and
 peak/runner-up is the confidence. This replaces `key_score` when both sides have
-chroma. **Bass clash** checks the bed's bass root against the vocal tonic after
+chroma. **When the transpose is a close call** is ranked against the library:
+confidence is `1 − runner-up/peak` on correlations mapped to 0–1, so a clear
+gap (0.90 vs 0.80) is only ~0.05 and the old fixed 0.15 flagged every pair (200
+of 200 in the 2026-10-10 simulation; 35 of 200 after). Each Score library run
+stores the 20th percentile of the library's confidences
+(`app_prefs.harmony_unsure_below`); `recipe.harmony_sure` decides it once,
+server-side, as `harmonic_sure` on listing rows and plan options, so the
+card's `?`, the WATCH row and Studio agree (0.15 only before a first run). **Bass clash** checks the bed's bass root against the vocal tonic after
 the shift and returns advice ("high-pass the bed" / mute `bed_bass.wav`), not a
 veto.
 
@@ -1020,7 +1078,10 @@ same two songs (both lifted for your own keepers), a 0–1 popularity percentile
 **surprise reordering** (cross-genre/era contrast, applied only among pairs that
 already fit) and an **uncertain-first** order (closest to a coin flip, where a
 verdict teaches most). Min-match filters the displayed percentile, not the raw
-composite (which clusters near 0.78).
+composite (which clusters near 0.78). A list scoped to one track also carries
+each row's **partner rank** (`models.partner_ranks`: best score per partner
+within the row's combo type, hidden pairs and excluded tracks left out), the
+dock's headline there.
 
 ### 5.8 Learned scorer
 
@@ -1152,8 +1213,18 @@ composite (which clusters near 0.78).
   mashup containing it), *version* penalises an unrequested rework (an
   "Extended Mix" is the same record), *plays* is a small tiebreak, neutral when
   unreported. `W_TITLE` must stay below the auto-link floor.
-- **Trust gate** (`is_trusted_link`): manual, scraped and ingested links are
-  trusted; an auto link only with score ≥ `0.72`, duration ≥ `60s` and artist
+- **Library matching** (`mixes.match_library`, run by `_persist_mix` and
+  `POST /api/mixes/{id}/match-library`): an unlinked, non-ID row links to a
+  library song whose key — `normalise_artist | alnum title` after
+  `search_credit` — is the same. `search_credit` drops featured artists and
+  DJ-tool asides but keeps rework credits, so `Fireproof (Acapella)` links to
+  Fireproof and `Midnight Signal (Kade Monroe Remix)` never links to the
+  original (`dedup.variant_key` strips remixes, so it is not used here). Several
+  songs sharing a key resolve to the one plain original (Fireproof over
+  Fireproof (Extended Mix)), else the row stays unlinked. Linked rows get
+  `resolve_status='library'`; a carried-over link is never replaced.
+- **Trust gate** (`is_trusted_link`): manual, scraped, ingested and
+  library-matched links are trusted; an auto link only with score ≥ `0.72`, duration ≥ `60s` and artist
   score ≥ `0.5`. Untrusted links still ingest but never become training
   positives.
 
@@ -1264,7 +1335,8 @@ hand; it is advisory until posted to `/reorder`.
 `track_id`; `origin_url` / `origin_duration_secs` — the imported link and its
 length, write-once; `audio_provenance` — JSON, where the file came from;
 `metadata_partial` — 1 when the per-track metadata fetch never landed;
-`quick_state` / `quick_at` — the quick tier's outcome for the current
+`pairs_input_at` — when a scoring input last changed, the dock's staleness
+test; `quick_state` / `quick_at` — the quick tier's outcome for the current
 download) · `stems` (path, separator tag, quality metrics, `content_hash` of the bytes last analysed) · `features` (per
 stem: tempo/grid/phase, key/confidence/Camelot, loudness, MFCC, spectral, bands,
 envelope, beats, hook window; `analyzer`; the Essentia-only `lufs`, `lra`,
@@ -1300,7 +1372,10 @@ Existing databases migrate on start.
   and `ux_pair_feedback_section` use the same key, and so do `set_items` and
   `pair_notes` (`COALESCE`d sections, like the feedback index). A set item
   freezes its scored row (`_SET_PAYLOAD_KEYS`) and prefers the live one when
-  the pair is still scored.
+  the pair is still scored — looked up for every item in ONE listing query
+  (`candidates_for_pairs`, the `pairs` filter of `get_candidates_enriched`);
+  `candidate_for_pair` is that call with one key. A per-item lookup cost 19 ms
+  each and made a 72-item set take 1.4 s per load and per add.
 - **One transpose per pair: `matcher/recipe.bed_shift`.** The card printed the
   measured shift while the audition and Studio played the Camelot one, so
   "♪ 92% · +2 st" looped at +5; the FL export re-picked its own sections and
@@ -1312,6 +1387,18 @@ Existing databases migrate on start.
 - **Studio's lane gain is linear** (`MashupEngine`'s gain node), so the rail
   prints `20·log10(gain)` dB (`StudioRail.gainDb`). It printed `gain×24−12`,
   reading 0.8 as +7.2 dB.
+- **Every writer of a scoring input bumps `songs.pairs_input_at`**
+  (`models.mark_pairs_input`, on the writer's own connection): today
+  `upsert_features`, `update_features_manual`, `replace_sections` and the
+  beat-phase route. `pairs_freshness` compares it with
+  `app_prefs.last_score.started_at`, which `score_all_pairs` writes only when a
+  run finishes (a failed run must not make stale pairs look fresh). A new
+  writer that skips it leaves the dock claiming the pairs are current.
+- **One nudge** (`MixStudio` `nudgeMs`, measured from `nudgeBase`) feeds the
+  ALIGN chip, the rail's slider and "edited". The chip once printed the raw
+  gap between the lanes' timeline positions ("nudge 39572 ms") beside a rail
+  reading −1437 ms. Beats + ms is `recipe.nudge_text` / `pairModel.nudgeText`,
+  the same arithmetic (test-pinned).
 - **The per-song cap never counts the scoped track** (`_cap_per_song`
   `exempt`). It is on every row of "beds for this vocal", so counting it ended
   the list at three — every dock scoped to a track showed three pairs.
@@ -1535,6 +1622,8 @@ Existing databases migrate on start.
 
 ### Operations
 
+- **`match_library` runs on the caller's connection**, inside
+  `_persist_mix`'s transaction (test-pinned: it opens none of its own).
 - **Never hold an open write transaction across a call that opens its own
   connection.** SQLite has one writer. `upsert_song`, `get_song_by_url` and
   every other `database/models.py` helper open, commit and close their own
@@ -1810,6 +1899,36 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    - ~~**Set transitions in Studio share one tempo**~~ — each mashup now lands
      at its own point on the set's tempo curve (§9 item 8, phase 4); ramps
      between them are still not modelled.
+
+   **Second run (2026-10-10).** 100 new personas (mashup producers, club and
+   open-format DJs, bedroom producers, crate diggers, analysts, mix
+   archaeologists, set planners, remixers, radio editors; 1280×720 to
+   2560×1440) ran 555 goal-driven tasks against a synthesised 40-track library
+   (librosa analyser; SoundCloud replaced by a fake catalogue; imports
+   stubbed). The core loop held — pick a track → pairs 55/55, loop 34/34,
+   Studio 35/35, no console or API errors. What it found, and what was done:
+   the pair card was too dense to scan (compact rows, plain term names), the
+   headline read 100 down a good library's first page (partner rank when
+   scoped, one-decimal percentile), the close-call transpose warning fired on
+   200 of 200 pairs (ranked against the library: 35 of 200), Score library hid
+   in a collapsed Settings card (the dock's stale-pairs Re-score), a pasted
+   tracklist did not recognise owned tracks (library matching), there was no
+   way to ask "A with B?" (`A + B` search, a verdict in Compare), Studio
+   printed two different nudges (one nudge, in beats), a row click toggled
+   the selection, exports hid in Filters, and sets loaded per item behind a
+   blank screen (one query, a loading state, what comes next). Re-run with the
+   same 100 personas after the fixes (562 tasks): cryptic labels 31 → 0
+   personas, one card per screen 20 → 1, buried Score library 7 → 0, owned
+   tracks unmatched in Mixes 10 → 0, row-click deselects 68 → 0, sets blank 24
+   → 0, exports in Filters 20 → 0; building a set 11/35 → 35/35 tasks and the
+   FL session 0/16 → 16/17 (the harness had waited for a download the button
+   did not start). The re-run caught three things the fixes introduced or left,
+   since fixed: the filter overlay swallowing the next click on a card, the
+   Re-score strip waiting for its 20 s poll after an edit, and rating from a
+   row not opening it for the WHY chips; and an empty `A + B` search now says
+   why. Still open from it: Studio as A/B decks for a whole set (item 8, phase
+   5) and a 3:2 tempo hint (the ×2/÷2 hint misses a 126 read as 84 — every
+   empty `A + B` in the re-run was a synthetic track read at 2/3 tempo).
 
 8. **From ranked pairs to a finished set in FL Studio (planned 2026-10-08).**
    Decided: native `.flp` export, a tempo curve across a set (both sides may

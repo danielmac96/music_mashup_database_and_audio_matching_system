@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
+import { onNextForSet } from "../dockModes";
 import { keyOf, SCORE_TERMS } from "../components/pairs/pairModel";
 
 // The pair dock: what it shows, where the cursor is, and what the keyboard does.
@@ -18,12 +19,14 @@ import { keyOf, SCORE_TERMS } from "../components/pairs/pairModel";
 // "effort" alone sorts client-side over the page the server returned, and says
 // so: re-asking the server for cheap-to-build pairs would be a different query
 // (max_effort), not a re-ordering of this one.
+const AUTO_ADVANCE_KEY = "mashup.dockAutoAdvance.v1";
+
 export const ORDERS = [
   ["score", "Score", "Best fit first."],
   ["effort", "Effort", "Cheapest to build first, within the rows already loaded."],
   ["uncertain", "Uncertain",
    "Where the learned scorer is least sure — a verdict here teaches it the most."],
-  ...SCORE_TERMS.map((t) => [t.order, t.label, `Best ${t.what}`, t.color]),
+  ...SCORE_TERMS.map((t) => [t.order, t.name, `Best ${t.what}`, t.color]),
 ];
 
 // The one order the server does not do. Everything else is sent as-is.
@@ -93,6 +96,12 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   // section line typed on Track detail).
   const [nonce, setNonce] = useState(0);
   const reload = useCallback(() => setNonce((n) => n + 1), []);
+  // "What comes next" for a set: the list becomes that set's next candidates
+  // until it is closed (or the scope changes). { id, name } or null.
+  const [nextFor, setNextFor] = useState(null);
+  useEffect(() => onNextForSet((id, name) => setNextFor({ id, name })), []);
+  useEffect(() => { setNextFor(null); }, [selectedTrackId, role]);
+  const clearNextFor = useCallback(() => setNextFor(null), []);
   const [loadingMore, setLoadingMore] = useState(false);
   const setFilters = useCallback(
     (patch) => setFiltersState((f) => ({ ...f, ...patch })), []);
@@ -124,21 +133,23 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       else opts.vocalSongId = selectedTrackId;
     }
     if (order !== CLIENT_ORDER) opts.order = order;
-    const request = perVocal
-      ? api.getBestBedPerVocal({ limit: LIMIT, minScore: filters.minScore })
-      : api.getMashups(opts);
+    const request = nextFor
+      ? api.getSetNext(nextFor.id, 20)
+      : perVocal
+        ? api.getBestBedPerVocal({ limit: LIMIT, minScore: filters.minScore })
+        : api.getMashups(opts);
     request
       .then((d) => {
         if (cancelled) return;
         const got = d.candidates || [];
         setRows(got);
-        setHasMore(!perVocal && got.length >= LIMIT);
+        setHasMore(!perVocal && !nextFor && got.length >= LIMIT);
         setCursor(0);
       })
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [selectedTrackId, role, order, filters, perVocal, nonce]);
+  }, [selectedTrackId, role, order, filters, perVocal, nonce, nextFor]);
 
   // The next page of the same server-side list. The offset is applied after
   // the per-song cap, so page two continues exactly where page one stopped.
@@ -208,6 +219,17 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       subtitle: `over ${candidate.inst_title}`,
     });
   }, [player]);
+
+  // Judging a list from the keyboard: after a 1-5 verdict, step to the next
+  // pair (and keep looping if a loop was playing). Off by default, because the
+  // WHY chips are offered on the card you just rated; a per-browser choice.
+  const [autoAdvance, setAutoAdvanceState] = useState(() => {
+    try { return localStorage.getItem(AUTO_ADVANCE_KEY) === "1"; } catch { return false; }
+  });
+  const setAutoAdvance = useCallback((on) => {
+    setAutoAdvanceState(on);
+    try { localStorage.setItem(AUTO_ADVANCE_KEY, on ? "1" : "0"); } catch { /* ignore */ }
+  }, []);
 
   const move = useCallback((delta) => {
     setCursor((c) => {
@@ -280,11 +302,17 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       if (e.key >= "1" && e.key <= "5" && row) {
         e.preventDefault();
         ratings.rate(row, Number(e.key));
+        if (autoAdvance && cursor < list.length - 1) {
+          const wasLooping = armedKey === keyOf(row) && audio.playing;
+          move(1);
+          if (wasLooping) play(list[cursor + 1]);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, cursor, move, play, openStudio, hide, audio, ratings, onAddToSet, toggleCompare]);
+  }, [visible, cursor, move, play, openStudio, hide, audio, ratings, onAddToSet,
+      toggleCompare, autoAdvance, armedKey]);
 
   return {
     order, setOrder, rows: visible, loading, error,
@@ -292,6 +320,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     exportBatch,
     cursor, setCursor, current, armedKey,
     play, move, openStudio, hide, bindKeys, audio,
-    compare, toggleCompare, clearCompare, reload,
+    compare, toggleCompare, clearCompare, reload, autoAdvance, setAutoAdvance,
+    nextFor, clearNextFor,
   };
 }

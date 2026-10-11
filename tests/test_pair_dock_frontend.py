@@ -114,11 +114,13 @@ def test_the_card_draws_the_four_weighted_terms():
 
 
 def test_every_score_term_explains_its_abbreviation():
-    """LBL / DUR / VOI / PHR mean nothing on their own; each carries hover text."""
+    """The bars print a plain name (Section / Length / Vocal / Phrase); the
+    abbreviation and the meaning stay on hover. LBL/DUR/VOI/PHR alone were
+    unreadable to 31 of 100 simulated users."""
     terms = MODEL[MODEL.index("export const SCORE_TERMS"):]
     terms = terms[:terms.index("];")]
-    assert terms.count("what:") == terms.count("key:") == 4
-    assert "title={t.what}" in CARD
+    assert terms.count("what:") == terms.count("key:") == terms.count("name:") == 4
+    assert "title={`${t.label} — ${t.what}`}>{t.name}" in CARD
 
 
 def test_each_side_shows_its_own_key_and_bpm():
@@ -208,12 +210,18 @@ def test_hiding_a_pair_is_reachable_and_reversible():
 
 
 def test_score_library_lives_with_the_knobs_it_re_applies():
-    """It is the one trigger for a re-score in the whole app. It used to sit in
-    a Discover pane, a screen away from the weights it reads."""
+    """Settings keeps the button beside the weights it re-applies, outside the
+    collapsed body, and the dock's Re-score pill starts the SAME job: both go
+    through requestRescore → useFreshness, the one place that calls
+    api.startScoring, so there is one scoring job and the dock reloads when it
+    lands. It used to sit in a Discover pane, a screen away from the weights."""
     tuning = _read("components/TuningPanel.jsx")
-    assert "api.startScoring" in tuning
-    assert "Score library" in tuning
+    assert "requestRescore" in tuning and "Score library" in tuning
     assert "MATCH_PRESETS" in tuning
+    body = tuning[tuning.index("<h3>Scoring &amp; tuning</h3>"):]
+    assert body.index("Score library") < body.index("{open && (")
+    hook = _read("hooks/useFreshness.js")
+    assert "api.startScoring" in hook and "onRescoreRequest" in hook
     # ...and nothing still sends the user to Discover to find it.
     for rel in ("components/PairDock.jsx", "components/TuningPanel.jsx",
                 "components/PartnersRail.jsx"):

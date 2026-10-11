@@ -375,7 +375,19 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
       </div>
     );
   }
-  if (!data) return <div className="set-screen"><ScreenHeader title="Sets" /></div>;
+  // A set loads in one query now, but never as a blank page: it showed nothing
+  // at all — no header, no rows — until the set arrived (24 of 100 simulated
+  // users read that as "my pairs are missing").
+  if (!data || data.id !== active.id) {
+    return (
+      <div className="set-screen">
+        <ScreenHeader title="Set" sub={`${active.item_count ?? 0} mashups`} />
+        <div className="set-empty small">
+          <span className="spin-dot" /> Loading “{active.name}”…
+        </div>
+      </div>
+    );
+  }
 
   const f = data.flow || { landings: [], transitions: [], starts: [], total_secs: 0, grades: {} };
   return (

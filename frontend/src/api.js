@@ -250,6 +250,8 @@ export const api = {
 
   getWaveform: (id, stem) => jsonFetch(`/api/tracks/${id}/waveform?stem=${stem}`),
 
+  getFreshness: () => jsonFetch("/api/mashups/freshness"),
+
   startScoring: ({ bpmMaxDiff = null, keyMinScore = null } = {}) => {
     const params = new URLSearchParams();
     if (bpmMaxDiff != null) params.set("bpm_max_diff", String(bpmMaxDiff));
@@ -500,6 +502,10 @@ export const api = {
   // Discard manual edits and rebuild the original 'w/'-derived grouping.
   resetMixMatches: (id) =>
     jsonFetch(`/api/mixes/${id}/reset-matches`, { method: "POST" }),
+
+  // Link unlinked rows to library songs naming the same record (offline).
+  matchMixToLibrary: (id) =>
+    jsonFetch(`/api/mixes/${id}/match-library`, { method: "POST" }),
 
   // ── Training data + learned model ─────────────────────────────────────────
   getDatasets: () => jsonFetch("/api/datasets"),

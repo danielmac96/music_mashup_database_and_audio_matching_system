@@ -78,3 +78,15 @@ def test_table_cells_are_compact_and_small_numbers_stay_readable():
     assert '"96px"' in js                                  # text columns are wider
     tt = _read("components/TrackTable.jsx")
     assert "fmtAttr(c.attr, t.attrs?.[c.attr.id], false)" in tt
+
+
+def test_compare_says_whether_the_two_tracks_mash():
+    """Comparing two tracks stopped at their attributes; it now shows the scored
+    pair both ways round, with a loop and a Studio hand-off."""
+    src = _read("components/AnalysisScreen.jsx")
+    assert "function PairVerdict(" in src
+    assert 'comboType: "vocal_over_instrumental"' in src
+    assert "one(a, b), one(b, a)" in src
+    assert "onPlay(c)" in src and "onOpen(c)" in src
+    app = _read("App.jsx")
+    assert "onPlayPair={dock.play} onOpenPair={pairToStudio}" in app

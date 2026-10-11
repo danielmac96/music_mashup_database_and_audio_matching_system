@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from database.models import (
     delete_song, get_all_features, get_all_songs, get_conn, get_features_for_song,
+    mark_pairs_input,
     get_sections, resolve_audio_path, update_features_manual, update_hook,
     update_song_url,
 )
@@ -561,6 +562,8 @@ def set_beat_phase(song_id: int, body: BeatPhaseUpdate) -> dict:
         "UPDATE features SET beat_phase=? WHERE song_id=? AND stem_type=?",
         (body.phase, song_id, body.stem),
     )
+    if cur.rowcount:
+        mark_pairs_input(conn, song_id)
     conn.commit()
     updated = cur.rowcount
     conn.close()

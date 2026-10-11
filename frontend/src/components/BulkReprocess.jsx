@@ -91,6 +91,15 @@ export function BulkReprocess({ onQueued }) {
 
   return (
     <>
+      <div className="drawer-section">
+        <h3>Re-process the library</h3>
+        <span className="hint">
+          Bulk re-analysis and stem separation. It belongs here rather
+          than on the Library screen because it acts on everything at
+          once — the per-track stages are on each row's pipeline dots.
+        </span>
+      </div>
+      <div className="drawer-body">
       {suspect > 0 && (
         <div className="bulk-bar">
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -186,6 +195,7 @@ export function BulkReprocess({ onQueued }) {
         </div>
       )}
       {error && <div className="error-text" style={{ fontSize: 11 }}>{error}</div>}
+      </div>
     </>
   );
 }

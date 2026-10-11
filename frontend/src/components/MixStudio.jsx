@@ -8,7 +8,9 @@ import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
 import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
 import { usePlan } from "../hooks/usePlan";
-import { BASS_CLASH_ADVICE, harmonyOf } from "./pairs/pairModel";
+import { BASS_CLASH_ADVICE, harmonyOf, nudgeText } from "./pairs/pairModel";
+import { startDownload } from "../download";
+import { notifyPairsInputChanged } from "../rescore";
 import { fmtTime, keyRel, parseCamelot } from "../theme";
 import { toast } from "../toast";
 
@@ -1462,7 +1464,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     const phase = phaseForDownbeatAt(nearest);
     patchLane(lane.id, { beatPhase: phase });
     api.setBeatPhase(lane.songId, lane.stem, phase)
-      .then(() => toast(`Bar 1 set to beat ${nearest + 1} (phase ${phase})`))
+      .then(() => { notifyPairsInputChanged();
+                    toast(`Bar 1 set to beat ${nearest + 1} (phase ${phase})`); })
       .catch((err) => toast(err.message || "Could not save downbeat"));
   };
 
@@ -1732,6 +1735,12 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
         return p.bed.offsetSec - p.vocal.offsetSec;
       })()
     : 0;
+  // THE nudge: how far the bed sits from where the matcher's section pairing
+  // puts it, in ms. The ALIGN chip, the rail's slider and "edited" all read
+  // this one number — the chip used to print the raw gap between the two lanes'
+  // timeline positions (tens of seconds) under the same name.
+  const nudgeMs = bedLane && vocalLane
+    ? Math.round((bedLane.offsetSec - vocalLane.offsetSec - nudgeBase) * 1000) : 0;
   const buildRating = activeOption ? (optionRatings[verdictKey(activeOption)] ?? null) : null;
   // "edited" means the arrangement has diverged from the recipe the matcher
   // handed over, not merely that something was touched.
@@ -1741,7 +1750,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     || (suggested.semitones != null && bedLane
       && bedLane.semitones !== suggested.semitones)
     || (suggested.nudgeSec != null && bedLane && vocalLane
-      && Math.abs((bedLane.offsetSec - vocalLane.offsetSec) - suggested.nudgeSec) > 0.005),
+      && Math.abs(nudgeMs - suggested.nudgeSec * 1000) > 5),
   );
 
   const resetToSuggestion = () => {
@@ -1780,7 +1789,15 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
         {sessionJobId && (
           <JobBadge jobId={sessionJobId} onComplete={(job) => {
             setSessionJobId(null);
-            if (job.status === "completed") setSessionToken(job.id);
+            if (job.status === "completed") {
+              setSessionToken(job.id);
+              // The folder downloads as soon as it is built; the link stays as
+              // a fallback. It used to wait behind a second click on "↓ session".
+              startDownload(api.sessionArchiveUrl(job.id));
+              toast("FL session ready — downloading the zip");
+            } else {
+              toast(`FL session failed: ${job.error || job.message || "unknown error"}`);
+            }
           }} />
         )}
         {sessionToken && (
@@ -1902,7 +1919,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
             title={suggested.nudgeSec == null
               ? "Neither side has a stored downbeat grid, so there is no measured offset"
               : "How far the bed sits from the vocal"}>
-            nudge {Math.round((bedLane.offsetSec - vocalLane.offsetSec) * 1000)} ms
+            nudge {nudgeText(nudgeMs, projectBpm)}
           </span>
         )}
         <span className={`align-chip mono${suggested.nudgeSec == null ? " unknown" : " locked"}`}
@@ -2189,7 +2206,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
           inst_section_idx: activeOption.inst_section_idx ?? null,
         }) : null}
         setName={setName}
-        nudgeBase={nudgeBase}
+        nudgeBase={nudgeBase} nudgeMs={nudgeMs}
         pairNote={notes && pairCtx && activeOption ? {
           value: notes.noteOf(notePair),
           save: (n) => notes.save(notePair, n),

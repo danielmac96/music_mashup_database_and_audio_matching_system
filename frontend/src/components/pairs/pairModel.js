@@ -24,10 +24,24 @@ export const feedbackKey = (f) =>
 // The headline number is the PERCENTILE, not the raw composite: raw totals
 // cluster near 0.78, so a control that filters on them barely works and a score
 // printed from them barely discriminates.
-export const pctOf = (c) => Math.round((c.score_percentile ?? 0) * 100);
+// One decimal: a good library's top page read 100, 100, 100, 99 as integers.
+export const pctOf = (c) => Math.round((c.score_percentile ?? 0) * 1000) / 10;
 export const rawPctOf = (c) => Math.round((c.score_total ?? 0) * 100);
 
 export const tierOf = (c) => tierFor(rawPctOf(c));
+
+// The card's headline. Scoped to a track, the pair's rank among that track's
+// partners ("#3 of 20 beds", GET /api/mashups scope_rank) — which bed is best
+// for THIS vocal; otherwise the library percentile to one decimal.
+export function headlineOf(c, noun = "beds") {
+  const pct = pctOf(c);
+  if (c?.scope_rank != null && c?.scope_total) {
+    return { big: `#${c.scope_rank}`, small: `of ${c.scope_total} ${noun} · ${pct}%`,
+             why: `Rank ${c.scope_rank} of the ${c.scope_total} ${noun} scored for this track; library percentile ${pct}` };
+  }
+  return { big: `${pct}`, small: "percentile",
+           why: `Library percentile ${pct}: better than ${pct}% of every scored pair` };
+}
 
 // Effort chips. The server sends the label; the tone is the UI's.
 export const EFFORT_TONE = { Free: "free", Light: "light", Heavy: "heavy" };
@@ -39,19 +53,20 @@ export const EFFORT_TONE = { Free: "free", Light: "light", Heavy: "heavy" };
 // first saturates (bar-profile cosine over 4/4 dance records has stdev .003)
 // and the second correlates .88 with label, so weighting both counts one
 // signal twice — which is why neither gets a bar.
-// `what` is the hover text: the abbreviations stay, so they have to explain
-// themselves somewhere.
+// `name` is what the bars and the sort tabs print — plain words, because 31 of
+// 100 simulated users could not read LBL/DUR/VOI/PHR. `label` (the
+// abbreviation) and `what` stay as the hover text.
 // `order` is the value GET /api/mashups accepts to rank by this one term —
 // database.models.SECTION_TERM_ORDERS. The dock's sort buttons are built from
 // this list, so a button and the bar it corresponds to cannot drift apart.
 export const SCORE_TERMS = [
-  { key: "score_label", label: "LBL", order: "label", color: "var(--accent)",
+  { key: "score_label", label: "LBL", name: "Section", order: "label", color: "var(--accent)",
     what: "label — chorus over drop ranks above verse over breakdown" },
-  { key: "score_duration", label: "DUR", order: "duration", color: "var(--cyan)",
+  { key: "score_duration", label: "DUR", name: "Length", order: "duration", color: "var(--cyan)",
     what: "duration — the bed section covers the vocal section in bars, looping allowed" },
-  { key: "score_voice", label: "VOI", order: "voice", color: "var(--violet)",
+  { key: "score_voice", label: "VOI", name: "Vocal", order: "voice", color: "var(--violet)",
     what: "voice — how much real singing the vocal section carries" },
-  { key: "score_phrase", label: "PHR", order: "phrase", color: "var(--amber)",
+  { key: "score_phrase", label: "PHR", name: "Phrase", order: "phrase", color: "var(--amber)",
     what: "phrase — equal phrase lengths best, clean multiples high" },
 ];
 
@@ -74,15 +89,15 @@ export function termsOf(candidate) {
 // weight for vocal-over-bed (config._for_combo moves it onto spectral room), so
 // it is only drawn for bed-over-bed pairs.
 export const SONG_TERMS = [
-  { key: "score_bpm", label: "BPM", color: "var(--green)",
+  { key: "score_bpm", label: "BPM", name: "Tempo", color: "var(--green)",
     what: "tempo — how close the two tempos are, half/double time allowed" },
-  { key: "score_key", label: "KEY", color: "var(--violet)",
+  { key: "score_key", label: "KEY", name: "Harmony", color: "var(--violet)",
     what: "key — the measured harmonic fit of the two sections (Camelot lookup when unmeasured)" },
-  { key: "score_energy", label: "NRG", color: "var(--amber)",
+  { key: "score_energy", label: "NRG", name: "Energy", color: "var(--amber)",
     what: "energy — closeness of the two sides' loudness, ranked within each stem kind" },
-  { key: "score_collision", label: "ROOM", color: "var(--cyan)",
+  { key: "score_collision", label: "ROOM", name: "Room", color: "var(--cyan)",
     what: "spectral room — whether the bed leaves space in the bands the vocal lives in" },
-  { key: "score_timbre", label: "TIM", color: "var(--accent)", bedOnly: true,
+  { key: "score_timbre", label: "TIM", name: "Timbre", color: "var(--accent)", bedOnly: true,
     what: "timbre — how alike the two beds sound (weighted for bed-over-bed only)" },
 ];
 
@@ -146,10 +161,24 @@ export function spanLabel(label, start, end) {
 // The bed's nudge, in the unit a person can act on. null means there was no
 // stored downbeat grid to measure against — which is not the same as a measured
 // zero, and the card must not print "0 ms" for it.
-export function nudgeLabel(offsetSec) {
+export function nudgeLabel(offsetSec, bpm = null) {
   if (offsetSec == null) return "no grid";
   const ms = Math.round(offsetSec * 1000);
-  return ms === 0 ? "on the grid" : `nudge ${ms > 0 ? "+" : ""}${ms} ms`;
+  return ms === 0 ? "on the grid" : `nudge ${nudgeText(ms, bpm)}`;
+}
+
+// An offset as a producer moves it: whole beats at the landing tempo, then
+// the milliseconds left over — matcher/recipe.nudge_text, the same arithmetic
+// (pinned by a test). "−1437 ms" at 84 BPM is "−2 beats −8 ms".
+const signed = (v, unit) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v)}${unit}`;
+export function nudgeText(ms, bpm = null) {
+  if (ms == null) return "";
+  const beat = bpm > 0 ? 60000 / bpm : null;
+  if (!beat || Math.abs(ms) < beat) return signed(Math.round(ms), " ms");
+  const beats = Math.round(ms / beat);
+  const rest = Math.round(ms - beats * beat);
+  const word = Math.abs(beats) === 1 ? " beat" : " beats";
+  return signed(beats, word) + (rest ? ` ${signed(rest, " ms")}` : "");
 }
 
 // The MEASURED harmony of a pair (matcher/harmony.py), as the card and Studio
@@ -171,9 +200,10 @@ export function harmonyOf(c) {
     known: true,
     shift: Number(c.harmonic_shift),
     fitPct: fit != null ? Math.round(fit * 100) : null,
-    // Peak vs runner-up: near zero means two transpositions fit about as well,
-    // so the suggested shift is a coin flip.
-    sure: conf != null && conf >= 0.15,
+    // Whether the measured transpose is clear of the runner-up, decided by the
+    // server against THIS library (harmonic_sure, matcher/recipe.harmony_sure);
+    // the fixed 0.15 is only for a row that arrived without it.
+    sure: c.harmonic_sure != null ? !!c.harmonic_sure : conf != null && conf >= 0.15,
     confidence: conf,
     clash: fit != null && fit < HARMONY_CLASH_FIT,
     bassClash: !!c.bass_clash,
