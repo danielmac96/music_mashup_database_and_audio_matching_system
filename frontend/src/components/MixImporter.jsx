@@ -542,6 +542,22 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     }
   };
 
+  // Tracks you already own, linked by name with no search at all. Import does
+  // this too; the button is for mixes imported before it did, or after more of
+  // their tracks reached the library.
+  const findInLibrary = async () => {
+    if (!detail) return;
+    setError(null);
+    try {
+      const res = await api.matchMixToLibrary(detail.id);
+      setDetail(res);
+      toast(res.linked ? `Linked ${res.linked} track${res.linked === 1 ? "" : "s"} already in your library`
+        : "No other tracks of this mix are in your library");
+    } catch (e) {
+      setError(e.message);
+    }
+  };
+
   // Re-search links a previous auto-link got wrong. `trackIds` narrows it to one
   // row (the per-row ↻); omitted, it uses the selection, or every flagged row.
   const relink = async (trackIds = relinkIds) => {
@@ -874,6 +890,14 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
                     <option value="soundcloud">SoundCloud</option>
                     <option value="youtube">YouTube</option>
                   </select>
+                  <button
+                    className="btn ghost"
+                    onClick={findInLibrary}
+                    disabled={resolving}
+                    title="Link rows to songs already in your library, by artist and title — no search, no network"
+                  >
+                    Find in library
+                  </button>
                   <button
                     className="btn ghost"
                     onClick={autoResolve}

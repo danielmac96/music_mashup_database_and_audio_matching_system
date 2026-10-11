@@ -1074,7 +1074,8 @@ def is_trusted_link(resolve_status: Optional[str],
 
     Manual links, page-scraped links (the exact URL 1001tracklists attributes to
     the track), and already-ingested tracks are trusted outright (a human chose
-    them, the page vouches for them, or they made it through ingest). An auto-linked
+    them, the page vouches for them, or they made it through ingest), as are rows
+    matched by name to exactly one library song (``library``). An auto-linked
     track (search) is trusted only when its match score clears AUTO_LINK_MIN_SCORE,
     its resolved upload is a full track rather than a ~30s Go+ preview
     (AUTO_LINK_MIN_DURATION), and the artist actually appears in the hit
@@ -1085,7 +1086,7 @@ def is_trusted_link(resolve_status: Optional[str],
     failed, low-confidence auto) is excluded from training but stays usable for
     ingest."""
     status = (resolve_status or "").lower()
-    if status in ("manual", "resolved", "scraped"):
+    if status in ("manual", "resolved", "scraped", "library"):
         return True
     if status == "auto":
         score = resolve_score if resolve_score is not None else 0.0

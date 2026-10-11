@@ -526,7 +526,10 @@ live); **capture it from your own browser** with the bookmarklet (below); or
 **paste the tracklist text**. All three end in the same rows. Numbered entries
 are **beds**; `w/` lines are **vocal overlays**
 paired to the preceding bed. The match board lets you re-assign roles and
-pairings (reset to original any time) and reorder the set. **Auto-link** finds
+pairings (reset to original any time) and reorder the set. Rows naming a
+track **already in your library** are linked to it at import, offline (§5.9);
+**Find in library** does the same later, for older mixes or tracks that
+arrived since. **Auto-link** finds
 SoundCloud/YouTube links (§5.9), **Scrape link** pulls the exact link from a
 track's 1001tracklists page, **Confirm** trusts a flagged auto-link, and
 **Ingest** sends resolved tracks into the pipeline.
@@ -1171,8 +1174,18 @@ composite (which clusters near 0.78).
   mashup containing it), *version* penalises an unrequested rework (an
   "Extended Mix" is the same record), *plays* is a small tiebreak, neutral when
   unreported. `W_TITLE` must stay below the auto-link floor.
-- **Trust gate** (`is_trusted_link`): manual, scraped and ingested links are
-  trusted; an auto link only with score ≥ `0.72`, duration ≥ `60s` and artist
+- **Library matching** (`mixes.match_library`, run by `_persist_mix` and
+  `POST /api/mixes/{id}/match-library`): an unlinked, non-ID row links to a
+  library song whose key — `normalise_artist | alnum title` after
+  `search_credit` — is the same. `search_credit` drops featured artists and
+  DJ-tool asides but keeps rework credits, so `Fireproof (Acapella)` links to
+  Fireproof and `Midnight Signal (Kade Monroe Remix)` never links to the
+  original (`dedup.variant_key` strips remixes, so it is not used here). Several
+  songs sharing a key resolve to the one plain original (Fireproof over
+  Fireproof (Extended Mix)), else the row stays unlinked. Linked rows get
+  `resolve_status='library'`; a carried-over link is never replaced.
+- **Trust gate** (`is_trusted_link`): manual, scraped, ingested and
+  library-matched links are trusted; an auto link only with score ≥ `0.72`, duration ≥ `60s` and artist
   score ≥ `0.5`. Untrusted links still ingest but never become training
   positives.
 
@@ -1567,6 +1580,8 @@ Existing databases migrate on start.
 
 ### Operations
 
+- **`match_library` runs on the caller's connection**, inside
+  `_persist_mix`'s transaction (test-pinned: it opens none of its own).
 - **Never hold an open write transaction across a call that opens its own
   connection.** SQLite has one writer. `upsert_song`, `get_song_by_url` and
   every other `database/models.py` helper open, commit and close their own

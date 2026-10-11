@@ -53,7 +53,8 @@ from ingest.soundcloud import search_candidates as yt_search_candidates
 from ingest.soundcloud_api import SoundCloudAPIError
 from ingest.soundcloud_api import search_candidates as sc_search_candidates
 from ingest.sources import classify_url
-from ingest.tracklist_parse import parse_line, parse_tracklist
+from ingest.tracklist_parse import parse_line, parse_tracklist, search_credit
+from matcher.dedup import normalise_artist
 
 log = logging.getLogger(__name__)
 
@@ -508,9 +509,87 @@ def _persist_mix(title: str, url: str, rows: list[dict], method: str,
         # Documented pairings ('w/' overlay → nearest preceding bed) + role seed,
         # honouring the manual matches just restored above.
         _seed_parsed_matches(conn, mix_id)
+        # Tracks already in the library are linked now, offline, so the
+        # documented pairs score without Auto-link or Ingest (10 of 10
+        # simulated mix importers saw "0 matched" for tracks they owned).
+        match_library(conn, mix_id)
 
         conn.commit()
         return _mix_detail(conn, mix_id)
+    finally:
+        conn.close()
+
+
+# ── linking rows to songs already in the library ─────────────────────────────
+
+_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _library_key(artist: Optional[str], title: Optional[str]) -> str:
+    """The record a credit names, as a key a tracklist row and a library song
+    share. search_credit drops featured artists and DJ-tool asides
+    ("(Acappella)", "(Extended Mix)", "- Radio Edit") but KEEPS rework credits,
+    so "X (Dzeko Remix)" never keys as X — matcher.dedup.variant_key strips
+    remixes and is the wrong tool here. "" when either side is empty."""
+    a, t = search_credit(artist or "", title or "")
+    a = normalise_artist(a)
+    t = _ALNUM_RE.sub(" ", (t or "").lower()).strip()
+    return f"{a}|{t}" if a and t else ""
+
+
+def _plain_title(title: str) -> bool:
+    """A title with no asides — the original, not its Extended Mix."""
+    t = (title or "").strip()
+    return bool(t) and search_credit("x", t)[1].strip().lower() == t.lower()
+
+
+def match_library(conn, mix_id: int) -> int:
+    """Point unlinked rows of a mix at library songs naming the same record,
+    on the CALLER's connection (§7: never a helper that opens its own while a
+    write transaction is held). A row links only to one song: several sharing
+    the key (Fireproof and Fireproof (Extended Mix)) resolve to the one plain
+    original, else stay unlinked. Linked rows get resolve_status='library' —
+    trusted, like an ingested track. Returns how many rows it linked."""
+    songs: dict[str, list] = {}
+    for r in conn.execute("SELECT id, title, artist, source_url FROM songs "
+                          "WHERE status NOT LIKE 'error%'").fetchall():
+        k = _library_key(r["artist"], r["title"])
+        if k:
+            songs.setdefault(k, []).append(r)
+    if not songs:
+        return 0
+    linked = 0
+    for t in conn.execute(
+            "SELECT id, artist, title FROM mix_tracks WHERE mix_id=? "
+            "AND song_id IS NULL AND COALESCE(is_id, 0)=0", (mix_id,)).fetchall():
+        cands = songs.get(_library_key(t["artist"], t["title"])) or []
+        if len(cands) > 1:
+            cands = [c for c in cands if _plain_title(c["title"])]
+        if len(cands) != 1:
+            continue
+        song = cands[0]
+        url = song["source_url"] or None
+        platform = classify_url(url)[0] if url else None
+        conn.execute(
+            "UPDATE mix_tracks SET song_id=?, link_url=COALESCE(link_url, ?), "
+            "link_platform=COALESCE(link_platform, ?), resolve_status='library' "
+            "WHERE id=?", (song["id"], url, platform, t["id"]))
+        linked += 1
+    return linked
+
+
+@router.post("/{mix_id}/match-library")
+def match_mix_to_library(mix_id: int) -> dict:
+    """Link this mix's unlinked rows to library songs by name — for a mix
+    imported before matching ran at import, or after more tracks arrived.
+    Returns the mix detail with ``linked``."""
+    conn = get_conn()
+    try:
+        if not conn.execute("SELECT id FROM mixes WHERE id=?", (mix_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="mix not found")
+        n = match_library(conn, mix_id)
+        conn.commit()
+        return {**_mix_detail(conn, mix_id), "linked": n}
     finally:
         conn.close()
 
