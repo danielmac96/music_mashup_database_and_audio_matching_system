@@ -255,7 +255,9 @@ function PairRow({ c, tier, head, rating, onRate, playing, onSelect, onPlay, onS
           title={playing ? "Stop (space)" : "Loop this pair (space)"}>
           {playing ? "◍" : "▶"}
         </button>
-        <StarRating value={rating} onRate={onRate} size={13} />
+        {/* Rating a row also opens it, so the WHY chips the full card offers
+            once rated are right there (they never showed for a row). */}
+        <StarRating value={rating} onRate={(n) => { onRate(n); onSelect?.(); }} size={13} />
       </div>
     </div>
   );

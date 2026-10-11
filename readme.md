@@ -1916,9 +1916,19 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    way to ask "A with B?" (`A + B` search, a verdict in Compare), Studio
    printed two different nudges (one nudge, in beats), a row click toggled
    the selection, exports hid in Filters, and sets loaded per item behind a
-   blank screen (one query, a loading state, what comes next). Still open from
-   it: Studio as A/B decks for a whole set (item 8, phase 5) and a 3:2 tempo
-   hint (the ×2/÷2 hint misses a 126 read as 84).
+   blank screen (one query, a loading state, what comes next). Re-run with the
+   same 100 personas after the fixes (562 tasks): cryptic labels 31 → 0
+   personas, one card per screen 20 → 1, buried Score library 7 → 0, owned
+   tracks unmatched in Mixes 10 → 0, row-click deselects 68 → 0, sets blank 24
+   → 0, exports in Filters 20 → 0; building a set 11/35 → 35/35 tasks and the
+   FL session 0/16 → 16/17 (the harness had waited for a download the button
+   did not start). The re-run caught three things the fixes introduced or left,
+   since fixed: the filter overlay swallowing the next click on a card, the
+   Re-score strip waiting for its 20 s poll after an edit, and rating from a
+   row not opening it for the WHY chips; and an empty `A + B` search now says
+   why. Still open from it: Studio as A/B decks for a whole set (item 8, phase
+   5) and a 3:2 tempo hint (the ×2/÷2 hint misses a 126 read as 84 — every
+   empty `A + B` in the re-run was a synthetic track read at 2/3 tempo).
 
 8. **From ranked pairs to a finished set in FL Studio (planned 2026-10-08).**
    Decided: native `.flp` export, a tempo curve across a set (both sides may

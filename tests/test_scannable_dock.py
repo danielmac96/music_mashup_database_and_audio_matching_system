@@ -191,3 +191,9 @@ def test_the_filter_overlay_is_easy_to_put_away():
     assert 'e.key !== "Escape"' in esc and "e.stopPropagation()" in esc
     assert 'addEventListener("keydown", onKey, true)' in esc
     assert "onClickCapture={open ?" in dock
+
+
+def test_rating_a_row_opens_it_for_the_why_chips():
+    card = _read("components/PairCard.jsx")
+    row = card[card.index("function PairRow("):]
+    assert "onRate={(n) => { onRate(n); onSelect?.(); }}" in row
