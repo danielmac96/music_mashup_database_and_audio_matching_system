@@ -18,6 +18,8 @@ import { keyOf, SCORE_TERMS } from "../components/pairs/pairModel";
 // "effort" alone sorts client-side over the page the server returned, and says
 // so: re-asking the server for cheap-to-build pairs would be a different query
 // (max_effort), not a re-ordering of this one.
+const AUTO_ADVANCE_KEY = "mashup.dockAutoAdvance.v1";
+
 export const ORDERS = [
   ["score", "Score", "Best fit first."],
   ["effort", "Effort", "Cheapest to build first, within the rows already loaded."],
@@ -209,6 +211,17 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     });
   }, [player]);
 
+  // Judging a list from the keyboard: after a 1-5 verdict, step to the next
+  // pair (and keep looping if a loop was playing). Off by default, because the
+  // WHY chips are offered on the card you just rated; a per-browser choice.
+  const [autoAdvance, setAutoAdvanceState] = useState(() => {
+    try { return localStorage.getItem(AUTO_ADVANCE_KEY) === "1"; } catch { return false; }
+  });
+  const setAutoAdvance = useCallback((on) => {
+    setAutoAdvanceState(on);
+    try { localStorage.setItem(AUTO_ADVANCE_KEY, on ? "1" : "0"); } catch { /* ignore */ }
+  }, []);
+
   const move = useCallback((delta) => {
     setCursor((c) => {
       const next = Math.max(0, Math.min(rowsRef.current.length - 1, c + delta));
@@ -280,11 +293,17 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       if (e.key >= "1" && e.key <= "5" && row) {
         e.preventDefault();
         ratings.rate(row, Number(e.key));
+        if (autoAdvance && cursor < list.length - 1) {
+          const wasLooping = armedKey === keyOf(row) && audio.playing;
+          move(1);
+          if (wasLooping) play(list[cursor + 1]);
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [visible, cursor, move, play, openStudio, hide, audio, ratings, onAddToSet, toggleCompare]);
+  }, [visible, cursor, move, play, openStudio, hide, audio, ratings, onAddToSet,
+      toggleCompare, autoAdvance, armedKey]);
 
   return {
     order, setOrder, rows: visible, loading, error,
@@ -292,6 +311,6 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     exportBatch,
     cursor, setCursor, current, armedKey,
     play, move, openStudio, hide, bindKeys, audio,
-    compare, toggleCompare, clearCompare, reload,
+    compare, toggleCompare, clearCompare, reload, autoAdvance, setAutoAdvance,
   };
 }

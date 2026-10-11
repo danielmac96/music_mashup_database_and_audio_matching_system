@@ -67,6 +67,18 @@ def queue_score(background: BackgroundTasks,
     return {"job_id": job_id}
 
 
+@router.get("/freshness")
+def freshness() -> dict:
+    """Whether the pairs are stale: how many analysed tracks changed since the
+    last Score library run began, and the scoring job running now, if any."""
+    from database.models import pairs_freshness
+    out = pairs_freshness()
+    running = [j for j in jobs.list_jobs()
+               if j.get("kind") == "match" and j.get("status") in ("queued", "running")]
+    out["running_job_id"] = running[0]["id"] if running else None
+    return out
+
+
 def _count_judgments() -> int:
     try:
         from database.models import get_conn

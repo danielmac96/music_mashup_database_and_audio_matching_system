@@ -97,7 +97,7 @@ export function PlayerBar({ player, ratings, onStudio }) {
     candidate.pitch_adjustment
       ? `bed ${candidate.pitch_adjustment > 0 ? "+" : ""}${candidate.pitch_adjustment} st`
       : null,
-    nudgeLabel(candidate.alignment_offset),
+    nudgeLabel(candidate.alignment_offset, candidate.target_bpm),
   ].filter(Boolean).join(" · ") : "";
 
   return (

@@ -95,7 +95,7 @@ export function PairCard({ candidate: c, rating, onRate, focused = false,
             title={c.alignment_offset == null
               ? "Neither side has a stored downbeat grid, so there is no measured offset — not a measured zero."
               : "How far to slide the bed so the two bar lines land together."}>
-            {nudgeLabel(c.alignment_offset)}
+            {nudgeLabel(c.alignment_offset, c.target_bpm)}
           </span>
         )}
         {/* The measured harmony: the two sections' notes cross-correlated over

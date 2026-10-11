@@ -208,12 +208,18 @@ def test_hiding_a_pair_is_reachable_and_reversible():
 
 
 def test_score_library_lives_with_the_knobs_it_re_applies():
-    """It is the one trigger for a re-score in the whole app. It used to sit in
-    a Discover pane, a screen away from the weights it reads."""
+    """Settings keeps the button beside the weights it re-applies, outside the
+    collapsed body, and the dock's Re-score pill starts the SAME job: both go
+    through requestRescore → useFreshness, the one place that calls
+    api.startScoring, so there is one scoring job and the dock reloads when it
+    lands. It used to sit in a Discover pane, a screen away from the weights."""
     tuning = _read("components/TuningPanel.jsx")
-    assert "api.startScoring" in tuning
-    assert "Score library" in tuning
+    assert "requestRescore" in tuning and "Score library" in tuning
     assert "MATCH_PRESETS" in tuning
+    body = tuning[tuning.index("<h3>Scoring &amp; tuning</h3>"):]
+    assert body.index("Score library") < body.index("{open && (")
+    hook = _read("hooks/useFreshness.js")
+    assert "api.startScoring" in hook and "onRescoreRequest" in hook
     # ...and nothing still sends the user to Discover to find it.
     for rel in ("components/PairDock.jsx", "components/TuningPanel.jsx",
                 "components/PartnersRail.jsx"):

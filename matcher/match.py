@@ -936,6 +936,11 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     PATTERNS_RUN = current_patterns()
 
     db = db_path or DB_PATH
+    # When this run started reading inputs, in SQLite's datetime('now') form so
+    # songs.pairs_input_at compares as text. Stored only on success: a failed
+    # run must not make stale pairs look fresh.
+    from datetime import datetime, timezone
+    run_started = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     bpm_max = float(bpm_max_diff) if bpm_max_diff is not None else BPM_MAX_DIFF
     key_min = float(key_min_score) if key_min_score is not None else KEY_MIN_SCORE
 
@@ -1175,6 +1180,9 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
              + f"  |  scorer={active_scorer}"
              + (f" ({model_version})" if model_version else "")
              + f"  filter: bpm_max_diff={bpm_max} key_min_score={key_min}")
+    from database.models import set_pref
+    set_pref("last_score", {"started_at": run_started, "scorer": active_scorer},
+             db_path=db)
     return {**results, "_scorer": active_scorer, "_model_version": model_version}
 
 

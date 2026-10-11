@@ -671,6 +671,12 @@ input, select { font-family: inherit; }
   display: flex; align-items: center; gap: 10px;
 }
 .toast .dot { color: var(--green); }
+.toast-action {
+  margin-left: 6px; cursor: pointer; border-radius: 7px; padding: 5px 10px;
+  border: 1px solid var(--border-accent); background: var(--raised);
+  color: var(--accent-light); font: 600 12px var(--font-ui);
+}
+.toast-action:hover { background: var(--accent); color: var(--text); }
 
 /* ── Setup Wizard ─────────────────────────────────────────────────────────── */
 .wizard-steps {
@@ -1836,6 +1842,12 @@ input, select { font-family: inherit; }
   font-size: 10px; font-weight: 500; padding: 2px 7px; white-space: nowrap;
 }
 .pd-roleswap:hover { color: var(--accent-light); border-color: var(--border-accent); }
+.pd-scope-x {
+  flex: none; cursor: pointer; width: 22px; height: 22px;
+  border: 1px solid var(--border-ctrl); border-radius: 6px;
+  background: var(--panel); color: var(--muted); font-size: 11px; line-height: 1;
+}
+.pd-scope-x:hover { color: var(--text); border-color: var(--border-accent); }
 
 .pd-list {
   flex: 1; min-height: 0; overflow: auto;
@@ -1851,6 +1863,10 @@ input, select { font-family: inherit; }
 }
 .pd-keys span { font-size: 10px; font-weight: 500; color: var(--faint); }
 .pd-keys b { font-weight: 600; color: var(--muted); }
+.pd-advance {
+  margin-left: auto; display: flex; align-items: center; gap: 4px; cursor: pointer;
+  font-size: 10px; font-weight: 500; color: var(--muted);
+}
 
 /* ── one card ──────────────────────────────────────────────────────────── */
 /* flex:none so the list SCROLLS. Left to flex, six cards share the dock's
@@ -2961,6 +2977,29 @@ input, select { font-family: inherit; }
   color: var(--muted); font-size: 11px;
 }
 .pd-filterbtn.on, .pd-filterbtn.active { color: var(--accent-light); border-color: var(--accent); }
+.pd-exportbtn {
+  flex: none; cursor: pointer; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--border-ctrl); background: transparent;
+  color: var(--muted); font-size: 11px;
+}
+.pd-exportbtn.on { color: var(--accent-light); border-color: var(--accent); }
+.pd-exportmenu {
+  flex: none; display: flex; flex-direction: column; gap: 7px;
+  padding: 9px 14px; border-bottom: 1px solid var(--hair); background: var(--inset);
+  font: 400 11px var(--font-ui); color: var(--muted);
+}
+.pd-exportrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pd-exportrow select {
+  background: var(--inset-2); color: var(--text-2); border: 1px solid var(--border-ctrl);
+  border-radius: 5px; padding: 3px 4px; font: 400 11.5px var(--font-ui);
+}
+.pd-exportrow button {
+  cursor: pointer; padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--border-ctrl); background: transparent; color: var(--text-2);
+  font-size: 11px;
+}
+.pd-exportrow button:disabled { opacity: 0.5; cursor: default; }
+.pd-plainexport, .pd-export { border-top: 1px solid var(--hair); padding-top: 7px; }
 .pd-filters {
   flex: none; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px;
   padding: 9px 14px; border-bottom: 1px solid var(--hair); background: var(--inset);
@@ -2982,7 +3021,6 @@ input, select { font-family: inherit; }
   font-size: 11px;
 }
 .pd-filteractions button:disabled, .pd-more:disabled { opacity: 0.5; cursor: default; }
-.pd-export { margin-left: auto; display: flex; align-items: center; gap: 6px; }
 .pd-archive { color: var(--accent-light); font-size: 11px; }
 .pd-more { flex: none; display: block; margin: 8px auto 12px; }
 
@@ -3135,7 +3173,6 @@ input, select { font-family: inherit; }
 .pd-keepers.on { color: var(--amber); border-color: var(--amber); }
 .pd-keypick { display: flex; gap: 4px; }
 .pd-keypick select { flex: 1; min-width: 0; }
-.pd-plainexport { justify-content: flex-end; }
 
 /* ── Studio picker: fit to the timeline, and matcher-scored layers ───────── */
 .picker-fit { font-size: 10.5px; color: var(--faint); white-space: nowrap; }
@@ -3326,3 +3363,17 @@ input, select { font-family: inherit; }
 .term-table tr.measured td:first-child { color: var(--cyan); }
 .term-table .term-verdict { color: var(--muted); white-space: normal; }
 .term-reasons { margin-top: 6px; font-size: 11px; color: var(--muted); display: grid; gap: 2px; }
+
+/* The dock's freshness strip: stale pairs and the one-click re-score. */
+.pd-fresh {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; background: var(--raised);
+  border-bottom: 1px solid var(--border-accent);
+}
+.pd-fresh-text { flex: 1; min-width: 0; font: 400 12px var(--font-ui); color: var(--text); }
+.pd-fresh-btn {
+  flex: none; cursor: pointer; border-radius: 7px; padding: 5px 10px;
+  border: 1px solid var(--border-accent); background: var(--accent);
+  color: var(--text); font: 600 12px var(--font-ui); white-space: nowrap;
+}
+.pd-fresh-btn:hover { filter: brightness(1.1); }

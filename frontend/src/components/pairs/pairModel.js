@@ -146,10 +146,24 @@ export function spanLabel(label, start, end) {
 // The bed's nudge, in the unit a person can act on. null means there was no
 // stored downbeat grid to measure against — which is not the same as a measured
 // zero, and the card must not print "0 ms" for it.
-export function nudgeLabel(offsetSec) {
+export function nudgeLabel(offsetSec, bpm = null) {
   if (offsetSec == null) return "no grid";
   const ms = Math.round(offsetSec * 1000);
-  return ms === 0 ? "on the grid" : `nudge ${ms > 0 ? "+" : ""}${ms} ms`;
+  return ms === 0 ? "on the grid" : `nudge ${nudgeText(ms, bpm)}`;
+}
+
+// An offset as a producer moves it: whole beats at the landing tempo, then
+// the milliseconds left over — matcher/recipe.nudge_text, the same arithmetic
+// (pinned by a test). "−1437 ms" at 84 BPM is "−2 beats −8 ms".
+const signed = (v, unit) => `${v > 0 ? "+" : v < 0 ? "−" : ""}${Math.abs(v)}${unit}`;
+export function nudgeText(ms, bpm = null) {
+  if (ms == null) return "";
+  const beat = bpm > 0 ? 60000 / bpm : null;
+  if (!beat || Math.abs(ms) < beat) return signed(Math.round(ms), " ms");
+  const beats = Math.round(ms / beat);
+  const rest = Math.round(ms - beats * beat);
+  const word = Math.abs(beats) === 1 ? " beat" : " beats";
+  return signed(beats, word) + (rest ? ` ${signed(rest, " ms")}` : "");
 }
 
 // The MEASURED harmony of a pair (matcher/harmony.py), as the card and Studio

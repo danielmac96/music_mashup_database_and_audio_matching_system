@@ -138,6 +138,37 @@ def _signed(v: float, unit: str, digits: int = 0) -> str:
     return f"{'+' if v > 0 else '−' if v < 0 else ''}{abs(v):.{digits}f}{unit}"
 
 
+def nudge_split(ms: Optional[float], bpm: Optional[float]):
+    """(beats, rest_ms) for an offset of at least one beat at `bpm`, else
+    (0, ms). An offset of 1437 ms at 84 BPM is the two sections' bar lines two
+    beats apart plus 9 ms, which is how a producer moves it; printed as
+    milliseconds it read as a timing error. rest_ms is what is left after the
+    nearest whole beat, so it can carry either sign.
+    (None, None) when there is no offset."""
+    if ms is None:
+        return None, None
+    ms = float(ms)
+    if not bpm or bpm <= 0:
+        return 0, round(ms)
+    beat = 60000.0 / float(bpm)
+    if abs(ms) < beat:
+        return 0, round(ms)
+    beats = int(round(ms / beat))
+    return beats, round(ms - beats * beat)
+
+
+def nudge_text(ms: Optional[float], bpm: Optional[float]) -> str:
+    """The nudge as the card prints it: "+12 ms", "−2 beats −9 ms"."""
+    beats, rest = nudge_split(ms, bpm)
+    if beats is None:
+        return ""
+    if not beats:
+        return _signed(rest, " ms")
+    word = "beat" if abs(beats) == 1 else "beats"
+    return (f"{_signed(beats, ' ' + word)}"
+            + (f" {_signed(rest, ' ms')}" if rest else ""))
+
+
 def _rate_to(target: float, bpm: Optional[float]):
     """(rate, fold) to play a side at `target`, read at half/double time when
     closer — rate > 1 plays it faster. (None, None) when its tempo is unknown."""
@@ -254,7 +285,7 @@ def pair_recipe(row: Dict, facts: Optional[Dict] = None,
         if abs(ms) >= NUDGE_MIN_MS:
             adjustments.append({
                 "key": "nudge", "level": "free",
-                "text": f"nudge bed {_signed(ms, ' ms')}",
+                "text": f"nudge bed {nudge_text(ms, target)}",
                 "why": "slide the bed so its downbeat lands under the vocal's"})
     repeats = row.get("section_loop_repeats") or 1
     if repeats > 1:
@@ -299,6 +330,8 @@ def pair_recipe(row: Dict, facts: Optional[Dict] = None,
         "bed_semitones": shift,
         "shift_source": None if shift is None else ("measured" if measured else "camelot"),
         "nudge_ms": None if off is None else round(float(off) * 1000),
+        "nudge_beats": nudge_split(None if off is None else float(off) * 1000, target)[0],
+        "nudge_rest_ms": nudge_split(None if off is None else float(off) * 1000, target)[1],
         "loop_repeats": repeats,
         "bed_gain_db": gain,
         "vocal_lane_gain": VOCAL_LANE_GAIN,

@@ -25,6 +25,7 @@ const RATED = [["", "Any"], ["rated", "Rated by you"], ["loved", "Loved (4–5�
 const CAMELOT = Array.from({ length: 12 }, (_, i) => [`${i + 1}A`, `${i + 1}B`]).flat();
 
 export function PairDock({ dock, ratings, scopeTitle, role, onRole,
+                          onClearScope = null, freshness = null,
                           onAddToSet = null, setName = null, notes = null }) {
   const { order, setOrder, rows, loading, error, cursor, setCursor, armedKey,
           play, openStudio, hide, audio, filters, setFilters, resetFilters,
@@ -35,6 +36,9 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
   const [search, setSearch] = useState(filters.search);
   const [options, setOptions] = useState(null);
   const [exportN, setExportN] = useState(10);
+  // Exports sat at the bottom of the Filters panel, where 20 of 100 simulated
+  // users found them only after opening Filters for something else.
+  const [exportOpen, setExportOpen] = useState(false);
   const [exportJob, setExportJob] = useState(null);
   const [archive, setArchive] = useState(null);
   const nActive = activeFilterCount(filters);
@@ -93,14 +97,44 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
         </div>
       </div>
 
+      {freshness && (freshness.jobId || freshness.label) && (
+        <div className="pd-fresh">
+          {freshness.jobId ? (
+            <>
+              <span className="pd-fresh-text">Scoring the library…</span>
+              <JobBadge jobId={freshness.jobId} onComplete={freshness.onJobDone} />
+            </>
+          ) : (
+            <>
+              <span className="pd-fresh-text">
+                {freshness.fresh?.never_scored
+                  ? "Your analysed tracks have not been paired yet."
+                  : "Some tracks changed since these pairs were scored."}
+              </span>
+              <button className="pd-fresh-btn" onClick={freshness.rescore}
+                title="Score every vocal section over every bed section again (the match width set in ⚙ Settings)">
+                ↻ {freshness.label}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
       <div className="pd-scope">
         <span className="pd-scopetext">{scope}</span>
         {scopeTitle ? (
-          <button className="pd-roleswap mono"
-            title="Look at this track as the other side of the pair"
-            onClick={() => onRole(role === "vocal" ? "instrumental" : "vocal")}>
-            {role === "instrumental" ? "as the bed" : "as the vocal"}
-          </button>
+          <>
+            <button className="pd-roleswap mono"
+              title="Look at this track as the other side of the pair"
+              onClick={() => onRole(role === "vocal" ? "instrumental" : "vocal")}>
+              {role === "instrumental" ? "as the bed" : "as the vocal"}
+            </button>
+            {onClearScope && (
+              <button className="pd-scope-x" onClick={onClearScope}
+                title="Back to the best pairs in the library (esc)"
+                aria-label="Clear the selected track">✕</button>
+            )}
+          </>
         ) : (
           <span className="pd-role mono">vocal over bed</span>
         )}
@@ -120,6 +154,11 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
           onClick={() => setOpen((v) => !v)}
           title="Narrow the pairs: match, build effort, genre, era, tempo, energy, vocal-forward">
           Filters{nActive ? ` · ${nActive}` : ""}
+        </button>
+        <button className={`pd-exportbtn mono${exportOpen ? " on" : ""}`}
+          onClick={() => setExportOpen((o) => !o)}
+          title="Export the top pairs under these filters: CSV, cue sheet, rekordbox XML or FL session folders">
+          Export
         </button>
       </div>
 
@@ -214,31 +253,22 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
           <div className="pd-filteractions">
             <button onClick={() => { resetFilters(); setSearch(""); }}
               disabled={!nActive && !filters.search}>Reset</button>
-            <span className="pd-export">
-              <select value={exportN} onChange={(e) => setExportN(Number(e.target.value))}
-                title="How many of the top pairs to export">
-                {EXPORT_N.map((n) => <option key={n} value={n}>top {n}</option>)}
-              </select>
-              <button onClick={startExport} disabled={exportJob != null || perVocal}
-                title={perVocal ? "Export works on the ranked list — untick Best bed per vocal"
-                  : "Render the top pairs under these filters as FL session folders (conformed stems, click, recipe), zipped"}>
-                ⤓ FL sessions
-              </button>
-              {exportJob && (
-                <JobBadge jobId={exportJob} onComplete={(job) => {
-                  setExportJob(null);
-                  if (job.status === "completed") setArchive(job.id);
-                  else toast(`Export failed: ${job.error || job.message || "unknown error"}`);
-                }} />
-              )}
-              {archive && (
-                <a className="pd-archive" href={api.sessionArchiveUrl(archive)}
-                  target="_blank" rel="noreferrer">↓ zip</a>
-              )}
-            </span>
           </div>
-          <div className="pd-filteractions pd-plainexport">
-            <span className="faint">Top {exportN} as</span>
+        </div>
+      )}
+
+      {exportOpen && (
+        <div className="pd-exportmenu">
+          <div className="pd-exportrow">
+            <span className="faint">Export the top</span>
+            <select value={exportN} onChange={(e) => setExportN(Number(e.target.value))}
+              title="How many of the top pairs, under the current filters">
+              {EXPORT_N.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <span className="faint">pairs{perVocal ? " (untick Best bed per vocal first)" : ""}</span>
+          </div>
+          <div className="pd-exportrow pd-plainexport">
+            <span className="faint">as a file</span>
             {[["csv", "CSV", "One row per pair: both sides, sections, landing key and tempo, bed transpose, harmony, note"],
               ["cue", "cue sheet", "A timed running order you can read or paste into a tracklist"],
               ["rekordbox", "rekordbox", "rekordbox XML: each vocal's acapella and each bed, with a beat grid and a hot cue at the paired section"]]
@@ -250,6 +280,25 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
                   {label}
                 </button>
               ))}
+          </div>
+          <div className="pd-exportrow pd-export">
+            <span className="faint">for FL Studio</span>
+            <button onClick={startExport} disabled={exportJob != null || perVocal}
+              title={perVocal ? "Export works on the ranked list — untick Best bed per vocal"
+                : "Render the top pairs under these filters as FL session folders (conformed stems, click, recipe), zipped"}>
+              ⤓ FL sessions
+            </button>
+            {exportJob && (
+              <JobBadge jobId={exportJob} onComplete={(job) => {
+                setExportJob(null);
+                if (job.status === "completed") setArchive(job.id);
+                else toast(`Export failed: ${job.error || job.message || "unknown error"}`);
+              }} />
+            )}
+            {archive && (
+              <a className="pd-archive" href={api.sessionArchiveUrl(archive)}
+                target="_blank" rel="noreferrer">↓ zip</a>
+            )}
           </div>
         </div>
       )}
@@ -274,7 +323,7 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
             <span className="hint">
               {scopeTitle
                 ? "This track has no partner that cleared the technical gates. It may need analysing, or its stems separating."
-                : "Run “Score library” from ⚙ Settings once tracks are analysed."}
+                : "Once tracks are analysed, press “Score library” above to pair them."}
             </span>
           </div>
         )}
@@ -312,6 +361,12 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
         {KEYS.map(([k, what]) => (
           <span key={k} className="mono"><b>{k}</b> {what}</span>
         ))}
+        <label className="pd-advance mono"
+          title="After rating with 1–5, move to the next pair (and keep looping)">
+          <input type="checkbox" checked={!!dock.autoAdvance}
+            onChange={(e) => dock.setAutoAdvance(e.target.checked)} />
+          auto-advance
+        </label>
       </div>
     </aside>
   );

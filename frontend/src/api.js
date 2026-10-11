@@ -250,6 +250,8 @@ export const api = {
 
   getWaveform: (id, stem) => jsonFetch(`/api/tracks/${id}/waveform?stem=${stem}`),
 
+  getFreshness: () => jsonFetch("/api/mashups/freshness"),
+
   startScoring: ({ bpmMaxDiff = null, keyMinScore = null } = {}) => {
     const params = new URLSearchParams();
     if (bpmMaxDiff != null) params.set("bpm_max_diff", String(bpmMaxDiff));

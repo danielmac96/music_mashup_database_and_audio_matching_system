@@ -507,6 +507,11 @@ _SONGS_OPTIONAL_COLUMNS = (
     # for the current audio: do_download clears it).
     ("quick_state", "TEXT"),
     ("quick_at", "TEXT"),
+    # When something the pair scorer reads last changed for this track —
+    # features, a manual BPM/key, the beat phase, the sections. Compared with
+    # the start of the last "Score library" run, it is what tells the dock its
+    # pairs are stale. Every writer of a scoring input bumps it (§7).
+    ("pairs_input_at", "TEXT"),
     ("artist_id", "TEXT"),
     ("track_id", "TEXT"),
     ("duration_str", "TEXT"),
@@ -1343,6 +1348,14 @@ def update_stem_quality(song_id: int, stem_type: str, metrics: Dict,
     conn.close()
 
 
+def mark_pairs_input(conn: sqlite3.Connection, song_id: int) -> None:
+    """Note that a scoring input of this track changed, on the caller's
+    connection and inside its transaction. The dock's freshness check compares
+    it with the start of the last scoring run."""
+    conn.execute("UPDATE songs SET pairs_input_at=datetime('now') WHERE id=?",
+                 (song_id,))
+
+
 def upsert_features(song_id: int, stem_type: str, features: dict,
                     db_path: Path = DB_PATH):
     mfcc = features.pop("mfcc", None)
@@ -1391,6 +1404,7 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
          features.get("hook_start"), features.get("hook_end"),
          features.get("hook_role"))
     )
+    mark_pairs_input(conn, song_id)
     conn.commit()
     conn.close()
 
@@ -1953,6 +1967,8 @@ def update_features_manual(song_id: int, *, bpm: Optional[float] = None,
             params,
         )
         updated += 1
+    if updated:
+        mark_pairs_input(conn, song_id)
     conn.commit()
     conn.close()
     return updated
@@ -2183,6 +2199,7 @@ def replace_sections(song_id: int, sections: List[Dict],
         conn.rollback()
         conn.close()
         raise
+    mark_pairs_input(conn, song_id)
     conn.commit()
     conn.close()
     if outcome.get("moved") or outcome.get("flagged"):
@@ -3224,6 +3241,41 @@ def set_pref(key: str, value: Dict, db_path: Path = DB_PATH) -> Dict:
     finally:
         conn.close()
     return dict(value)
+
+
+def pairs_freshness(db_path: Path = DB_PATH) -> Dict:
+    """Whether the scored pairs still describe the library.
+
+    changed_tracks counts analysed tracks whose scoring inputs changed after
+    the last successful "Score library" run started (songs.pairs_input_at).
+    never_scored is true when no run has finished and there is something to
+    pair; a library scored before this was recorded counts as scored, with no
+    change known."""
+    last = get_pref("last_score", db_path=db_path) or {}
+    started = last.get("started_at")
+    conn = get_conn(db_path)
+    try:
+        analysed = conn.execute(
+            "SELECT COUNT(*) FROM songs WHERE status='analysed'").fetchone()[0]
+        has_pairs = conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM mashup_candidates)").fetchone()[0]
+        last_scored = conn.execute(
+            "SELECT MAX(scored_at) FROM mashup_candidates").fetchone()[0]
+        changed = 0
+        if started:
+            changed = conn.execute(
+                "SELECT COUNT(*) FROM songs WHERE status='analysed' "
+                "AND pairs_input_at IS NOT NULL AND pairs_input_at > ?",
+                (started,)).fetchone()[0]
+    finally:
+        conn.close()
+    return {
+        "last_score_started_at": started,
+        "last_scored_at": last_scored,
+        "changed_tracks": int(changed),
+        "never_scored": bool(not started and not has_pairs and analysed >= 2),
+        "analysed_tracks": int(analysed),
+    }
 
 
 def get_pref(key: str, db_path: Path = DB_PATH) -> Optional[Dict]:

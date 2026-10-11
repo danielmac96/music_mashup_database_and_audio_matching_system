@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { StarRating } from "./StarRating";
+import { nudgeText } from "./pairs/pairModel";
 
 // The 340px adjustments rail.
 //
@@ -69,21 +70,22 @@ export function StudioRail({
   buildRating, onRateBuild, onSaveSnapshot, onNextPair, hasNextPair, dirty,
   snapshots = [], onLoadSnapshot = () => {}, onDeleteSnapshot = () => {},
   onAppendNext = null, onAddToSet = null, setName = null, nudgeBase = 0,
-  pairNote = null,
+  nudgeMs = 0, pairNote = null,
 }) {
   const [noteDraft, setNoteDraft] = useState(null);
   const [showSnaps, setShowSnaps] = useState(false);
   const bedRate = bedLane?.rate ?? 1;
   const bedPitch = bedLane?.semitones ?? 0;
-  // Nudge is expressed where a person can act on it: milliseconds of bed
-  // against vocal, not an absolute position on the timeline.
-  // Measured from the sections-aligned placement (nudgeBase) when a timing
-  // option is armed; from the vocal lane's start otherwise.
-  const nudgeMs = bedLane && vocalLane
-    ? Math.round((bedLane.offsetSec - vocalLane.offsetSec - nudgeBase) * 1000) : 0;
-
+  // Nudge is expressed where a person can act on it: bed against vocal,
+  // measured from the sections-aligned placement (nudgeBase) — MixStudio
+  // computes it once (nudgeMs) for this slider, the ALIGN chip and "edited".
   const suggestNudgeMs = suggested.nudgeSec == null
     ? null : Math.round(suggested.nudgeSec * 1000);
+  // The slider covers a bar either way and always the suggestion: suggested
+  // offsets of several beats fell off a fixed ±2 s range.
+  const barMs = projectBpm ? 4 * 60000 / projectBpm : 2000;
+  const nudgeRange = Math.ceil(Math.max(2000, barMs,
+    Math.abs(suggestNudgeMs ?? 0) + 500, Math.abs(nudgeMs) + 500) / 100) * 100;
 
   return (
     <aside className="studio-rail">
@@ -109,9 +111,9 @@ export function StudioRail({
               hint="Shifts the bed only — the vocal is the thing you are keeping"
               onChange={(v) => patchLane(bedLane.id, { semitones: v })} />
 
-            <Knob label="Offset nudge" value={nudgeMs} min={-2000} max={2000} step={5}
+            <Knob label="Offset nudge" value={nudgeMs} min={-nudgeRange} max={nudgeRange} step={5}
               suggest={suggestNudgeMs}
-              format={(v) => `${v > 0 ? "+" : ""}${v} ms`}
+              format={(v) => nudgeText(v, projectBpm)}
               hint={suggested.nudgeSec == null
                 ? "No stored downbeat grid — this offset is unmeasured, not zero"
                 : "Slides the bed against the vocal"}

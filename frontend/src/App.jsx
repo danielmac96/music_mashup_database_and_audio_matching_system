@@ -28,6 +28,7 @@ import { usePlayer } from "./hooks/usePlayer";
 import { isActiveJob } from "./hooks/useQueue";
 import { api } from "./api";
 import { onToast } from "./toast";
+import { useFreshness } from "./hooks/useFreshness";
 
 // Statuses still waiting on a stage that prefetch can move up the line.
 const PREFETCH_STATUSES = new Set(["queued", "downloaded", "stemmed"]);
@@ -40,12 +41,15 @@ const PREFETCH_STATUSES = new Set(["queued", "downloaded", "stemmed"]);
 
 function Toast() {
   const [msg, setMsg] = useState("");
+  const [action, setAction] = useState(null);
   useEffect(() => {
     let timer = null;
-    const off = onToast((m) => {
+    const off = onToast((m, a) => {
       setMsg(m);
+      setAction(a || null);
       clearTimeout(timer);
-      timer = setTimeout(() => setMsg(""), 2600);
+      // A toast that offers something stays long enough to take it.
+      timer = setTimeout(() => { setMsg(""); setAction(null); }, a ? 7000 : 2600);
     });
     return () => { off(); clearTimeout(timer); };
   }, []);
@@ -54,6 +58,12 @@ function Toast() {
     <div className="toast">
       <span className="dot">●</span>
       {msg}
+      {action && (
+        <button className="toast-action"
+          onClick={() => { action.onClick(); setMsg(""); setAction(null); }}>
+          {action.label}
+        </button>
+      )}
     </div>
   );
 }
@@ -188,6 +198,12 @@ export default function App() {
     selectedTrackId, role: dockRole, ratings, onOpenStudio: pairToStudio, player,
     onAddToSet: sets.addPair,
   });
+  // Stale pairs and the one scoring job (the dock's pill, Settings' button and
+  // a toast's "Re-score now" all start it). A finished run reloads the dock and
+  // the library's MASH / PAIRS columns.
+  const freshness = useFreshness({
+    onScored: () => { dock.reload(); library.refresh(); },
+  });
 
   // A whole set on one Studio timeline, back to back — what "Next pair" could
   // never do, because it replaces the arrangement.
@@ -260,7 +276,26 @@ export default function App() {
 
   // Selecting a row scopes the dock; it does not navigate. Clearing it is what
   // puts the dock back on "the best pairs in the library".
-  const selectTrack = (id) => setSelectedTrackId((cur) => (cur === id ? null : id));
+  // A click selects; it never toggles. Clicking the selected row again used to
+  // clear it, sending the dock back to "Best in library" while the search still
+  // showed that one row (68 of 100 simulated users hit it). Clearing is the ✕
+  // on the dock's scope line, or Esc on the Library.
+  const selectTrack = (id) => setSelectedTrackId(id);
+  const clearSelection = () => setSelectedTrackId(null);
+
+  useEffect(() => {
+    if (route !== "library" || selectedTrackId == null || settingsOpen || helpOpen) {
+      return undefined;
+    }
+    const onKey = (e) => {
+      const el = e.target;
+      if (e.key !== "Escape" || (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
+        || el.tagName === "SELECT" || el.isContentEditable))) return;
+      setSelectedTrackId(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [route, selectedTrackId, settingsOpen, helpOpen]);
 
   const selectedTrack = useMemo(
     () => library.tracks.find((t) => t.id === selectedTrackId) || null,
@@ -346,7 +381,8 @@ export default function App() {
             <PairDock dock={dock} ratings={ratings}
               onAddToSet={sets.addPair} setName={sets.active?.name || null}
               notes={notes}
-              scopeTitle={selectedTrack?.title || null}
+              scopeTitle={selectedTrack?.title || null} onClearScope={clearSelection}
+              freshness={freshness}
               role={dockRole} onRole={setDockRole} />
           </div>
         )}
@@ -427,17 +463,8 @@ export default function App() {
                 title="Close (esc)">✕</button>
             </div>
 
-            <div className="drawer-section">
-              <h3>Re-process the library</h3>
-              <span className="hint">
-                Bulk re-analysis and stem separation. It belongs here rather
-                than on the Library screen because it acts on everything at
-                once — the per-track stages are on each row's pipeline dots.
-              </span>
-            </div>
-            <div className="drawer-body">
-              <BulkReprocess onQueued={() => library.refresh()} />
-            </div>
+            {/* Renders nothing (heading included) when no track needs it. */}
+            <BulkReprocess onQueued={() => library.refresh()} />
 
             <div className="drawer-body">
               <TuningPanel />
