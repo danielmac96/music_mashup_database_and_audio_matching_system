@@ -289,3 +289,11 @@ def test_x_and_with_stay_inside_a_title():
     assert _two_track_query("Fireproof w/ Siren Song") == ("Fireproof", "Siren Song")
     for one_song in ("Calvin Harris x Dua Lipa", "Dancing with a Stranger", "Fire +", "C++"):
         assert _two_track_query(one_song) is None, one_song
+
+
+def test_an_empty_two_track_search_says_why():
+    """'A + B' with no pair is not 'loosen a filter': they were never scored
+    together (the tempo gate, one record, or no re-score yet)."""
+    src = (ROOT / "frontend" / "src" / "components" / "PairDock.jsx").read_text(encoding="utf-8")
+    assert "These two were never scored together." in src
+    assert "TWO_TRACK.test(filters.search)" in src

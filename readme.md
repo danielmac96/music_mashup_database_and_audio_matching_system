@@ -364,7 +364,8 @@ reprocesses), add to a group, or delete the track and its files.
   shows as a pill under the search box, ✕ to drop it. Two songs as **`A + B`**
   (or `A w/ B`) find the pairs of exactly those two, either way round — "does
   this vocal work on that bed?" (`models._two_track_query`; `x`, `with` and
-  `vs` stay part of a title). Otherwise the search box matches either side's title or
+  `vs` stay part of a title). No result says they were never scored together
+  and why that usually is, rather than "loosen a filter". Otherwise the search box matches either side's title or
   artist across every scored pair. **Filters** narrow by min match
   (percentile), build effort (free / free or light), genre and era (either
   side), BPM band (the vocal's), bed energy, vocal-forward, and **adventure**

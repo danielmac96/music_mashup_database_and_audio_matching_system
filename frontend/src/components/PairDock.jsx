@@ -24,6 +24,9 @@ const RATED = [["", "Any"], ["rated", "Rated by you"], ["loved", "Loved (4–5�
                ["unrated", "Not rated yet"]];
 const CAMELOT = Array.from({ length: 12 }, (_, i) => [`${i + 1}A`, `${i + 1}B`]).flat();
 
+// The pair search's "A + B" form (database/models._two_track_query).
+const TWO_TRACK = /\w.*(\s*\+\s*|\s+w\/\s+).*\w/i;
+
 const EFFORT_PILL = { 0.25: "free builds", 0.5: "free or light" };
 const RATED_PILL = { rated: "rated by you", loved: "loved 4–5★", unrated: "not rated yet" };
 
@@ -388,7 +391,19 @@ export function PairDock({ dock, ratings, scopeTitle, role, onRole,
       <div className="pd-list" ref={listRef}
         onClickCapture={open ? (e) => { e.stopPropagation(); setOpen(false); } : undefined}>
         {error && <div className="error-text pd-msg">{error}</div>}
-        {!error && !loading && rows.length === 0 && (nActive > 0 || filters.search) && (
+        {!error && !loading && rows.length === 0 && TWO_TRACK.test(filters.search) && (
+          <div className="pd-msg">
+            These two were never scored together.
+            <span className="hint">
+              Their tempos are too far apart for the tempo gate (half and double
+              time allowed), they are versions of one record, or one arrived
+              after the last re-score. A wrong BPM (×2/÷2 in the Library) is the
+              usual cause — fix it, then re-score.
+            </span>
+          </div>
+        )}
+        {!error && !loading && rows.length === 0 && (nActive > 0 || filters.search)
+          && !TWO_TRACK.test(filters.search) && (
           <div className="pd-msg">
             No pairs match these filters.
             <span className="hint">Loosen a filter, or reset them.</span>
