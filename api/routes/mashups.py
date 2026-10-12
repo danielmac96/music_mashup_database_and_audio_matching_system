@@ -548,6 +548,14 @@ def get_plan(vocal_id: int, inst_id: int,
 
 # ── Batch FL session export (B.3) ─────────────────────────────────────────────
 
+class BatchPair(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+    vocal_section_idx: Optional[int] = None
+    inst_section_idx: Optional[int] = None
+    lanes: Optional[list] = None
+
+
 class BatchSessionRequest(BaseModel):
     """Export the top N of the *currently filtered* list.
 
@@ -566,6 +574,10 @@ class BatchSessionRequest(BaseModel):
     bpm_band: str = ""
     vocal_forward: bool = False
     search: str = ""
+    # Exactly these pairs instead of the filtered top N — each with its section
+    # pairing and, optionally, its Studio lane state (api/routes/studio.py
+    # LaneState). A set's mashups, or what Studio has open.
+    pairs: Optional[List[BatchPair]] = None
 
 
 @router.post("/session/batch")
@@ -579,6 +591,31 @@ def queue_session_batch(req: BatchSessionRequest,
             status_code=400,
             detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
     top_n = max(1, min(req.top_n, MAX_SESSIONS))
+
+    if req.pairs is not None:
+        from pydantic import ValidationError
+        from api.routes.studio import LaneState, lanes_payload
+        if not req.pairs:
+            raise HTTPException(status_code=400, detail="pairs is empty")
+        pairs = []
+        for p in req.pairs[:MAX_SESSIONS]:
+            try:
+                lanes = lanes_payload([LaneState.model_validate(x)
+                                       for x in (p.lanes or [])])
+            except ValidationError as exc:
+                raise HTTPException(status_code=400,
+                                    detail=f"bad lane state: {exc.errors()[0]['msg']}")
+            pair = {"vocal_song_id": p.vocal_song_id, "inst_song_id": p.inst_song_id,
+                    "vocal_section_idx": p.vocal_section_idx,
+                    "inst_section_idx": p.inst_section_idx}
+            if lanes:
+                pair["lanes"] = lanes
+            pairs.append(pair)
+        job_id = jobs.new_job(kind="session",
+                              message=f"Queued {len(pairs)} FL session exports")
+        background.add_task(session_worker.run_batch, job_id, pairs)
+        return {"job_id": job_id, "pair_count": len(pairs),
+                "archive_url": f"/api/studio/session/{job_id}/archive"}
 
     rows = get_candidates_enriched(
         combo_type=req.combo_type, min_score=req.min_score, limit=top_n,
