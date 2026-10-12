@@ -1266,9 +1266,19 @@ caches responses, and opens a breaker after repeated failures.
   `session.json` that round-trips into Studio. The folder holds the section
   pair it was asked for — Studio sends the armed timing, the dock's batch each
   row's indexes — and `session.json` records them; with none, the plan's pick.
-  Lane edits in Studio (a hand-set transpose, nudge, gains, fades, filters) are
-  not in the session yet — the WAV mixdown carries them (§9). Batches zip, and
-  skip a pair that cannot render rather than failing the rest.
+  **Lane state**: `POST /api/studio/session` takes optional `lanes` — one per
+  role (`vocal` / `bed`) with `semitones`, `rate`, `gain`, `offset_ms`,
+  `fade_in`, `fade_out`, `highpass_hz`, `lowpass_hz`, each optional. A value
+  given replaces the plan's for that lane (`render/session.lane_overrides`):
+  rate, transpose and nudge are baked into the WAVs (a later nudge pads the
+  head, an earlier one trims it; the bed's parts move with the bed); level,
+  fades and filters are left to the mixer, recorded in `session.json` (`lanes`,
+  and each clip in `build_mixdown`'s vocabulary) and in the README's "FROM
+  YOUR STUDIO LANES". Without `lanes` nothing changes. The batch
+  (`POST /api/mashups/session/batch`) takes `pairs` — explicit pairs, each
+  with its sections and its own `lanes` — instead of the filtered top N. The
+  Studio UI does not send its lanes yet (§9). Batches zip, and skip a pair
+  that cannot render rather than failing the rest.
 - **Pair lists** (`render/exports.py`), from a set or the dock's top N, one
   module so the two cannot disagree: **CSV** (both sides, sections, landing
   tempo and key, bed transpose, harmony, nudge, loop, note, start time), a
@@ -1309,6 +1319,90 @@ take the cheapest next move, cost = steps + tempo% / 3 (one wheel step weighs
 about a 3% tempo move, both what "smooth" allows) — which is what a DJ does by
 hand; it is advisory until posted to `/reorder`.
 
+### 5.13 Backend contracts for the redesign
+
+Built ahead of a frontend redesign (2026-10-12); each shape is pinned by a
+contract test. The current UI reads none of them yet except where it already
+read the endpoint (extra keys on pair rows, jobs and mixes are ignored).
+
+- **View preferences** (`api/routes/prefs.py`, `tests/test_view_prefs.py`).
+  `GET` / `PUT /api/prefs/library-view` → `{columns: [{id, visible, width}],
+  order: [id], sort: {id, dir}}` in `app_prefs.library_view`; columns keyed by
+  id, at most 200, unknown keys dropped, a wrong shape is a 400, nothing stored
+  is the empty view. `GET` / `POST /api/prefs/filter-presets`,
+  `DELETE /api/prefs/filter-presets/{id}` → `{id, name, filters, created_at}`
+  in `app_prefs.filter_presets`; `filters` is opaque JSON ≤ 16 KB (413 over),
+  names unique case-insensitively (409). `attribute_visibility` is untouched.
+- **Pair confidence and compatibility** (`matcher/compat.py`,
+  `tests/test_pair_confidence.py`). Every pair row — the dock, keepers,
+  by-vocal, a set's items and its *what comes next*, a mix's engine row —
+  carries `confidence_tier` and `compat`, attached where the recipe is
+  (`mashups._with_recipes`). The tier reads the library **percentile** in
+  points: `strong` ≥ 75, `good` ≥ 65, `maybe` ≥ 50, else `long_shot` —
+  `theme.js` `tierFor`'s STRONG / GOOD / FAIR cut-offs (its EXCELLENT folds
+  into strong) — and drops one tier when `harmonic_sure` is false. `compat` is
+  `{key: {vocal, bed, landing, relation, steps, shift_st}, bpm: {vocal, bed,
+  delta_pct, fold}, genre: {vocal, bed, vocal_style, bed_style, same}}`:
+  `landing` is the vocal's key, `shift_st` the row's `semitone_shift`,
+  `steps` the set's wheel distance, `delta_pct` the bed's stretch after the
+  fold, `*_style` the top Discogs style. `relation` is `same` / `relative` /
+  `adjacent` / `transpose` from the wheel, and `clash` only when the recipe
+  warns of one (measured fit under `HARMONY_CLASH`) — `keyRel`'s CLASH branch
+  is unreachable, since two semitones bring any two keys within a step. The
+  listing takes `tier=strong,good` and `order=tier` (tier, then score), both
+  in SQL (`compat.tier_sql`).
+- **Queue readability** (`api/queue_eta.py`, `tests/test_queue_eta.py`).
+  Every job in `GET /api/jobs` (and `/api/jobs/{id}`) carries `eta_secs` and a
+  one-sentence `summary` ("Separating vocals — about 2 min left", "Waiting for
+  stems (#3 in line)", "Failed downloading: … — Retry", "Done in 4 m 12 s");
+  waiting and running stage records carry `eta_secs` too.
+  `GET /api/jobs/queue` adds them to each `positions` entry, lists `running`
+  stages (`{job_id, song_id, stage, eta_secs, summary}`) and gives each pool
+  `clears_in_secs`. An estimate is the stage's median wall time per
+  audio-second on this library (successful stage-level `analysis_runs` rows;
+  the typical wall time where no length was recorded) × the track's length,
+  less the time a running stage has spent; a waiting job adds position ×
+  typical ÷ workers. No history is `null`, never 0, and nothing here raises.
+- **Analysis dashboard** (`analysis/library_stats.py`,
+  `tests/test_library_stats.py`). `GET /api/analysis/library-stats` with
+  `group` (crate id), `genre`, `style`, `bpm_min/max`, `year_min/max`,
+  `camelot` (comma list), `vocal_forward` → the echoed filters, counts, a
+  2-BPM histogram over 60–200, the 24-code Camelot wheel, top-15 genre /
+  style / mood (a mood counts when among a track's top 3), years, 20-bin
+  energy / LUFS / sung-share histograms over the observed range, an energy ×
+  loudness scatter and pair counts (rows with both sides in the set). One pass
+  per table; unmeasured values are left out of a histogram and fail a filter
+  that asks about them. Sung share is the Library's VOX% (test-pinned).
+- **Similarity web** (`matcher/neighbors.py`, `tests/test_neighbors.py`).
+  `GET /api/tracks/{id}/neighbors?k=12&mode=pair|sound&edges=3` → `{center,
+  mode, nodes, edges: [{a, b, weight}]}`. `pair`: the best scored pairing per
+  partner across both roles (hidden pairs and excluded tracks out, as
+  `partner_ranks`); a node's `score` and an edge's `weight` are library
+  percentiles, `role` is the part the neighbour plays against the centre.
+  `sound`: cosine similarity of EffNet embeddings clamped to 0–1, `role` and
+  `best_pair` null; 409 `{detail, coverage, with, total}` when the centre (or
+  everything else) has no vector. Two queries per call.
+- **Embeddings** (`embeddings` table, `models.sync_embeddings`). The EffNet
+  mean embedding is copied from `feature_cache` into float32 BLOBs after each
+  analysis and by `POST /api/analysis/embeddings/backfill` (a job; a copy, no
+  re-analysis); a vector whose audio changed is dropped.
+  `GET /api/analysis/status` reports `embeddings_coverage` `{with, total,
+  coverage}` over analysed tracks.
+- **Discover for a track** (`tests/test_discover_mix_helpers.py`).
+  `GET /api/discovery/for-track/{id}?role=acapella|instrumental|any&limit=20`
+  → `{rows, queries}`: "`{credit}` acapella", "… instrumental" and "`{genre}`
+  `{bpm}` bpm" (a role asks for that cut and "`{genre}` `{role}` `{bpm}`
+  bpm"), the credit from `search_credit`, searched through the browse layer,
+  merged round-robin, deduplicated by URL, owned tracks removed. Rows are
+  `/search` rows (`fit_hint`, `in_library`, `is_snip` — the Go+ flag). One
+  failed search does not cost the others.
+- **Mix summary.** `GET /api/mixes/{id}` and each row of `GET /api/mixes`
+  carry `summary` `{tracks, beds, overlays, ids, linked, library,
+  needs_review, unresolved, ingested, pairs_documented, pairs_in_library}`
+  (`mixes.mix_summary`): `needs_review` is a link that fails the trust gate,
+  `library` a row matched by name to a song you had, `ingested` any row with
+  a library song. The list is three queries however many mixes.
+
 ---
 
 ## 6. Repo map and data model
@@ -1318,8 +1412,8 @@ hand; it is advisory until posted to `/reorder`.
 | `config.py` | Paths, weights, gates, settings layer, live readers (`current_*`) |
 | `database/models.py` | SQLite schema, migrations, every query; `resolve_audio_path` is the one audio resolver |
 | `api/server.py` | FastAPI app, routers, health/deps, yt-dlp update, SPA serving with stale-build detection |
-| `api/routes/` | `tracks`, `playlists`, `jobs`, `analysis` (analyser status), `mashups` (+ pair notes and pair exports), `mixes`, `discovery` (+ library gaps), `crates`, `sets`, `studio`, `settings`, `datasets`, `models`, `database` |
-| `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py` | per-stage worker pools + resume, job registry, playlist preview hydration |
+| `api/routes/` | `tracks` (+ neighbours), `playlists`, `jobs`, `analysis` (analyser status, library stats, embeddings backfill), `mashups` (+ pair notes and pair exports), `mixes`, `discovery` (+ library gaps, finds for a track), `crates`, `sets`, `studio`, `settings`, `prefs` (Library view, filter presets), `datasets`, `models`, `database` |
+| `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py`, `api/queue_eta.py` | per-stage worker pools + resume, job registry, playlist preview hydration, per-job ETA and summary (§5.13) |
 | `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage download/stems/analysis/structure; `bulk`, `match`, `hook`, `candidate_preview`, `mixdown`, `session`, `mix_resolve`, `mix_ingest` (Mixes import + ingest), `reverify`, `discovery` (`suggest`), `ml`; `bulk` also backfills descriptive metadata |
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py`, `fit_hints.py` (tempo/key/role an upload prints) |
 | `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
@@ -1358,7 +1452,11 @@ keyed by the four pair ids, each with the scored row frozen as it was added;
 `sets.tempo_plan_json`, `set_items.transition_json`)
 · `pair_notes` (a note per pair, keyed like `pair_feedback`; never training
 data) · `section_lines` (a vocal section's lyric cue, anchored to a time in
-the song).
+the song) · `embeddings` (`song_id`, `kind='effnet'`, `dim`, `vector` float32
+BLOB, `content_hash` of the full mix it describes, `updated_at` — derived,
+refillable; §5.13).
+`app_prefs` keys: `soundcloud_profile`, `soundcloud_saved_profiles`, `attribute_visibility`,
+`last_score`, `harmony_unsure_below`, `library_view`, `filter_presets`.
 Existing databases migrate on start.
 
 ---
@@ -1387,6 +1485,24 @@ Existing databases migrate on start.
 - **Studio's lane gain is linear** (`MashupEngine`'s gain node), so the rail
   prints `20·log10(gain)` dB (`StudioRail.gainDb`). It printed `gain×24−12`,
   reading 0.8 as +7.2 dB.
+- **`confidence_tier` and `compat` have one definition: `matcher/compat.py`.**
+  The tier is decided once per row from `score_percentile` and
+  `harmonic_sure`; `tier=` and `order=tier` are the same rule in SQL
+  (`compat.tier_sql`, which takes the library's `harmony_unsure_below` as its
+  one parameter), and a test compares the two row by row and the cut-offs with
+  `theme.js` `tierFor`. Change a threshold in one place only and the dock
+  filters to rows whose card prints another tier. `compat.key.shift_st` is the
+  row's `semitone_shift`, never a recomputation, and `clash` is the recipe's
+  own warning. A new consumer of pair rows gets both by going through
+  `mashups._with_playback_terms`.
+- **A job's ETA and sentence come from `api/queue_eta.py`**, for `/api/jobs`
+  and `/api/jobs/queue` alike. It reads `analysis_runs` and `songs` on its own
+  connections, swallows every failure into `eta_secs: null`, and must stay
+  that way: it runs inside the poll every screen makes.
+- **`embeddings` is derived from `feature_cache`, keyed to the audio's
+  bytes.** `sync_embeddings` is its only writer; it never re-analyses, and it
+  drops a vector whose `content_hash` is no longer the full mix's. Nothing but
+  `mode=sound` reads it — `matcher/dedup.py` is not on embeddings yet (§9).
 - **Every writer of a scoring input bumps `songs.pairs_input_at`**
   (`models.mark_pairs_input`, on the writer's own connection): today
   `upsert_features`, `update_features_manual`, `replace_sections` and the
@@ -1814,10 +1930,15 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    Eyeballed: Bon Jovi → Hard Rock / Arena Rock, "Unwritten" → RnB/Swing,
    "DtMF" → Trap / Reggaeton, a techno track → Tech Trance / Techno; misses
    include a "Cruel Summer" remix → Ambient / Field Recording.
-   *Slice 2* (next in phase 5): the `embeddings` table,
-   `GET /api/tracks/{id}/similar`, `voice_instrumental` setting provisional
-   sections' `vocal_presence` (`vocal_presence_source = 'ml_mix'`), and the
-   EffNet embedding as `matcher/dedup.py`'s audio check (below).
+   *Slice 2* — partly done (2026-10-12, §5.13): the `embeddings` table,
+   filled after each analysis and by a backfill job, and "sounds like"
+   neighbours as `GET /api/tracks/{id}/neighbors?mode=sound` (in place of the
+   planned `/similar`). Not verified on real vectors — the suite runs without
+   Essentia, so the tests use synthetic ones; run the backfill in the
+   container and eyeball a few neighbourhoods. Still open: `voice_instrumental`
+   setting provisional sections' `vocal_presence` (`vocal_presence_source =
+   'ml_mix'`), and the EffNet embedding as `matcher/dedup.py`'s audio check
+   (below) — deliberately a separate change.
 
    *Found on the way (open):*
    - **The dedup audio check barely discriminates** — 93% of random pairs
@@ -1937,8 +2058,9 @@ driven by the 100-persona browser simulation (§9) against a synthesised
       are the same on the card, the loop, Studio, the set and the FL export;
       `pair_recipe` with the bed's level from stem loudness and the bass-clash
       high-pass, armed by the loop, Studio and the FL session; effort priced
-      on the measured transpose (done, §5.7, §7). Still open: the FL session
-      taking Studio's lane state.
+      on the measured transpose (done, §5.7, §7). The FL session takes
+      Studio's lane state on the API (done, §5.11); still open: Studio sending
+      its lanes with the export.
    2. **A legible pair** — the recipe's DO / WATCH rows on the card and Set
       rows (done, §4). Still open: the strip in Studio's ALIGN bar, the vocal
       out of register (needs `f0` after the shift, phase 3), plain-language
@@ -1966,6 +2088,13 @@ driven by the 100-persona browser simulation (§9) against a synthesised
       the user's FL version. Stretch and pitch baked into the rendered clips;
       gain, fades and EQ left to FL as channel settings and markers; WAVs and a
       README beside the `.flp` so nothing is lost if FL refuses the file.
+
+9. **Frontend redesign on the §5.13 contracts.** The backend is in place and
+   pinned; nothing in the UI uses it yet. When it does: the Library moves its
+   column widths from `localStorage` to `library-view`; the dock reads
+   `confidence_tier` instead of `tierOf` (then `theme.js` `tierFor` and the
+   test that pins it can go); the Queue screen drops `poolMedianSecs` /
+   `PoolEta` for `eta_secs`, `summary` and `clears_in_secs`.
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in
 Discover (nothing external is analysed — rows show the tempo an upload prints,
