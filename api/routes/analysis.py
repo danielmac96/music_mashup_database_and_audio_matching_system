@@ -94,6 +94,31 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
     }
 
 
+# ── The Analysis dashboard ───────────────────────────────────────────────────
+
+@router.get("/library-stats")
+def library_stats(group: Optional[int] = None, genre: str = "", style: str = "",
+                  bpm_min: Optional[float] = None, bpm_max: Optional[float] = None,
+                  year_min: Optional[int] = None, year_max: Optional[int] = None,
+                  camelot: str = "", vocal_forward: Optional[bool] = None) -> dict:
+    """Distributions over the library (or the tracks passing the filters):
+    tempo, the Camelot wheel, genre / style / mood, years, energy, loudness,
+    sung share, an energy × loudness scatter and the pair counts. One pass per
+    table over stored rows (analysis/library_stats.py)."""
+    from analysis import library_stats as L
+    try:
+        filters = L.clean_filters(group=group, genre=genre, style=style,
+                                  bpm_min=bpm_min, bpm_max=bpm_max,
+                                  year_min=year_min, year_max=year_max,
+                                  camelot=camelot, vocal_forward=vocal_forward)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    out = L.library_stats(filters)
+    if out is None:
+        raise HTTPException(status_code=404, detail="group not found")
+    return out
+
+
 # ── The Analysis panel (readme §9, C) ────────────────────────────────────────
 
 class VisibilityRequest(BaseModel):
