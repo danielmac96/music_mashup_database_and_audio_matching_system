@@ -186,6 +186,55 @@ def _shape_track(t: dict) -> dict:
     return t
 
 
+SUMMARY_KEYS = ("tracks", "beds", "overlays", "ids", "linked", "library",
+                "needs_review", "unresolved", "ingested", "pairs_documented",
+                "pairs_in_library")
+
+
+def mix_summary(tracks: list, pairs: list) -> dict:
+    """Where a mix stands, in counts — the same for the list row and the
+    detail. `tracks` are mix_tracks rows (dicts or sqlite rows), `pairs` its
+    mashup_pairs.
+
+    beds / overlays   numbered entries / `w/` lines
+    ids               "ID - ID" entries: nothing to find
+    linked            rows with a link
+    library           rows matched by name to a song you already had
+    needs_review      linked, but the link does not pass the trust gate
+                      (is_trusted_link) — the ⚠ rows: they ingest, and never
+                      become training positives
+    unresolved        no link, no library song, not an ID: still to find
+    ingested          rows with a library song, however it got there
+    pairs_documented  the `w/` pairings; pairs_in_library those with both
+                      sides in the library (what the engine can score)"""
+    out = dict.fromkeys(SUMMARY_KEYS, 0)
+    in_library = set()
+    for t in tracks:
+        link = t["link_url"]
+        out["tracks"] += 1
+        out["overlays" if t["is_overlay"] else "beds"] += 1
+        if t["is_id"]:
+            out["ids"] += 1
+        if t["song_id"]:
+            out["ingested"] += 1
+            in_library.add(t["id"])
+        if t["resolve_status"] == "library":
+            out["library"] += 1
+        if link:
+            out["linked"] += 1
+            if not is_trusted_link(t["resolve_status"], t["resolve_score"],
+                                   t["resolve_duration_secs"],
+                                   t["resolve_artist_score"]):
+                out["needs_review"] += 1
+        elif not t["song_id"] and not t["is_id"]:
+            out["unresolved"] += 1
+    out["pairs_documented"] = len(pairs)
+    out["pairs_in_library"] = sum(
+        1 for p in pairs if p["inst_mix_track_id"] in in_library
+        and p["vocal_mix_track_id"] in in_library)
+    return out
+
+
 def _track_row(conn, track_id: int) -> dict:
     """A single mix_track row shaped like the mix-detail rows."""
     return _shape_track(dict(conn.execute(_ONE_TRACK_SELECT, (track_id,)).fetchone()))
@@ -254,6 +303,7 @@ def _mix_detail(conn, mix_id: int) -> dict:
         "SELECT id, inst_mix_track_id, vocal_mix_track_id, cue_secs, origin "
         "FROM mashup_pairs WHERE mix_id=? ORDER BY id", (mix_id,)).fetchall()]
     mix["match_count"] = len(mix["pairs"])
+    mix["summary"] = mix_summary(tracks, mix["pairs"])
     _with_engine_view(mix)
     # Ingest tracker rollup: how far the mix's songs are through the pipeline.
     # Keyed by songs.status ('queued'|'downloaded'|'stemmed'|'analysed'|'error_*').
@@ -705,20 +755,27 @@ def import_mix_paste(req: ImportPasteRequest) -> dict:
 
 @router.get("")
 def list_mixes() -> dict:
+    """Every mix with its counts. Three queries whatever the number of mixes:
+    the mixes, every track's summary columns, every documented pair."""
     conn = get_conn()
-    mixes = []
-    for r in conn.execute("SELECT * FROM mixes ORDER BY id DESC").fetchall():
-        m = dict(r)
-        counts = conn.execute(
-            "SELECT COUNT(*) AS n, "
-            "       SUM(CASE WHEN link_url IS NOT NULL AND link_url != '' "
-            "           THEN 1 ELSE 0 END) AS resolved "
-            "FROM mix_tracks WHERE mix_id=?", (m["id"],)
-        ).fetchone()
-        m["track_count"] = counts["n"] or 0
-        m["resolved_count"] = counts["resolved"] or 0
-        mixes.append(m)
-    conn.close()
+    try:
+        mixes = [dict(r) for r in conn.execute("SELECT * FROM mixes ORDER BY id DESC")]
+        tracks: dict = {}
+        for t in conn.execute(
+                "SELECT id, mix_id, is_overlay, is_id, link_url, song_id, resolve_status, "
+                "       resolve_score, resolve_duration_secs, resolve_artist_score "
+                "FROM mix_tracks"):
+            tracks.setdefault(t["mix_id"], []).append(t)
+        pairs: dict = {}
+        for p in conn.execute(
+                "SELECT mix_id, inst_mix_track_id, vocal_mix_track_id FROM mashup_pairs"):
+            pairs.setdefault(p["mix_id"], []).append(p)
+    finally:
+        conn.close()
+    for m in mixes:
+        m["summary"] = mix_summary(tracks.get(m["id"], []), pairs.get(m["id"], []))
+        m["track_count"] = m["summary"]["tracks"]
+        m["resolved_count"] = m["summary"]["linked"]
     return {"count": len(mixes), "mixes": mixes}
 
 

@@ -507,6 +507,88 @@ def unlike(track_id: str) -> dict:
 
 # ── where the library is thin ────────────────────────────────────────────────
 
+# ── finds for one library track ──────────────────────────────────────────────
+
+FOR_TRACK_ROLES = ("acapella", "instrumental", "any")
+
+
+def for_track_queries(song: dict, bpm: Optional[float], role: str) -> list[str]:
+    """The searches worth running for one library track.
+
+    The record is named as it is searched everywhere else (search_credit:
+    featured artists and DJ-tool asides dropped, rework credits kept). `any`
+    looks for its official acapella and instrumental and for neighbours in its
+    genre and tempo; a role looks for that cut of it, and for that kind of
+    track in its genre and tempo (the Library-gaps query)."""
+    from ingest.tracklist_parse import search_credit
+    artist, title = search_credit(song.get("artist") or "", song.get("title") or "")
+    if artist.strip().lower() == "unknown":
+        artist = ""
+    credit = " ".join(x for x in (artist, title) if x).strip()
+    genre = (song.get("genre") or "").strip()
+    tempo = f"{round(bpm)} bpm" if bpm else ""
+    words = ("acapella", "instrumental") if role == "any" else (role,)
+    queries = [f"{credit} {w}" for w in words] if credit else []
+    if genre or tempo:
+        queries.append(" ".join(x for x in (
+            genre, "" if role == "any" else role, tempo) if x))
+    return list(dict.fromkeys(q for q in queries if q.strip()))
+
+
+@router.get("/for-track/{song_id}")
+def for_track(song_id: int,
+              role: str = Query("any", pattern="^(acapella|instrumental|any)$"),
+              limit: int = Query(20, ge=1, le=50)) -> dict:
+    """SoundCloud finds for one library track: its acapella / instrumental and
+    tracks in its genre and tempo, merged across the searches, deduplicated by
+    URL, with what you already own removed. Rows are /search rows — canonical,
+    with `fit_hint`, `in_library` and `is_snip` (the Go+ preview flag).
+
+    Every search goes through the browse layer (its throttle, cache and
+    breaker). One failed search does not cost the others; if all of them fail
+    the answer is the usual 502/503."""
+    from database.models import get_features_for_song
+    song = get_song(song_id)
+    if not song:
+        raise HTTPException(status_code=404, detail="track not found")
+    try:
+        bpm = (get_features_for_song(song_id, "full") or {}).get("bpm")
+    except Exception:  # noqa: BLE001 — the tempo only sharpens one query
+        bpm = None
+    queries = for_track_queries(song, bpm, role)
+    if not queries:
+        return {"rows": [], "queries": []}
+
+    pages: list[list[dict]] = []
+    last_error: Optional[HTTPException] = None
+    for q in queries:
+        try:
+            pages.append(_guard(browse.search, "tracks", q, limit=limit).get("items") or [])
+        except HTTPException as exc:
+            log.warning("for-track search %r failed: %s", q, exc.detail)
+            last_error = exc
+            pages.append([])
+            if exc.status_code == 503:
+                break          # the breaker is open: the rest would fail the same way
+    if last_error is not None and not any(pages):
+        raise last_error
+
+    # Round-robin, so each search gets its share of the page.
+    merged, seen = [], set()
+    for rank in range(max((len(p) for p in pages), default=0)):
+        for page in pages:
+            if rank < len(page):
+                row = page[rank]
+                url = row.get("source_url")
+                if url and not row.get("kind") and url not in seen:
+                    seen.add(url)
+                    merged.append(row)
+    own = {u for u in (song.get("source_url"), song.get("origin_url")) if u}
+    rows = [r for r in _annotate(merged)
+            if not r.get("in_library") and r["source_url"] not in own]
+    return {"rows": rows[:limit], "queries": queries}
+
+
 @router.get("/gaps")
 def library_gaps(max_partners: int = Query(2, ge=0, le=10)) -> dict:
     """Where digging pays: vocals the matcher found few beds for, and beds it
