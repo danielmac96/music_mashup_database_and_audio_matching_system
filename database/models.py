@@ -1978,7 +1978,8 @@ def update_features_manual(song_id: int, *, bpm: Optional[float] = None,
 def get_stem_facts(song_ids, db_path: Path = DB_PATH) -> Dict:
     """What a pair's recipe needs about each side, for a page of songs in one
     query: {(song_id, stem_type): {lufs, true_peak, quality, bleed, bpm,
-    bpm_candidates_json}} for the full mix and the two-stem view. Missing rows
+    bpm_candidates_json, tags_json, genre}} for the full mix and the two-stem
+    view (tags and genre feed matcher/compat.pair_compat). Missing rows
     are simply absent — the recipe reads absence as unmeasured."""
     ids = sorted({int(i) for i in song_ids if i is not None})
     if not ids:
@@ -1988,7 +1989,9 @@ def get_stem_facts(song_ids, db_path: Path = DB_PATH) -> Dict:
         marks = ",".join("?" * len(ids))
         rows = conn.execute(
             f"""SELECT f.song_id, f.stem_type, f.lufs, f.true_peak, f.bpm,
-                       f.bpm_candidates_json, st.quality, st.bleed
+                       f.bpm_candidates_json, st.quality, st.bleed,
+                       f.tags_json,
+                       (SELECT genre FROM songs WHERE id = f.song_id) AS genre
                 FROM features f
                 LEFT JOIN stems st ON st.song_id=f.song_id AND st.stem_type=f.stem_type
                 WHERE f.song_id IN ({marks})
@@ -2675,6 +2678,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             rated: str = "", key: str = "", key_tolerance: int = 0,
                             vocal_label: str = "", inst_label: str = "",
                             pairs: Optional[Sequence[Tuple[int, int]]] = None,
+                            tier: str = "",
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -2725,8 +2729,18 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     pairs that LAND within n Camelot steps of `key` — the vocal's key, since
     the bed is transposed to it (relative major/minor count as the same place,
     as in the Library's key filter). vocal_label / inst_label keep one section
-    type per side ("chorus" over "drop")."""
+    type per side ("chorus" over "drop").
+
+    tier is a comma list of matcher/compat.TIERS ("strong,good") and
+    order="tier" ranks by tier, then score. Both use compat.tier_sql — the
+    card's confidence_tier in SQL, the close-call downgrade included — so they
+    search the library, like every other filter here."""
+    from matcher.compat import parse_tiers, tier_sql
+    from matcher.recipe import harmony_unsure_below
     offset = max(0, int(offset or 0))
+    tiers = parse_tiers(tier)
+    unsure_below = (harmony_unsure_below(db_path=db_path)
+                    if tiers or order == "tier" else None)
     conn = get_conn(db_path)
     # min_score gates on the PERCENTILE, not the raw composite — the same number
     # the row displays and the same one `tierFor` colours.
@@ -2829,6 +2843,9 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     if inst_label:
         where.append("mc.inst_section_label = ?")
         params.append(inst_label)
+    if tiers:
+        where.append(f"{tier_sql()} IN ({','.join(str(t) for t in tiers)})")
+        params.append(unsure_below)
     if search and search.strip():
         both = _two_track_query(search)
         if both:
@@ -2871,6 +2888,9 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         col = SECTION_TERM_ORDERS[order]
         order_sql = (f"(mc.{col} IS NULL) ASC, mc.{col} DESC, "
                      "mc.score_total DESC")
+    elif order == "tier":
+        order_sql = f"{tier_sql()} ASC, mc.score_total DESC"
+        params.append(unsure_below)
     else:
         order_sql = "mc.score_total DESC"
 

@@ -33,7 +33,7 @@ _COMBO_TYPES = {"vocal_over_instrumental", "instrumental_over_instrumental"}
 # "score" and "uncertain" rank the composite; the rest rank one section term
 # each (see SECTION_TERM_ORDERS). All of them are the SQL's, not a re-sort of
 # the returned page.
-_ORDERS = {"score", "uncertain"} | set(SECTION_TERM_ORDERS)
+_ORDERS = {"score", "uncertain", "tier"} | set(SECTION_TERM_ORDERS)
 
 # What the dominant effort component means in the DAW, for the chip's tooltip.
 _EFFORT_REASONS = {
@@ -185,6 +185,7 @@ def _with_recipes(rows: list, target_of=None) -> None:
         logging.getLogger(__name__).warning("could not read stem facts for recipes",
                                             exc_info=True)
         facts = {}
+    from matcher.compat import confidence_tier, pair_compat
     from matcher.recipe import harmony_unsure_below
     unsure_below = harmony_unsure_below()
     for r in rows:
@@ -193,6 +194,11 @@ def _with_recipes(rows: list, target_of=None) -> None:
                                   unsure_below=unsure_below)
         # Decided once, server-side: the card's "?" and the WATCH row agree.
         r["harmonic_sure"] = r["recipe"]["harmonic_sure"]
+        # The tier and the key/tempo/genre summary, one definition each
+        # (matcher/compat.py); the tier= filter and order=tier are its SQL twin.
+        r["confidence_tier"] = confidence_tier(r.get("score_percentile"),
+                                               r["harmonic_sure"])
+        r["compat"] = pair_compat(r, facts)
 
 
 def _with_scope_rank(rows: list, vocal_song_id: Optional[int],
@@ -236,7 +242,8 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     adventure: float = 0.0,
                     search: str = "", offset: int = 0,
                     rated: str = "", key: str = "", key_tolerance: int = 1,
-                    vocal_label: str = "", inst_label: str = "") -> dict:
+                    vocal_label: str = "", inst_label: str = "",
+                    tier: str = "") -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -284,7 +291,7 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
             vocal_forward=vocal_forward, max_effort=max_effort, order=order,
             search=search[:100], offset=offset,
             rated=rated, key=key, key_tolerance=key_tolerance,
-            vocal_label=vocal_label, inst_label=inst_label,
+            vocal_label=vocal_label, inst_label=inst_label, tier=tier,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
