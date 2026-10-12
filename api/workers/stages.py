@@ -556,6 +556,14 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
     except Exception:  # noqa: BLE001
         log.exception("stem quality failed for %s", song_id)
 
+    # The "sounds like" vector: copied out of the feature cache the analysis
+    # just filled (or reused). Derived data, never fatal.
+    try:
+        from database.models import sync_embeddings
+        sync_embeddings([song_id])
+    except Exception:  # noqa: BLE001
+        log.exception("embedding sync failed for %s", song_id)
+
     # Near-duplicate grouping (A.2). Needs the mean MFCC this stage just wrote,
     # so it runs here rather than at download. Never fatal: a track without a
     # cluster is one that might pair with its own Extended Mix, not a failure.

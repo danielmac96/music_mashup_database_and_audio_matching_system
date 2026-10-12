@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -65,7 +65,8 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
     from analysis import essentia_groups, ml_models
     from analysis.registry import GROUPS, describe
     from api.workers.stages import effective_analyzer
-    from database.models import analysed_stem_count, feature_cache_for_stems
+    from database.models import (analysed_stem_count, embeddings_coverage,
+                                 feature_cache_for_stems)
 
     configured, core = effective_analyzer()
     rows = _current(feature_cache_for_stems(list(GROUPS)))
@@ -87,11 +88,39 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
         "models": ml_models.status(),
         "cache_enabled": config.current_analysis_cache(),
         "analysed_stems": analysed_stem_count(),
+        # Tracks with a "sounds like" vector, of the analysed ones — what
+        # GET /api/tracks/{id}/neighbors?mode=sound can answer for.
+        "embeddings_coverage": embeddings_coverage(),
         "coverage": coverage,
         "agreement": _agreement([r for r in rows
                                  if not stem_type or r["stem_type"] == stem_type]),
         "groups": describe(),
     }
+
+
+# ── Embeddings ───────────────────────────────────────────────────────────────
+
+def _run_embeddings_backfill(job_id: str) -> None:
+    from api import jobs
+    from database.models import embeddings_coverage, sync_embeddings
+    try:
+        jobs.update(job_id, status="running", message="Copying embeddings from the feature cache")
+        result = sync_embeddings()
+        jobs.done(job_id, {**result, "coverage": embeddings_coverage()})
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        jobs.fail(job_id, f"{type(exc).__name__}: {exc}", traceback.format_exc())
+
+
+@router.post("/embeddings/backfill")
+def backfill_embeddings(background: BackgroundTasks) -> dict:
+    """Fill the embeddings table from the EffNet vectors the feature cache
+    already holds — a copy, not a re-analysis. A job, because it scales with
+    the library."""
+    from api import jobs
+    job_id = jobs.new_job(kind="embeddings", message="Queued embeddings backfill")
+    background.add_task(_run_embeddings_backfill, job_id)
+    return {"job_id": job_id}
 
 
 # ── The Analysis dashboard ───────────────────────────────────────────────────

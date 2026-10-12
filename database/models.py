@@ -390,6 +390,24 @@ CREATE TABLE IF NOT EXISTS feature_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_feature_cache_grp ON feature_cache(grp, version);
 
+-- ── Embeddings ───────────────────────────────────────────────────────────────
+-- One vector per (song, kind) for "sounds like" neighbours. kind='effnet' is
+-- the Discogs-EffNet mean embedding of the full mix, copied out of
+-- feature_cache (where the analysis already stores it) so a similarity query
+-- reads float32 BLOBs instead of parsing 1280-number JSON per track.
+-- content_hash is the full mix's bytes the vector describes: a re-download
+-- makes the row stale and sync_embeddings drops it. Derived data — safe to
+-- delete and refill (POST /api/analysis/embeddings/backfill).
+CREATE TABLE IF NOT EXISTS embeddings (
+    song_id       INTEGER NOT NULL,
+    kind          TEXT NOT NULL,
+    dim           INTEGER NOT NULL,
+    vector        BLOB NOT NULL,
+    content_hash  TEXT,
+    updated_at    TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (song_id, kind)
+);
+
 -- ── Sets: chosen mashups in running order ────────────────────────────────────
 -- What a Big Bootie-style mix is made of: not tracks (that is a crate) but
 -- PAIRS, in order. An item is keyed by the four ids that name a pair (readme
@@ -1628,6 +1646,7 @@ def delete_song(song_id: int, db_path: Path = DB_PATH) -> Dict:
     # the point of a crate), but it must stop claiming to be a library group's
     # member or the group's count outruns the rows it can filter to.
     conn.execute("UPDATE crate_items SET song_id=NULL WHERE song_id=?", (song_id,))
+    conn.execute("DELETE FROM embeddings WHERE song_id=?", (song_id,))
     conn.execute("DELETE FROM songs WHERE id=?", (song_id,))
     conn.commit()
     conn.close()
@@ -3981,6 +4000,98 @@ def analysis_timing_summary(since: Optional[str] = None,
             "median_rtf": round(rtf, 4) if rtf is not None else None,
         })
     return out
+
+
+# ── Embeddings ───────────────────────────────────────────────────────────────
+
+EMBEDDING_KIND = "effnet"
+_EMBEDDING_GROUP = "essentia.effnet"
+
+
+def pack_vector(values) -> bytes:
+    """float32 bytes for an embeddings.vector BLOB."""
+    from array import array
+    return array("f", [float(v) for v in values]).tobytes()
+
+
+def unpack_vector(blob: bytes) -> List[float]:
+    from array import array
+    out = array("f")
+    out.frombytes(blob)
+    return out.tolist()
+
+
+def sync_embeddings(song_ids: Optional[Sequence[int]] = None,
+                    db_path: Optional[Path] = None) -> Dict[str, int]:
+    """Copy the EffNet mean embedding of each full mix from feature_cache into
+    `embeddings`, for songs that have none or whose audio changed since — no
+    re-analysis, nothing decoded. Rows describing bytes the song no longer has
+    are dropped first. `song_ids` limits it to those songs (the analysis stage
+    passes its one track); None is the whole library (the backfill job).
+
+    One connection, read then write: nothing else is called while it is open.
+    Returns {"written", "removed"}."""
+    ids = None if song_ids is None else sorted({int(i) for i in song_ids})
+    if ids is not None and not ids:
+        return {"written": 0, "removed": 0}
+    scope = "" if ids is None else f" AND st.song_id IN ({','.join('?' * len(ids))})"
+    escope = "" if ids is None else f" AND song_id IN ({','.join('?' * len(ids))})"
+    args = [] if ids is None else list(ids)
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        removed = conn.execute(
+            f"""DELETE FROM embeddings
+                 WHERE kind = ?{escope}
+                   AND NOT EXISTS (SELECT 1 FROM stems st
+                                    WHERE st.song_id = embeddings.song_id
+                                      AND st.stem_type = 'full'
+                                      AND st.content_hash = embeddings.content_hash)""",
+            [EMBEDDING_KIND, *args]).rowcount
+        rows = conn.execute(
+            f"""SELECT st.song_id, fc.content_hash, fc.payload_json
+                  FROM stems st
+                  JOIN feature_cache fc ON fc.content_hash = st.content_hash
+                                       AND fc.grp = ?
+                  LEFT JOIN embeddings e ON e.song_id = st.song_id AND e.kind = ?
+                 WHERE st.stem_type = 'full' AND e.song_id IS NULL{scope}""",
+            [_EMBEDDING_GROUP, EMBEDDING_KIND, *args]).fetchall()
+        new = []
+        for r in rows:
+            try:
+                vec = (json.loads(r["payload_json"]) or {}).get("embedding_mean")
+                blob = pack_vector(vec) if vec else None
+            except (TypeError, ValueError):
+                blob = None
+            if blob:
+                new.append((r["song_id"], EMBEDDING_KIND, len(vec), blob, r["content_hash"]))
+        conn.executemany(
+            """INSERT INTO embeddings (song_id, kind, dim, vector, content_hash, updated_at)
+               VALUES (?,?,?,?,?, datetime('now'))
+               ON CONFLICT(song_id, kind) DO UPDATE SET
+                   dim=excluded.dim, vector=excluded.vector,
+                   content_hash=excluded.content_hash, updated_at=excluded.updated_at""",
+            new)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"written": len(new), "removed": int(removed or 0)}
+
+
+def embeddings_coverage(db_path: Optional[Path] = None) -> Dict:
+    """How many analysed tracks have an embedding: {"with", "total",
+    "coverage"} — coverage is with/total, None for an empty library."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM songs WHERE status='analysed'").fetchone()[0]
+        have = conn.execute(
+            """SELECT COUNT(*) FROM embeddings e JOIN songs s ON s.id = e.song_id
+                WHERE e.kind = ? AND s.status = 'analysed'""",
+            (EMBEDDING_KIND,)).fetchone()[0]
+    finally:
+        conn.close()
+    return {"with": int(have), "total": int(total),
+            "coverage": round(have / total, 4) if total else None}
 
 
 # ── Pair lookup by its four ids ──────────────────────────────────────────────
