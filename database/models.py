@@ -390,6 +390,24 @@ CREATE TABLE IF NOT EXISTS feature_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_feature_cache_grp ON feature_cache(grp, version);
 
+-- ── Embeddings ───────────────────────────────────────────────────────────────
+-- One vector per (song, kind) for "sounds like" neighbours. kind='effnet' is
+-- the Discogs-EffNet mean embedding of the full mix, copied out of
+-- feature_cache (where the analysis already stores it) so a similarity query
+-- reads float32 BLOBs instead of parsing 1280-number JSON per track.
+-- content_hash is the full mix's bytes the vector describes: a re-download
+-- makes the row stale and sync_embeddings drops it. Derived data — safe to
+-- delete and refill (POST /api/analysis/embeddings/backfill).
+CREATE TABLE IF NOT EXISTS embeddings (
+    song_id       INTEGER NOT NULL,
+    kind          TEXT NOT NULL,
+    dim           INTEGER NOT NULL,
+    vector        BLOB NOT NULL,
+    content_hash  TEXT,
+    updated_at    TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (song_id, kind)
+);
+
 -- ── Sets: chosen mashups in running order ────────────────────────────────────
 -- What a Big Bootie-style mix is made of: not tracks (that is a crate) but
 -- PAIRS, in order. An item is keyed by the four ids that name a pair (readme
@@ -1628,6 +1646,7 @@ def delete_song(song_id: int, db_path: Path = DB_PATH) -> Dict:
     # the point of a crate), but it must stop claiming to be a library group's
     # member or the group's count outruns the rows it can filter to.
     conn.execute("UPDATE crate_items SET song_id=NULL WHERE song_id=?", (song_id,))
+    conn.execute("DELETE FROM embeddings WHERE song_id=?", (song_id,))
     conn.execute("DELETE FROM songs WHERE id=?", (song_id,))
     conn.commit()
     conn.close()
@@ -1978,7 +1997,8 @@ def update_features_manual(song_id: int, *, bpm: Optional[float] = None,
 def get_stem_facts(song_ids, db_path: Path = DB_PATH) -> Dict:
     """What a pair's recipe needs about each side, for a page of songs in one
     query: {(song_id, stem_type): {lufs, true_peak, quality, bleed, bpm,
-    bpm_candidates_json}} for the full mix and the two-stem view. Missing rows
+    bpm_candidates_json, tags_json, genre}} for the full mix and the two-stem
+    view (tags and genre feed matcher/compat.pair_compat). Missing rows
     are simply absent — the recipe reads absence as unmeasured."""
     ids = sorted({int(i) for i in song_ids if i is not None})
     if not ids:
@@ -1988,7 +2008,9 @@ def get_stem_facts(song_ids, db_path: Path = DB_PATH) -> Dict:
         marks = ",".join("?" * len(ids))
         rows = conn.execute(
             f"""SELECT f.song_id, f.stem_type, f.lufs, f.true_peak, f.bpm,
-                       f.bpm_candidates_json, st.quality, st.bleed
+                       f.bpm_candidates_json, st.quality, st.bleed,
+                       f.tags_json,
+                       (SELECT genre FROM songs WHERE id = f.song_id) AS genre
                 FROM features f
                 LEFT JOIN stems st ON st.song_id=f.song_id AND st.stem_type=f.stem_type
                 WHERE f.song_id IN ({marks})
@@ -2675,6 +2697,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             rated: str = "", key: str = "", key_tolerance: int = 0,
                             vocal_label: str = "", inst_label: str = "",
                             pairs: Optional[Sequence[Tuple[int, int]]] = None,
+                            tier: str = "",
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -2725,8 +2748,18 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     pairs that LAND within n Camelot steps of `key` — the vocal's key, since
     the bed is transposed to it (relative major/minor count as the same place,
     as in the Library's key filter). vocal_label / inst_label keep one section
-    type per side ("chorus" over "drop")."""
+    type per side ("chorus" over "drop").
+
+    tier is a comma list of matcher/compat.TIERS ("strong,good") and
+    order="tier" ranks by tier, then score. Both use compat.tier_sql — the
+    card's confidence_tier in SQL, the close-call downgrade included — so they
+    search the library, like every other filter here."""
+    from matcher.compat import parse_tiers, tier_sql
+    from matcher.recipe import harmony_unsure_below
     offset = max(0, int(offset or 0))
+    tiers = parse_tiers(tier)
+    unsure_below = (harmony_unsure_below(db_path=db_path)
+                    if tiers or order == "tier" else None)
     conn = get_conn(db_path)
     # min_score gates on the PERCENTILE, not the raw composite — the same number
     # the row displays and the same one `tierFor` colours.
@@ -2829,6 +2862,9 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     if inst_label:
         where.append("mc.inst_section_label = ?")
         params.append(inst_label)
+    if tiers:
+        where.append(f"{tier_sql()} IN ({','.join(str(t) for t in tiers)})")
+        params.append(unsure_below)
     if search and search.strip():
         both = _two_track_query(search)
         if both:
@@ -2871,6 +2907,9 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         col = SECTION_TERM_ORDERS[order]
         order_sql = (f"(mc.{col} IS NULL) ASC, mc.{col} DESC, "
                      "mc.score_total DESC")
+    elif order == "tier":
+        order_sql = f"{tier_sql()} ASC, mc.score_total DESC"
+        params.append(unsure_below)
     else:
         order_sql = "mc.score_total DESC"
 
@@ -3961,6 +4000,98 @@ def analysis_timing_summary(since: Optional[str] = None,
             "median_rtf": round(rtf, 4) if rtf is not None else None,
         })
     return out
+
+
+# ── Embeddings ───────────────────────────────────────────────────────────────
+
+EMBEDDING_KIND = "effnet"
+_EMBEDDING_GROUP = "essentia.effnet"
+
+
+def pack_vector(values) -> bytes:
+    """float32 bytes for an embeddings.vector BLOB."""
+    from array import array
+    return array("f", [float(v) for v in values]).tobytes()
+
+
+def unpack_vector(blob: bytes) -> List[float]:
+    from array import array
+    out = array("f")
+    out.frombytes(blob)
+    return out.tolist()
+
+
+def sync_embeddings(song_ids: Optional[Sequence[int]] = None,
+                    db_path: Optional[Path] = None) -> Dict[str, int]:
+    """Copy the EffNet mean embedding of each full mix from feature_cache into
+    `embeddings`, for songs that have none or whose audio changed since — no
+    re-analysis, nothing decoded. Rows describing bytes the song no longer has
+    are dropped first. `song_ids` limits it to those songs (the analysis stage
+    passes its one track); None is the whole library (the backfill job).
+
+    One connection, read then write: nothing else is called while it is open.
+    Returns {"written", "removed"}."""
+    ids = None if song_ids is None else sorted({int(i) for i in song_ids})
+    if ids is not None and not ids:
+        return {"written": 0, "removed": 0}
+    scope = "" if ids is None else f" AND st.song_id IN ({','.join('?' * len(ids))})"
+    escope = "" if ids is None else f" AND song_id IN ({','.join('?' * len(ids))})"
+    args = [] if ids is None else list(ids)
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        removed = conn.execute(
+            f"""DELETE FROM embeddings
+                 WHERE kind = ?{escope}
+                   AND NOT EXISTS (SELECT 1 FROM stems st
+                                    WHERE st.song_id = embeddings.song_id
+                                      AND st.stem_type = 'full'
+                                      AND st.content_hash = embeddings.content_hash)""",
+            [EMBEDDING_KIND, *args]).rowcount
+        rows = conn.execute(
+            f"""SELECT st.song_id, fc.content_hash, fc.payload_json
+                  FROM stems st
+                  JOIN feature_cache fc ON fc.content_hash = st.content_hash
+                                       AND fc.grp = ?
+                  LEFT JOIN embeddings e ON e.song_id = st.song_id AND e.kind = ?
+                 WHERE st.stem_type = 'full' AND e.song_id IS NULL{scope}""",
+            [_EMBEDDING_GROUP, EMBEDDING_KIND, *args]).fetchall()
+        new = []
+        for r in rows:
+            try:
+                vec = (json.loads(r["payload_json"]) or {}).get("embedding_mean")
+                blob = pack_vector(vec) if vec else None
+            except (TypeError, ValueError):
+                blob = None
+            if blob:
+                new.append((r["song_id"], EMBEDDING_KIND, len(vec), blob, r["content_hash"]))
+        conn.executemany(
+            """INSERT INTO embeddings (song_id, kind, dim, vector, content_hash, updated_at)
+               VALUES (?,?,?,?,?, datetime('now'))
+               ON CONFLICT(song_id, kind) DO UPDATE SET
+                   dim=excluded.dim, vector=excluded.vector,
+                   content_hash=excluded.content_hash, updated_at=excluded.updated_at""",
+            new)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"written": len(new), "removed": int(removed or 0)}
+
+
+def embeddings_coverage(db_path: Optional[Path] = None) -> Dict:
+    """How many analysed tracks have an embedding: {"with", "total",
+    "coverage"} — coverage is with/total, None for an empty library."""
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        total = conn.execute(
+            "SELECT COUNT(*) FROM songs WHERE status='analysed'").fetchone()[0]
+        have = conn.execute(
+            """SELECT COUNT(*) FROM embeddings e JOIN songs s ON s.id = e.song_id
+                WHERE e.kind = ? AND s.status = 'analysed'""",
+            (EMBEDDING_KIND,)).fetchone()[0]
+    finally:
+        conn.close()
+    return {"with": int(have), "total": int(total),
+            "coverage": round(have / total, 4) if total else None}
 
 
 # ── Pair lookup by its four ids ──────────────────────────────────────────────

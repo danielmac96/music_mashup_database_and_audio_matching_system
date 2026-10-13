@@ -322,6 +322,29 @@ def prefetch_partners(song_id: int, k: int) -> list[int]:
     return [int(r["id"]) for r in ranked[:k]]
 
 
+@router.get("/{song_id}/neighbors")
+def track_neighbors(song_id: int, k: int = 12, mode: str = "pair", edges: int = 3):
+    """The similarity web around one track: its `k` nearest tracks and the
+    strongest links between them (matcher/neighbors.py). mode=pair is what it
+    pairs best with, from the scored pairs; mode=sound is what sounds like it,
+    from the EffNet embeddings — 409 with the coverage when those are missing,
+    so the UI can hide the toggle."""
+    from fastapi.responses import JSONResponse
+    from matcher.neighbors import MODES, NoEmbeddings, neighbors
+    if mode not in MODES:
+        raise HTTPException(status_code=400,
+                            detail=f"mode must be one of {list(MODES)}")
+    try:
+        out = neighbors(song_id, k=k, mode=mode, edges=edges)
+    except NoEmbeddings as exc:
+        return JSONResponse(status_code=409, content={
+            "detail": exc.detail, "coverage": exc.coverage["coverage"],
+            "with": exc.coverage["with"], "total": exc.coverage["total"]})
+    if out is None:
+        raise HTTPException(status_code=404, detail="track not found")
+    return out
+
+
 @router.post("/{song_id}/prefetch")
 def prefetch(song_id: int) -> dict:
     """Selecting a track (a Library row, the track detail screen): move it and

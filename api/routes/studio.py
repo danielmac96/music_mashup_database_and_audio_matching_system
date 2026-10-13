@@ -8,7 +8,7 @@ same clip math offline (render/mixdown.py) so the export matches what was
 heard. The token is the render job id."""
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from fastapi.responses import FileResponse
@@ -109,6 +109,31 @@ def stream_mixdown(token: str):
 # 1 is at 0:00 — plus a click, the recipe, and a session.json in build_mixdown's
 # clip shape so an export round-trips back into Studio.
 
+class LaneState(BaseModel):
+    """One Studio lane as the user left it. Every setting is optional: a value
+    given replaces the plan's for that lane (render/session.build_session)."""
+    role: Literal["vocal", "bed"]
+    semitones: Optional[int] = Field(default=None, ge=-24, le=24)
+    rate: Optional[float] = Field(default=None, ge=0.25, le=4.0)
+    gain: Optional[float] = Field(default=None, ge=0, le=4)        # linear
+    offset_ms: Optional[float] = Field(default=None, ge=-60000, le=60000)
+    fade_in: Optional[float] = Field(default=None, ge=0, le=60)
+    fade_out: Optional[float] = Field(default=None, ge=0, le=60)
+    highpass_hz: Optional[float] = Field(default=None, ge=0, le=20000)
+    lowpass_hz: Optional[float] = Field(default=None, ge=0, le=22050)
+
+
+def lanes_payload(lanes: Optional[list]) -> Optional[list]:
+    """Request lanes as plain dicts for the worker (None when absent); 400 on
+    two lanes for one role."""
+    if not lanes:
+        return None
+    roles = [lane.role for lane in lanes]
+    if len(set(roles)) != len(roles):
+        raise HTTPException(status_code=400, detail="at most one lane per role")
+    return [lane.model_dump(exclude_none=True) for lane in lanes]
+
+
 class SessionRequest(BaseModel):
     vocal_song_id: int
     inst_song_id: int
@@ -116,15 +141,18 @@ class SessionRequest(BaseModel):
     # plan's own pick, as before.
     vocal_section_idx: Optional[int] = None
     inst_section_idx: Optional[int] = None
+    # Studio's lane state. Omitted: the plan's values, as before.
+    lanes: Optional[list[LaneState]] = None
 
 
 @router.post("/session")
 def queue_session(req: SessionRequest, background: BackgroundTasks) -> dict:
     _require_songs([req.vocal_song_id, req.inst_song_id])
+    lanes = lanes_payload(req.lanes)
     job_id = jobs.new_job(kind="session", message="Queued for FL session export")
     background.add_task(session_worker.run, job_id,
                         req.vocal_song_id, req.inst_song_id,
-                        req.vocal_section_idx, req.inst_section_idx)
+                        req.vocal_section_idx, req.inst_section_idx, lanes)
     return {"job_id": job_id,
             "archive_url": f"/api/studio/session/{job_id}/archive"}
 

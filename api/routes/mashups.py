@@ -33,7 +33,7 @@ _COMBO_TYPES = {"vocal_over_instrumental", "instrumental_over_instrumental"}
 # "score" and "uncertain" rank the composite; the rest rank one section term
 # each (see SECTION_TERM_ORDERS). All of them are the SQL's, not a re-sort of
 # the returned page.
-_ORDERS = {"score", "uncertain"} | set(SECTION_TERM_ORDERS)
+_ORDERS = {"score", "uncertain", "tier"} | set(SECTION_TERM_ORDERS)
 
 # What the dominant effort component means in the DAW, for the chip's tooltip.
 _EFFORT_REASONS = {
@@ -185,6 +185,7 @@ def _with_recipes(rows: list, target_of=None) -> None:
         logging.getLogger(__name__).warning("could not read stem facts for recipes",
                                             exc_info=True)
         facts = {}
+    from matcher.compat import confidence_tier, pair_compat
     from matcher.recipe import harmony_unsure_below
     unsure_below = harmony_unsure_below()
     for r in rows:
@@ -193,6 +194,11 @@ def _with_recipes(rows: list, target_of=None) -> None:
                                   unsure_below=unsure_below)
         # Decided once, server-side: the card's "?" and the WATCH row agree.
         r["harmonic_sure"] = r["recipe"]["harmonic_sure"]
+        # The tier and the key/tempo/genre summary, one definition each
+        # (matcher/compat.py); the tier= filter and order=tier are its SQL twin.
+        r["confidence_tier"] = confidence_tier(r.get("score_percentile"),
+                                               r["harmonic_sure"])
+        r["compat"] = pair_compat(r, facts)
 
 
 def _with_scope_rank(rows: list, vocal_song_id: Optional[int],
@@ -236,7 +242,8 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     adventure: float = 0.0,
                     search: str = "", offset: int = 0,
                     rated: str = "", key: str = "", key_tolerance: int = 1,
-                    vocal_label: str = "", inst_label: str = "") -> dict:
+                    vocal_label: str = "", inst_label: str = "",
+                    tier: str = "") -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -284,7 +291,7 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
             vocal_forward=vocal_forward, max_effort=max_effort, order=order,
             search=search[:100], offset=offset,
             rated=rated, key=key, key_tolerance=key_tolerance,
-            vocal_label=vocal_label, inst_label=inst_label,
+            vocal_label=vocal_label, inst_label=inst_label, tier=tier,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -541,6 +548,14 @@ def get_plan(vocal_id: int, inst_id: int,
 
 # ── Batch FL session export (B.3) ─────────────────────────────────────────────
 
+class BatchPair(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+    vocal_section_idx: Optional[int] = None
+    inst_section_idx: Optional[int] = None
+    lanes: Optional[list] = None
+
+
 class BatchSessionRequest(BaseModel):
     """Export the top N of the *currently filtered* list.
 
@@ -559,6 +574,10 @@ class BatchSessionRequest(BaseModel):
     bpm_band: str = ""
     vocal_forward: bool = False
     search: str = ""
+    # Exactly these pairs instead of the filtered top N — each with its section
+    # pairing and, optionally, its Studio lane state (api/routes/studio.py
+    # LaneState). A set's mashups, or what Studio has open.
+    pairs: Optional[List[BatchPair]] = None
 
 
 @router.post("/session/batch")
@@ -572,6 +591,31 @@ def queue_session_batch(req: BatchSessionRequest,
             status_code=400,
             detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
     top_n = max(1, min(req.top_n, MAX_SESSIONS))
+
+    if req.pairs is not None:
+        from pydantic import ValidationError
+        from api.routes.studio import LaneState, lanes_payload
+        if not req.pairs:
+            raise HTTPException(status_code=400, detail="pairs is empty")
+        pairs = []
+        for p in req.pairs[:MAX_SESSIONS]:
+            try:
+                lanes = lanes_payload([LaneState.model_validate(x)
+                                       for x in (p.lanes or [])])
+            except ValidationError as exc:
+                raise HTTPException(status_code=400,
+                                    detail=f"bad lane state: {exc.errors()[0]['msg']}")
+            pair = {"vocal_song_id": p.vocal_song_id, "inst_song_id": p.inst_song_id,
+                    "vocal_section_idx": p.vocal_section_idx,
+                    "inst_section_idx": p.inst_section_idx}
+            if lanes:
+                pair["lanes"] = lanes
+            pairs.append(pair)
+        job_id = jobs.new_job(kind="session",
+                              message=f"Queued {len(pairs)} FL session exports")
+        background.add_task(session_worker.run_batch, job_id, pairs)
+        return {"job_id": job_id, "pair_count": len(pairs),
+                "archive_url": f"/api/studio/session/{job_id}/archive"}
 
     rows = get_candidates_enriched(
         combo_type=req.combo_type, min_score=req.min_score, limit=top_n,

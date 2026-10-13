@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter()
@@ -65,7 +65,8 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
     from analysis import essentia_groups, ml_models
     from analysis.registry import GROUPS, describe
     from api.workers.stages import effective_analyzer
-    from database.models import analysed_stem_count, feature_cache_for_stems
+    from database.models import (analysed_stem_count, embeddings_coverage,
+                                 feature_cache_for_stems)
 
     configured, core = effective_analyzer()
     rows = _current(feature_cache_for_stems(list(GROUPS)))
@@ -87,11 +88,64 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
         "models": ml_models.status(),
         "cache_enabled": config.current_analysis_cache(),
         "analysed_stems": analysed_stem_count(),
+        # Tracks with a "sounds like" vector, of the analysed ones — what
+        # GET /api/tracks/{id}/neighbors?mode=sound can answer for.
+        "embeddings_coverage": embeddings_coverage(),
         "coverage": coverage,
         "agreement": _agreement([r for r in rows
                                  if not stem_type or r["stem_type"] == stem_type]),
         "groups": describe(),
     }
+
+
+# ── Embeddings ───────────────────────────────────────────────────────────────
+
+def _run_embeddings_backfill(job_id: str) -> None:
+    from api import jobs
+    from database.models import embeddings_coverage, sync_embeddings
+    try:
+        jobs.update(job_id, status="running", message="Copying embeddings from the feature cache")
+        result = sync_embeddings()
+        jobs.done(job_id, {**result, "coverage": embeddings_coverage()})
+    except Exception as exc:  # noqa: BLE001
+        import traceback
+        jobs.fail(job_id, f"{type(exc).__name__}: {exc}", traceback.format_exc())
+
+
+@router.post("/embeddings/backfill")
+def backfill_embeddings(background: BackgroundTasks) -> dict:
+    """Fill the embeddings table from the EffNet vectors the feature cache
+    already holds — a copy, not a re-analysis. A job, because it scales with
+    the library."""
+    from api import jobs
+    job_id = jobs.new_job(kind="embeddings", message="Queued embeddings backfill")
+    background.add_task(_run_embeddings_backfill, job_id)
+    return {"job_id": job_id}
+
+
+# ── The Analysis dashboard ───────────────────────────────────────────────────
+
+@router.get("/library-stats")
+def library_stats(group: Optional[int] = None, genre: str = "", style: str = "",
+                  bpm_min: Optional[float] = None, bpm_max: Optional[float] = None,
+                  year_min: Optional[int] = None, year_max: Optional[int] = None,
+                  camelot: str = "", vocal_forward: Optional[bool] = None) -> dict:
+    """Distributions over the library (or the tracks passing the filters):
+    tempo, the Camelot wheel, genre / style / mood, years, energy, loudness,
+    sung share, an energy × loudness scatter and the pair counts. One pass per
+    table over stored rows (analysis/library_stats.py)."""
+    from analysis import library_stats as L
+    try:
+        filters = L.clean_filters(group=group, genre=genre, style=style,
+                                  bpm_min=bpm_min, bpm_max=bpm_max,
+                                  year_min=year_min, year_max=year_max,
+                                  camelot=camelot, vocal_forward=vocal_forward)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    out = L.library_stats(filters)
+    if out is None:
+        raise HTTPException(status_code=404, detail="group not found")
+    return out
 
 
 # ── The Analysis panel (readme §9, C) ────────────────────────────────────────

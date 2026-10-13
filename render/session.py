@@ -253,6 +253,109 @@ def conform_stem(song_id: int, stem: str, *, start_sec: Optional[float],
     }
 
 
+# ── Studio lane state ────────────────────────────────────────────────────────
+# What the user set by hand on a Studio lane, per role. When given, it replaces
+# the plan's value for that lane — the folder holds the arrangement that was
+# heard, not the suggestion it started from.
+
+LANE_ROLES = ("vocal", "bed")
+LANE_KEYS = ("semitones", "rate", "gain", "offset_ms", "fade_in", "fade_out",
+             "highpass_hz", "lowpass_hz")
+MAX_LANE_OFFSET_MS = 60_000.0
+
+
+def lane_overrides(lanes) -> dict:
+    """{"vocal": {...}, "bed": {...}} from a request's lanes list: only the
+    keys actually set, numbers only, the first entry per role. Anything
+    malformed is dropped rather than failing the export."""
+    out: dict = {}
+    for lane in lanes or []:
+        if not isinstance(lane, dict) or lane.get("role") not in LANE_ROLES:
+            continue
+        if lane["role"] in out:
+            continue
+        clean = {}
+        for key in LANE_KEYS:
+            value = lane.get(key)
+            if value is None or isinstance(value, bool):
+                continue
+            try:
+                clean[key] = float(value)
+            except (TypeError, ValueError):
+                continue
+        if "offset_ms" in clean:
+            clean["offset_ms"] = max(-MAX_LANE_OFFSET_MS,
+                                     min(MAX_LANE_OFFSET_MS, clean["offset_ms"]))
+        for key in ("gain", "fade_in", "fade_out", "highpass_hz", "lowpass_hz"):
+            if key in clean:
+                clean[key] = max(0.0, clean[key])
+        out[lane["role"]] = clean
+    return out
+
+
+def _nudge(y, offset_ms: float, sr: int = RENDER_SR):
+    """Slide a rendered stem: later by padding its head, earlier by trimming
+    it. Bar 1 stays at 0:00 for everything that was not moved."""
+    n = int(round(abs(offset_ms) / 1000.0 * sr))
+    if n == 0:
+        return y
+    np, _librosa, _sf = require_audio_stack()
+    if offset_ms > 0:
+        return np.concatenate([np.zeros(n, dtype=y.dtype), y])
+    return y[n:] if n < len(y) else y[:0]
+
+
+def _gain_db(gain: float) -> Optional[float]:
+    """A linear lane gain in dB (Studio's rail prints the same number)."""
+    import math
+    return None if gain <= 0 else 20.0 * math.log10(gain)
+
+
+def _lane_clip(lane: dict) -> dict:
+    """A lane's unbaked settings in build_mixdown's clip vocabulary."""
+    names = {"fade_in": "fade_in", "fade_out": "fade_out",
+             "highpass_hz": "hp_hz", "lowpass_hz": "lp_hz"}
+    return {clip_key: lane[key] for key, clip_key in names.items() if key in lane}
+
+
+def _lane_notes(lanes: dict) -> list:
+    """README lines for the Studio lane state: what was baked into the WAVs
+    and what is left for the mixer."""
+    if not lanes:
+        return []
+    lines = ["=" * 68, "FROM YOUR STUDIO LANES", "=" * 68,
+             "These replace the plan's suggestions for this export.", ""]
+    for role in LANE_ROLES:
+        lane = lanes.get(role)
+        if not lane:
+            continue
+        name = "vocals.wav" if role == "vocal" else "instrumental.wav"
+        baked, todo = [], []
+        if "rate" in lane:
+            baked.append(f"×{clamp_rate(lane['rate']):.4f} time-stretch")
+        if "semitones" in lane:
+            baked.append(f"{clamp_semitones(round(lane['semitones'])):+d} semitones")
+        if lane.get("offset_ms"):
+            baked.append(f"nudged {lane['offset_ms']:+.0f} ms")
+        if "gain" in lane:
+            db = _gain_db(lane["gain"])
+            todo.append("mute it" if db is None else f"level {db:+.1f} dB")
+        if lane.get("fade_in"):
+            todo.append(f"fade in {lane['fade_in']:.2f} s")
+        if lane.get("fade_out"):
+            todo.append(f"fade out {lane['fade_out']:.2f} s")
+        if lane.get("highpass_hz"):
+            todo.append(f"high-pass {lane['highpass_hz']:.0f} Hz")
+        if lane.get("lowpass_hz"):
+            todo.append(f"low-pass {lane['lowpass_hz']:.0f} Hz")
+        lines.append(f"  {name}")
+        lines.append(f"    baked in   : {', '.join(baked) if baked else 'nothing beyond the plan'}")
+        lines.append(f"    set in FL  : {', '.join(todo) if todo else 'nothing'}")
+    lines += ["", "Level, fades and filters are NOT baked in: they are mixer and",
+              "clip settings, and baking them would take the choice away.", ""]
+    return lines
+
+
 def _write_tags(path: Path, bpm: Optional[float], key: Optional[str]) -> None:
     """ID3 TBPM/TKEY so the folder is also usable from Serato/rekordbox.
 
@@ -283,9 +386,17 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
                   on_progress: ProgressCb = None,
                   db_path=None,
                   vocal_section_idx: Optional[int] = None,
-                  inst_section_idx: Optional[int] = None) -> Optional[Path]:
+                  inst_section_idx: Optional[int] = None,
+                  lanes: Optional[list] = None) -> Optional[Path]:
     """Write one mashup's FL session folder. Returns the folder, or None on a
     caller-fixable problem (reported through on_progress).
+
+    `lanes` is Studio's per-lane state ([{role: "vocal"|"bed", semitones, rate,
+    gain, offset_ms, fade_in, fade_out, highpass_hz, lowpass_hz}], every key
+    optional). A value given replaces the plan's for that lane: rate, transpose
+    and nudge are baked into the WAVs; level, fades and filters are recorded in
+    session.json and the README for the mixer. Without it, the plan's values —
+    the behaviour before lanes existed.
 
     The section indexes name the pairing the user chose — a dock card, a set
     item, Studio's armed timing. Without them the export used the plan's own
@@ -323,9 +434,12 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
 
     # The bed is played at `stretch` to reach the vocal's tempo; the vocal plays
     # native. This is the same convention Studio's SYNC and the audition use.
-    rate_vocal = clamp_rate(1.0)
-    rate_inst = clamp_rate(stretch)
-    semis_inst = clamp_semitones(shift)
+    lane = lane_overrides(lanes)
+    v_lane, b_lane = lane.get("vocal") or {}, lane.get("bed") or {}
+    rate_vocal = clamp_rate(v_lane.get("rate", 1.0))
+    rate_inst = clamp_rate(b_lane.get("rate", stretch))
+    semis_vocal = clamp_semitones(round(v_lane.get("semitones", 0)))
+    semis_inst = clamp_semitones(round(b_lane.get("semitones", shift)))
 
     pairing = (plan.get("pairings") or [None])[0]
     v_start = pairing.get("vocal_start") if pairing else None
@@ -346,12 +460,13 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     _tick(20, "Conforming the vocal…")
     v_y, v_info = conform_stem(vocal_song_id, "vocals",
                                start_sec=v_start, end_sec=v_end,
-                               rate=rate_vocal, semitones=0, feat=v_feat,
+                               rate=rate_vocal, semitones=semis_vocal, feat=v_feat,
                                on_progress=on_progress, label="Vocal: ",
                                db_path=db_path)
     if v_y is None:
         _tick(None, f"Vocal: {v_info}")
         return None
+    v_y = _nudge(v_y, v_lane.get("offset_ms", 0.0))
 
     _tick(50, "Conforming the instrumental…")
     i_y, i_info = conform_stem(inst_song_id, "instrumental",
@@ -362,6 +477,7 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     if i_y is None:
         _tick(None, f"Instrumental: {i_info}")
         return None
+    i_y = _nudge(i_y, b_lane.get("offset_ms", 0.0))
 
     # The bed's own stems, conformed identically, when four-stem separation ran.
     # resolve_stem_path returns None on a two-stem library, so this is a no-op
@@ -375,7 +491,7 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
                                    feat=i_feat, on_progress=on_progress,
                                    label=f"{name.title()}: ", db_path=db_path)
         if c_y is not None:
-            components[name] = (c_y, c_info)
+            components[name] = (_nudge(c_y, b_lane.get("offset_ms", 0.0)), c_info)
 
     # Both start at bar 1 already; pad the shorter to the longer so the two
     # files line up in the playlist and the click covers both.
@@ -422,18 +538,25 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
         "lock_offset_ms": None if lock_ms is None else round(lock_ms, 1),
         "vocal_section_idx": (pairing or {}).get("vocal_section_idx"),
         "inst_section_idx": (pairing or {}).get("inst_section_idx"),
+        # Studio's lane state as it was applied (null: the plan's values).
+        "lanes": lane or None,
         "clips": [
-            {"song_id": vocal_song_id, "stem": "vocals", "offset_sec": 0.0,
-             "rate": rate_vocal, "semitones": 0,
-             "gain": plan.get("vocal_lane_gain", 0.8)},
-            {"song_id": inst_song_id, "stem": "instrumental", "offset_sec": 0.0,
+            {"song_id": vocal_song_id, "stem": "vocals",
+             "offset_sec": v_lane.get("offset_ms", 0.0) / 1000.0,
+             "rate": rate_vocal, "semitones": semis_vocal,
+             "gain": v_lane.get("gain", plan.get("vocal_lane_gain", 0.8)),
+             **_lane_clip(v_lane)},
+            {"song_id": inst_song_id, "stem": "instrumental",
+             "offset_sec": b_lane.get("offset_ms", 0.0) / 1000.0,
              "rate": rate_inst, "semitones": semis_inst,
-             "gain": plan.get("bed_lane_gain", 0.8)},
+             "gain": b_lane.get("gain", plan.get("bed_lane_gain", 0.8)),
+             **_lane_clip(b_lane)},
         ],
     }, indent=2), encoding="utf-8")
 
     (out / "README.txt").write_text(
-        _readme(plan, v_info, i_info, target_bpm, sorted(components), lock_ms),
+        _readme(plan, v_info, i_info, target_bpm, sorted(components), lock_ms,
+                lanes=lane),
         encoding="utf-8")
 
     _tick(100, f"Session ready: {out.name}")
@@ -443,7 +566,7 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
 
 def _readme(plan: dict, v_info: dict, i_info: dict,
             target_bpm: float, component_stems: Optional[list] = None,
-            lock_ms: Optional[float] = None) -> str:
+            lock_ms: Optional[float] = None, lanes: Optional[dict] = None) -> str:
     """The recipe, from build_mashup_plan, plus what this export already did."""
     v, i = plan.get("vocal") or {}, plan.get("inst") or {}
     component_stems = component_stems or []
@@ -485,7 +608,10 @@ def _readme(plan: dict, v_info: dict, i_info: dict,
         "=" * 68,
         "WHAT WAS APPLIED",
         "=" * 68,
-        "  vocal        : native tempo, no transpose",
+        ("  vocal        : native tempo, no transpose"
+         if v_info.get("rate") == 1.0 and not v_info.get("semitones") else
+         f"  vocal        : ×{v_info.get('rate'):.4f} time-stretch, "
+         f"{v_info.get('semitones'):+d} semitones"),
         f"                 section {_fmt(v_info.get('section_start'))}"
         f"–{_fmt(v_info.get('section_end'))}"
         f"{'  (snapped to a downbeat)' if v_info.get('snapped_to_downbeat') else ''}",
@@ -497,6 +623,7 @@ def _readme(plan: dict, v_info: dict, i_info: dict,
         f"  key relation : {plan.get('key_relation')}",
         _level_note(plan.get("bed_gain_db")),
         "",
+        *_lane_notes(lanes or {}),
         "=" * 68,
         "THE FULL RECIPE",
         "=" * 68,
@@ -554,7 +681,8 @@ def build_session_batch(token: str, pairs: list[dict],
     """Export several mashups into one parent folder, then zip it.
 
     `pairs`: [{vocal_song_id, inst_song_id, vocal_section_idx?,
-    inst_section_idx?}, …] — with the indexes, that section pairing. A pair that cannot be rendered
+    inst_section_idx?, lanes?}, …] — with the indexes, that section pairing;
+    with lanes, that pair's Studio lane state (build_session). A pair that cannot be rendered
     is skipped with a note in the folder rather than failing the batch — one
     un-separated track should not cost the other nine exports.
 
@@ -597,7 +725,8 @@ def build_session_batch(token: str, pairs: list[dict],
         made_path = build_session(
             sub_token, v_id, i_id,
             on_progress=lambda pct, msg, _lo=lo: _tick(_lo, msg),
-            db_path=db_path, vocal_section_idx=v_sec, inst_section_idx=i_sec)
+            db_path=db_path, vocal_section_idx=v_sec, inst_section_idx=i_sec,
+            lanes=p.get("lanes"))
         if made_path is None:
             skipped.append(f"{v_id} over {i_id}")
             continue
