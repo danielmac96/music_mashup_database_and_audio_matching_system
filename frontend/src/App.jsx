@@ -528,7 +528,9 @@ export default function App() {
         {route === "sets" && (
           <SetScreen sets={sets} player={player}
             onOpenStudio={pairToStudio} onOpenChain={chainToStudio}
-            onRailSlot={setRailSlot} onOpenLibrary={() => setRoute("library")} />
+            onRailSlot={setRailSlot} onOpenLibrary={() => setRoute("library")}
+            onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}
+            dockPair={dock.rows[dock.cursor] || null} selectedTrack={selectedTrack} />
         )}
         {route === "studio" && (
           <MixStudio

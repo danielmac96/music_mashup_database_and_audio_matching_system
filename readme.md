@@ -718,36 +718,53 @@ bar hides in Studio.
 
 ### Sets
 
-A set is a mix's running order — **pairs**, not tracks (that is a crate). Pairs
-arrive from the dock (**+ Set** or `a`) and from Studio into the set
-highlighted under SETS in the rail (the first one is made for you). Each row is
-one mashup: its start time in the running order, both sides and sections, the
-**landing** tempo and key, the bed's transpose, the measured harmony, the
-pair's note and its recipe (DO row). **Tempo** (start → end BPM) puts the set
-on a **tempo curve**: each mashup lands at its point on it, vocal and bed both
-stretched there, and its recipe is re-priced at that tempo (a vocal stretched
-more than 4% reads heavy); blank start = off, every mashup at its vocal's own
-tempo, the key always the vocal's. Between rows, the move is graded
-**smooth** (≤1 Camelot step and ≤3% tempo), **workable** (≤2, ≤6%) or a
-**key/tempo jump**, and carries **how** to make it — a **bed swap** when the
-two share a vocal, a **vocal swap** when they share a bed, an 8- or 4-bar
-**blend** for a smooth or workable move, **echo out** for a key jump, else a
-**cut** — which you can change (type and bars) or reset to the suggestion
-(§5.12). A **timeline** above the list shows the mix: each mashup a block on
-alternating A/B decks at its start time, coloured by key, overlaps visible.
-**What comes next**, under the list, ranks pairs that are good on their own
-*and* an easy move from the last landing (a shared record counts in their
-favour); **+ add** appends one. Drag to reorder; **Auto-order** keeps each move
-small from the current first mashup; **Open in Studio** lays the whole set back
-to back, each mashup at its own curve tempo; **Export** writes a timed **cue
-sheet** (with each move), a **CSV** (`move_in`, `overlap_bars`,
-`vocal_tempo_pct`) or a **rekordbox XML** (§5.11). An item is frozen when
-added, so a re-score that drops its pair leaves it in the set marked `stale`.
-Adding from the dock offers **What comes next →** on its toast: the dock then
-lists that set's next candidates (the same ranking as under the list) until
-its ✕, so a set does not fill with one track's beds. A set loads in one query
-whatever its length (`models.candidates_for_pairs`), and shows its name while
-it does.
+A set is a mix's running order — mostly **pairs** (a crate holds tracks), but a
+slot can also be a whole **track**, a **break** (a labelled pause) or a
+**gap** (a slot to fill). There is one **active set**: the dock's **+ Set** (or
+`a`) and Studio's **+ Set** append to it, and the header's picker switches it
+or makes a new one. The header shows the name (edit in place), slots, running
+time, the tempo run and gaps, a **⚠ rough** pill, **+ Pair** (the pair under
+the dock's cursor, else the best next one) / **+ Track** (the Library's
+selected track) / **+ Break** / **+ Gap** — each inserted after the selected
+slot — and **Export ▾**: a timed **cue sheet**, **rekordbox XML**, **FL Studio
+sessions** (a job; the zip downloads when it is ready) or **CSV** (§5.11).
+
+The **timeline** lays the slots left to right, each **as wide as it lasts**:
+a pair has a pink/teal band, a track a solid one, breaks and gaps are dashed
+(gaps amber); each shows its number, kind, landing key, two title lines,
+landing BPM and length; drag one onto another to move it. A **fit dot** sits
+on every boundary — ✓ within ±1 Camelot step (relative = 0) and ±4% tempo
+(half/double counts), **!** amber when one rule breaks, red when both, `·`
+next to a break or gap (§5.12). Under it, the **flow graph**: the landing tempo
+as a line, the key as a dot at its place on the wheel (a jump over one step
+drawn amber), each slot's energy as a tick, and the **energy curve** — a dashed
+line of points you drag (shift-click adds one, double-click removes one;
+**Warm-up / Peak time / Journey** presets), saved to the set. The toolbar also
+holds zoom (− / + / Fit), the **tempo curve** (start → end BPM: every slot
+lands at its point on it, recipes re-priced — blank start = off), **⇅
+Auto-order** (smallest moves from the first slot; breaks and gaps keep their
+places) and **◫ Studio** (every pair back to back, each at its curve tempo).
+
+The **inspector** (290 px) follows the selection. *Nothing*: the key path,
+**Needs attention** (every rough move — click one to select it), **What comes
+next** (pairs good on their own and an easy move from the last landing) and
+Delete (click twice). *A pair*: both sides with their sections, the landing,
+the recipe (DO row), its note, its fit from the slot before and into the slot
+after, ▶ Loop, **Open in Studio**, Insert gap after, Remove. *A track*: the
+same for one song, with ▶ Preview and Open track. *A break*: its label and a
+5–240 s length slider. *A gap*: up to six pairs that fit **both** neighbours,
+ranked by distance to the energy curve there, each with why-chips (key path,
+tempo, energy against the curve, score) and ▶ / **Fill**; when nothing fits
+every rule, the closest four with the broken rule marked ⚠. *A transition*
+(click a dot): the key and tempo verdict, **the move** (bed swap, vocal swap,
+blend or bars, echo out, cut — the suggestion, or yours; reset returns to it),
+**▶ Preview transition** — the last 8 bars into the first 8, rendered on the
+server and played in the player bar — Insert gap here, and Swap the two.
+Keys on the timeline: `←/→` select, `alt+←/→` move the slot, `t` preview the
+transition, `g` insert a gap after, `del` remove (Undo on the toast puts it
+back where it was, its chosen move included), `esc` deselect. A pair is frozen
+when added, so a re-score that drops it leaves the slot marked `stale`. A set
+loads in one query whatever its length (`models.candidates_for_pairs`).
 
 ### ⚙ Settings drawer
 
@@ -2237,9 +2254,12 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    cards, filter chips, Undo toasts in place of confirm dialogs, Match as
    pick-then-click, ⤓ scrape its link back in the UI), B3 (set slots:
    tracks, breaks, gaps; the fit dot; the energy curve; gap suggestions; FL
-   export of a set), B4 (transition audio, server-rendered and cached).
-   Next: 6
-   Sets, B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
+   export of a set), B4 (transition audio, server-rendered and cached), 6
+   (Sets: the duration-width timeline, fit dots, the flow graph with the
+   draggable energy curve, the four-mode inspector, gap fill, transition
+   preview, four exports; the rail slot is gone — one active set, picked in
+   the header).
+   Next: B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
    screen's step lands it keeps its old rail-slot block.
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in

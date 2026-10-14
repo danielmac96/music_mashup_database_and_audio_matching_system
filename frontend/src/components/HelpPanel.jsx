@@ -34,6 +34,7 @@ const KEYS = [
   ["Queue", "↑↓ move (opens the inspector) · ⏎ open the track · r retry a failed track · esc close the inspector"],
   ["Discover", "⏎ search (or paste a link) · ↓ into the results · ↑↓ move · x shortlist · ⏎ preview a track, open a set or artist · / back to the search"],
   ["Mixes › Match", "click a vocal, then the bed it went over · esc cancel the pick · ctrl/⌘+Z undo the last move"],
+  ["Sets", "←/→ select a slot · alt+←/→ move it · t preview the transition · g insert a gap after · del remove (Undo on the toast) · esc deselect · flow graph: drag an energy point, shift-click adds, double-click removes"],
   ["Pair dock", "↑↓ move · space loop · 1–5 rate and move on (again to clear) · ⏎ expand the card · double-click open in Studio · V/B solo vocal/bed · h hide · a add to set · c compare the two tracks in Analysis"],
   ["Studio", "space play · ←→ nudge a lane · L loop · [ ] timing options · 1–6 jump · ctrl/⌘+Z undo · shift+ctrl/⌘+Z redo · ⌫ remove lane"],
   ["Everywhere", "⌘K / ctrl+K command palette (↑↓ move · ⏎ open · esc close) · / focus search · space play/pause the player bar · esc back one layer · ? this help"],

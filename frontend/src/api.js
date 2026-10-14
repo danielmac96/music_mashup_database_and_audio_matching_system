@@ -747,6 +747,20 @@ export const api = {
         vocal_section: c.vocal_section_idx ?? null, inst_section: c.inst_section_idx ?? null,
       }),
     }),
+  // Any slot — {kind: pair|track|break|gap, …, position} (revamp B3). A pair
+  // is still named by its four ids; `position` inserts there, omitted appends.
+  addSetSlot: (id, body) =>
+    jsonFetch(`/api/sets/${id}/items`, { method: "POST", body: JSON.stringify(body) }),
+  updateSetItem: (id, itemId, patch) =>
+    jsonFetch(`/api/sets/${id}/items/${itemId}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  // Pairs that fit both neighbours of slot `position`, nearest the energy curve.
+  getSetSuggest: (id, position, limit = 6) =>
+    jsonFetch(`/api/sets/${id}/suggest?position=${position}&limit=${limit}`),
+  // The last N bars of the slot before into the first N of this one (B4).
+  setTransitionAudioUrl: (id, itemId, bars = 8) =>
+    `/api/sets/${id}/transition/${itemId}/audio?bars=${bars}`,
+  // FL sessions for every pair in the set: a job → {job_id, archive_url}.
+  exportSetFl: (id) => jsonFetch(`/api/sets/${id}/export?format=fl`),
   removeFromSet: (id, itemId) =>
     jsonFetch(`/api/sets/${id}/items/${itemId}`, { method: "DELETE" }),
   reorderSet: (id, itemIds) =>

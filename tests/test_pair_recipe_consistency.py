@@ -292,7 +292,7 @@ def test_the_card_and_the_set_show_the_recipe():
     assert "const doChips = r.adjustments || [];" in card
     assert "const watch = r.warnings || [];" in card
     assert "title={[a.why," in card, "every DO chip explains itself"
-    assert "<RecipeStrip recipe={item.recipe} compact" in _read("components/SetScreen.jsx")
+    assert "<RecipeStrip recipe={selItem.recipe} compact" in _read("components/SetScreen.jsx")
     css = (FRONT / "styles.css").read_text(encoding="utf-8")
     for cls in (".pc-recipe", ".pc-adj.free", ".pc-adj.light", ".pc-adj.heavy",
                 ".pc-warn", ".set-recipe", ".pcx-do", ".pcx-watch"):

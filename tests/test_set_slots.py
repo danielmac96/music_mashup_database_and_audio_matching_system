@@ -331,6 +331,8 @@ def test_transition_clips_land_each_side_at_its_tempo():
 def test_the_transition_route_renders_once_and_caches(client, monkeypatch, tmp_path):
     c, models, ids = client
     import render.mixdown as mixdown
+    # Never the real previews folder: a WAV left there is a cache hit next run.
+    monkeypatch.setattr(mixdown, "PREVIEWS_DIR", tmp_path / "previews")
     calls = []
 
     def fake(token, clips, on_progress=None, db_path=None):

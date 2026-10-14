@@ -45,6 +45,8 @@ import { toast } from "../toast";
 export function sourceKey(s) {
   if (!s) return null;
   if (s.kind === "track") {
+    // A rendered file (a set's transition preview) is keyed by its URL.
+    if (s.url) return `track:url:${s.url}`;
     const w = s.loop
       ? `${(s.loop.start ?? 0).toFixed(3)}-${(s.loop.end ?? 0).toFixed(3)}`
       : "all";
@@ -190,7 +192,9 @@ export function usePlayer() {
     // strip span the record and the playhead leave the section.
     silence("element");
     const el = audio();
-    el.src = api.audioUrl(next.songId, next.stem || "full");
+    // `url` plays a server-rendered file (a set's transition preview) on the
+    // same element; it has no stems, so the bar offers no stem switch.
+    el.src = next.url || api.audioUrl(next.songId, next.stem || "full");
     // NEVER the native loop: that loops the whole FILE, and a window inside one
     // has to be wrapped by the ticker below.
     el.loop = false;
