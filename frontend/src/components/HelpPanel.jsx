@@ -30,7 +30,8 @@ const GLOSSARY = [
 const KEYS = [
   ["Pair dock", "↑↓ move · space loop · 1–5 rate (again to clear) · V/B solo vocal/bed · h hide · a add to set · c compare · ⏎ Studio"],
   ["Studio", "space play · ←→ nudge a lane · L loop · [ ] timing options · 1–6 jump · ctrl/⌘+Z undo · shift+ctrl/⌘+Z redo · ⌫ remove lane"],
-  ["Everywhere", "? this help · Esc close · space play/pause the player bar"],
+  ["Everywhere", "⌘K / ctrl+K command palette (↑↓ move · ⏎ open · esc close) · / focus search · space play/pause the player bar · esc back one layer · ? this help"],
+  ["Player bar", "click or drag the strip to seek · ←/→ nudge 5 s (shift 15 s) · Home to the start"],
 ];
 
 export function HelpPanel({ onClose }) {

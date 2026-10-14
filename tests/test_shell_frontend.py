@@ -130,3 +130,74 @@ def test_chip_active_is_defined():
     assert ".chip.active" in CSS
     writers = [p.name for p in SRC.rglob("*.jsx") if "chip${" in p.read_text(encoding="utf-8")]
     assert writers, "nothing builds a chip class dynamically any more"
+
+
+# ── revamp step 0: tokens + shell ────────────────────────────────────────────
+
+THEME = _read("theme.js")
+PALETTE = _read("shell/CommandPalette.jsx")
+
+
+def test_one_token_source_in_root():
+    """Every revamp token is a :root variable; components read var(--x)."""
+    root = CSS[CSS.index(":root {"):]
+    root = root[:root.index("\n}")]
+    for name in ("--bg:", "--bg-sunk:", "--well:", "--bar:", "--card:", "--panel:",
+                 "--raised:", "--line:", "--line-2:", "--line-soft:", "--fg:", "--fg-2:",
+                 "--muted:", "--faint:", "--disabled:", "--vocal:", "--bed:", "--accent:",
+                 "--ok:", "--warn:", "--fail:", "--run:", "--star:", "--playhead:",
+                 "--tier-strong:", "--tier-good:", "--tier-maybe:", "--tier-long:"):
+        assert name in root, name
+    assert "--vocal: #ff5fae" in root and "--bed: #2dd4bf" in root
+    assert "--accent: #5b8cff" in root
+    assert ":focus-visible { outline: 2px solid var(--accent)" in CSS
+
+
+def test_new_shell_files_carry_no_hex():
+    """Colours come from the tokens. The shell and the primitives are the
+    first files built on them and must not carry a hex of their own."""
+    for rel in ("shell/Sidebar.jsx", "shell/CommandPalette.jsx", "shell/Styleguide.jsx",
+                "components/ui/primitives.jsx", "components/PlayerBar.jsx"):
+        assert not re.search(r"#[0-9a-fA-F]{3,8}\b", _read(rel)), rel
+
+
+def test_camelot_colour_is_the_mixed_in_key_wheel():
+    assert "(165 - (num - 1) * 30)" in THEME
+    assert "hsl(${hue} 66% 58%)" in THEME and "hsl(${hue} 80% 76%)" in THEME
+    assert "color: var(--key-ink)" in CSS
+
+
+def test_the_rail_collapses_and_remembers():
+    assert '"mashup.rail.v1"' in SIDEBAR
+    assert ".app-shell.rail-collapsed { grid-template-columns: 56px" in CSS
+    assert "rail-collapsed" in APP and "useRailCollapsed()" in APP
+    # The pipeline readout opens the queue.
+    assert 'onRoute("queue")' in SIDEBAR and "usePipelineReadout(" in APP
+
+
+def test_cmd_k_palette_has_every_group_and_its_keys():
+    for group in ('"Go to"', '"Actions"', '"Saved views"', '"Tracks"', '"Pairs"'):
+        assert group in PALETTE, group
+    assert "needle.length >= 2" in PALETTE           # tracks from two characters
+    for key in ('"ArrowDown"', '"ArrowUp"', '"Enter"', '"Escape"'):
+        assert key in PALETTE, key
+    assert 'e.key === "k" || e.key === "K"' in APP and "<CommandPalette" in APP
+
+
+def test_slash_and_space_are_global():
+    assert 'e.key === "/"' in APP and "focusSearch" in APP
+    assert 'data-search="library"' in _read("components/LibraryScreen.jsx")
+    assert 'data-search="discover"' in _read("components/SoundCloudBrowser.jsx")
+    assert 'e.code !== "Space"' in APP
+
+
+def test_styleguide_is_a_dev_only_route():
+    assert "import.meta.env.DEV" in APP
+    assert 'has("styleguide")' in APP
+    assert 'route === "styleguide" && STYLEGUIDE' in APP
+
+
+def test_every_global_key_is_in_help():
+    help_ = _read("components/HelpPanel.jsx")
+    for k in ("⌘K", "/ focus search", "space play/pause", "esc back one layer"):
+        assert k in help_, k

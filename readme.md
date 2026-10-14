@@ -292,9 +292,23 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
 
 The shell is a left **rail** (Library · Queue · Analysis · Discover · Mixes · Sets ·
 Studio, plus library groups, the screen's status readout, **?** help and ⚙ Settings) and
-one **player bar** at the bottom that every screen shares. **?** (or the `?` key) opens
-*How it works*: the first mashup in six steps, what every number on a pair card means,
-and each screen's keys; a *New here* pill shows until it has been opened once.
+one 56px **player bar** at the bottom that every screen shares. The rail collapses to
+56px with **«** (remembered as `mashup.rail.v1`); at its foot a **pipeline readout**
+("7 running · 271 waiting · 51 failed · clears in ~2.9 h", from `/api/jobs/queue` and
+the library's `error_*` tracks) opens the Queue. **⌘K** (ctrl+K) opens a command
+palette — Go to · Actions · Saved views · Tracks (from two characters) · Pairs (the
+dock's) — `/` focuses the search on screen, space plays/pauses the player bar, esc
+steps back one layer. **?** (or the `?` key) opens *How it works*: the first mashup in
+six steps, what every number on a pair card means, and each screen's keys; a *New
+here* pill shows until it has been opened once. In a dev build (`npm run dev`),
+`?styleguide` (or ◇ in the rail) shows every token and shared primitive
+(`components/ui/primitives.jsx`).
+
+The UI is mid-revamp (`design_handoff_mashup_engine_revamp/`, §9 item 9): colours,
+type and spacing are the `:root` tokens in `styles.css` (`--bg`, `--fg`, `--vocal`,
+`--bed`, `--accent`, the status and tier colours…); the old variable names are
+aliases to them until the last screen is rebuilt. Canvas code reads a token with
+`theme.cssVar`. Camelot chips use the Mixed In Key wheel (`theme.camelotColor`).
 
 ### Library
 
@@ -1339,9 +1353,8 @@ read the endpoint (extra keys on pair rows, jobs and mixes are ignored).
   carries `confidence_tier` and `compat`, attached where the recipe is
   (`mashups._with_recipes`). The tier reads the library **percentile** in
   points: `strong` ≥ 75, `good` ≥ 65, `maybe` ≥ 50, else `long_shot` —
-  `theme.js` `tierFor`'s STRONG / GOOD / FAIR cut-offs (its EXCELLENT folds
-  into strong) — and drops one tier when `harmonic_sure` is false. `compat` is
-  `{key: {vocal, bed, landing, relation, steps, shift_st}, bpm: {vocal, bed,
+  and drops one tier when `harmonic_sure` is false. `compat` is
+  `{key: {vocal, bed, landing, relation, steps, shift_st, known}, bpm: {vocal, bed,
   delta_pct, fold}, genre: {vocal, bed, vocal_style, bed_style, same}}`:
   `landing` is the vocal's key, `shift_st` the row's `semitone_shift`,
   `steps` the set's wheel distance, `delta_pct` the bed's stretch after the
@@ -1489,9 +1502,11 @@ Existing databases migrate on start.
   The tier is decided once per row from `score_percentile` and
   `harmonic_sure`; `tier=` and `order=tier` are the same rule in SQL
   (`compat.tier_sql`, which takes the library's `harmony_unsure_below` as its
-  one parameter), and a test compares the two row by row and the cut-offs with
-  `theme.js` `tierFor`. Change a threshold in one place only and the dock
-  filters to rows whose card prints another tier. `compat.key.shift_st` is the
+  one parameter), and a test compares the two row by row. The frontend never
+  computes a tier: `theme.js` `TIERS` only names and colours compat's (pinned
+  equal). Change a threshold in one place only and the dock filters to rows
+  whose card prints another tier. `/by-vocal` rows are enriched through
+  `candidates_for_pairs`, so they carry the listing's joined columns too. `compat.key.shift_st` is the
   row's `semitone_shift`, never a recomputation, and `clash` is the recipe's
   own warning. A new consumer of pair rows gets both by going through
   `mashups._with_playback_terms`.
@@ -2089,12 +2104,14 @@ driven by the 100-persona browser simulation (§9) against a synthesised
       gain, fades and EQ left to FL as channel settings and markers; WAVs and a
       README beside the `.flp` so nothing is lost if FL refuses the file.
 
-9. **Frontend redesign on the §5.13 contracts.** The backend is in place and
-   pinned; nothing in the UI uses it yet. When it does: the Library moves its
-   column widths from `localStorage` to `library-view`; the dock reads
-   `confidence_tier` instead of `tierOf` (then `theme.js` `tierFor` and the
-   test that pins it can go); the Queue screen drops `poolMedianSecs` /
-   `PoolEta` for `eta_secs`, `summary` and `clears_in_secs`.
+9. **Frontend revamp on the §5.13 contracts** (`design_handoff_mashup_engine_revamp/`,
+   worked through its `TRANSITION.md` one step per commit). Done: B1 (pair
+   payload audit: `compat.key.known`, `/by-vocal` enriched) and step 0 (tokens,
+   collapsible rail, ⌘K palette, player bar, toast, `?styleguide`; tiers read
+   from `confidence_tier`, `tierFor` gone). Next: 1a Library, 1b pair dock,
+   1c track detail, 2 Queue, 3 Analysis, 4 Discover, 5 Mixes, B3/B4 then 6
+   Sets, B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
+   screen's step lands it keeps its old rail-slot block.
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in
 Discover (nothing external is analysed — rows show the tempo an upload prints,

@@ -1,6 +1,23 @@
 // theme.js — shared visual + music-theory helpers for the Mashup Engine UI.
 // Everything here is pure (no React) so components can import freely.
 
+/* ── tokens ──────────────────────────────────────────────────────────────── */
+
+// The palette lives once, in styles.css :root. A <canvas> cannot read
+// var(--x), so canvas code asks for the resolved value here instead of keeping
+// a second copy of the hex. Cached: the theme is dark-only and never changes.
+const _tokenCache = new Map();
+export function cssVar(name) {
+  const key = name.startsWith("--") ? name : `--${name}`;
+  if (_tokenCache.has(key)) return _tokenCache.get(key);
+  let v = "";
+  try {
+    v = getComputedStyle(document.documentElement).getPropertyValue(key).trim();
+  } catch { /* no DOM (tests, SSR) */ }
+  if (v) _tokenCache.set(key, v);
+  return v;
+}
+
 /* ── formatting ──────────────────────────────────────────────────────────── */
 
 export function fmtTime(secs) {
@@ -35,15 +52,26 @@ export function parseCamelot(camelot) {
   return { num, letter: m[2].toUpperCase() };
 }
 
-// Chip background for a Camelot key. Text on chips is near-black, so keep
-// these light. Hue walks the wheel; minor (A) is slightly deeper than major.
+// Chip background for a Camelot key — the Mixed In Key-style wheel: 1 aqua →
+// 4 yellow → 7 pink → 10 violet → 12 azure. A (minor) is the deeper tone, B
+// (major) the lighter one. Chip text is always var(--key-ink) and the chip
+// always carries its label, so colour is never the only cue. Unknown keys sit
+// on var(--raised) and read "—".
+export const camelotHue = (num) => (((165 - (num - 1) * 30) % 360) + 360) % 360;
 export function camelotColor(camelot) {
   const k = parseCamelot(camelot);
   if (!k) return "var(--raised)";
-  const hue = ((k.num - 1) * 30 + 190) % 360; // 8A/8B (A minor / C major) land teal-green
-  return k.letter === "A"
-    ? `hsl(${hue}, 62%, 58%)`
-    : `hsl(${hue}, 72%, 70%)`;
+  const hue = camelotHue(k.num);
+  return k.letter === "A" ? `hsl(${hue} 66% 58%)` : `hsl(${hue} 80% 76%)`;
+}
+
+// The keys that mix with `camelot` as they are: itself, ±1 hour, relative.
+export function compatibleKeys(camelot) {
+  const k = parseCamelot(camelot);
+  if (!k) return [];
+  const w = (n) => ((n - 1 + 12) % 12) + 1;
+  return [`${k.num}${k.letter}`, `${w(k.num + 1)}${k.letter}`,
+    `${w(k.num - 1)}${k.letter}`, `${k.num}${k.letter === "A" ? "B" : "A"}`];
 }
 
 // Signed shortest distance around the 12-position wheel (from -> to), in [-6, 6].
@@ -133,14 +161,32 @@ export function bpmTag(vocalBpm, instBpm) {
   return `${best.label}${d > 0 ? "+" : ""}${d.toFixed(1)}% BPM`;
 }
 
-/* ── match-score tiers ───────────────────────────────────────────────────── */
+/* ── confidence tiers ────────────────────────────────────────────────────── */
+// The tier is decided server-side (matcher/compat.py confidence_tier) from the
+// library percentile and whether the transpose is a close call. The UI never
+// computes one: it reads `confidence_tier` and draws it. The % is shown only as
+// a number. tests/test_pair_confidence.py pins these ids to compat.TIERS.
+export const TIERS = [
+  { id: "strong", label: "Strong", color: "var(--tier-strong)", glyph: "▮▮▮▮" },
+  { id: "good", label: "Good", color: "var(--tier-good)", glyph: "▮▮▮▯" },
+  { id: "maybe", label: "Maybe", color: "var(--tier-maybe)", glyph: "▮▮▯▯" },
+  { id: "long_shot", label: "Long-shot", color: "var(--tier-long)", glyph: "▮▯▯▯" },
+];
+const TIER_BY_ID = Object.fromEntries(TIERS.map((t) => [t.id, t]));
+const UNRANKED = { id: null, label: "Unranked", color: "var(--muted)", glyph: "▯▯▯▯" };
 
-export function tierFor(totalPct) {
-  if (totalPct >= 85) return { tier: "EXCELLENT", color: "var(--green)", textColor: "var(--green-ink)" };
-  if (totalPct >= 75) return { tier: "STRONG", color: "var(--cyan)", textColor: "#062333" };
-  if (totalPct >= 65) return { tier: "GOOD", color: "var(--accent)", textColor: "#0a1330" };
-  if (totalPct >= 50) return { tier: "FAIR", color: "var(--amber)", textColor: "#2a1c04" };
-  return { tier: "ROUGH", color: "var(--faint)", textColor: "#0e1118" };
+// Display bits for a row's confidence_tier (null = not ranked yet).
+export const tierMeta = (confidenceTier) => TIER_BY_ID[confidenceTier] || UNRANKED;
+export const tierColor = (confidenceTier) => tierMeta(confidenceTier).color;
+
+// A 0–100 fit (a section term, a measured harmony) on the same green → red
+// ramp the tiers use. Unmeasured is muted, never red.
+export function compatColor(pct) {
+  if (pct == null || !Number.isFinite(pct)) return "var(--muted)";
+  if (pct >= 82) return "var(--tier-strong)";
+  if (pct >= 70) return "var(--tier-good)";
+  if (pct >= 55) return "var(--tier-maybe)";
+  return "var(--tier-long)";
 }
 
 /* ── pipeline / status ───────────────────────────────────────────────────── */
@@ -150,9 +196,9 @@ export function isAnalysed(track) {
   return !!(f && f.bpm != null);
 }
 
-const DOT_DONE = "var(--green)";
-const DOT_RUN = "var(--amber)";
-const DOT_TODO = "var(--faint-2)";
+const DOT_DONE = "var(--ok)";
+const DOT_RUN = "var(--run)";
+const DOT_TODO = "var(--disabled)";
 
 // Colours for the DL / Stems / Analyse / Structure dots on a track row.
 export function pipelineDots(track, runningKind) {
@@ -167,23 +213,29 @@ export function pipelineDots(track, runningKind) {
   };
 }
 
-// Song / job status → chip styling. Song statuses are queued / downloaded /
-// error_*; job rows in the DB browser also pass running / completed / failed.
+// Song / job status → pill styling. Song statuses are queued / downloaded /
+// stemmed / analysed / error_*; job rows in the DB browser also pass running /
+// completed / failed. Pills are the status colour at low alpha.
+const PILL = {
+  ok: { color: "var(--ok-soft)", bg: "var(--ok-bg)" },
+  warn: { color: "var(--warn-soft)", bg: "var(--warn-bg)" },
+  fail: { color: "var(--fail-soft)", bg: "var(--fail-bg)" },
+  run: { color: "var(--run-soft)", bg: "var(--run-bg)" },
+  idle: { color: "var(--muted)", bg: "var(--idle-bg)" },
+  plain: { color: "var(--fg-2)", bg: "var(--idle-bg)" },
+};
 export function statusMeta(status) {
   const s = String(status || "").toLowerCase();
-  if (s.startsWith("error") || s === "failed") {
-    return { tag: s.toUpperCase(), color: "var(--red)", bg: "rgba(248,113,113,0.12)", border: "rgba(248,113,113,0.4)", pulse: false };
-  }
-  if (s === "running") {
-    return { tag: "RUNNING", color: "var(--amber-light)", bg: "rgba(245,166,35,0.12)", border: "rgba(245,166,35,0.4)", pulse: true };
-  }
-  if (s === "downloaded" || s === "completed") {
-    return { tag: s.toUpperCase(), color: "var(--green)", bg: "rgba(46,204,113,0.12)", border: "rgba(46,204,113,0.4)", pulse: false };
-  }
-  if (s === "queued") {
-    return { tag: "QUEUED", color: "var(--muted)", bg: "rgba(138,147,166,0.12)", border: "var(--border-ctrl)", pulse: false };
-  }
-  return { tag: (s || "—").toUpperCase(), color: "var(--muted)", bg: "rgba(138,147,166,0.12)", border: "var(--border-ctrl)", pulse: false };
+  const pill = (tone, tag, glyph, pulse = false) => ({
+    tag, glyph, tone, pulse, ...PILL[tone], border: "transparent",
+  });
+  if (s.startsWith("error") || s === "failed") return pill("fail", "Failed", "✕");
+  if (s === "running") return pill("run", "Running", "◍", true);
+  if (s === "analysed" || s === "completed" || s === "ready") return pill("ok", "Ready", "✓");
+  if (s === "stemmed") return pill("run", "Analysing…", "◍", true);
+  if (s === "downloaded") return pill("plain", "No stems", "○");
+  if (s === "queued") return pill("idle", "Queued", "…");
+  return pill("idle", s ? s[0].toUpperCase() + s.slice(1) : "—", "·");
 }
 
 /* ── library shelves ─────────────────────────────────────────────────────── */

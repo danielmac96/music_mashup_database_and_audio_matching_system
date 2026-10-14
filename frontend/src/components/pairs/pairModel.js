@@ -1,4 +1,4 @@
-import { tierFor } from "../../theme";
+import { tierMeta } from "../../theme";
 
 // What a pair IS, shared by the Library dock, the track-detail rail and
 // Discover's Find-mashups pane. Three screens rendering the same row from three
@@ -28,7 +28,12 @@ export const feedbackKey = (f) =>
 export const pctOf = (c) => Math.round((c.score_percentile ?? 0) * 1000) / 10;
 export const rawPctOf = (c) => Math.round((c.score_total ?? 0) * 100);
 
-export const tierOf = (c) => tierFor(rawPctOf(c));
+// The tier is the API's confidence_tier (matcher/compat.py) — never derived
+// here. `tier` keeps the label old cards print.
+export const tierOf = (c) => {
+  const t = tierMeta(c?.confidence_tier);
+  return { ...t, tier: t.label.toUpperCase() };
+};
 
 // The card's headline. Scoped to a track, the pair's rank among that track's
 // partners ("#3 of 20 beds", GET /api/mashups scope_rank) — which bed is best

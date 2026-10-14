@@ -254,7 +254,7 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
         <div className="disc-search">
           <div className="disc-input">
             <span className="glyph">⌕</span>
-            <input ref={inputRef} value={query}
+            <input ref={inputRef} data-search="discover" value={query}
               placeholder="Search SoundCloud…"
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") search(); }} />

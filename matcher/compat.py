@@ -17,11 +17,10 @@ from typing import Dict, Optional
 
 from matcher.recipe import _num, _rate_to
 
-# Best first. The cut-offs are frontend/src/theme.js tierFor's STRONG / GOOD /
-# FAIR (its EXCELLENT is folded into strong, its ROUGH is long_shot), read on
-# the library PERCENTILE in points — the number the card prints — not the raw
-# composite, which clusters near 0.78. tests/test_pair_confidence.py pins the
-# two files together.
+# Best first. The cut-offs are read on the library PERCENTILE in points — the
+# number the card prints — not the raw composite, which clusters near 0.78.
+# The frontend never computes a tier: theme.js TIERS only names and colours
+# these (tests/test_pair_confidence.py pins the two lists together).
 TIERS = ("strong", "good", "maybe", "long_shot")
 TIER_MIN_PCT = {"strong": 75, "good": 65, "maybe": 50}
 

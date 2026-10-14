@@ -16,7 +16,9 @@ import { TuningPanel } from "./components/TuningPanel";
 import { MlPanel } from "./components/MlPanel";
 import { BulkReprocess } from "./components/BulkReprocess";
 import { SetupWizard } from "./components/SetupWizard";
-import { Sidebar } from "./shell/Sidebar";
+import { NAV_ITEMS, Sidebar, usePipelineReadout, useRailCollapsed } from "./shell/Sidebar";
+import { CommandPalette } from "./shell/CommandPalette";
+import { Styleguide } from "./shell/Styleguide";
 import { useLibrary } from "./hooks/useLibrary";
 import { useLibraryGroups } from "./hooks/useLibraryGroups";
 import { useRatings } from "./hooks/useRatings";
@@ -29,6 +31,20 @@ import { isActiveJob } from "./hooks/useQueue";
 import { api } from "./api";
 import { onToast } from "./toast";
 import { useFreshness } from "./hooks/useFreshness";
+
+// ?styleguide — a dev-build route (tokens and primitives); never in production.
+const STYLEGUIDE = Boolean(import.meta.env.DEV);
+const initialRoute = () => {
+  try {
+    if (STYLEGUIDE && new URLSearchParams(window.location.search).has("styleguide")) {
+      return "styleguide";
+    }
+  } catch { /* no location */ }
+  return "library";
+};
+
+// The global search box for a route: Discover's own, else the Library's.
+const SEARCH_FOR = { discovery: "discover" };
 
 // Statuses still waiting on a stage that prefetch can move up the line.
 const PREFETCH_STATUSES = new Set(["queued", "downloaded", "stemmed"]);
@@ -55,7 +71,7 @@ function Toast() {
   }, []);
   if (!msg) return null;
   return (
-    <div className="toast">
+    <div className="toast" role="status">
       <span className="dot">●</span>
       {msg}
       {action && (
@@ -69,7 +85,9 @@ function Toast() {
 }
 
 export default function App() {
-  const [route, setRouteState] = useState("library");
+  const [route, setRouteState] = useState(initialRoute);
+  const rail = useRailCollapsed();
+  const [paletteOpen, setPaletteOpen] = useState(false);
   // null = still loading, true/false = configured flag from GET /api/settings.
   const [configured, setConfigured] = useState(null);
   // Pair handed to Studio from Library/Discover. `at` is bumped on every send
@@ -265,6 +283,40 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [route, player]);
 
+  // `/` focuses the search on screen — Discover's on Discover, the Library's
+  // everywhere else (going there first).
+  const focusSearch = useCallback(() => {
+    const target = SEARCH_FOR[route] || "library";
+    if (target === "library" && route !== "library") setRoute("library");
+    setTimeout(() => document.querySelector(`[data-search="${target}"]`)?.focus(), 40);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route]);
+
+  // ⌘K / ctrl+K toggles the palette from anywhere, typing included. `/` and
+  // esc only when no field has the keyboard; esc steps back one layer
+  // (palette → settings → help close themselves; the track screen → Library).
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      if (paletteOpen || e.defaultPrevented) return;
+      const el = e.target;
+      const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
+        || el.tagName === "SELECT" || el.isContentEditable);
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "/") { e.preventDefault(); focusSearch(); }
+      else if (e.key === "Escape" && route === "styleguide") setRoute("library");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paletteOpen, focusSearch, route]);
+
+  const pipeline = usePipelineReadout(library.tracks);
+
   const counts = useMemo(() => {
     const active = library.pipeJobs.filter(isActiveJob).length;
     return {
@@ -329,9 +381,13 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${rail.collapsed ? " rail-collapsed" : ""}`}>
       <Sidebar route={route === "track" ? "library" : route}
         onRoute={setRoute} counts={counts}
+        collapsed={rail.collapsed} onToggle={rail.toggle}
+        pipeline={pipeline}
+        onOpenPalette={() => setPaletteOpen(true)}
+        onStyleguide={STYLEGUIDE ? () => setRoute("styleguide") : null}
         settingsOpen={settingsOpen}
         onOpenSettings={() => setSettingsOpen((v) => !v)}
         judged={ratings.count}
@@ -354,6 +410,8 @@ export default function App() {
       </Sidebar>
 
       <div className="app-main">
+
+        {route === "styleguide" && STYLEGUIDE && <Styleguide />}
 
         {route === "mixes" && (
           <MixImporter player={player} onOpenStudio={pairToStudio}
@@ -495,6 +553,35 @@ export default function App() {
             </div>
           </aside>
         </>
+      )}
+
+      {paletteOpen && (
+        <CommandPalette onClose={() => setPaletteOpen(false)}
+          goTo={[
+            ...NAV_ITEMS.map(([id, label, glyph]) => ({
+              key: `go:${id}`, glyph, label, run: () => setRoute(id) })),
+            ...(STYLEGUIDE ? [{ key: "go:styleguide", glyph: "◇", label: "Styleguide",
+              hint: "tokens and primitives", run: () => setRoute("styleguide") }] : []),
+          ]}
+          actions={[
+            { key: "a:search", glyph: "⌕", label: "Focus search", hint: "/", run: focusSearch },
+            ...(selectedTrackId != null ? [{ key: "a:clear", glyph: "✕",
+              label: "Clear the selected track", hint: "esc", run: clearSelection }] : []),
+            { key: "a:rail", glyph: "«", label: "Toggle rail", run: rail.toggle },
+            ...(player.source ? [{ key: "a:play", glyph: "▶", label: "Play / pause",
+              hint: "space", run: () => (player.playing ? player.pause() : player.resume()) }] : []),
+            { key: "a:help", glyph: "?", label: "How it works", hint: "?", run: openHelp },
+            { key: "a:settings", glyph: "⚙", label: "Settings", run: () => setSettingsOpen(true) },
+          ]}
+          tracks={library.tracks}
+          pairs={dock.rows}
+          onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}
+          onOpenPair={(c) => {
+            setRoute("library");
+            const at = dock.rows.indexOf(c);
+            if (at >= 0) dock.setCursor(at);
+            dock.play(c);
+          }} />
       )}
 
       <Toast />

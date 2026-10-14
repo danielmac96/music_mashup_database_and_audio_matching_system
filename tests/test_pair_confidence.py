@@ -1,6 +1,6 @@
 """confidence_tier and compat on every pair row (matcher/compat.py), the tier=
 filter and order=tier — and the pins that keep them one definition:
-the Python tier ≡ its SQL twin ≡ theme.js tierFor's cut-offs, and compat's
+the Python tier ≡ its SQL twin, theme.js drawing those tiers and computing none, and compat's
 transpose ≡ the row's semitone_shift (recipe.bed_shift)."""
 import importlib
 import json
@@ -163,17 +163,19 @@ def test_fold_delta_genre_and_style(app):
 
 # ── one definition ───────────────────────────────────────────────────────────
 
-def test_tier_cutoffs_are_theme_js_tierfor(app):
+def test_theme_js_draws_the_api_tiers_and_computes_none(app):
+    """The UI never derives a tier: theme.js TIERS names exactly compat.TIERS,
+    in order, and the old percentage cut-offs (tierFor) are gone."""
     from matcher.compat import TIER_MIN_PCT, TIERS as ORDER
     src = (ROOT / "frontend/src/theme.js").read_text(encoding="utf-8")
-    body = src[src.index("export function tierFor"):]
-    body = body[:body.index("\n}")]
-    js = {name: int(n) for n, name in
-          re.findall(r'totalPct >= (\d+)\) return \{ tier: "(\w+)"', body)}
-    assert js == {"EXCELLENT": 85, "STRONG": 75, "GOOD": 65, "FAIR": 50}
-    assert TIER_MIN_PCT == {"strong": js["STRONG"], "good": js["GOOD"],
-                            "maybe": js["FAIR"]}
+    assert "tierFor" not in src
+    body = src[src.index("export const TIERS = ["):]
+    body = body[:body.index("];")]
+    assert tuple(re.findall(r'id: "(\w+)"', body)) == ORDER
     assert ORDER == ("strong", "good", "maybe", "long_shot")
+    assert TIER_MIN_PCT == {"strong": 75, "good": 65, "maybe": 50}
+    model = (ROOT / "frontend/src/components/pairs/pairModel.js").read_text(encoding="utf-8")
+    assert "tierMeta(c?.confidence_tier)" in model
 
 
 @pytest.mark.parametrize("pct,sure,want", [

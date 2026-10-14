@@ -192,7 +192,7 @@ export function LibraryScreen({ library, attributes, ratings, groups, player, se
         sub={`${ready.toLocaleString()} ready · ${tracks.length.toLocaleString()} total`}>
         <div className="header-search">
           <span className="glyph">⌕</span>
-          <input ref={searchRef} value={search} placeholder="Search title, artist, genre…"
+          <input ref={searchRef} data-search="library" value={search} placeholder="Search title, artist, genre…"
             onChange={(e) => setSearch(e.target.value)} />
           <span className="slash mono">/</span>
         </div>
