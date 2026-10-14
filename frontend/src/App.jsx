@@ -217,10 +217,21 @@ export default function App() {
     scoredOption: scoredOptionOf(c),
   });
 
+  // `c` on a pair (or ⇄ Compare): Analysis › Compare, vocal against bed.
+  const [compareSeed, setCompareSeed] = useState(null);
+  const compareInAnalysis = (c) => {
+    setCompareSeed({ a: c.vocal_song_id, b: c.inst_song_id, at: Date.now() });
+    setRoute("analysis");
+  };
+
   const dock = usePairDock({
     selectedTrackId, role: dockRole, ratings, onOpenStudio: pairToStudio, player,
-    onAddToSet: sets.addPair,
+    onAddToSet: sets.addPair, onCompare: compareInAnalysis,
   });
+  // A track's length, for the expanded pair card's section waveforms.
+  const durationOf = useCallback(
+    (id) => library.tracks.find((t) => t.id === id)?.duration_secs ?? null,
+    [library.tracks]);
   // Stale pairs and the one scoring job (the dock's pill, Settings' button and
   // a toast's "Re-score now" all start it). A finished run reloads the dock and
   // the library's MASH / PAIRS columns.
@@ -446,7 +457,8 @@ export default function App() {
             <PairDock dock={dock} ratings={ratings}
               onAddToSet={sets.addPair} setName={sets.active?.name || null}
               notes={notes}
-              scopeTitle={selectedTrack?.title || null} onClearScope={clearSelection}
+              scopeTrack={selectedTrack} onClearScope={clearSelection}
+              onCompare={compareInAnalysis} durationOf={durationOf}
               freshness={freshness}
               role={dockRole} onRole={setDockRole} />
           </div>
@@ -460,6 +472,7 @@ export default function App() {
         )}
         {route === "analysis" && (
           <AnalysisScreen attributes={attributes} onRailSlot={setRailSlot}
+            compareSeed={compareSeed}
             tracks={library.tracks} onPlayPair={dock.play} onOpenPair={pairToStudio} />
         )}
         {route === "track" && (

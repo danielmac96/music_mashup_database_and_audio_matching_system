@@ -77,9 +77,9 @@ def test_measured_harmony_is_drawn_and_unmeasured_is_not():
     fn = MODEL[MODEL.index("export function harmonyOf"):]
     assert "c.harmonic_shift == null" in fn and "known: false" in fn
     assert "harmonyOf(c)" in CARD
-    assert "h.known &&" in CARD
+    assert "h.known ? (" in CARD
     assert "h.bassClash &&" in CARD and "BASS_CLASH_ADVICE" in CARD
-    assert ".pc-tag.harmony" in CSS and ".pc-tag.clash" in CSS
+    assert ".pcx-harm" in CSS and ".pcx-clash" in CSS
 
 
 def test_studio_shows_the_armed_timings_harmony_and_bass_advice():

@@ -199,12 +199,18 @@ def test_the_fl_session_downloads_when_it_is_built():
     assert "a.download" in _read("download.js")
 
 
-def test_auto_advance_is_optional_and_remembered():
+def test_auto_advance_is_on_by_default_and_remembered():
+    """1–5 rates and moves to the next pair, keeping the loop playing — on
+    unless you switched it off (remembered per browser)."""
     hook = _read("hooks/usePairDock.js")
     assert "AUTO_ADVANCE_KEY" in hook and "localStorage" in hook
-    rate = hook[hook.index('if (e.key >= "1" && e.key <= "5" && row)'):]
-    rate = rate[:rate.index("window.addEventListener")]
-    assert "autoAdvance" in rate and "move(1)" in rate
+    assert 'localStorage.getItem(AUTO_ADVANCE_KEY) !== "0"' in hook   # default on
+    rate = hook[hook.index("const rateAndAdvance"):]
+    rate = rate[:rate.index("}, [")]
+    assert "if (!autoAdvance) return;" in rate
+    assert "setCursor(at + 1)" in rate and "if (wasLooping) play(list[at + 1])" in rate
+    keys = hook[hook.index('if (e.key >= "1" && e.key <= "5" && row)'):]
+    assert "rateAndAdvance(row, Number(e.key))" in keys[:200]
     assert "dock.setAutoAdvance" in _read("components/PairDock.jsx")
 
 

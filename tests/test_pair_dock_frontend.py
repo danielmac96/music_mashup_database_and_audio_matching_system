@@ -113,24 +113,31 @@ def test_the_card_draws_the_four_weighted_terms():
         assert absent not in terms, absent
 
 
-def test_every_score_term_explains_its_abbreviation():
-    """The bars print a plain name (Section / Length / Vocal / Phrase); the
-    abbreviation and the meaning stay on hover. LBL/DUR/VOI/PHR alone were
-    unreadable to 31 of 100 simulated users."""
+def test_every_meter_explains_itself():
+    """The expanded card's meters (VOI / HARM / RHY / ENGY) each carry their
+    meaning and their value on hover; the section terms keep their plain names
+    and explanations in pairModel."""
     terms = MODEL[MODEL.index("export const SCORE_TERMS"):]
     terms = terms[:terms.index("];")]
     assert terms.count("what:") == terms.count("key:") == terms.count("name:") == 4
-    assert "title={`${t.label} — ${t.what}`}>{t.name}" in CARD
+    meters = CARD[CARD.index("function metersOf("):]
+    meters = meters[:meters.index("\n}")]
+    for name in ('"VOI"', '"HARM"', '"RHY"', '"ENGY"'):
+        assert name in meters, name
+    assert 'title={`${tip}: ${v == null ? "not measured"' in CARD
 
 
-def test_each_side_shows_its_own_key_and_bpm():
-    """Both songs' tempo and key, before adjustment, on their own line."""
-    assert "bpm={c.vocal_bpm}" in CARD
-    assert "bpm={c.inst_bpm}" in CARD
-    assert "bars={c.section_bars_vocal}" in CARD
-    assert "bars={c.section_bars_bed}" in CARD
+def test_each_side_shows_its_own_genre_key_and_bpm():
+    """Variant C: each side on its own line with its own genre, key and BPM,
+    before adjustment; the bed's genre turns amber when it differs."""
+    assert 'title="Vocal BPM">{fmtBpm(cb.vocal ?? c.vocal_bpm)}' in CARD
+    assert 'title="Bed BPM">{fmtBpm(cb.bed ?? c.inst_bpm)}' in CARD
+    assert 'title="Vocal key (Camelot)"' in CARD and 'title="Bed key (Camelot)"' in CARD
+    assert 'genreDiffers ? " differs" : ""' in CARD
     css = _read("styles.css")
-    assert ".pc-bpm {" in css and ".pc-bpm.none" in css
+    assert ".pc-bpm {" in css and ".pc-genre.differs" in css
+    grid = css[css.index("\n.pc-grid {"):]
+    assert "grid-template-columns: 26px minmax(0, 1fr) auto 30px 36px" in grid[:grid.index("}")]
 
 
 def test_an_unmeasured_term_is_not_drawn_as_zero():
@@ -139,9 +146,11 @@ def test_an_unmeasured_term_is_not_drawn_as_zero():
     fn = MODEL[MODEL.index("export function termsOf"):]
     fn = fn[:fn.index("\n}")]
     assert "known" in fn and "null" in fn
-    assert "unmeasured" in CARD
+    assert "value={v == null || !Number.isFinite(Number(v)) ? null : Number(v)}" in CARD
+    prim = _read("components/ui/primitives.jsx")
+    assert 'pct == null ? " unmeasured" : ""' in prim
     css = _read("styles.css")
-    assert ".pc-bar.unmeasured" in css
+    assert ".compat-meter .track.unmeasured" in css
 
 
 def test_no_grid_is_not_a_measured_zero():
@@ -152,9 +161,15 @@ def test_no_grid_is_not_a_measured_zero():
 
 
 def test_cards_scroll_rather_than_compress():
+    """The list scrolls; a card never shrinks to fit (the list is a flex column
+    of cards that keep their own height), and nothing scrolls sideways."""
     css = _read("styles.css")
-    block = css[css.index(".pair-card {"):]
-    assert "flex: none" in block[:block.index("}")]
+    block = css[css.index("\n.pd-list {"):]
+    block = block[:block.index("}")]
+    assert "overflow-y: auto" in block and "overflow-x: hidden" in block
+    card = css[css.index("\n.pair-card {"):]
+    assert "flex-direction: column" in card[:card.index("}")]
+    assert "min-height: 58px" in css[css.index("\n.pc-grid {"):]
 
 
 def test_the_keyboard_is_gated_on_the_visible_screen():
@@ -198,15 +213,42 @@ def test_the_dock_scopes_to_the_selected_track_server_side():
 
 def test_hiding_a_pair_is_reachable_and_reversible():
     """Hiding is a display preference, not a verdict: it is suppressed by SQL
-    and never becomes training data. Without a restore it would be permanent,
-    so the count and the way back live in the Tuning panel."""
+    and never becomes training data. It is undone from the toast, from "Show
+    hidden" in the dock's filters, and in the Tuning panel."""
     hook = DOCK_HOOK[DOCK_HOOK.index("const bindKeys"):]
     assert 'e.key === "h"' in hook
-    assert "api.hidePair" in DOCK_HOOK
-    assert '["h", "hide"]' in DOCK, "the footer must advertise the key it binds"
+    assert "api.hidePair" in DOCK_HOOK and "api.unhidePair" in DOCK_HOOK
+    assert 'label: "Undo", onClick: () => unhide(candidate)' in DOCK_HOOK
+    assert "h hide" in DOCK, "the footer must advertise the key it binds"
+    assert '"showHidden", `Show hidden pairs' in DOCK
     tuning = _read("components/TuningPanel.jsx")
     assert "api.getHidden" in tuning
     assert "api.unhidePair" in tuning and "api.includeTrack" in tuning
+
+
+def test_loaded_pair_filters_never_refetch():
+    """The Filters overlay's loaded-pairs half (max stretch, transposed beds,
+    same genre, per-side genre / BPM / key, tier chips) narrows rows already
+    fetched — it is not in the fetch effect's dependencies."""
+    fetch = DOCK_HOOK[DOCK_HOOK.index("  useEffect(() => {\n    let cancelled = false;"):]
+    deps = fetch[fetch.index("}, ["):]
+    deps = deps[:deps.index("]")]
+    for name in ("df", "tierOn", "hiddenKeys"):
+        assert name not in deps, name
+    assert "export function applyLoadedFilters" in DOCK_HOOK
+    assert "applyLoadedFilters(out, df, hiddenKeys)" in DOCK_HOOK
+
+
+def test_tier_chips_and_group_headers_read_the_api_tier():
+    assert "c.confidence_tier" in DOCK_HOOK
+    assert "className=\"pd-tierhead mono\"" in DOCK
+    assert "toggleTier(t.id)" in DOCK
+
+
+def test_the_dock_resizes_and_remembers():
+    assert '"mashup.dockw.v1"' in DOCK
+    assert "DOCK_MIN = 320" in DOCK and "DOCK_MAX = 640" in DOCK and "DOCK_DEFAULT = 400" in DOCK
+    assert 'className="pd-resize"' in DOCK
 
 
 def test_score_library_lives_with_the_knobs_it_re_applies():

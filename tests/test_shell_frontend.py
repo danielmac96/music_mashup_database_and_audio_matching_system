@@ -43,10 +43,11 @@ def test_the_dock_lives_beside_the_library_not_behind_a_tab():
     assert "pair" not in nav[:nav.index("]")].lower()
 
 
-def test_the_library_layout_is_main_plus_a_404px_dock():
+def test_the_library_layout_is_main_plus_a_resizable_dock():
     block = CSS[CSS.index(".lib-layout {"):]
     block = block[:block.index("}")]
-    assert "404px" in block, "the dock is no longer the width the design fixes"
+    assert "grid-template-columns: minmax(0, 1fr) auto" in block
+    assert "style={{ width }}" in _read("components/PairDock.jsx")
     # The transport is no longer a row of this grid — it belongs to the app, so
     # a grid-column rule here would only ever be a leftover.
     # Anchored: `.module.transport` is an unrelated audition-era rule.
@@ -159,7 +160,8 @@ def test_new_shell_files_carry_no_hex():
     for rel in ("shell/Sidebar.jsx", "shell/CommandPalette.jsx", "shell/Styleguide.jsx",
                 "components/ui/primitives.jsx", "components/PlayerBar.jsx",
                 "components/LibraryScreen.jsx", "components/LibraryFilters.jsx",
-                "components/TrackTable.jsx", "components/KeyChip.jsx"):
+                "components/TrackTable.jsx", "components/KeyChip.jsx",
+                "components/PairDock.jsx", "components/PairCard.jsx"):
         assert not re.search(r"#[0-9a-fA-F]{3,8}\b", _read(rel)), rel
 
 

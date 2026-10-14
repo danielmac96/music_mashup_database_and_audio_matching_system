@@ -310,7 +310,7 @@ def test_sets_screen_is_wired():
     assert "onAddToSet: sets.addPair" in app
     dock = _read("hooks/usePairDock.js")
     assert 'e.key === "a"' in dock and "onAddToSet(row)" in dock
-    assert "pc-addset" in _read("components/PairCard.jsx")
+    assert "+ Set</button>" in _read("components/PairCard.jsx")
     studio = _read("components/MixStudio.jsx")
     assert "const layPairs" in studio and "seed?.chain" in studio
     assert "onAppendNext" in _read("components/StudioRail.jsx")
@@ -423,15 +423,16 @@ def test_studio_picker_ranks_by_fit_and_offers_scored_layers():
 
 # ── 12 / 13. pair card and library: what the scores are made of ────────────
 
-def test_pair_card_shows_artists_song_terms_and_loop_note():
+def test_pair_card_shows_artists_song_terms_and_the_recipe():
     card, model = _read("components/PairCard.jsx"), _read("components/pairs/pairModel.js")
-    assert "artist={c.vocal_artist}" in card and "pc-artist" in card
-    assert "export const SONG_TERMS" in model and "songTermsOf(candidate)" in card
+    assert '<span className="a">{c.vocal_artist || ""}</span>' in card
+    assert "export const SONG_TERMS" in model and "songTermsOf(c)" in card
     for key in ("score_bpm", "score_key", "score_energy", "score_collision"):
         assert key in model
-    assert "loop bed ×{c.section_loop_repeats}" in card
-    # A measured harmony makes the Camelot lookup context, not a verdict.
-    assert 'h.known ? " muted"' in card
+    # Looping the bed is a recipe step ("loop bed ×2"), drawn in the DO row.
+    assert "r.adjustments" in card
+    # A measured harmony is drawn as measured; without one the card says so.
+    assert "harmony not measured — Camelot estimate" in card
 
 
 def test_library_summarises_each_track_as_mashup_material(one_vocal_many_beds):
@@ -543,11 +544,16 @@ def test_library_and_editor_offer_the_octave_fix():
     assert ">×2</button>" in editor and ">÷2</button>" in editor
 
 
-def test_dock_compares_two_pairs_and_carries_notes():
-    dock, hook = _read("components/PairDock.jsx"), _read("hooks/usePairDock.js")
-    assert "function ComparePanel" in dock and "toggleCompare" in hook
-    assert 'e.key === "c"' in hook and ".slice(-2)" in hook
-    assert "notes.noteOf(c)" in dock and "pc-note" in _read("components/PairCard.jsx")
+def test_compare_goes_to_analysis_and_the_card_carries_notes():
+    """c (or ⇄ Compare) opens Analysis › Compare with the pair's vocal and bed
+    picked; the expanded card writes the pair's note."""
+    hook, app = _read("hooks/usePairDock.js"), _read("App.jsx")
+    assert 'e.key === "c"' in hook and "onCompare(row)" in hook
+    assert "setCompareSeed({ a: c.vocal_song_id, b: c.inst_song_id" in app
+    assert "compareSeed={compareSeed}" in app
+    assert "setA(String(seed.a)); setB(String(seed.b));" in _read("components/AnalysisScreen.jsx")
+    dock = _read("components/PairDock.jsx")
+    assert "notes.noteOf(c)" in dock and "pcx-note" in _read("components/PairCard.jsx")
     assert "export function usePairNotes" in _read("hooks/usePairNotes.js")
     assert "pairNote" in _read("components/StudioRail.jsx")
 
@@ -650,7 +656,7 @@ def test_pair_rows_carry_the_vocal_sections_line(one_vocal_many_beds):
     models.set_section_line(vocal, 30.0, 60.0, "Shout it out", db_path=db)
     rows = models.get_candidates_enriched(vocal_song_id=vocal, limit=5, db_path=db)
     assert rows[0]["vocal_section_line"] == "Shout it out"
-    assert "pc-line" in _read("components/PairCard.jsx")
+    assert "c.vocal_section_line" in _read("components/PairCard.jsx")
     assert "function SectionLine" in _read("components/SectionTable.jsx")
 
 

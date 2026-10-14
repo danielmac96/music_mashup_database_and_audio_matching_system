@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { fmtAttr } from "../attributes";
 
@@ -7,7 +7,7 @@ import { fmtAttr } from "../attributes";
 // show it on Track detail. Show/hide only — nothing is recomputed from here
 // (readme §9, C).
 export function AnalysisScreen({ attributes, onRailSlot, tracks = [],
-                                onPlayPair = null, onOpenPair = null }) {
+                                onPlayPair = null, onOpenPair = null, compareSeed = null }) {
   const { catalogue, categories, visibility, toggle, refresh } = attributes;
   // Which analyser is actually running, whether its models are installed, and
   // how often librosa and Essentia agree where both measured (GET
@@ -30,7 +30,7 @@ export function AnalysisScreen({ attributes, onRailSlot, tracks = [],
       </div>
       <AnalyzerStatus status={status} error={statusError} />
       <TrackCompare tracks={tracks} catalogue={catalogue} categories={categories}
-        onPlayPair={onPlayPair} onOpenPair={onOpenPair} />
+        onPlayPair={onPlayPair} onOpenPair={onOpenPair} seed={compareSeed} />
       {categories.map((cat) => (
         <section key={cat} className="an-cat">
           <h3>{cat}</h3>
@@ -181,10 +181,17 @@ function PairVerdict({ c, vocal, bed, onPlay, onOpen }) {
 }
 
 function TrackCompare({ tracks, catalogue, categories, onPlayPair = null,
-                        onOpenPair = null }) {
+                        onOpenPair = null, seed = null }) {
   const analysed = tracks.filter((t) => t.features?.full);
   const [a, setA] = useState("");
   const [b, setB] = useState("");
+  // `c` on a pair in the dock lands here with its vocal and bed picked.
+  const boxRef = useRef(null);
+  useEffect(() => {
+    if (!seed) return;
+    setA(String(seed.a)); setB(String(seed.b));
+    setTimeout(() => boxRef.current?.scrollIntoView({ block: "start" }), 50);
+  }, [seed]);
   // The question behind comparing two tracks is "do they mash?": the scored
   // pair, both ways round, with a loop and a Studio hand-off. Comparing used to
   // stop at the attributes.
@@ -216,7 +223,7 @@ function TrackCompare({ tracks, catalogue, categories, onPlayPair = null,
     ["Sections", (t) => t.section_count || null],
   ];
   return (
-    <section className="an-cat an-compare">
+    <section className="an-cat an-compare" ref={boxRef}>
       <h3>Compare two tracks</h3>
       <div className="an-compare-pick">{pick(a, setA)}<span className="faint">vs</span>{pick(b, setB)}</div>
       {pairs && (

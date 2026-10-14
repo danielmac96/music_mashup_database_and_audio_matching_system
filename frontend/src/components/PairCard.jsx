@@ -1,331 +1,274 @@
-import { useState } from "react";
-import { TrackArt } from "./TrackArt";
+import { useEffect, useMemo, useState } from "react";
 import { StarRating } from "./StarRating";
-import { RecipeStrip } from "./pairs/RecipeStrip";
+import { CompatMeter, KeyChip, MiniWave } from "./ui/primitives";
+import { useWaveform } from "../hooks/useWaveform";
 import {
-  BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, headlineOf, nudgeLabel, rawPctOf,
-  reasonsFor, songTermsOf, spanLabel, termsOf, tierOf,
+  BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, pctOf, reasonsFor, songTermsOf, termsOf, tierOf,
 } from "./pairs/pairModel";
-import { bpmTag, camelotColor, keyRel } from "../theme";
+import { compatColor, fmtTime } from "../theme";
 
-// One pair, as a card.
+// One pair, as a card — variant C of the revamp: each side on its own line with
+// its own genre, key and BPM in aligned columns, then a result line (match %,
+// tier, where it lands, the transpose, the stretch, ▶ and the stars). Under
+// 72px collapsed, so a laptop-height dock shows a screenful of pairs.
 //
-// The card exists to make a score you disagree with legible. A number on its
-// own is not reviewable — so the card shows the two section spans it is
-// actually talking about, what the keys and tempos do to each other, what
-// building it costs, and the four weighted terms the score is a sum of. A high
-// score with a flat VOI bar is a different object from a high score with a full
-// one, and you can see which you are looking at without opening anything.
+// Expanded (⏎ or a click), it shows what the score is about: the two sections
+// with their waveforms, what building it takes (DO) and what to listen for
+// (WATCH) from the pair's recipe, the fit terms, the measured harmony, the
+// note, the WHY chips once rated, and the actions. Every number is the API's
+// (confidence_tier, compat, recipe) — the card computes none of them.
 
-export function PairCard({ candidate: c, rating, onRate, focused = false,
-                           playing = false, compact = false,
-                           onSelect, onPlay, onStudio, onHide = null,
-                           onAddToSet = null, setName = null,
-                           note = "", onNote = null,
-                           comparing = false, onCompare = null,
-                           reasons = [], onReason = null,
-                           row = false, scopeNoun = "beds", scopedSide = null }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(note);
-  const tier = tierOf(c);
-  const head = headlineOf(c, scopeNoun);
-  // Unfocused pairs are a two-line row; the focused one is this full card.
-  // One card filled a laptop-height dock (20 of 100 simulated users scrolled
-  // once per pair), so scanning happens on rows and reading on the card.
-  if (row) {
-    return (
-      <PairRow c={c} tier={tier} head={head} rating={rating} onRate={onRate}
-        scopedSide={scopedSide}
-        playing={playing} onSelect={onSelect} onPlay={onPlay} onStudio={onStudio} />
-    );
-  }
-  const rel = keyRel(c.vocal_camelot, c.inst_camelot);
-  const effort = c.effort_label || null;
-  const tempo = c.target_bpm != null ? `→ ${c.target_bpm.toFixed(1)} BPM` : null;
+const signed = (n, dec = 0) => `${n > 0 ? "+" : n < 0 ? "−" : "±"}${Math.abs(n).toFixed(dec)}`;
+const FOLD = { half: "½×", double: "2×" };
+// The relation, in the few characters the result line has. With a transpose
+// the shift says it all; "transpose" itself is never printed.
+const REL = { same: "same key", relative: "relative", adjacent: "±1 step", clash: "clash" };
+
+// The meters the expanded card draws: VOI (real singing in the vocal section),
+// HARM (the measured harmonic fit), RHY (bar-profile agreement) and ENGY (the
+// two sections' energy match). Unmeasured is hatched, never zero.
+function metersOf(c) {
   const h = harmonyOf(c);
+  return [
+    ["VOI", "Vocal — how much real singing the vocal section carries", c.score_voice],
+    ["HARM", "Harmony — the two sections' notes, measured at the played transpose",
+      h.known ? c.score_key : null],
+    ["RHY", "Rhythm — per-bar onset profiles of the two sections", c.score_rhythm],
+    ["ENGY", "Energy — how close the two sections' energies are", c.score_energy_match],
+  ];
+}
+
+// The waveform of one section: the stem's 360-point envelope, sliced to the
+// section's span and resampled to `n` bars.
+function SectionWave({ songId, stem, start, end, duration, role }) {
+  const { waveform } = useWaveform(songId, stem);
+  const peaks = useMemo(() => {
+    if (!waveform?.length || !(duration > 0) || end == null || start == null) return [];
+    const n = 40;
+    return Array.from({ length: n }, (_, j) => {
+      const t = start + ((j + 0.5) / n) * (end - start);
+      return waveform[Math.min(waveform.length - 1, Math.floor((t / duration) * waveform.length))] || 0;
+    });
+  }, [waveform, start, end, duration]);
+  if (!peaks.length) return <div className="pcx-wave empty" />;
+  return <MiniWave peaks={peaks} role={role} />;
+}
+
+export function PairCard({ candidate: c, rating, onRate, focused = false, expanded = false,
+                           playing = false, onSelect, onToggle, onPlay, onStudio,
+                           onHide = null, onAddToSet = null, setName = null,
+                           note = "", onNote = null, onCompare = null,
+                           reasons = [], onReason = null, durationOf = () => null,
+                           hidden = false }) {
+  const tier = tierOf(c);
+  const ck = c.compat?.key || {};
+  const cb = c.compat?.bpm || {};
+  const cg = c.compat?.genre || {};
+  const pct = pctOf(c);
+  const shift = ck.shift_st ?? c.semitone_shift ?? 0;
+  const keyTone = !ck.known ? "var(--muted)" : !shift ? "var(--ok)"
+    : Math.abs(shift) <= 2 ? "var(--warn)" : "var(--fail)";
+  const d = cb.delta_pct;
+  const dTone = d == null ? "var(--muted)" : Math.abs(d) <= 2 ? "var(--ok)"
+    : Math.abs(d) <= 5 ? "var(--warn)" : "var(--fail)";
+  const vGenre = cg.vocal_style || cg.vocal || c.vocal_genre || "";
+  const bGenre = cg.bed_style || cg.bed || c.inst_genre || "";
+  const genreDiffers = cg.same === false;
+  const fmtBpm = (v) => (v != null ? Number(v).toFixed(1) : "—");
 
   return (
-    <div
-      className={`pair-card${focused ? " focused" : ""}${playing ? " playing" : ""}`}
-      style={focused ? { borderColor: tier.color } : undefined}
-      onClick={onSelect}
-      onDoubleClick={onStudio}>
+    <div className={`pair-card${focused ? " focused" : ""}${expanded ? " expanded" : ""}`
+        + `${playing ? " playing" : ""}${hidden ? " is-hidden" : ""}`}
+      title="Click to expand (⏎) · double-click opens Studio"
+      onClick={onToggle} onDoubleClick={onStudio}>
+      <div className="pc-grid">
+        <span className="pc-role vox mono">VOX</span>
+        <div className="pc-name"><span className="t vox">{c.vocal_title || "—"}</span>
+          <span className="a">{c.vocal_artist || ""}</span></div>
+        <span className="pc-genre">{vGenre}</span>
+        <KeyChip camelot={ck.vocal || c.vocal_camelot} title="Vocal key (Camelot)" />
+        <span className="pc-bpm mono" title="Vocal BPM">{fmtBpm(cb.vocal ?? c.vocal_bpm)}</span>
 
-      <div className="pc-head">
-        <div className="pc-score mono" style={{ color: tier.color }}
-          title={`${head.why} · raw score ${rawPctOf(c)}`}>{head.big}</div>
-        <div className="pc-headtext">
-          <div className="pc-tier mono" style={{ color: tier.color }}>
-            {tier.tier} <span className="pc-headsmall">{head.small}</span>
-          </div>
-          <div className="pc-sub">{tempo || "—"}</div>
-        </div>
-        {effort && (
-          <span className={`pc-effort mono ${EFFORT_TONE[effort] || ""}`}
-            title={c.effort_reason || "How much work building this pair is"}>
-            {effort}
+        <span className="pc-role bed mono">BED</span>
+        <div className="pc-name"><span className="t bed">{c.inst_title || "—"}</span>
+          <span className="a">{c.inst_artist || ""}</span></div>
+        <span className={`pc-genre${genreDiffers ? " differs" : ""}`}
+          title={`Vocal: ${[cg.vocal, cg.vocal_style].filter(Boolean).join(" / ") || "—"} · `
+            + `Bed: ${[cg.bed, cg.bed_style].filter(Boolean).join(" / ") || "—"}`
+            + (genreDiffers ? " — different genres" : "")}>{bGenre}</span>
+        <KeyChip camelot={ck.bed || c.inst_camelot} title="Bed key (Camelot)" />
+        <span className="pc-bpm mono" title="Bed BPM">{fmtBpm(cb.bed ?? c.inst_bpm)}</span>
+
+        <div className="pc-result" onClick={(e) => e.stopPropagation()}>
+          <span className="pc-pct mono" style={{ color: tier.color }}
+            title={`Library percentile ${pct}: better than ${pct}% of every scored pair`}>{pct}%</span>
+          <span className="pc-tier mono" style={{ color: tier.color }}
+            title={`Confidence: ${tier.label} · ${pct}% match`}>
+            <span className="glyph">{tier.glyph}</span> {tier.label}
           </span>
-        )}
-      </div>
-
-      <div className="pc-sides">
-        <Side role="VOX" songId={c.vocal_song_id} title={c.vocal_title} artist={c.vocal_artist}
-          span={spanLabel(c.vocal_section_label, c.vocal_section_start,
-            c.vocal_section_end)}
-          bars={c.section_bars_vocal} line={c.vocal_section_line}
-          camelot={c.vocal_camelot} bpm={c.vocal_bpm} />
-        <Side role="BED" songId={c.inst_song_id} title={c.inst_title} artist={c.inst_artist}
-          span={spanLabel(c.inst_section_label, c.inst_section_start,
-            c.inst_section_end)}
-          bars={c.section_bars_bed}
-          camelot={c.inst_camelot} bpm={c.inst_bpm} />
-      </div>
-
-      <div className="pc-tags">
-        {/* With a measured harmony the Camelot lookup is context, not the
-            verdict — drawn neutral, so "5 STEPS OFF" in amber no longer sits
-            beside a 90% fit as if the two disagreed. */}
-        <span className={`pc-tag mono${h.known ? " muted" : ""}`}
-          style={h.known ? undefined : { background: rel.tagBg, color: rel.tagColor }}
-          title={h.known
-            ? `Camelot lookup: ${rel.text} The measured fit (♪) is what ranks this pair.`
-            : rel.text}>
-          {h.known ? `${c.vocal_camelot || "?"}/${c.inst_camelot || "?"} wheel` : rel.tag}
-          {!h.known && rel.suggest ? ` · ${rel.suggest > 0 ? "+" : ""}${rel.suggest} st` : ""}
-        </span>
-        {/* The tempo move is a recipe step ("bed tempo −1.5%", "bed at half
-            time"); this older tag measured it the other way round, so the two
-            printed one stretch with opposite signs. */}
-        {!c.recipe && (
-          <span className="pc-tag mono neutral">
-            {bpmTag(c.vocal_bpm, c.inst_bpm)}
+          <span className="pc-land mono" style={{ color: keyTone }}
+            title={`Vocal ${ck.vocal || "?"} · bed ${ck.bed || "?"} → lands in ${ck.landing || "?"}`
+              + `${ck.relation ? ` (${ck.relation})` : ""}${shift ? `. Bed transposed ${signed(shift)} semitones` : ""}`}>
+            → <KeyChip camelot={ck.landing} />{" "}
+            {shift ? `${signed(shift)} st` : (REL[ck.relation] || (ck.known ? "" : "key ?"))}
           </span>
-        )}
-        {/* Nudge and loop are recipe steps: drawn here only for a row that
-            arrived without a recipe. */}
-        {!c.recipe && (
-          <span className="pc-tag mono muted"
-            title={c.alignment_offset == null
-              ? "Neither side has a stored downbeat grid, so there is no measured offset — not a measured zero."
-              : "How far to slide the bed so the two bar lines land together."}>
-            {nudgeLabel(c.alignment_offset, c.target_bpm)}
-          </span>
-        )}
-        {/* The measured harmony: the two sections' notes cross-correlated over
-            all twelve transpositions, not the Camelot lookup beside it. */}
-        {h.known && (
-          <span className={`pc-tag mono ${h.clash ? "clash" : "harmony"}`}
-            title={`Measured harmonic fit${h.fitPct != null ? ` ${h.fitPct}%` : ""} at ${h.shift > 0 ? "+" : ""}${h.shift} semitones on the bed`
-              + (h.sure ? "" : " — low confidence: another transposition fits almost as well")
-              + (h.clash ? ". Below 55% the notes genuinely clash." : ".")}>
-            ♪ {h.fitPct != null ? `${h.fitPct}%` : "fit"}
-            {h.shift ? ` · ${h.shift > 0 ? "+" : ""}${h.shift} st` : ""}{h.sure ? "" : " ?"}
-          </span>
-        )}
-        {h.bassClash && (
-          <span className="pc-tag mono clash" title={BASS_CLASH_ADVICE}>bass clash</span>
-        )}
-        {!c.recipe && (c.section_loop_repeats ?? 1) > 1 && (
-          <span className="pc-tag mono neutral"
-            title={c.section_note || "The bed section is shorter than the vocal's: loop it to cover"}>
-            loop bed ×{c.section_loop_repeats}
-          </span>
-        )}
-      </div>
-
-      <RecipeStrip recipe={c.recipe} compact={compact} />
-
-      {!compact && <ScoreBars candidate={c} />}
-
-      {(note || editing) && (
-        <div className="pc-note" onClick={(e) => e.stopPropagation()}>
-          {editing ? (
-            <input autoFocus value={draft} placeholder="opener · needs a riser · use the 2nd chorus"
-              onChange={(e) => setDraft(e.target.value)}
-              onBlur={() => { setEditing(false); if (draft !== note) onNote?.(draft.trim()); }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") e.currentTarget.blur();
-                if (e.key === "Escape") { setDraft(note); setEditing(false); }
-                e.stopPropagation();
-              }} />
-          ) : (
-            <span title="Click to edit" onClick={() => { setDraft(note); setEditing(true); }}>✎ {note}</span>
+          {d != null && (
+            <span className="pc-delta mono" style={{ color: dTone }}
+              title={`Vocal ${fmtBpm(cb.vocal)} BPM · bed ${fmtBpm(cb.bed)} BPM`
+                + `${FOLD[cb.fold] ? ` played at ${cb.fold} time` : ""} · stretch ${signed(d, 1)}%`}>
+              Δ{signed(d, 1)}%{FOLD[cb.fold] && <span className="fold"> {FOLD[cb.fold]}</span>}
+            </span>
           )}
+          <span className="grow" />
+          <button className={`pc-play${playing ? " on" : ""}`}
+            title={playing ? "Stop the loop (space)" : "Loop this pair (space)"}
+            onClick={(e) => { e.stopPropagation(); onSelect?.(); onPlay(); }}>{playing ? "❚❚" : "▶"}</button>
+          <StarRating value={rating} onRate={onRate} size={11} />
         </div>
+      </div>
+
+      {expanded && (
+        <Expanded c={c} rating={rating} note={note} onNote={onNote} reasons={reasons}
+          onReason={onReason} onStudio={onStudio} onAddToSet={onAddToSet} setName={setName}
+          onCompare={onCompare} onHide={onHide} durationOf={durationOf} hidden={hidden} />
+      )}
+    </div>
+  );
+}
+
+function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddToSet, setName,
+                    onCompare, onHide, durationOf, hidden }) {
+  const [draft, setDraft] = useState(note || "");
+  useEffect(() => { setDraft(note || ""); }, [note]);
+  const h = harmonyOf(c);
+  const r = c.recipe || {};
+  // Every step explains itself on hover (recipe.adjustments[].why) and says
+  // how much work it is (free / light / heavy).
+  const doChips = r.adjustments || [];
+  const watch = r.warnings || [];
+  const bars = (n) => (n ? ` · ${n} bars` : "");
+  const span = (s, e) => (s != null && e != null ? `${fmtTime(s)}–${fmtTime(e)}` : "");
+  const engine = c.scope_rank != null && c.scope_total
+    ? `Engine #${c.scope_rank} of ${c.scope_total} in this scope`
+    : `Library percentile ${pctOf(c)}`;
+  const stop = (e) => e.stopPropagation();
+
+  return (
+    <div className="pcx" onClick={stop} onDoubleClick={stop}>
+      <div className="pcx-secs">
+        <span className="pc-role vox mono">VOX</span>
+        <div className="pcx-sec">
+          <div className="pcx-sechead"><b className="vox">{c.vocal_section_label || "section"}</b>
+            <span className="mono muted">{span(c.vocal_section_start, c.vocal_section_end)}{bars(c.section_bars_vocal)}</span></div>
+          {c.vocal_section_line && <span className="pcx-line">“{c.vocal_section_line}”</span>}
+          <SectionWave songId={c.vocal_song_id} stem="vocals" role="vocal"
+            start={c.vocal_section_start} end={c.vocal_section_end} duration={durationOf(c.vocal_song_id)} />
+        </div>
+        <span className="pc-role bed mono">BED</span>
+        <div className="pcx-sec">
+          <div className="pcx-sechead"><b className="bed">{c.inst_section_label || "section"}</b>
+            <span className="mono muted">{span(c.inst_section_start, c.inst_section_end)}{bars(c.section_bars_bed)}</span></div>
+          <SectionWave songId={c.inst_song_id} stem="instrumental" role="bed"
+            start={c.inst_section_start} end={c.inst_section_end} duration={durationOf(c.inst_song_id)} />
+        </div>
+      </div>
+
+      <div className="pcx-chips">
+        <span className="caps">DO</span>
+        {doChips.length ? doChips.map((a) => (
+          <span key={a.key || a.text} className={`pcx-do ${a.level || ""}`}
+            title={[a.why, a.level ? `${a.level} to build` : null].filter(Boolean).join(" · ")}>
+            {a.text}
+          </span>
+        )) : <span className="pcx-do">nothing — drop both in</span>}
+        {watch.length > 0 && <span className="caps watch-label">WATCH</span>}
+        {watch.map((w) => (
+          <span key={w.key || w.text} className="pcx-watch" title={w.why || w.text}>⚠ {w.text}</span>
+        ))}
+      </div>
+
+      <div className="pcx-cols">
+        <div className="pcx-meters">
+          {metersOf(c).map(([name, tip, v]) => (
+            <CompatMeter key={name} name={name}
+              value={v == null || !Number.isFinite(Number(v)) ? null : Number(v)}
+              title={`${tip}: ${v == null ? "not measured" : `${Math.round(v * 100)}%`}`} />
+          ))}
+        </div>
+        <div className="pcx-side">
+          {h.known ? (
+            <span className="mono pcx-harm"
+              style={{ color: compatColor(h.fitPct) }}
+              title={"Measured harmony: the two sections' notes cross-correlated over 12 transpositions"
+                + (h.sure ? "" : " — another transposition fits almost as well")}>
+              ♪ Measured harmony {h.fitPct != null ? `${h.fitPct}%` : ""}
+              {h.shift ? ` at bed ${h.shift > 0 ? "+" : ""}${h.shift} st` : ""}{h.sure ? "" : " ?"}
+            </span>
+          ) : (
+            <span className="mono muted">♪ harmony not measured — Camelot estimate</span>
+          )}
+          {h.bassClash && <span className="pcx-clash" title={BASS_CLASH_ADVICE}>✕ bass clash</span>}
+          <span className="muted small">{engine}</span>
+          {c.effort_label && (
+            <span className={`small pcx-effort ${EFFORT_TONE[c.effort_label] || ""}`}
+              title={c.effort_reason || "How much stretching, transposing and grid uncertainty building it costs"}>
+              Effort: {c.effort_label}{c.effort_reason ? ` — ${c.effort_reason}` : ""}
+            </span>
+          )}
+          {/* The terms the score is a sum of, as a compact readout: the section
+              fit, then the track fit. Unmeasured is "—", never 0. */}
+          <span className="muted small pcx-terms">
+            {termsOf(c).map((t) => `${t.name} ${t.known ? Math.round(t.value * 100) : "—"}`).join(" · ")}
+          </span>
+          <span className="muted small pcx-terms">
+            {songTermsOf(c).map((t) => `${t.name} ${t.known ? Math.round(t.value * 100) : "—"}`).join(" · ")}
+          </span>
+        </div>
+      </div>
+
+      {onNote && (
+        <input className="pcx-note" value={draft}
+          placeholder="Note — opener · needs a riser · use the 2nd chorus"
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => { if (draft.trim() !== (note || "")) onNote(draft.trim()); }}
+          onKeyDown={(e) => {
+            e.stopPropagation();
+            if (e.key === "Enter" || e.key === "Escape") {
+              if (e.key === "Escape") setDraft(note || "");
+              e.currentTarget.blur();
+            }
+          }} />
       )}
 
-      {/* Why the star: offered on the focused card once it is rated. */}
-      {focused && rating && onReason && (
-        <div className="pc-why" onClick={(e) => e.stopPropagation()}
+      {rating && onReason && (
+        <div className="pcx-why"
           title="Why this rating? Never changes the verdict — it is what the scorer's terms get checked against">
-          <span className="pc-recipe-label mono">WHY</span>
-          {reasonsFor(rating).map((r) => (
-            <button key={r.key}
-              className={`pc-reason ${r.tone}${reasons.includes(r.key) ? " on" : ""}`}
-              onClick={() => onReason(r.key)}>{r.label}</button>
+          <span className="caps">WHY</span>
+          {reasonsFor(rating).map((x) => (
+            <button key={x.key} className={`pcx-reason ${x.tone}${reasons.includes(x.key) ? " on" : ""}`}
+              onClick={() => onReason(x.key)}>{x.label}</button>
           ))}
         </div>
       )}
 
-      <div className="pc-foot">
-        <StarRating value={rating} onRate={onRate} size={15} />
-        <button className="pc-loop" onClick={(e) => { e.stopPropagation(); onPlay(); }}
-          title={playing ? "Stop (space)" : "Loop this pair (space)"}>
-          {playing ? "◍ looping" : "▶ loop"}
-        </button>
-        <button className="pc-studio" onClick={(e) => { e.stopPropagation(); onStudio(); }}
-          title="Open both tracks in Studio (enter)">Studio ⏎</button>
+      <div className="pcx-actions">
+        <button className="btn-primary" onClick={onStudio} title="Open both tracks in Studio">Open in Studio</button>
         {onAddToSet && (
-          <button className="pc-addset" onClick={(e) => { e.stopPropagation(); onAddToSet(); }}
+          <button className="ui-btn" onClick={onAddToSet}
             title={`Add to the set “${setName || "My set"}” (a)`}>+ Set</button>
         )}
-        {onNote && !note && !editing && (
-          <button className="pc-hide" title="Add a note to this pair — never training data"
-            onClick={(e) => { e.stopPropagation(); setDraft(""); setEditing(true); }}>✎</button>
-        )}
         {onCompare && (
-          <button className={`pc-hide pc-cmp${comparing ? " on" : ""}`}
-            title="Compare side by side (c) — pick two"
-            onClick={(e) => { e.stopPropagation(); onCompare(); }}>⇄</button>
+          <button className="ui-btn" onClick={onCompare}
+            title="Compare the two tracks in Analysis (c)">⇄ Compare</button>
         )}
+        <span className="grow" />
         {onHide && (
-          <button className="pc-hide" onClick={(e) => { e.stopPropagation(); onHide(); }}
-            title="Hide this pair (h). A display preference, not a verdict — it never trains the scorer, and ⚙ restores it.">⊘</button>
+          <button className="ui-btn ghosted" onClick={onHide}
+            title="Hide this pair (h) — a display preference, never a verdict">
+            {hidden ? "↺ Unhide" : "⊘ Hide"}
+          </button>
         )}
       </div>
-    </div>
-  );
-}
-
-// A pair as a two-line row: who over whom and which moments, then where it
-// lands (key, tempo), what the bed needs (its transpose), the measured fit,
-// the build effort and the two things you do on every row — loop and rate.
-// Click focuses it (the full card), double-click opens Studio.
-function PairRow({ c, tier, head, rating, onRate, playing, onSelect, onPlay, onStudio,
-                   scopedSide = null }) {
-  const h = harmonyOf(c);
-  const shift = c.recipe?.bed_semitones ?? c.semitone_shift ?? 0;
-  const land = c.recipe?.target_bpm ?? c.target_bpm ?? c.vocal_bpm;
-  return (
-    <div className={`pair-card pc-row${playing ? " playing" : ""}`}
-      onClick={onSelect} onDoubleClick={onStudio}
-      title="Click for the full card · double-click opens Studio">
-      <div className="pcr-line">
-        <span className="pcr-score mono" style={{ color: tier.color }} title={head.why}>
-          {head.big}
-        </span>
-        <span className="pcr-pair">
-          {/* On a list scoped to one track, that track is on every row: its
-              title gives way to the partner's, which is what differs. */}
-          <span className="pc-role mono vox">VOX</span>
-          {scopedSide !== "vocal" && <b>{c.vocal_title}</b>}
-          <span className="pcr-sec mono">{c.vocal_section_label || "—"}</span>
-          <span className="pcr-over">over</span>
-          <span className="pc-role mono bed">BED</span>
-          {scopedSide !== "instrumental" && <b>{c.inst_title}</b>}
-          <span className="pcr-sec mono">{c.inst_section_label || "—"}</span>
-        </span>
-      </div>
-      <div className="pcr-line pcr-meta">
-        {c.vocal_camelot
-          ? <span className="pc-key mono" style={{ background: camelotColor(c.vocal_camelot) }}
-              title="The key it lands in — the vocal's; the bed is transposed to it">
-              {c.vocal_camelot}</span>
-          : <span className="pc-key mono none">—</span>}
-        <span className="mono pcr-dim" title="The tempo it lands at">
-          {land != null ? `${Math.round(land)} BPM` : "— BPM"}
-        </span>
-        <span className="mono pcr-dim" title="The bed's transpose">
-          bed {shift > 0 ? "+" : ""}{shift} st
-        </span>
-        {h.known && (
-          <span className={`mono ${h.clash ? "pcr-clash" : "pcr-dim"}`}
-            title="Measured harmonic fit of the two sections">
-            ♪ {h.fitPct}%{h.sure ? "" : " ?"}
-          </span>
-        )}
-        {c.effort_label && (
-          <span className={`pc-effort mono ${EFFORT_TONE[c.effort_label] || ""}`}
-            title={c.effort_reason || "How much work building this pair is"}>
-            {c.effort_label}
-          </span>
-        )}
-        <span className="pcr-spacer" />
-        <button className="pc-loop" onClick={(e) => { e.stopPropagation(); onPlay(); }}
-          title={playing ? "Stop (space)" : "Loop this pair (space)"}>
-          {playing ? "◍" : "▶"}
-        </button>
-        {/* Rating a row also opens it, so the WHY chips the full card offers
-            once rated are right there (they never showed for a row). */}
-        <StarRating value={rating} onRate={(n) => { onRate(n); onSelect?.(); }} size={13} />
-      </div>
-    </div>
-  );
-}
-
-// One song of the pair: what it is, which stretch of it plays, and the key and
-// tempo it brings before any adjustment. A null bpm is unanalysed, drawn as a
-// dash like the key chip, never as 0.
-function Side({ role, songId, title, artist, span, bars, camelot, bpm, line = null }) {
-  const barText = bars != null && Number.isFinite(Number(bars))
-    ? ` · ${Math.round(bars)} bars` : "";
-  return (
-    <div className="pc-side">
-      <span className={`pc-role mono ${role.toLowerCase()}`}>{role}</span>
-      <TrackArt id={songId} className="pc-art" />
-      <div className="pc-sidetext">
-        <div className="pc-title" title={artist ? `${title} — ${artist}` : title}>
-          {title}{artist && <span className="pc-artist"> · {artist}</span>}
-        </div>
-        <div className="pc-span mono">{span}{barText}</div>
-        {line && <div className="pc-line" title="The line this vocal section sings">“{line}”</div>}
-      </div>
-      {camelot
-        ? <span className="pc-key mono" style={{ background: camelotColor(camelot) }}>
-            {camelot}
-          </span>
-        : <span className="pc-key mono none">—</span>}
-      {bpm != null && Number.isFinite(Number(bpm))
-        ? <span className="pc-bpm mono" title={`${Number(bpm).toFixed(1)} BPM`}>
-            {Math.round(bpm)}
-          </span>
-        : <span className="pc-bpm mono none" title="Tempo not analysed">—</span>}
-    </div>
-  );
-}
-
-// The four weighted terms score_section is a sum of.
-//
-// An UNMEASURED term is drawn hatched, not empty. Three of these were computed
-// and thrown away until they were stored, so a candidate scored before that has
-// no value for them — and an empty bar would claim the section scored zero on a
-// test it was never given.
-function ScoreBars({ candidate }) {
-  return (
-    <>
-      <Bars terms={termsOf(candidate)} group="section fit" />
-      <Bars terms={songTermsOf(candidate)} group="track fit" song />
-    </>
-  );
-}
-
-function Bars({ terms, group, song = false }) {
-  return (
-    <div className={`pc-bars${song ? " song" : ""}`} data-group={group}>
-      {terms.map((t) => (
-        <div key={t.key} className="pc-bar-row">
-          <span className="pc-bar-label" title={`${t.label} — ${t.what}`}>{t.name}</span>
-          <span className={`pc-bar${t.known ? "" : " unmeasured"}`}
-            title={t.known
-              ? `${t.name} ${(t.value * 100).toFixed(0)}% — ${t.what}`
-              : `${t.name} not measured — re-score the library to fill this in (${t.what})`}>
-            {t.known && (
-              <span style={{ width: `${Math.round(t.value * 100)}%`,
-                             background: t.color }} />
-            )}
-          </span>
-        </div>
-      ))}
     </div>
   );
 }

@@ -289,11 +289,13 @@ def test_the_card_and_the_set_show_the_recipe():
     assert "recipe.adjustments" in strip and "recipe.warnings" in strip
     assert "title={a.why}" in strip, "every adjustment explains itself"
     card = _read("components/PairCard.jsx")
-    assert "<RecipeStrip recipe={c.recipe}" in card
+    assert "const doChips = r.adjustments || [];" in card
+    assert "const watch = r.warnings || [];" in card
+    assert "title={[a.why," in card, "every DO chip explains itself"
     assert "<RecipeStrip recipe={item.recipe} compact" in _read("components/SetScreen.jsx")
     css = (FRONT / "styles.css").read_text(encoding="utf-8")
     for cls in (".pc-recipe", ".pc-adj.free", ".pc-adj.light", ".pc-adj.heavy",
-                ".pc-warn", ".set-recipe"):
+                ".pc-warn", ".set-recipe", ".pcx-do", ".pcx-watch"):
         assert cls in css, cls
 
 
@@ -340,5 +342,10 @@ def test_effort_prices_the_transpose_the_pair_plays():
 
 
 def test_the_card_does_not_print_the_stretch_twice():
+    """The stretch is printed once on the result line, from compat.bpm — the
+    recipe's own wording is in the DO row of the expanded card."""
     card = _read("components/PairCard.jsx")
-    assert "{!c.recipe && (\n          <span className=\"pc-tag mono neutral\">\n            {bpmTag(" in card
+    assert card.count("Δ{signed(d, 1)}%") == 1
+    assert "bpmTag(" not in card
+
+

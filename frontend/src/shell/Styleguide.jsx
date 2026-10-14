@@ -3,6 +3,31 @@ import {
   BpmChip, CompatMeter, Disclosure, GenreTag, KeyChip, MiniWave, Sparkline,
   StatusPill, TierBadge,
 } from "../components/ui/primitives";
+import { PairCard } from "../components/PairCard";
+
+// One pair row in the shape GET /api/mashups returns (confidence_tier, compat,
+// recipe), so the card here is drawn by exactly the code the dock uses.
+const SAMPLE_PAIR = {
+  vocal_song_id: -1, inst_song_id: -2, vocal_section_idx: 2, inst_section_idx: 3,
+  vocal_title: "Midnight Signal", vocal_artist: "Kessa Vale", inst_title: "Cold Groove",
+  inst_artist: "DJ Morrow", vocal_camelot: "5A", inst_camelot: "7A", vocal_bpm: 113, inst_bpm: 115.2,
+  vocal_section_label: "chorus", inst_section_label: "drop", vocal_section_start: 72.4,
+  vocal_section_end: 104.1, inst_section_start: 48.0, inst_section_end: 81.3,
+  section_bars_vocal: 16, section_bars_bed: 16, score_percentile: 0.912, semitone_shift: -2,
+  confidence_tier: "strong", score_voice: 0.88, score_key: 0.67, harmonic_shift: -2,
+  harmonic_sure: true, score_rhythm: 0.97, score_energy_match: 0.42, bass_clash: 1,
+  score_label: 0.9, score_duration: 1, score_phrase: 0.75, scope_rank: 2, scope_total: 31,
+  compat: {
+    key: { vocal: "5A", bed: "7A", landing: "5A", relation: "transpose", steps: 2, shift_st: -2, known: true },
+    bpm: { vocal: 113, bed: 115.2, delta_pct: -1.91, fold: "none" },
+    genre: { vocal: "R&B", bed: "House", vocal_style: "Contemporary R&B", bed_style: "Deep House", same: false },
+  },
+  recipe: {
+    adjustments: [{ text: "bed tempo −1.9%" }, { text: "bed −2 st" }, { text: "bed high-pass 120 Hz" }],
+    warnings: [{ text: "the bed's bass fights the vocal's tonic" }],
+  },
+};
+const noop = () => {};
 
 // ?styleguide — dev builds only. The tokens from styles.css :root and the
 // shared primitives, drawn by the same code the screens use, so a token change
@@ -109,6 +134,19 @@ export function Styleguide() {
           </div>
           <p className="muted">Motion: 120 ms ease for hover, width and colour. Nothing animates
             longer than 150 ms. Running state pulses at 1.4 s.</p>
+        </div>
+      </section>
+
+      <section>
+        <h2>Pair card · variant C (the dock's)</h2>
+        <p className="muted">Each side carries its own genre, key and BPM in aligned columns;
+          the result line sits underneath. Under 72px collapsed.</p>
+        <div className="sg-cards">
+          <PairCard candidate={SAMPLE_PAIR} rating={null} onRate={noop} onToggle={noop}
+            onPlay={noop} onStudio={noop} />
+          <PairCard candidate={SAMPLE_PAIR} rating={4} onRate={noop} onToggle={noop}
+            onPlay={noop} onStudio={noop} expanded focused onAddToSet={noop}
+            onCompare={noop} onHide={noop} onNote={noop} onReason={noop} />
         </div>
       </section>
 

@@ -368,93 +368,79 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
   toggles — the ✕ on the dock's scope line, or `esc`, goes back to the whole
   library); click anywhere in the **title/artist column** to open the track
   detail screen.
-- The permanent **pair dock** lists the best pairs for the selected track (as
-  vocal or as bed — every one of them: the per-song cap never counts the track
-  the list is scoped to) or for the whole library. Keys: `↑↓` move · `space`
-  loop · `1–5` rate · `V`/`B` solo · `h` hide · `a` add to the active set ·
-  `c` compare · `⏎` open in Studio. **auto-advance** (in the key strip, off by
-  default and remembered per browser) steps to the next pair after a rating,
-  still looping if it was.
+- The permanent **pair dock** (400px, drag its left edge between 320 and 640;
+  remembered as `mashup.dockw.v1`) lists the best pairs for the selected track
+  — **for {track}**, with an **As vocal / As bed** switch carrying each side's
+  partner count; every one of them: the per-song cap never counts the track
+  the list is scoped to — or **Best in library**. Keys (when the table does
+  not have focus — tab across): `↑↓` move · `space` loop · `1–5` rate and move
+  on, still looping · `⏎` expand · double-click open in Studio · `V`/`B` solo ·
+  `h` hide · `a` add to the active set · `c` compare the two tracks in Analysis.
+  **auto-advance** (in the key strip, on unless you switch it off; remembered
+  per browser) is the "move on" after a rating.
+- **Tier chips** (Strong / Good / Maybe / Long-shot, with counts) narrow the
+  list to tiers, and under the Score order the cards sit under a header per
+  tier. The tier is the API's `confidence_tier` (§5.13); the percentage is only
+  ever shown as a number.
 - **Stale pairs show on the dock.** When analysed tracks changed after the last
   scoring run began (new analysis, a BPM/key fix, a beat-phase fix, a re-cut —
   `songs.pairs_input_at`), a strip under the dock's header says so with
   **↻ Re-score · N changed** (**Score library** when nothing has been scored);
-  it shows the job's progress and reloads the dock and the library's MASH /
-  PAIRS columns when it lands (`GET /api/mashups/freshness`, polled every 20 s
+  it shows the job's progress and reloads the dock and the library's Best pair /
+  Pairs columns when it lands (`GET /api/mashups/freshness`, polled every 20 s
   and re-checked at once after a BPM/key edit or a bar-1 fix). Fixing a BPM
   offers **Re-score now** on its toast.
-- **★ Keepers** lists the pairs you rated 4–5, every section pairing of them,
-  uncapped. **⇄** (or `c`) holds two pairs side by side above the list: every
-  term aligned, the better value green, A/B loop buttons. **✎** puts a note on
-  a pair ("opener", "use the 2nd chorus") — shown on the card, in Studio and in
-  sets, and never training data. **+ Set** adds the pair to the active set.
-- **Sort the dock** by Score, Effort, Uncertain, or by one section term from
-  the **By…** menu — Section / Length / Vocal / Phrase. Every order but Effort is the server's, so it ranks
-  the library; Effort re-sorts the page already fetched and says so. An
-  unmeasured term sorts last, never as zero.
-- **Find and filter the dock.** Filters opens over the list (it used to push
-  the list down to a sliver) and closes with **Done**, `esc` or a click on the
-  list below it; each active filter then
-  shows as a pill under the search box, ✕ to drop it. Two songs as **`A + B`**
-  (or `A w/ B`) find the pairs of exactly those two, either way round — "does
-  this vocal work on that bed?" (`models._two_track_query`; `x`, `with` and
-  `vs` stay part of a title). No result says they were never scored together
-  and why that usually is, rather than "loosen a filter". Otherwise the search box matches either side's title or
-  artist across every scored pair. **Filters** narrow by min match
-  (percentile), build effort (free / free or light), genre and era (either
-  side), BPM band (the vocal's), bed energy, vocal-forward, and **adventure**
-  (under Score, pulls cross-genre/era contrast forward among pairs that already
-  fit), **Rated** (by you / loved / not rated yet), **Lands in** a Camelot key
-  ± 0–2 steps (the vocal's key — the bed is transposed to it; relative
-  major/minor count as the same place), and **Vocal part** / **Bed part**
-  (section type). All of it runs in SQL, so it searches the library, not the
-  40 rows on screen; **Load more pairs** pages the same list (offset applied
-  after the per-song cap). **Best bed per vocal** swaps the list for one row
-  per acapella.
-- **Export** (beside Filters) takes the top 5/10/16 under the current filters
-  as **CSV / cue sheet / rekordbox** files, or **⤓ FL sessions** as one zip of
-  FL session folders (§5.11). It used to sit at the bottom of the Filters
-  panel.
-- **Rows, then a card.** Every pair but the focused one is a two-line row:
-  the headline, vocal and bed with their sections (on a list scoped to a track,
-  only the partner's title — the track is on every row), then the landing key
-  and tempo, the bed's transpose, the measured fit, the effort chip, ▶ and the
-  stars. Click a row (or `↑↓`) to open it as the full card below;
-  double-click opens Studio. A laptop-height dock shows five pairs where it
-  showed one card.
-- **The headline.** On a list scoped to a track: the pair's rank among that
-  track's partners, `#3` with "of 20 beds · 96.1%" beside it (`scope_rank` /
-  `scope_total`, §5.7); library-wide: the percentile to one decimal (`99.6`).
-  Integers read 100, 100, 100, 99 down a good library's first page.
-- The full card gives one line per song — title · artist, section span and
-  bars, the vocal section's line when you have typed one, key, BPM — then the
-  key relation (drawn neutral as `8A/9B wheel` when a measured harmony exists,
-  because then it is context, not the verdict), the **recipe** (§5.7) — a
-  **DO** row of what building it takes, each chip graded free / light / heavy
-  like the effort chip and explained on hover (`bed at half time`, `bed tempo
-  −1.5%`, `bed +3 st`, `nudge bed +12 ms`, `loop bed ×2`, `bed −6.0 dB`, `bed
-  high-pass 120 Hz`; "nothing — drop both in" when there is nothing to do), and
-  a **WATCH** row of what the numbers cannot promise (a suspected half/double
-  BPM, a coin-flip transpose, clashing notes, no beat grid, rough separation) —
-  the **measured harmony** (`♪ 92% · +2 st` — the two sections' notes
-  cross-correlated, §5.7; `?` when the transpose is a closer call than most
-  pairs in your library;
-  red below 55%), a red **bass clash** tag with the high-pass advice,
-  the four **section fit** bars, the **track fit** bars and the rating.
-  **Section** label priority, **Length** bars covered (looping allowed),
-  **Vocal** vocal presence, **Phrase** phrase-length agreement; **Tempo**
-  tempo closeness, **Harmony** the measured harmonic fit, **Energy** loudness
-  match, **Room** spectral room (§5.7; **Timbre** only on bed-over-bed, where
-  it is weighted); hover a name for its abbreviation and meaning. A **hatched** bar is not
-  measured (the pair was scored before that term was stored) — **Score
-  library** fills it. Clicking the star you already set **clears** the rating,
-  which removes the judgement entirely (§7). Once the focused card is rated, a
-  **WHY** row offers reasons — praise for 4–5 stars (vocal sits, groove locks,
-  energy lift, keys sing, great contrast), faults for 1–2 (key clash, timing
-  off, vocal buried, bass mud, energy mismatch, bad separation, boring), both
-  for a 3. They sit beside the verdict (`pair_feedback.reasons_json`), never
-  change it and do not train anything yet: they are what phase 3 checks the
-  section terms against (§9).
+- **The library-wide row**: the search box (either side's title or artist,
+  across every scored pair; two songs as **`A + B`** or `A w/ B` find the pairs
+  of exactly those two, either way round — `models._two_track_query`; no result
+  says they were never scored together and why that usually is), **★ Keepers**
+  (the pairs you rated 4–5, every section pairing, uncapped), **Sort** (Score,
+  Effort, Uncertain, or one section term — Section / Length / Vocal / Phrase;
+  every order but Effort is the server's, so it ranks the library; an
+  unmeasured term sorts last), and **Export ▾** (the top 5/10/16 under the
+  current filters as **CSV / cue sheet / rekordbox**, or **⤓ FL sessions** as
+  one zip, §5.11). **Load more pairs** pages the same list.
+- **Filters** opens over the list and closes with **Done**, `esc` or a click on
+  the list below it. Its two halves never mix: **Loaded pairs** — max BPM
+  stretch (≤2 / 4 / 6%), allow transposed beds, same genre only, show the pairs
+  you hid this session, and per side (**Vocal | Bed**) genre, BPM and key —
+  narrows the rows already fetched and **never refetches** ("n of m loaded");
+  its per-side filters show as VOX / BED pills under the tier chips.
+  **Library-wide** — min match, build effort, genre and era (either side), BPM
+  band, bed energy, Rated, **Lands in** a Camelot key ± 0–2, Vocal part / Bed
+  part, vocal-forward, **Best bed per vocal** (one row per acapella) and
+  **adventure** (cross-genre/era contrast pulled forward among pairs that
+  already fit) — goes to SQL, so it searches the library; each shows as a pill.
+- **The card** (variant C, under 72px): a VOX line and a BED line, each with
+  its title, artist, genre or Discogs style (the bed's amber when it differs),
+  key chip and BPM; then the result line — the percentile, the tier, `→` the
+  landing key with the bed's transpose (or same key / relative / ±1 step), the
+  stretch `Δ%` with ½× / 2× when folded, ▶ and the stars. ⏎ or a click
+  **expands** it: the two sections (label, span, bars, the vocal section's line
+  when you have typed one) with their waveforms; the **recipe** (§5.7) as a
+  **DO** row of what building it takes (`bed at half time`, `bed tempo −1.5%`,
+  `bed +3 st`, `nudge bed +12 ms`, `loop bed ×2`, `bed −6.0 dB`, `bed high-pass
+  120 Hz`; each explained and graded free / light / heavy on hover; "nothing —
+  drop both in" when there is nothing to do) and a **WATCH** row of what the
+  numbers cannot promise (a suspected half/double BPM, a coin-flip transpose,
+  clashing notes, no beat grid, rough separation); the **VOI / HARM / RHY /
+  ENGY** meters (hatched when unmeasured — **Score library** fills them); the
+  **measured harmony** (`♪ 92% at bed +2 st`, the two sections' notes
+  cross-correlated, `?` when the transpose is a closer call than most pairs in
+  your library) or "Camelot estimate" without one; a red **bass clash** chip
+  with the high-pass advice; the engine rank in this scope (`scope_rank` /
+  `scope_total`); the effort and its reason; the section-fit and track-fit
+  terms; a **note** ("opener", "use the 2nd chorus" — shown in Studio and in
+  sets, never training data); and **Open in Studio**, **+ Set**, **⇄ Compare**
+  and **⊘ Hide** (a display preference, never a verdict — Undo on the toast,
+  or *Show hidden* in Filters, or ⚙ restores it). Clicking the star you
+  already set **clears** the rating, which removes the judgement entirely (§7).
+  Once rated, a **WHY** row offers reasons — praise for 4–5 stars (vocal sits,
+  groove locks, energy lift, keys sing, great contrast), faults for 1–2 (key
+  clash, timing off, vocal buried, bass mud, energy mismatch, bad separation,
+  boring), both for a 3. They sit beside the verdict
+  (`pair_feedback.reasons_json`), never change it and do not train anything
+  yet: they are what phase 3 checks the section terms against (§9).
 
 ### Queue
 
@@ -2143,7 +2129,10 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    payload audit: `compat.key.known`, `/by-vocal` enriched) and step 0 (tokens,
    collapsible rail, ⌘K palette, player bar, toast, `?styleguide`; tiers read
    from `confidence_tier`, `tierFor` gone), 1a (the Library: virtualised table,
-   parsing search, chip popovers, presets, the view on the server). Next: 1b pair dock,
+   parsing search, chip popovers, presets, the view on the server), 1b (the
+   pair dock: variant C cards and their expanded state, tier chips and groups,
+   loaded-pairs filters that never refetch, every library-wide control kept,
+   resizable; `c` hands off to Analysis › Compare). Next:
    1c track detail, 2 Queue, 3 Analysis, 4 Discover, 5 Mixes, B3/B4 then 6
    Sets, B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
    screen's step lands it keeps its old rail-slot block.
