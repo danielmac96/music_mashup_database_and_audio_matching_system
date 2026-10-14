@@ -160,6 +160,25 @@ def _chosen_pairing(vocal_sections: List[Dict], inst_sections: List[Dict],
 
 # What _with_option_harmony adds to a top_section_pairs row: the option's own
 # measured harmony, in the candidate row's column names, and the shift it plays.
+def _lane_suggestions(stretch, shift, gain_db, pairings, options) -> dict:
+    """{"vocal": {...}, "bed": {...}}: rate, semitones, offset_sec and gain
+    for each lane, plus the section it plays as clip_start / clip_end. The bed's
+    offset is the chosen pairing's measured bar-line nudge (None: no grid)."""
+    top = (pairings or [None])[0] or {}
+    opt = next((o for o in options or []
+                if o.get("vocal_section_idx") == top.get("vocal_section_idx")
+                and o.get("inst_section_idx") == top.get("inst_section_idx")),
+               (options or [None])[0]) or {}
+    return {
+        "vocal": {"rate": 1.0, "semitones": 0, "offset_sec": 0.0, "gain": VOCAL_LANE_GAIN,
+                  "clip_start": top.get("vocal_start"), "clip_end": top.get("vocal_end")},
+        "bed": {"rate": stretch, "semitones": shift,
+                "offset_sec": opt.get("alignment_offset"),
+                "gain": bed_lane_gain(gain_db),
+                "clip_start": top.get("inst_start"), "clip_end": top.get("inst_end")},
+    }
+
+
 OPTION_HARMONY_KEYS = ("harmonic_shift", "score_key", "harmonic_confidence",
                        "harmonic_sure", "bass_clash", "harmony_advice",
                        "semitone_shift")
@@ -376,6 +395,10 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
         "bed_gain_db": gain_db,
         "vocal_lane_gain": VOCAL_LANE_GAIN,
         "bed_lane_gain": bed_lane_gain(gain_db),
+        # Each lane's suggested settings in Studio's own terms — the grey
+        # ticks on its sliders (revamp B5). One block, so the rail never
+        # assembles them from four places.
+        "lanes": _lane_suggestions(stretch, shift, gain_db, pairings, section_options),
         "vocal_sections": v_sections,
         "inst_sections": i_sections,
         "pairings": pairings,

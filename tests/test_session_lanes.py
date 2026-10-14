@@ -273,3 +273,72 @@ def test_batch_route_takes_explicit_pairs_with_lanes(client):
     assert c.post("/api/mashups/session/batch", json={"pairs": []}).status_code == 400
     # No pairs: the filtered top N, as before (nothing scored here → 404).
     assert c.post("/api/mashups/session/batch", json={}).status_code == 404
+
+
+# ── B5: a trimmed or extended clip renders as it plays ──────────────────────
+
+def test_a_lane_trim_replaces_the_sections_edges(env):
+    from render.session import build_session
+    tmp_path, db_path = env
+    vocal, inst = _pair(tmp_path, db_path)
+    plain = _session(build_session("abcdef20", vocal, inst, db_path=db_path))
+    v0, _ = sf.read(str(tmp_path / "previews" / "fl_session_abcdef20" / "vocals.wav"))
+    # The vocal clip extended 4 s before its chorus and cut 4 s short of its end.
+    out = build_session("abcdef21", vocal, inst, db_path=db_path, lanes=[
+        {"role": "vocal", "clip_start": 4.0, "clip_end": 20.0},
+        {"role": "bed", "clip_start": 24.0, "clip_end": 32.0, "hp_hz": 120.0}])
+    data = _session(out)
+    assert data["lanes"]["vocal"] == {"clip_start": 4.0, "clip_end": 20.0}
+    assert data["lanes"]["bed"] == {"clip_start": 24.0, "clip_end": 32.0, "highpass_hz": 120.0}
+    v, b = data["clips"]
+    assert (v["start_sec"], v["end_sec"]) == (4.0, 20.0)
+    assert (b["start_sec"], b["end_sec"]) == (24.0, 32.0) and b["hp_hz"] == 120.0
+    assert "start_sec" not in plain["clips"][0], "no trim, no change"
+    vy, _ = sf.read(str(out / "vocals.wav"))
+    # The files are padded to the longer of the two: the vocal's 16 s window at
+    # native rate outlasts the bed's 8 s (≈8.4 s once stretched to 120 BPM),
+    # less the snap to the first downbeat (the test grid starts ¼ beat late).
+    assert len(vy) / SR == pytest.approx(16.0, abs=0.2)
+    b_y, _ = sf.read(str(out / "instrumental.wav"))
+    assert np.abs(b_y[int(SR * 9.5):]).max() < 1e-6, "the bed stops where its trim ends"
+    assert np.abs(b_y[:int(SR * 8)]).max() > 0.01
+    assert len(v0) > 0
+    text = (out / "README.txt").read_text(encoding="utf-8")
+    assert "trimmed to 4.00–20.00 s" in text and "high-pass 120 Hz" in text
+
+
+def test_an_empty_trim_is_dropped():
+    from render.session import lane_overrides
+    out = lane_overrides([{"role": "bed", "clip_start": 10.0, "clip_end": 10.0, "lp_hz": 8000}])
+    assert out == {"bed": {"lowpass_hz": 8000.0}}
+    # The explicit name wins over its alias.
+    out = lane_overrides([{"role": "bed", "highpass_hz": 90, "hp_hz": 120}])
+    assert out == {"bed": {"highpass_hz": 90.0}}
+
+
+def test_the_route_validates_the_trim(client):
+    c, (v, i), calls = client
+    r = c.post("/api/studio/session", json={"vocal_song_id": v, "inst_song_id": i,
+               "lanes": [{"role": "bed", "clip_start": 12, "clip_end": 4}]})
+    assert r.status_code == 422 and not calls
+    r = c.post("/api/studio/session", json={"vocal_song_id": v, "inst_song_id": i,
+               "lanes": [{"role": "bed", "clip_start": 4, "clip_end": 12, "lp_hz": 9000}]})
+    assert r.status_code == 200
+    assert calls[-1][1][-1] == [{"role": "bed", "clip_start": 4.0, "clip_end": 12.0, "lp_hz": 9000.0}]
+
+
+def test_the_plan_carries_each_lanes_suggestions(env):
+    from matcher.plan import build_mashup_plan
+    tmp_path, db_path = env
+    vocal, inst = _pair(tmp_path, db_path)
+    plan = build_mashup_plan(vocal, inst, db_path=db_path)
+    lanes = plan["lanes"]
+    assert set(lanes) == {"vocal", "bed"}
+    for role in ("vocal", "bed"):
+        assert {"rate", "semitones", "offset_sec", "gain", "clip_start", "clip_end"} <= set(lanes[role])
+    assert lanes["vocal"]["rate"] == 1.0 and lanes["vocal"]["gain"] == plan["vocal_lane_gain"]
+    assert lanes["bed"]["rate"] == plan["stretch_factor"]
+    assert lanes["bed"]["semitones"] == plan["semitone_shift"]
+    assert lanes["bed"]["gain"] == plan["bed_lane_gain"]
+    top = plan["pairings"][0]
+    assert (lanes["vocal"]["clip_start"], lanes["bed"]["clip_end"]) == (top["vocal_start"], top["inst_end"])

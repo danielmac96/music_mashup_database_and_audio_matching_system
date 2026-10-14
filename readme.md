@@ -1369,13 +1369,21 @@ caches responses, and opens a breaker after repeated failures.
   row's indexes — and `session.json` records them; with none, the plan's pick.
   **Lane state**: `POST /api/studio/session` takes optional `lanes` — one per
   role (`vocal` / `bed`) with `semitones`, `rate`, `gain`, `offset_ms`,
-  `fade_in`, `fade_out`, `highpass_hz`, `lowpass_hz`, each optional. A value
-  given replaces the plan's for that lane (`render/session.lane_overrides`):
-  rate, transpose and nudge are baked into the WAVs (a later nudge pads the
-  head, an earlier one trims it; the bed's parts move with the bed); level,
+  `fade_in`, `fade_out`, `highpass_hz`, `lowpass_hz` (or the mixdown clip's
+  names `hp_hz` / `lp_hz`) and `clip_start` / `clip_end` — the clip's trim in
+  the stem's own seconds, Studio's `clipStart` / `clipEnd` — each optional. A
+  value given replaces the plan's for that lane
+  (`render/session.lane_overrides`): rate, transpose, nudge and the trim are
+  baked into the WAVs (a later nudge pads the head, an earlier one trims it; a
+  trim replaces the section's edges, so a clip extended past its section or
+  cut short of it renders as it plays; the bed's parts move with the bed); level,
   fades and filters are left to the mixer, recorded in `session.json` (`lanes`,
   and each clip in `build_mixdown`'s vocabulary) and in the README's "FROM
-  YOUR STUDIO LANES". Without `lanes` nothing changes. The batch
+  YOUR STUDIO LANES". Without `lanes` nothing changes. The plan carries each
+  lane's suggestion in Studio's terms — `plan.lanes.{vocal,bed}` = `rate`,
+  `semitones`, `offset_sec` (the bed's measured bar-line nudge, null without a
+  grid), `gain`, `clip_start` / `clip_end` (the chosen sections) — which is
+  what Studio's grey slider ticks read (`matcher/plan._lane_suggestions`). The batch
   (`POST /api/mashups/session/batch`) takes `pairs` — explicit pairs, each
   with its sections and its own `lanes` — instead of the filtered top N. The
   Studio UI does not send its lanes yet (§9). Batches zip, and skip a pair
@@ -2258,8 +2266,10 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    (Sets: the duration-width timeline, fit dots, the flow graph with the
    draggable energy curve, the four-mode inspector, gap fill, transition
    preview, four exports; the rail slot is gone — one active set, picked in
-   the header).
-   Next: B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
+   the header), B5 (the FL session honours a lane's trim and the `hp_hz` /
+   `lp_hz` names; the plan carries per-lane suggestions; the mixdown already
+   took trims, fades and filters, and Studio already saved them per lane).
+   Next: 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
    screen's step lands it keeps its old rail-slot block.
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in
