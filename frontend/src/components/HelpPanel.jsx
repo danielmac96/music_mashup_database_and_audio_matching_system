@@ -32,6 +32,7 @@ const KEYS = [
   ["Library search", "type 8A 124-128 house 2015+ vox stems — read as filters · ⏎ pin them · ↓ into the table · esc clear"],
   ["Track detail", "space play the hook · esc back to the Library (same selection and scroll) · click a section block to loop it · click or drag the structure to scrub · the dock's keys still work beside it"],
   ["Queue", "↑↓ move (opens the inspector) · ⏎ open the track · r retry a failed track · esc close the inspector"],
+  ["Discover", "⏎ search (or paste a link) · ↓ into the results · ↑↓ move · x shortlist · ⏎ preview a track, open a set or artist · / back to the search"],
   ["Pair dock", "↑↓ move · space loop · 1–5 rate and move on (again to clear) · ⏎ expand the card · double-click open in Studio · V/B solo vocal/bed · h hide · a add to set · c compare the two tracks in Analysis"],
   ["Studio", "space play · ←→ nudge a lane · L loop · [ ] timing options · 1–6 jump · ctrl/⌘+Z undo · shift+ctrl/⌘+Z redo · ⌫ remove lane"],
   ["Everywhere", "⌘K / ctrl+K command palette (↑↓ move · ⏎ open · esc close) · / focus search · space play/pause the player bar · esc back one layer · ? this help"],

@@ -1350,12 +1350,6 @@ input, select { font-family: inherit; }
    .mix-title, .mix-url, .mix-flag, .preview-check, .empty, .hint) and only
    owns the layout the mixes table's grid does not fit. */
 
-.discovery-modebar {
-  display: flex; align-items: center; gap: 14px;
-  max-width: 1400px; margin: 0 auto; padding: 16px 28px 0;
-}
-.discovery-modebar .hint { margin: 0; }
-
 /* Results left, crate shortlist right. Collapses on narrow windows so the crate
    sits under the results rather than squeezing both. */
 .link-btn {
@@ -1364,25 +1358,13 @@ input, select { font-family: inherit; }
 }
 .link-btn:hover { text-decoration: underline; }
 
-.sc-bulkbar {
-  display: flex; align-items: center; gap: 10px;
-  background: var(--inset); border: 1px solid var(--border-ctrl);
-  border-radius: 9px; padding: 8px 12px; margin-bottom: 10px;
-  position: sticky; top: 0; z-index: 2;
-}
-
 .mix-flag.warn { color: var(--amber-light); background: rgba(245, 166, 35, 0.14); }
-.sc-snip { cursor: help; white-space: nowrap; }
 
 /* Crate membership. Deliberately unlike .mix-flag.ok ("in library", green):
    these mean different things — one is "you own the audio", the other is "you
    shortlisted it". Accent-tinted and outlined so they read as a label you
    applied rather than a status the app derived. Not interactive: chips are
    read-only, adding happens through the tick-box and the bulk button. */
-.sc-crates {
-  display: flex; flex-wrap: wrap; gap: 3px;
-  justify-content: flex-end; max-width: 200px;
-}
 .crate-chip {
   font-size: 10px; line-height: 1.5; padding: 1px 6px; border-radius: 999px;
   color: var(--accent); background: var(--accent-tint);
@@ -1411,14 +1393,8 @@ input, select { font-family: inherit; }
 }
 .sc-filter-count { font-size: 11.5px; white-space: nowrap; }
 
-.sc-more { width: 100%; margin-top: 12px; }
-
 /* Why a row is here: the seeds that led to it, or the genre a set matched on.
    Small and quiet — it explains the list without competing with it. */
-.sc-because {
-  font-size: 11px; color: var(--muted); margin-top: 2px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 
 /* Your own shelves, shown where the blank "nothing yet" state used to be. */
 .sc-shelf {
@@ -1433,34 +1409,9 @@ input, select { font-family: inherit; }
 
 /* The seed picker. Choosing what to aim a run at is the first half of the pane,
    so it gets a panel rather than a toolbar. */
-.sc-seedbox {
-  display: flex; flex-direction: column; gap: 10px;
-  background: var(--inset); border: 1px solid var(--border-ctrl);
-  border-radius: 9px; padding: 12px 14px; margin-bottom: 12px;
-}
-.sc-seedpick { display: flex; flex-direction: column; gap: 8px; }
-.sc-seedpick .import-input { max-width: 340px; }
 
 /* Capped and scrolling: a big library would otherwise push the Run button off
    the screen it belongs on. */
-.sc-seedlist {
-  display: flex; flex-wrap: wrap; gap: 6px;
-  max-height: 210px; overflow-y: auto; padding: 2px;
-}
-.sc-seed {
-  background: var(--raised); border: 1px solid var(--border-ctrl);
-  border-radius: 999px; padding: 5px 11px; cursor: pointer;
-  color: var(--text-2); font: inherit; font-size: 12px;
-  max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.sc-seed:hover { border-color: var(--accent); color: var(--text); }
-.sc-seed.on {
-  background: var(--accent-tint); border-color: var(--accent); color: var(--text);
-}
-.sc-seed-title { font-weight: 500; }
-
-.sc-seedbar { display: flex; align-items: center; gap: 10px; }
-.sc-skipped { margin: 0 0 10px; }
 
 /* "Add N to crate ▾" */
 .crate-add { position: relative; }
@@ -2140,202 +2091,20 @@ input, select { font-family: inherit; }
  * ══════════════════════════════════════════════════════════════════════════ */
 
 /* ── Discover: main + 340px shortlist dock ─────────────────────────────── */
-.disc-body {
-  flex: 1; min-height: 0;
-  display: grid; grid-template-columns: minmax(0, 1fr) 340px;
-}
 /* A hidden pane still occupies its grid cells, so each pane is its own
    sub-grid: the keep-mounted trick would otherwise leave two docks stacked. */
-.disc-pane {
-  grid-column: 1 / span 2; min-width: 0;
-  display: grid; grid-template-columns: minmax(0, 1fr) 340px;
-}
-.disc-pane > .page { grid-column: 1 / span 2; overflow: auto; }
-.disc-main { min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
-
-.disc-search {
-  flex: none; box-sizing: border-box;
-  padding: 12px 16px 10px; border-bottom: 1px solid var(--hair);
-  background: var(--inset);
-  display: flex; flex-direction: column; gap: 9px;
-}
-.disc-input {
-  display: flex; align-items: center; gap: 8px;
-  background: var(--inset-2); border: 1px solid var(--border-accent);
-  border-radius: 8px; padding: 8px 12px;
-}
-.disc-input .glyph { color: var(--accent); font-size: 13px; }
-.disc-input input {
-  all: unset; flex: 1; min-width: 0;
-  font: 400 13px var(--font-ui); color: var(--text);
-}
-.disc-input input::placeholder { color: var(--faint); }
-.disc-or { font-size: 10.5px; color: var(--faint); white-space: nowrap; }
-
-.disc-chips { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
-.disc-chips .sc-filterbar { border: none; padding: 0; background: transparent; }
-.disc-page { margin-left: auto; font-size: 11px; color: var(--faint); white-space: nowrap; }
-
-.sc-breadcrumb {
-  flex: none; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  padding: 7px 16px; border-bottom: 1px solid var(--hair);
-  background: var(--inset-2); font-size: 11.5px;
-}
 
 /* ── results table ─────────────────────────────────────────────────────── */
-.sc-head {
-  flex: none; display: grid; gap: 8px; align-items: center;
-  padding: 7px 16px; background: var(--inset-2);
-  border-bottom: 1px solid var(--border);
-  font: 600 9.5px var(--font-mono); letter-spacing: 0.08em; color: var(--faint);
-}
-.sc-head .right { text-align: right; }
-
-.sc-rows { flex: 1; min-height: 0; overflow: auto; }
-.sc-row {
-  display: grid; gap: 8px; align-items: center;
-  padding: 0 16px; height: 52px; cursor: pointer;
-  border-bottom: 1px solid var(--panel);
-}
-.sc-row:hover { background: var(--panel); }
-.sc-row.picked { background: var(--accent-tint); }
-.sc-row.owned { cursor: default; }
-.sc-row.owned .sc-title { color: var(--muted); }
-.sc-row.nav .sc-title { color: var(--accent-light); }
 
 /* Which row the bar is on. `current` is loaded, `playing` is sounding — two
    different facts, and neither had any cue at all: you could start a preview and
    then lose which of fifty rows it came from. */
-.sc-row.current { background: rgba(56, 189, 248, 0.07); }
-.sc-row.current .sc-title { color: var(--text); }
-.sc-row.playing {
-  background: rgba(56, 189, 248, 0.13);
-  box-shadow: inset 3px 0 0 var(--cyan);
-}
-.sc-row.playing .sc-title { color: var(--cyan); font-weight: 600; }
-.sc-row.current .sc-open { border-color: var(--cyan); color: var(--cyan); }
-.sc-row.playing .sc-open {
-  background: var(--cyan); border-color: var(--cyan); color: #07090d;
-  animation: sc-pulse 1.8s ease-in-out infinite;
-}
 @keyframes sc-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(56, 189, 248, 0.5); }
   50% { box-shadow: 0 0 0 4px rgba(56, 189, 248, 0); }
 }
 
-.sc-open {
-  width: 20px; height: 20px; display: flex; align-items: center;
-  justify-content: center; border-radius: 4px; background: var(--raised);
-  border: 1px solid var(--border-ctrl); color: var(--text-2);
-  font-size: 8px; text-decoration: none;
-  padding: 0; cursor: pointer; font-family: inherit;
-}
-.sc-open:hover { border-color: var(--accent); color: var(--accent-light); }
-.sc-art { width: 32px; height: 32px; border-radius: 4px; }
-.sc-kind {
-  font: 600 8px var(--font-mono); letter-spacing: 0.06em; color: var(--faint);
-  text-align: center;
-}
-.sc-name { min-width: 0; }
-.sc-title {
-  font: 500 12.5px var(--font-ui); color: var(--text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.sc-uploader {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 11px; color: var(--muted);
-  white-space: nowrap; overflow: hidden;
-}
-.sc-uploader .link-btn { font-size: 11px; }
-.sc-cell { min-width: 0; }
-.sc-num { font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.sc-dim { color: var(--muted); }
-
-.sc-state { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
-.sc-tag {
-  font: 600 10px var(--font-mono); letter-spacing: 0.05em;
-  border: none; background: transparent; padding: 0; cursor: default;
-}
-.sc-tag.owned { color: var(--green); cursor: pointer; }
-.sc-tag.picked { color: var(--accent-light); }
-.sc-tag.add { color: var(--faint); }
-.sc-row:hover .sc-tag.add { color: var(--text-2); }
-.sc-similar {
-  cursor: pointer; border: 1px solid var(--border-ctrl); border-radius: 4px;
-  background: transparent; color: var(--faint); font-size: 10px; padding: 1px 5px;
-}
-.sc-similar:hover { color: var(--accent-light); border-color: var(--accent); }
-
-.disc-landing { padding: 18px 16px; }
-.disc-keys {
-  flex: none; height: 44px; display: flex; align-items: center; gap: 12px;
-  padding: 0 16px; border-top: 1px solid var(--border-top); background: var(--topbar);
-}
-.disc-keys span { font-size: 11px; font-weight: 500; color: var(--faint); }
-.disc-keys b { color: var(--muted); }
-.disc-keys-note { margin-left: auto; color: var(--muted); }
-
 /* ── shortlist dock ────────────────────────────────────────────────────── */
-.shortlist {
-  min-width: 0; background: var(--topbar);
-  border-left: 1px solid var(--border-top);
-  display: flex; flex-direction: column; overflow: hidden;
-}
-.sl-tab {
-  cursor: pointer; border: none; background: transparent; padding: 0 2px;
-  display: flex; align-items: center; gap: 6px;
-  font: 500 13px var(--font-ui); color: var(--muted);
-}
-.sl-tab.on { color: var(--text); font-weight: 600; }
-.shortlist .crate-panel { border: none; flex: 1; min-height: 0; overflow: auto; }
-
-.sl-list {
-  flex: 1; min-height: 0; overflow: auto;
-  padding: 10px; display: flex; flex-direction: column; gap: 6px;
-}
-.sl-item {
-  flex: none; display: flex; align-items: center; gap: 9px;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: 8px; padding: 8px 9px;
-}
-.sl-art { width: 26px; height: 26px; flex: none; border-radius: 4px; }
-.sl-text { min-width: 0; flex: 1; }
-.sl-title {
-  font: 500 11.5px var(--font-ui); color: var(--text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.sl-meta {
-  font-size: 10.5px; color: var(--muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.sl-x {
-  cursor: pointer; border: none; background: transparent;
-  color: var(--faint); font-size: 13px; padding: 0 2px;
-}
-.sl-x:hover { color: var(--red); }
-
-.sl-foot {
-  flex: none; border-top: 1px solid var(--border-top); padding: 12px 14px;
-  background: var(--inset-2); display: flex; flex-direction: column; gap: 9px;
-}
-.sl-pipeline {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 11px; font-weight: 500; color: var(--muted);
-}
-.sl-stages { margin-left: auto; color: var(--text-2); }
-.sl-buttons { display: flex; gap: 6px; }
-.sl-buttons .head-btn { flex: 1; text-align: center; }
-.sl-import {
-  flex: 2; cursor: pointer; border: none; border-radius: 7px; padding: 8px 0;
-  font: 600 11.5px var(--font-ui); color: #07090d; background: var(--accent);
-}
-.sl-import:hover:not(:disabled) { background: var(--accent-light); }
-.sl-import:disabled { opacity: 0.4; cursor: default; }
-.sl-queue {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 10.5px; font-weight: 500; color: var(--faint);
-}
-.sl-queue .dot { width: 6px; height: 6px; border-radius: 3px; background: var(--amber-light); }
 
 .crate-new { display: flex; gap: 5px; padding: 4px; }
 .crate-new input {
@@ -2453,13 +2222,6 @@ input, select { font-family: inherit; }
 .group-save .hint { flex-basis: 100%; font-size: 10.5px; line-height: 1.45; }
 
 /* Discover's dock: import the set you are looking at AS a set. */
-.sl-group {
-  display: flex; align-items: center; gap: 7px; margin-bottom: 8px;
-  font: 500 11px var(--font-ui); color: var(--text-2); cursor: pointer;
-}
-.sl-group span {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 
 /* A group this track is already on. Not disabled-looking by accident: the
    button IS disabled, because adding it twice is a no-op the server would
@@ -2690,18 +2452,6 @@ input, select { font-family: inherit; }
 .rail-note { margin-bottom: 8px; }
 
 /* ── Discover: fit hints, roles, library gaps ────────────────────────────── */
-.sc-fit { display: flex; gap: 6px; flex-wrap: wrap; font-size: 10px; color: var(--muted); margin-top: 2px; }
-.sc-fit .sc-role { padding: 0 5px; border-radius: 4px; font-weight: 600; }
-.sc-fit .sc-role.acapella { color: var(--violet); background: rgba(167, 139, 250, 0.12); }
-.sc-fit .sc-role.instrumental { color: var(--cyan); background: rgba(56, 189, 248, 0.12); }
-.sc-fit .fits { color: var(--green); }
-.sc-fit .nofit { color: var(--faint); }
-.disc-main.gaps { padding: 16px 22px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
-.gap-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
-.gap-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; }
-.gap-head .head-btn { margin-left: auto; }
-.gap-tracks { display: flex; gap: 6px 14px; flex-wrap: wrap; margin-top: 6px; font-size: 11.5px; color: var(--text-2); }
-.gap-bar { display: flex; gap: 8px; align-items: center; font-size: 12px; }
 
 /* ── Help ────────────────────────────────────────────────────────────────── */
 .rail-help.new { color: var(--ok); border-color: var(--ok); font-size: 11px; }
@@ -3794,3 +3544,234 @@ input, select { font-family: inherit; }
 .an-dots .dot.b { border: 2px solid var(--fg); }
 .an-hint { max-width: 520px; font-size: 12.5px; }
 .an-hint b { color: var(--fg); }
+
+/* ========================================================================== *
+ * Discover (revamp 4)
+ * ========================================================================== */
+.d-tabs { flex: none; display: flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.d-tabs button {
+  height: 28px; padding: 0 12px; border: 0; border-right: 1px solid var(--line-2);
+  background: none; color: var(--fg-2); font: 400 12px var(--font-ui); cursor: pointer; white-space: nowrap;
+}
+.d-tabs button:last-child { border-right: 0; }
+.d-tabs button.on { background: var(--select); color: var(--fg); }
+
+.d-seg { flex: none; display: flex; border: 1px solid var(--line-2); border-radius: var(--r-ctl); overflow: hidden; }
+.d-seg button {
+  height: 26px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px;
+  border: 0; border-right: 1px solid var(--line-2); background: none; color: var(--fg-2);
+  font: 400 11.5px var(--font-ui); cursor: pointer; white-space: nowrap;
+}
+.d-seg button:last-child { border-right: 0; }
+.d-seg button.on { background: var(--select); color: var(--fg); }
+.d-seg .sw { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.d-seg .sw.vox { background: var(--vocal); }
+.d-seg .sw.bed { background: var(--bed); }
+
+.disc-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 280px; }
+.disc-panes { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.disc-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.disc-pane[hidden] { display: none; }
+.disc-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.disc-pad { padding: 6px 16px; }
+
+.disc-bar {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.disc-input {
+  flex: 1 1 280px; min-width: 200px; height: 30px; display: flex; align-items: center; gap: 8px;
+  padding: 0 10px; border: 1px solid var(--line-2); border-radius: var(--r-ctl); background: var(--well);
+}
+.disc-input:focus-within { border-color: var(--accent); }
+.disc-input.small { flex: none; width: 100%; box-sizing: border-box; }
+.disc-input .glyph { color: var(--muted); font-size: 13px; }
+.disc-input input {
+  all: unset; flex: 1; min-width: 0; font: 400 12.5px var(--font-ui); color: var(--fg);
+}
+.disc-input input::placeholder { color: var(--faint); }
+.ui-btn.toggle.on, .ui-btn.on { border-color: var(--accent); background: var(--accent-bg); color: var(--fg); }
+
+.disc-nav {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 8px 16px; border-bottom: 1px solid var(--line-soft); background: var(--well);
+}
+.disc-navart { width: 32px; height: 32px; flex: none; border-radius: var(--r-ctl); }
+.disc-navart.round { border-radius: 50%; }
+.disc-navtext { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.disc-navtext b { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.disc-navtext .crumb { font-size: 11px; margin-right: 6px; }
+
+.disc-list { flex: 1; min-height: 0; overflow: auto; outline: none; }
+.disc-list:focus-visible { box-shadow: inset 0 0 0 1px var(--accent); outline: none; }
+.disc-empty {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  padding: 28px 16px; font-size: 12.5px; color: var(--fg-2); max-width: 620px;
+}
+.disc-empty b { color: var(--fg); font-weight: 600; }
+.disc-profiles { display: flex; flex-wrap: wrap; gap: 6px; }
+.disc-profile {
+  height: 26px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px;
+  border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--panel);
+  color: var(--fg-2); font: 400 12px var(--font-ui); cursor: pointer;
+}
+.disc-profile:hover { border-color: var(--accent); color: var(--fg); }
+.disc-keys {
+  flex: none; padding: 6px 16px; border-top: 1px solid var(--line-soft);
+  font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── result rows ─────────────────────────────────────────────────────────── */
+.sc-head {
+  position: sticky; top: 0; z-index: 1; display: grid; gap: 8px; align-items: center;
+  height: 28px; padding: 0 16px; background: var(--bar); border-bottom: 1px solid var(--line);
+  font: 600 9.5px var(--font-mono); letter-spacing: 0.08em; color: var(--muted);
+}
+.sc-h { display: flex; align-items: center; gap: 3px; min-width: 0; }
+.sc-h.right { justify-content: flex-end; }
+.sc-head .cbox { cursor: pointer; padding: 0; }
+.sc-row {
+  display: grid; gap: 8px; align-items: center; height: 40px; padding: 0 16px;
+  border-bottom: 1px solid var(--line-soft); cursor: pointer;
+}
+.sc-row:hover { background: var(--panel); }
+.sc-row.picked { background: var(--accent-bg); }
+.sc-row.cursor { box-shadow: inset 2px 0 0 var(--accent); background: var(--select); }
+.sc-row.owned .sc-title { color: var(--muted); }
+.sc-row.current .sc-title, .sc-row.playing .sc-title { color: var(--accent-light); }
+.sc-row .cbox { cursor: pointer; padding: 0; background: none; }
+.sc-row .cbox.on { background: var(--accent); }
+.sc-row .cbox.off { opacity: 0.35; cursor: default; }
+.sc-artbox { position: relative; width: 32px; height: 32px; }
+.sc-art { width: 32px; height: 32px; border-radius: var(--r-chip); }
+.sc-open {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  border: 0; border-radius: var(--r-chip); background: var(--scrim); color: var(--fg);
+  font-size: 11px; cursor: pointer; opacity: 0; text-decoration: none; transition: opacity 0.12s var(--ease);
+}
+.sc-row:hover .sc-open, .sc-row.cursor .sc-open, .sc-open.on { opacity: 1; }
+.sc-name { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.sc-titleline { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sc-title { font-size: 12.5px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-artist {
+  all: unset; cursor: pointer; font-size: 11px; color: var(--muted); max-width: 100%;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sc-artist:hover { color: var(--link); text-decoration: underline; }
+.sc-role {
+  flex: none; height: 15px; display: inline-flex; align-items: center; padding: 0 4px;
+  border-radius: var(--r-chip); font-size: 9px; letter-spacing: 0.06em;
+}
+.sc-role.vox { background: var(--vocal-bg); color: var(--vocal-label); }
+.sc-role.bed { background: var(--bed-bg); color: var(--bed-label); }
+.sc-genre { font-size: 11px; color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-num { font-size: 11px; text-align: right; color: var(--fg-2); }
+.sc-num.warn { color: var(--warn); }
+.sc-chips { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+.sc-chip {
+  flex: none; height: 18px; display: inline-flex; align-items: center; padding: 0 6px;
+  border: 0; border-radius: var(--r-chip); font: 400 10.5px var(--font-ui); white-space: nowrap;
+}
+.sc-chip.owned { background: var(--accent-bg); color: var(--ok); cursor: pointer; }
+.sc-chip.warn { background: var(--warn-bg); color: var(--warn-soft); }
+.sc-crates { display: inline-flex; gap: 3px; min-width: 0; overflow: hidden; }
+.sc-fit { flex: none; font-size: 10px; color: var(--muted); white-space: nowrap; }
+.sc-fit.fits { color: var(--ok); }
+.sc-act { display: flex; justify-content: flex-end; }
+.sc-similar {
+  all: unset; cursor: pointer; font-size: 10.5px; color: var(--muted); white-space: nowrap; opacity: 0;
+}
+.sc-row:hover .sc-similar, .sc-row.cursor .sc-similar { opacity: 1; }
+.sc-similar:hover { color: var(--link); }
+.sc-more { display: block; margin: 12px auto; }
+
+/* Sets and artists: places to go, drawn as cards. */
+.sc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; padding: 12px 16px; }
+.sc-cardrow { padding: 4px 16px; }
+.sc-card {
+  display: flex; align-items: center; gap: 10px; min-width: 0; width: 100%; padding: 8px;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--well);
+  color: var(--fg); font: inherit; text-align: left; cursor: pointer;
+}
+.sc-card:hover { border-color: var(--accent); }
+.sc-cardart { width: 44px; height: 44px; flex: none; border-radius: var(--r-ctl); }
+.sc-cardart.round { border-radius: 50%; }
+.sc-cardtext { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.sc-cardtext .t { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sc-cardtext .m { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Suggestions ─────────────────────────────────────────────────────────── */
+.sugg-seedbox {
+  flex: none; display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line-soft); background: var(--well);
+}
+.sugg-seeds { display: flex; flex-wrap: wrap; gap: 5px; max-height: 120px; overflow: auto; }
+.sugg-seed {
+  height: 24px; display: inline-flex; align-items: center; padding: 0 9px; max-width: 280px;
+  border: 1px solid var(--line-2); border-radius: var(--r-pill); background: var(--panel);
+  color: var(--fg-2); font: 400 11.5px var(--font-ui); cursor: pointer; white-space: nowrap; overflow: hidden;
+}
+.sugg-seed .t { overflow: hidden; text-overflow: ellipsis; }
+.sugg-seed.on { border-color: var(--accent); background: var(--accent-bg); color: var(--fg); }
+.sugg-seedbar { display: flex; align-items: center; gap: 8px; }
+.sugg-progress { display: flex; flex-direction: column; gap: 5px; }
+.sugg-progress .bar { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.sugg-progress .bar i { display: block; height: 100%; background: var(--run); transition: width 0.3s var(--ease); }
+
+/* ── Library gaps ────────────────────────────────────────────────────────── */
+.disc-list.gaps { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; }
+.gap-card {
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  border: 1px solid var(--line); border-left: 3px solid var(--line-2); border-radius: var(--r-card); background: var(--well);
+}
+.gap-card.vox { border-left-color: var(--vocal); }
+.gap-card.bed { border-left-color: var(--bed); }
+.gap-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.gap-head b { font-size: 12.5px; }
+.gap-need {
+  height: 18px; display: inline-flex; align-items: center; padding: 0 6px;
+  border-radius: var(--r-chip); font-size: 9.5px; letter-spacing: 0.06em;
+}
+.gap-need.vox { background: var(--bed-bg); color: var(--bed-label); }
+.gap-need.bed { background: var(--vocal-bg); color: var(--vocal-label); }
+.gap-keys { display: inline-flex; flex-wrap: wrap; gap: 3px; }
+.gap-tracks { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11.5px; }
+.gap-track { white-space: nowrap; }
+.gap-track .t { color: var(--fg); }
+
+/* ── the shortlist column ────────────────────────────────────────────────── */
+.shortlist {
+  min-height: 0; display: flex; flex-direction: column;
+  border-left: 1px solid var(--line); background: var(--well);
+}
+.sl-head {
+  flex: none; height: 40px; display: flex; align-items: center; gap: 4px;
+  padding: 0 10px; border-bottom: 1px solid var(--line-soft);
+}
+.sl-tab {
+  all: unset; cursor: pointer; height: 40px; display: inline-flex; align-items: center; gap: 5px;
+  padding: 0 6px; font-size: 12px; color: var(--muted); border-bottom: 2px solid transparent; box-sizing: border-box;
+}
+.sl-tab.on { color: var(--fg); border-bottom-color: var(--accent); }
+.shortlist .crate-panel { flex: 1; min-height: 0; overflow: auto; border: 0; }
+.sl-list { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; }
+.sl-empty { padding: 16px 12px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.sl-item { display: flex; align-items: center; gap: 8px; padding: 5px 10px; }
+.sl-item:hover { background: var(--panel); }
+.sl-art { width: 28px; height: 28px; flex: none; border-radius: var(--r-chip); }
+.sl-text { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+.sl-title { font-size: 12px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sl-meta { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sl-meta .warn { color: var(--warn); }
+.sl-foot {
+  flex: none; display: flex; flex-direction: column; gap: 8px;
+  padding: 10px; border-top: 1px solid var(--line-soft);
+}
+.sl-group { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--fg-2); cursor: pointer; }
+.sl-craterow { display: flex; gap: 6px; }
+.sl-crate {
+  flex: 1; min-width: 0; height: 28px; padding: 0 6px; border: 1px solid var(--line-2);
+  border-radius: var(--r-ctl); background: var(--panel); color: var(--fg); font: 400 12px var(--font-ui);
+}
+.sl-import { height: 32px; width: 100%; }
+.sl-note { font-size: 10.5px; color: var(--muted); line-height: 1.4; }

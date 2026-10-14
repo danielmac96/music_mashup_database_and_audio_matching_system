@@ -79,8 +79,8 @@ def test_a_track_that_cannot_be_embedded_keeps_the_old_link():
 def test_the_play_button_is_a_button_and_still_stops_propagation():
     """The row's own click shortlists the track. Without stopPropagation, ▶
     would play it AND silently add it to the shortlist."""
-    block = ROWS[ROWS.index('className="sc-open"'):]
-    block = block[:block.index("<TrackArt")]
+    block = ROWS[ROWS.index("className={`sc-open"):]
+    block = block[:block.index("</button>")]
     assert "stopPropagation" in block
     assert "onPlay(row)" in block
 
@@ -182,13 +182,12 @@ def test_every_discover_column_with_a_value_is_sortable():
     away, reachable only from a dropdown."""
     heads = ROWS[ROWS.index("const SC_HEADS = ["):]
     heads = heads[:heads.index("];")]
-    for label, key in (("TITLE", "title"), ("UPLOADER", "artist"),
-                       ("GENRE", "genre"), ("PLAYS", "plays"),
-                       ("YEAR", "year"), ("LIKES", "likes"),
-                       ("TIME", "duration")):
+    for label, key in (("TITLE", "title"), ("ARTIST", "artist"),
+                       ("GENRE TAG", "genre"), ("PLAYS", "plays"),
+                       ("LIKES", "likes"), ("LENGTH", "duration")):
         assert f'"{label}"' in heads, label
         assert f'"{key}"' in heads, key
-    assert "ScHeader({ filters, onChange })" in ROWS
+    assert "ScHeader({ filters, onChange, " in ROWS
 
     sorts = _read("hooks/useResultFilters.js")
     block = sorts[sorts.index("  track: {"):]

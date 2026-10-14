@@ -2,10 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
-import { useRowSelection } from "../hooks/useRowSelection";
 import { ScHeader, PlaylistRow, TrackRow, UserRow, rowKey, scSource,
          scRowState } from "./ScRows";
-import { ShortlistDock } from "./ShortlistDock";
 import { useCrateMembership } from "../hooks/useCrateMembership";
 import { useResultFilters } from "../hooks/useResultFilters";
 import { ResultFilters } from "./ResultFilters";
@@ -17,6 +15,9 @@ import { ResultFilters } from "./ResultFilters";
 // Seeds are picked rather than taken automatically: the average of a whole
 // library is nobody's taste, and aiming a run at five records you are actually
 // in the mood for is the difference between a useful list and a genre summary.
+//
+// Ticking a result puts it on Discover's shortlist (the right-hand column),
+// shared with Find tracks — importing and crate-adding happen there.
 
 const SOURCES = [
   ["library", "My tracks"],
@@ -30,11 +31,8 @@ const GROUPS = [
   ["playlists", "Sets"],
 ];
 
-// Stable identity: passing a literal [] would hand useRowSelection a new array
-// on every render and re-run its memos for nothing.
-const NO_ROWS = [];
-
-export function Suggestions({ player, onStatus, onOpenLibrary, onNavigate }) {
+export function Suggestions({ player, onStatus, onOpenLibrary, onNavigate, shortlist,
+                              crateRefresh = 0 }) {
   const [source, setSource] = useState("library");
   const [seeds, setSeeds] = useState([]);
   const [filter, setFilter] = useState("");
@@ -48,8 +46,6 @@ export function Suggestions({ player, onStatus, onOpenLibrary, onNavigate }) {
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [group, setGroup] = useState("tracks");
-  const [importing, setImporting] = useState(false);
-  const [crateRefresh, setCrateRefresh] = useState(0);
 
   const { job } = useJobPolling(jobId);
 
@@ -115,7 +111,7 @@ export function Suggestions({ player, onStatus, onOpenLibrary, onNavigate }) {
   const rows = result?.[group] || [];
   // More load-bearing here than in the browser: a suggestion row excludes
   // library-owned tracks, so the crate chip is the only membership signal it
-  // has. crateRefresh is bumped by addToCrate below.
+  // has. crateRefresh is bumped by Discover when the shortlist goes to a crate.
   const crateOf = useCrateMembership(rows, crateRefresh);
 
   const { filters, setFilters, reset: resetFilters, visible } =
@@ -123,179 +119,142 @@ export function Suggestions({ player, onStatus, onOpenLibrary, onNavigate }) {
 
   // ▶ on a row plays through the app-wide player, which drives SoundCloud's own
   // embed widget. Nothing is fetched from api-v2 to do it, so the scraped
-  // client_id the frozen mixes resolver shares is untouched. The source and the
-  // "is this row the one" test are shared with the other pane (ScRows) — they
-  // were duplicated byte for byte here, and the copy compared track_id, which
-  // matches undefined to undefined on rows SoundCloud returned without an id.
+  // client_id the frozen mixes resolver shares is untouched.
   const playRow = (row) => player?.toggle(scSource(row));
-
-
-  // Selection follows what is shown, not what is loaded — see the same note in
-  // SoundCloudBrowser.
-  const { isChecked, toggle, toggleAll, allSelected, clear,
-          selected, importable, selectedRows, selectedImportable } =
-    useRowSelection(group === "tracks" ? visible : NO_ROWS);
 
   // Switching group (tracks / artists / sets) or landing a new run is a new
   // listing, and a filter built for the last one does not carry over.
-  useEffect(() => { resetFilters(); clear(); }, [group, result, resetFilters, clear]);
+  useEffect(() => { resetFilters(); }, [group, result, resetFilters]);
 
-  const doImport = async () => {
-    if (!selectedImportable.length) return;
-    setImporting(true);
-    try {
-      const res = await api.discoveryImport(selectedImportable);
-      toast(`Saved ${res.count} track${res.count === 1 ? "" : "s"} — processing started`);
-      clear();
-    } catch (e) {
-      toast(`Import failed: ${e.message}`);
-    } finally {
-      setImporting(false);
-    }
-  };
-
-  const addToCrate = async (id) => {
-    if (!selectedRows.length || !id) return;
-    try {
-      const res = await api.addCrateItems(id, selectedRows);
-      toast(`Added ${res.added} to crate`
-            + (res.skipped ? `, ${res.skipped} already there` : ""));
-      clear();
-      setCrateRefresh((n) => n + 1);
-    } catch (e) {
-      toast(`Could not add to crate: ${e.message}`);
-    }
-  };
+  // "Shortlist all shown" — shown, not loaded: filtering a row away must not
+  // shortlist it.
+  const shortlistable = group === "tracks" ? visible.filter((r) => !r.in_library) : [];
+  const allShortlisted = shortlistable.length > 0 && shortlistable.every((r) => shortlist.has(r));
 
   const count = useCallback((k) => (result?.[k] || []).length, [result]);
 
   return (
-    <>
-      <main className="disc-main sugg">
-      <div className="screen-head">
-        <h1>Suggestions</h1>
-        <span className="hint">
-          Point at tracks you like — yours, a crate, or any link — and get back
-          the tracks, artists and sets you don’t have yet.
-        </span>
-      </div>
-
-      <div className="sc-seedbox">
-        <div className="seg">
+    <main className="disc-main sugg">
+      <div className="sugg-seedbox">
+        <div className="d-seg" role="group" aria-label="Seed from">
           {SOURCES.map(([id, label]) => (
-            <button key={id} className={source === id ? "active" : ""}
+            <button key={id} className={source === id ? "on" : ""} aria-pressed={source === id}
               onClick={() => setSource(id)}>{label}</button>
           ))}
         </div>
 
         {source === "library" && (
-          <div className="sc-seedpick">
-            <div className="import-input">
-              <input value={filter} placeholder="Filter your library…"
+          <>
+            <div className="disc-input small">
+              <span className="glyph">⌕</span>
+              <input value={filter} placeholder="Filter your library…" aria-label="Filter seeds"
                 onChange={(e) => setFilter(e.target.value)} />
             </div>
             {/* Only songs with a SoundCloud id are listed: the fan-out is
                 /tracks/{id}/related, and a track imported outside that path
                 never learned one. */}
             {!seeds.length ? (
-              <div className="empty">
+              <div className="muted small">
                 No library track carries a SoundCloud id yet, so there is nothing
                 to seed from. Import something through Find tracks first.
               </div>
             ) : (
-              <div className="sc-seedlist">
+              <div className="sugg-seeds">
                 {shown.map((s) => (
-                  <button key={s.song_id}
-                    className={`sc-seed${picked.has(s.song_id) ? " on" : ""}`}
+                  <button key={s.song_id} aria-pressed={picked.has(s.song_id)}
+                    className={`sugg-seed${picked.has(s.song_id) ? " on" : ""}`}
                     onClick={() => togglePick(s.song_id)}>
-                    <span className="sc-seed-title">{s.title}</span>
-                    <span className="faint"> · {s.artist}</span>
+                    <span className="t">{s.title}</span>
+                    <span className="muted"> · {s.artist}</span>
                   </button>
                 ))}
               </div>
             )}
-          </div>
+          </>
         )}
 
         {source === "crate" && (
-          <div className="sc-seedpick">
-            {!crates.length ? (
-              <div className="empty">No crates yet — shortlist some finds first.</div>
-            ) : (
-              <div className="sc-seedlist">
-                {crates.map((c) => (
-                  <button key={c.id}
-                    className={`sc-seed${crateId === c.id ? " on" : ""}`}
-                    onClick={() => setCrateId(c.id)}>
-                    <span className="sc-seed-title">{c.name}</span>
-                    <span className="faint"> · {c.item_count} tracks</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          !crates.length ? (
+            <div className="muted small">No crates yet — shortlist some finds first.</div>
+          ) : (
+            <div className="sugg-seeds">
+              {crates.map((c) => (
+                <button key={c.id} aria-pressed={crateId === c.id}
+                  className={`sugg-seed${crateId === c.id ? " on" : ""}`}
+                  onClick={() => setCrateId(c.id)}>
+                  <span className="t">{c.name}</span>
+                  <span className="muted"> · {c.item_count} tracks</span>
+                </button>
+              ))}
+            </div>
+          )
         )}
 
         {source === "link" && (
-          <div className="sc-seedpick">
-            <div className="import-input">
-              <input value={url}
+          <>
+            <div className="disc-input small">
+              <span className="glyph">⌕</span>
+              <input value={url} aria-label="Seed link"
                 placeholder="Paste a track, set or artist link to take suggestions from"
                 onChange={(e) => setUrl(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") run(); }} />
             </div>
-            <span className="hint">
-              A set seeds from its tracks and an artist page from their uploads.
-            </span>
-          </div>
+            <span className="muted small">A set seeds from its tracks and an artist page from their uploads.</span>
+          </>
         )}
 
-        <div className="sc-seedbar">
-          <span className="faint">
-            {source === "library" && `${picked.size} track${picked.size === 1 ? "" : "s"} selected`}
+        <div className="sugg-seedbar">
+          <span className="mono muted small">
+            {source === "library" && `${picked.size} seed${picked.size === 1 ? "" : "s"} picked`}
           </span>
-          <span style={{ flex: 1 }} />
+          <span className="grow" />
           {picked.size > 0 && source === "library" && (
-            <button className="btn ghost" onClick={() => setPicked(new Set())}>Clear</button>
+            <button className="ui-link" onClick={() => setPicked(new Set())}>Clear</button>
           )}
-          <button className="btn" onClick={run} disabled={!ready || running}>
+          <button className="btn-primary" onClick={run} disabled={!ready || running}>
             {running ? (job?.message || "Working…") : "Find suggestions"}
           </button>
         </div>
+        {running && (
+          <div className="sugg-progress">
+            <div className="bar"><i style={{ width: `${Math.round((job?.progress || 0) * 100)}%` }} /></div>
+            <span className="muted small">
+              {job?.message || "Asking SoundCloud…"} — a few seconds per seed, on purpose: requests
+              are spaced so the shared SoundCloud key is not rate-limited.
+            </span>
+          </div>
+        )}
       </div>
 
-      {error && <div className="error-text">{error}</div>}
-
-      {running && (
-        <div className="empty">
-          {job?.message || "Asking SoundCloud…"} — this takes a few seconds per
-          seed, on purpose: the requests are spaced out so the shared SoundCloud
-          key does not get rate-limited.
-        </div>
-      )}
+      {error && <div className="error-text disc-pad">{error}</div>}
 
       {result && (
         <>
-          <div className="discovery-modebar">
-            <div className="seg">
+          <div className="disc-bar">
+            <div className="d-seg" role="group" aria-label="Result type">
               {GROUPS.map(([id, label]) => (
-                <button key={id} className={group === id ? "active" : ""}
-                  onClick={() => { setGroup(id); clear(); }}>
-                  {label} <span className="faint">{count(id)}</span>
+                <button key={id} className={group === id ? "on" : ""} aria-pressed={group === id}
+                  onClick={() => setGroup(id)}>
+                  {label} <span className="mono muted">{count(id)}</span>
                 </button>
               ))}
             </div>
-            <span className="hint">
+            <span className="muted small">
               {result.summary}
               {result.already_owned ? ` · ${result.already_owned} you already have were left out` : ""}
             </span>
+            <span className="grow" />
+            {group === "tracks" && (
+              <button className="ui-btn" disabled={!shortlistable.length}
+                onClick={() => shortlist.addMany(shortlistable)}>Shortlist all shown</button>
+            )}
           </div>
 
           {/* A seed SoundCloud would not expand is worth naming: it usually means
               the upload was deleted or went private, which is about your library
               rather than about this feature. */}
           {result.skipped?.length > 0 && (
-            <div className="hint sc-skipped">
+            <div className="muted small disc-pad">
               Couldn’t expand {result.skipped.length} seed
               {result.skipped.length === 1 ? "" : "s"}
               {result.skipped[0].title ? ` (${result.skipped[0].title}…)` : ""} —
@@ -303,66 +262,47 @@ export function Suggestions({ player, onStatus, onOpenLibrary, onNavigate }) {
             </div>
           )}
 
-          {/* Importing and crate-adding moved to the shortlist dock, where you
-              can see WHAT is queued rather than only how many. What stays here
-              is the one action that is about this list: take everything shown.
-              Shown, not loaded — filtering a row away must not import it. */}
-          {group === "tracks" && importable.length > 0 && (
-            <div className="sc-bulkbar">
-              <button className={`preview-check ${allSelected ? "on" : "off"}`}
-                onClick={toggleAll} title="Select every suggestion shown">
-                {allSelected ? "✓" : ""}
-              </button>
-              <span className="faint">
-                {selected.size} shortlisted of {importable.length} shown
-              </span>
-            </div>
-          )}
-
-          {!rows.length && <div className="empty">Nothing in this group.</div>}
-
           <ResultFilters items={rows} filters={filters} onChange={setFilters}
             visibleCount={visible.length} crateOf={crateOf} />
 
-          {rows.length > 0 && !visible.length && (
-            <div className="empty">
-              No loaded result matches these filters.{" "}
-              <button className="link-btn" onClick={resetFilters}>Clear filters</button>
-            </div>
-          )}
+          <div className="disc-list">
+            {!rows.length && <div className="disc-empty">Nothing in this group.</div>}
+            {rows.length > 0 && !visible.length && (
+              <div className="disc-empty">
+                <b>No loaded result matches these filters.</b>
+                <button className="ui-btn" onClick={resetFilters}>Clear filters</button>
+              </div>
+            )}
 
-          <ScHeader filters={filters} onChange={setFilters} />
-          <div className="sc-rows">
-            {visible.map((row, i) => group === "artists" ? (
-              <UserRow key={`u${row.user_id}`} row={row}
-                onOpen={() => onNavigate?.({ kind: "user", id: row.user_id,
-                                             label: row.username })} />
-            ) : group === "playlists" ? (
-              <PlaylistRow key={`p${row.playlist_id}`} row={row}
-                onOpen={() => onNavigate?.({ kind: "playlist", id: row.playlist_id,
-                                             label: row.title })} />
-            ) : (
+            {group === "tracks" && visible.length > 0 && (
+              <ScHeader filters={filters} onChange={setFilters} allChecked={allShortlisted}
+                onToggleAll={() => (allShortlisted ? shortlist.removeMany(shortlistable)
+                  : shortlist.addMany(shortlistable))} />
+            )}
+            {group === "tracks" ? visible.map((row, i) => (
               <TrackRow key={`${rowKey(row)}-${i}`} row={row}
-                checked={isChecked(row)} onToggle={() => toggle(row)}
+                checked={shortlist.has(row)} onToggle={() => shortlist.toggle(row)}
                 onArtist={() => onNavigate?.({ kind: "user", id: row.user?.id,
                                                label: row.user?.username })}
                 onOpenLibrary={onOpenLibrary}
                 onPlay={playRow} {...scRowState(player, row)}
                 crates={crateOf(row)} />
-            ))}
+            )) : (
+              <div className="sc-cards">
+                {visible.map((row) => group === "artists" ? (
+                  <UserRow key={`u${row.user_id}`} row={row}
+                    onOpen={() => onNavigate?.({ kind: "user", id: row.user_id,
+                                                 label: row.username })} />
+                ) : (
+                  <PlaylistRow key={`p${row.playlist_id}`} row={row}
+                    onOpen={() => onNavigate?.({ kind: "playlist", id: row.playlist_id,
+                                                 label: row.title })} />
+                ))}
+              </div>
+            )}
           </div>
         </>
       )}
-      </main>
-
-      <ShortlistDock
-        rows={selectedRows} importable={selectedImportable}
-        onDrop={(r) => toggle(r)} onClear={clear}
-        onImport={doImport} importing={importing}
-        crateRefresh={crateRefresh} onCrateAdd={addToCrate}
-        onActiveCrate={() => {}} activeCrateId={null}
-        onCratesChanged={() => setCrateRefresh((n) => n + 1)}
-        onOpenLibrary={onOpenLibrary} />
-    </>
+    </main>
   );
 }

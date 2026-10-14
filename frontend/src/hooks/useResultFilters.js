@@ -27,6 +27,7 @@ export const EMPTY_FILTERS = {
   inLibrary: "any",
   inCrate: "any",
   hideSnip: false,
+  minPlays: "",        // a floor on plays, e.g. 10000 ("≥ 10k plays")
   minMin: "",
   maxMin: "",
   album: "any",
@@ -143,6 +144,7 @@ export function applyFilters(items, filters, crateOf) {
       if (f.inLibrary === "yes" && !r.in_library) return false;
       if (f.inLibrary === "no" && r.in_library) return false;
       if (f.hideSnip && r.is_snip) return false;
+      if (f.minPlays && (Number(r.plays) || 0) < Number(f.minPlays)) return false;
 
       const crates = membership(r) || EMPTY_LIST;
       if (f.inCrate === "none" && crates.length) return false;

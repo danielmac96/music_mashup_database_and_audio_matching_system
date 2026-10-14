@@ -565,8 +565,20 @@ Five groups, collapsed until opened and remembered (`mashup.detailGroups.v1`):
 
 ### Discover
 
+Three tabs — Find tracks · Suggestions · Library gaps — beside one
+**shortlist** column shared by all of them (`hooks/useShortlist.js`): tick a
+row or press `x`, and it is listed there until you **Import** it (download →
+stems → analysis), add it to a crate, or drop it. Every row that will be
+imported is visible; a likely preview clip (≤30 s, Go+) or DJ set (≥30 min)
+is called out before you import. After an import the listing re-runs, so the
+rows you took read **✓ in library**. Keys: `⏎` search, `↓` into the results,
+`↑↓` move, `x` shortlist, `⏎` preview a track or open a set/artist.
+
 - **Find tracks** — search SoundCloud (tracks, sets, artists) or paste a link;
-  browse an artist's uploads, likes and sets; `↔ similar` for related tracks.
+  browse an artist's uploads, likes and sets (← Search goes back; **+ Save
+  profile** bookmarks an artist, shown when the search is empty; **Shortlist
+  all shown**); `↔ similar` for related tracks; **Hide in library** and
+  **≥ 10k plays** narrow what is loaded.
   **Looking for** Acapella / Instrumental adds that word to the search. Rows
   flag **in library**, **Go+ preview** and crate membership, and show what the
   upload prints about itself — tempo, key (a Camelot code or a note with an
@@ -574,13 +586,12 @@ Five groups, collapsed until opened and remembered (`mashup.detailGroups.v1`):
   library tracks within 6% tempo (half/double allowed) and one Camelot step
   (`ingest/fit_hints.py`; nothing outside the library is analysed, so this is
   the upload's word, not a measurement). `▶` previews in the player bar
-  through SoundCloud's embed widget. Tick rows, then **Import & process** or
-  **Add to crate**.
+  through SoundCloud's embed widget. Sets and artists draw as cards.
 - **Library gaps** — vocals the matcher found ≤2 (5, 10) beds for, and beds
   with as few vocals, grouped by 5-BPM band and key, each with the search that
   would fill it ("House instrumental 126 bpm"). Read off `mashup_candidates`,
   so a gap is a gap in what actually pairs (`GET /api/discovery/gaps`).
-- **Crates** are local shortlists. Items need not be downloaded; they reorder by
+- **Crates** (the shortlist column's second tab) are saved shortlists. Items need not be downloaded; they reorder by
   drag, dedupe on add, export as URLs / JSON / M3U, and **Import** fetches what
   is not in the library yet. A crate is also a library group. **⤓** in the
   crate list builds a new crate from pasted SoundCloud links (tracks or sets),
@@ -2171,8 +2182,11 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    cards with the bottleneck, Timeline rows on the API's summary and ETA, the
    inspector), 3 (Analysis: Attributes / Compare tabs, status strip, 24-bin
    p1–p99 histograms from the library in memory, Library/Detail switches,
-   searchable pickers, verdict pair cards, attribute diff with range dots).
-   Next: 4 Discover, 5 Mixes, B3/B4 then 6
+   searchable pickers, verdict pair cards, attribute diff with range dots),
+   4 (Discover: mode tabs, one shortlist column across every mode, 40px result
+   rows with keyboard nav, set/artist cards, saved profiles in the empty
+   state, gap cards).
+   Next: 5 Mixes, B3/B4 then 6
    Sets, B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
    screen's step lands it keeps its old rail-slot block.
 

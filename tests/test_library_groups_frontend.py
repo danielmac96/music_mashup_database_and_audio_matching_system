@@ -107,16 +107,19 @@ def test_discover_offers_the_group_only_on_a_playlist():
     "House" would make a shelf nobody asked for."""
     browser = _read("components/SoundCloudBrowser.jsx")
     assert 'here?.kind === "playlist" ? here.label : null' in browser
-    assert "groupOn && playlistHere ? playlistHere : null" in browser
+    assert "onPlaylistHere?.(null)" in browser       # told again on leaving
+    disc = _read("components/Discovery.jsx")
+    assert "groupOn && playlistHere ? playlistHere : null" in disc
+    assert 'playlistName={mode === "tracks" ? playlistHere : null}' in disc
     dock = _read("components/ShortlistDock.jsx")
-    assert "{playlistName && (" in dock
+    assert "{playlistName && onGroupOn && (" in dock
 
 
 def test_an_import_elsewhere_tells_the_library_rail():
     """The rail is a screen away and only learns about a new group if someone
     says so."""
-    browser = _read("components/SoundCloudBrowser.jsx")
-    assert "onGroupsChanged?.()" in browser
+    disc = _read("components/Discovery.jsx")
+    assert "if (res.group) onGroupsChanged?.();" in disc
     assert "onGroupsChanged={groups.refresh}" in APP
     assert "groups.refresh()" in SCREEN
 

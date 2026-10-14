@@ -3,7 +3,7 @@ import { api } from "../api";
 import { TrackArt } from "./TrackArt";
 import { SortHead } from "./SortHead";
 import { sourceKey } from "../hooks/usePlayer";
-import { fmtDur, fmtPlays, fmtYear, playsColor, yearColor, yearOf } from "../theme";
+import { fmtDur, fmtPlays, playsColor, yearOf } from "../theme";
 import { toast } from "../toast";
 
 // One row vocabulary for both Discover panes.
@@ -44,49 +44,56 @@ export const scRowState = (player, row) => {
   return { current, playing: current && player.playing };
 };
 
-// play · art · title/@uploader · genre · plays · year · likes · time · state
-//
-// The design's column here is "~BPM". There is no tempo to put in it: nothing
-// external has been analysed, and a column of em dashes is a column of nothing.
-// LIKES is on the row already, and is the number that actually separates two
-// SoundCloud uploads of the same record.
-export const SC_COLS = "26px 34px 1fr 92px 74px 48px 52px 44px 78px";
+// Discover's result row (revamp step 4): shortlist box · art (hover ▶) ·
+// VOX/BED tag + title / artist · genre tag · length · plays · likes · chips ·
+// ↔ similar. 40px, one line each for title and artist; what the upload prints
+// about itself (tempo, key, "fits N in library") and the seeds a suggestion
+// came from are chips and tooltips rather than extra lines.
+export const SC_COLS = "28px 36px minmax(200px,2fr) minmax(90px,.7fr) 56px 64px 60px minmax(110px,.9fr) 64px";
 
 // Every column that shows a value is sortable, and the keys are the ones
 // useResultFilters already scores — this is wiring, not a second sort engine.
-// TITLE / UPLOADER is one column showing two different fields, so it carries
-// two click targets rather than pretending one of them does not exist.
+// TITLE / ARTIST is one column showing two different fields, so it carries two
+// click targets.
 const SC_HEADS = [
   { label: "" },
   { label: "" },
-  { label: "TITLE", key: "title", also: { label: "UPLOADER", key: "artist" } },
-  { label: "GENRE", key: "genre" },
-  { label: "PLAYS", key: "plays", numeric: true },
-  { label: "YEAR", key: "year", numeric: true },
-  { label: "LIKES", key: "likes", numeric: true },
-  { label: "TIME", key: "duration", numeric: true },
-  { label: "STATE", right: true },
+  { label: "TITLE", key: "title", also: { label: "ARTIST", key: "artist" } },
+  { label: "GENRE TAG", key: "genre" },
+  { label: "LENGTH", key: "duration", numeric: true, right: true },
+  { label: "PLAYS", key: "plays", numeric: true, right: true },
+  { label: "LIKES", key: "likes", numeric: true, right: true },
+  { label: "IN LIBRARY" },
+  { label: "" },
 ];
 
 /** `filters`/`onChange` are the pane's own useResultFilters state, passed
- *  straight through — the header patches the same object the filter bar does. */
-export function ScHeader({ filters, onChange }) {
+ *  straight through. `allChecked` / `onToggleAll` drive the header's box:
+ *  shortlist every row shown. */
+export function ScHeader({ filters, onChange, allChecked = false, onToggleAll = null }) {
   const sort = filters?.sort ?? "";
   const dir = filters?.dir ?? "asc";
   const onSort = (patch) => onChange?.({ ...filters, ...patch });
   const sortable = Boolean(onChange);
 
   return (
-    <div className="sc-head" style={{ gridTemplateColumns: SC_COLS }}>
+    <div className="sc-head caps" style={{ gridTemplateColumns: SC_COLS }}>
       {SC_HEADS.map((h, i) => (
         <div key={i} className={`sc-h${h.right ? " right" : ""}`}>
-          <SortHead label={h.label} sortKey={sortable ? h.key : null}
-            sort={sort} dir={dir} onSort={onSort} numeric={h.numeric} />
-          {h.also && (
+          {i === 0 && onToggleAll ? (
+            <button className={`cbox${allChecked ? " on" : ""}`} onClick={onToggleAll}
+              title="Shortlist every row shown" aria-label="Shortlist all">{allChecked ? "✓" : ""}</button>
+          ) : (
             <>
-              <span className="sh-sep">/</span>
-              <SortHead label={h.also.label} sortKey={sortable ? h.also.key : null}
-                sort={sort} dir={dir} onSort={onSort} />
+              <SortHead label={h.label} sortKey={sortable ? h.key : null}
+                sort={sort} dir={dir} onSort={onSort} numeric={h.numeric} />
+              {h.also && (
+                <>
+                  <span className="sh-sep">/</span>
+                  <SortHead label={h.also.label} sortKey={sortable ? h.also.key : null}
+                    sort={sort} dir={dir} onSort={onSort} />
+                </>
+              )}
             </>
           )}
         </div>
@@ -95,178 +102,149 @@ export function ScHeader({ filters, onChange }) {
   );
 }
 
+// A preview clip (Go+, or 30 s and under) or a DJ set (30 min and over) is
+// rarely what you meant to import.
+export const lengthWarning = (row) => {
+  const s = Number(row.duration_secs) || 0;
+  if (row.is_snip || (s > 0 && s <= 30)) return "preview";
+  if (s >= 1800) return "set";
+  return null;
+};
+
 // `crates` is optional and defaults to undefined, so a caller that does not
 // pass it renders exactly as before.
 export function TrackRow({ row, checked, onToggle, onArtist, onRelated,
                            onOpenLibrary, crates, onPlay, playing = false,
-                           current = false }) {
+                           current = false, cursor = false, onSelect = null }) {
   const owned = row.in_library;
   // `because` only exists on a suggestion. Saying which of your records led here
   // is what separates a recommendation from an unexplained list.
   const because = row.because?.length ? row.because : null;
+  const fit = row.fit_hint;
+  const role = fit?.role === "acapella" ? "VOX" : fit?.role === "instrumental" ? "BED" : null;
+  const warn = lengthWarning(row);
+  const yr = yearOf(row);
 
   return (
     <div className={`sc-row${owned ? " owned" : ""}${checked ? " picked" : ""}`
-      + `${current ? " current" : ""}${playing ? " playing" : ""}`}
+      + `${current ? " current" : ""}${playing ? " playing" : ""}${cursor ? " cursor" : ""}`}
       style={{ gridTemplateColumns: SC_COLS }}
-      onClick={owned ? undefined : onToggle}
-      title={owned ? "Already in your library"
-        : checked ? "Shortlisted — click to drop it" : "Click to shortlist"}>
+      onClick={onSelect || (owned ? undefined : onToggle)}
+      title={because ? `Suggested from ${because.join(", ")}` : undefined}>
 
-      {/* ▶ used to be a link that opened SoundCloud in a new tab, because this
-          app never streamed external audio. It plays here now, through
-          SoundCloud's OWN widget — so nothing is downloaded, no extra api-v2
-          request is spent, and you keep your place in the list. A track
-          SoundCloud will not let anyone embed keeps the old link, and says so
-          before you click rather than after. */}
-      {onPlay && row.embeddable !== false ? (
-        <button className="sc-open" type="button"
-          onClick={(e) => { e.stopPropagation(); onPlay(row); }}
-          title={playing ? "Pause"
-            : current ? "Resume — this is what the bar is loaded with"
-            : "Preview here — streams from SoundCloud, nothing is downloaded"}>
-          {playing ? "❚❚" : "▶"}
-        </button>
-      ) : (
-        <a className="sc-open" href={row.permalink_url} target="_blank" rel="noreferrer"
-          onClick={(e) => e.stopPropagation()}
-          title={row.embeddable === false
-            ? "SoundCloud does not allow this one to be embedded — opens there"
-            : "Open on SoundCloud"}>▶</a>
-      )}
+      <button className={`cbox${checked ? " on" : ""}${owned ? " off" : ""}`} disabled={!!owned}
+        aria-label={checked ? "Drop from the shortlist" : "Shortlist"}
+        title={owned ? "Already in your library" : checked ? "Shortlisted — click to drop it (x)" : "Shortlist (x)"}
+        onClick={(e) => { e.stopPropagation(); onToggle(); }}>{checked ? "✓" : ""}</button>
 
-      <TrackArt id={row.track_id} thumbnail={row.thumbnail} className="sc-art" />
+      {/* ▶ plays here through SoundCloud's OWN widget — nothing is downloaded,
+          no extra api-v2 request is spent. A track SoundCloud will not let
+          anyone embed keeps a link out, and says so before you click. */}
+      <div className="sc-artbox">
+        <TrackArt id={row.track_id} thumbnail={row.thumbnail} className="sc-art" />
+        {onPlay && row.embeddable !== false ? (
+          <button className={`sc-open${playing || current ? " on" : ""}`} type="button"
+            aria-label="Preview"
+            onClick={(e) => { e.stopPropagation(); onPlay(row); }}
+            title={playing ? "Pause"
+              : current ? "Resume — this is what the bar is loaded with"
+              : "Preview on SoundCloud (⏎) — streams, nothing is downloaded"}>
+            {playing ? "❚❚" : "▶"}
+          </button>
+        ) : (
+          <a className="sc-open" href={row.permalink_url} target="_blank" rel="noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            title={row.embeddable === false
+              ? "SoundCloud does not allow this one to be embedded — opens there"
+              : "Open on SoundCloud"}>▶</a>
+        )}
+      </div>
 
       <div className="sc-name">
-        <div className="sc-title">{row.title}</div>
-        <div className="sc-uploader mono">
-          <button className="link-btn" onClick={(e) => { e.stopPropagation(); onArtist(); }}>
-            @{row.artist}
-          </button>
-          {row.is_snip && (
-            <span className="mix-flag warn sc-snip"
-              title="SoundCloud Go+ — only a ~30s preview is downloadable">Go+</span>
+        <div className="sc-titleline">
+          {role && (
+            <span className={`sc-role mono ${role === "VOX" ? "vox" : "bed"}`}
+              title={`The upload calls itself ${fit.role === "acapella" ? "an acapella" : "an instrumental"}`}>{role}</span>
           )}
-          {/* Which of your crates already hold this. Read-only on purpose:
-              adding stays on the tick-box plus the bulk "Add to crate" path, so
-              a row cannot half-commit you to something. */}
-          {crates?.length ? (
-            <span className="sc-crates">
-              {crates.map((c) => (
-                <span key={c.crate_id} className="crate-chip" title={`In crate: ${c.name}`}>
-                  {c.name}
-                </span>
-              ))}
-            </span>
-          ) : null}
+          <span className="sc-title">{row.title}</span>
         </div>
-        {row.fit_hint && (row.fit_hint.bpm || row.fit_hint.camelot || row.fit_hint.role) && (
-          <div className="sc-fit mono"
+        <button className="sc-artist" title={`Open the artist${yr ? ` · ${yr}` : ""}`}
+          onClick={(e) => { e.stopPropagation(); onArtist(); }}>{row.artist}</button>
+      </div>
+
+      <span className="sc-genre">{row.genre || <span className="faint">—</span>}</span>
+      <span className={`mono sc-num${warn ? " warn" : ""}`}
+        title={warn === "preview" ? "30 s or under — likely a preview clip"
+          : warn === "set" ? "30 min or over — likely a DJ set" : "Length"}>
+        {fmtDur(row.duration_secs)}
+      </span>
+      <span className="mono sc-num" style={{ color: playsColor(row.plays) }}>{fmtPlays(row.plays)}</span>
+      <span className="mono sc-num muted">{fmtPlays(row.likes)}</span>
+
+      <div className="sc-chips">
+        {owned && (
+          <button className="sc-chip owned" onClick={(e) => { e.stopPropagation(); onOpenLibrary?.(); }}
+            title={`Already in your library (#${owned.song_id}) — ${owned.status}`}>✓ in library</button>
+        )}
+        {row.is_snip && (
+          <span className="sc-chip warn" title="SoundCloud Go+ — only a ~30s preview is downloadable">Go+</span>
+        )}
+        {/* Which of your crates already hold this. Read-only on purpose. */}
+        {crates?.length ? (
+          <span className="sc-crates">
+            {crates.map((c) => (
+              <span key={c.crate_id} className="crate-chip" title={`In crate: ${c.name}`}>{c.name}</span>
+            ))}
+          </span>
+        ) : null}
+        {fit && (fit.bpm || fit.camelot || fit.fits != null) && (
+          <span className={`sc-fit mono${fit.fits > 0 ? " fits" : ""}`}
             title={"What the upload prints about itself (nothing outside the library is analysed)"
-              + (row.fit_hint.fits != null ? ` — tempo${row.fit_hint.camelot ? " and key" : ""} sit with ${row.fit_hint.fits} track(s) in your library` : "")}>
-            {row.fit_hint.role && <span className={`sc-role ${row.fit_hint.role}`}>{row.fit_hint.role}</span>}
-            {row.fit_hint.bpm && <span>~{Math.round(row.fit_hint.bpm)} BPM</span>}
-            {row.fit_hint.camelot && <span>{row.fit_hint.camelot}</span>}
-            {row.fit_hint.fits != null && (
-              <span className={row.fit_hint.fits > 0 ? "fits" : "nofit"}>
-                fits {row.fit_hint.fits} in library
-              </span>
-            )}
-          </div>
-        )}
-        {because && (
-          <div className="sc-because" title={because.join(", ")}>
-            from {because.slice(0, 2).join(", ")}
-            {because.length > 2 && ` +${because.length - 2} more`}
-          </div>
+              + (fit.fits != null ? ` — sits with ${fit.fits} track(s) in your library` : "")}>
+            {[fit.bpm ? `~${Math.round(fit.bpm)}` : null, fit.camelot,
+              fit.fits != null ? `fits ${fit.fits}` : null].filter(Boolean).join(" · ")}
+          </span>
         )}
       </div>
 
-      <div className="sc-cell">
-        {row.genre
-          ? <span className="tt-genre mono" title={row.genre}>{row.genre}</span>
-          : <span className="mono sc-dim">—</span>}
-      </div>
-      <div className="mono sc-num" style={{ color: playsColor(row.plays) }}>
-        {fmtPlays(row.plays)}
-      </div>
-      <div className="mono sc-num" style={{ color: yearColor(yearOf(row)) }}>
-        {fmtYear(yearOf(row))}
-      </div>
-      <div className="mono sc-num sc-dim">{fmtPlays(row.likes)}</div>
-      <div className="mono sc-num sc-dim">{fmtDur(row.duration_secs)}</div>
-
-      <div className="sc-state right">
-        {owned ? (
-          <button className="sc-tag owned" onClick={(e) => { e.stopPropagation(); onOpenLibrary?.(); }}
-            title={`Already in your library (#${owned.song_id}) — ${owned.status}`}>
-            in library
-          </button>
-        ) : checked ? (
-          <span className="sc-tag picked">shortlisted</span>
-        ) : (
-          <span className="sc-tag add">add</span>
-        )}
+      <div className="sc-act">
         {onRelated && (
-          <button className="sc-similar" title="Find similar tracks"
-            onClick={(e) => { e.stopPropagation(); onRelated(); }}>↔</button>
+          <button className="sc-similar" title="More like this upload"
+            onClick={(e) => { e.stopPropagation(); onRelated(); }}>↔ similar</button>
         )}
       </div>
     </div>
   );
 }
 
+// Sets and artists are places to go, drawn as cards in a grid.
 export function PlaylistRow({ row, onOpen }) {
   return (
-    <div className="sc-row nav" style={{ gridTemplateColumns: SC_COLS }} onClick={onOpen}>
-      <span className="sc-kind">SET</span>
-      <TrackArt id={row.playlist_id} thumbnail={row.thumbnail} className="sc-art" />
-      <div className="sc-name">
-        <div className="sc-title">{row.title}</div>
-        <div className="sc-uploader mono">@{row.artist}</div>
-        {row.source === "genre" && row.because?.length ? (
-          <div className="sc-because">tagged {row.because[0]}</div>
-        ) : null}
-      </div>
-      <div className="sc-cell" />
-      <div className="mono sc-num sc-dim">{row.track_count} trk</div>
-      <div className="sc-cell" />
-      <div className="sc-cell" />
-      <div className="mono sc-num sc-dim">{fmtDur(row.duration_secs)}</div>
-      <div className="sc-state right"><span className="sc-tag add">open →</span></div>
-    </div>
+    <button className="sc-card" onClick={onOpen}
+      title={row.source === "genre" && row.because?.length ? `tagged ${row.because[0]}` : `Open ${row.title}`}>
+      <TrackArt id={row.playlist_id} thumbnail={row.thumbnail} className="sc-cardart" />
+      <span className="sc-cardtext">
+        <span className="t">{row.title}</span>
+        <span className="mono m">SET · {row.track_count} tracks · {fmtDur(row.duration_secs)} · {row.artist}</span>
+      </span>
+    </button>
   );
 }
 
 export function UserRow({ row, onOpen }) {
   return (
-    <div className="sc-row nav" style={{ gridTemplateColumns: SC_COLS }} onClick={onOpen}>
-      <span className="sc-kind">ARTIST</span>
-      <TrackArt id={row.user_id} thumbnail={row.avatar_url} className="sc-art" />
-      <div className="sc-name">
-        <div className="sc-title">
-          {row.username}{row.verified && <span className="faint" title="Verified"> ✓</span>}
-        </div>
-        <div className="sc-uploader mono">
-          {fmtPlays(row.followers)} followers
-          {row.city ? ` · ${row.city}` : ""}
-        </div>
-        {/* Only suggestions carry these counts. Owning some of an artist already
-            is why they surfaced, so it belongs on the row, not filtered out. */}
-        {(row.new_tracks || row.owned_tracks) ? (
-          <div className="sc-because">
-            {row.new_tracks} new here
-            {row.owned_tracks ? ` · you have ${row.owned_tracks}` : ""}
-          </div>
-        ) : null}
-      </div>
-      <div className="sc-cell" />
-      <div className="mono sc-num sc-dim">{row.track_count} trk</div>
-      <div className="sc-cell" />
-      <div className="sc-cell" />
-      <div className="sc-cell" />
-      <div className="sc-state right"><span className="sc-tag add">open →</span></div>
-    </div>
+    <button className="sc-card user" onClick={onOpen} title={`Open ${row.username}`}>
+      <TrackArt id={row.user_id} thumbnail={row.avatar_url} className="sc-cardart round" />
+      <span className="sc-cardtext">
+        <span className="t">{row.username}{row.verified && <span className="muted" title="Verified"> ✓</span>}</span>
+        <span className="mono m">
+          {fmtPlays(row.followers)} followers · {row.track_count} tracks{row.city ? ` · ${row.city}` : ""}
+          {/* Only suggestions carry these counts. */}
+          {(row.new_tracks || row.owned_tracks)
+            ? ` · ${row.new_tracks} new${row.owned_tracks ? ` · you have ${row.owned_tracks}` : ""}` : ""}
+        </span>
+      </span>
+    </button>
   );
 }
 
