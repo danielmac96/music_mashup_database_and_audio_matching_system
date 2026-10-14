@@ -157,7 +157,9 @@ def test_new_shell_files_carry_no_hex():
     """Colours come from the tokens. The shell and the primitives are the
     first files built on them and must not carry a hex of their own."""
     for rel in ("shell/Sidebar.jsx", "shell/CommandPalette.jsx", "shell/Styleguide.jsx",
-                "components/ui/primitives.jsx", "components/PlayerBar.jsx"):
+                "components/ui/primitives.jsx", "components/PlayerBar.jsx",
+                "components/LibraryScreen.jsx", "components/LibraryFilters.jsx",
+                "components/TrackTable.jsx", "components/KeyChip.jsx"):
         assert not re.search(r"#[0-9a-fA-F]{3,8}\b", _read(rel)), rel
 
 
@@ -186,7 +188,7 @@ def test_cmd_k_palette_has_every_group_and_its_keys():
 
 def test_slash_and_space_are_global():
     assert 'e.key === "/"' in APP and "focusSearch" in APP
-    assert 'data-search="library"' in _read("components/LibraryScreen.jsx")
+    assert 'data-search="library"' in _read("components/LibraryFilters.jsx")
     assert 'data-search="discover"' in _read("components/SoundCloudBrowser.jsx")
     assert 'e.code !== "Space"' in APP
 

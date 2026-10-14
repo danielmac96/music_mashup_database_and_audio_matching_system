@@ -37,68 +37,56 @@ CSS = _read("styles.css")
 def _row(src: str) -> str:
     """The TrackRow component's body — not the TrackTable wrapper above it,
     which mentions the same prop names."""
-    return src[src.index("function TrackRow("):]
+    return src[src.index("const Row = memo("):]
 
 
 # ── the library row ────────────────────────────────────────────────────────
 
 def test_the_title_is_a_button_that_opens_the_track():
-    row = _row(TABLE)
-    block = row[row.index('className="tt-name"'):]
+    cell = TABLE[TABLE.index('case "title": {'):]
+    cell = cell[:cell.index('case "bpm":')]
+    block = cell[cell.index('<button className="tt-title"'):]
     block = block[:block.index("</button>")]
-    assert "<button" in row[:row.index('className="tt-name"')][-200:], \
-        "tt-name must be a button, not a div — a div is not a link"
-    assert "onOpen(t.id)" in block
+    assert "ctx.onOpen(t.id)" in block, "a span is not a link — keep it a button"
 
 
 def test_opening_a_track_does_not_also_toggle_the_row():
     """Without stopPropagation one click navigates AND re-scopes the dock, so
     you arrive on the detail screen having silently changed what the dock was
     showing behind it."""
-    row = _row(TABLE)
-    block = row[row.index('className="tt-name"'):]
-    block = block[:block.index("</button>")]
-    assert "e.stopPropagation()" in block
+    cell = TABLE[TABLE.index('<button className="tt-title"'):]
+    cell = cell[:cell.index("</button>")]
+    assert "e.stopPropagation()" in cell
 
 
 def test_the_row_itself_still_scopes_the_pair_dock():
     """The README's interaction contract: selecting a library row re-scopes the
     dock. The link is additive — it must not have taken that gesture over."""
     row = _row(TABLE)
-    head = row[:row.index('className="tt-play"')]
-    assert "onClick={() => onSelect(t.id)}" in head
-    # And the double-click fallback the revamp shipped with still works.
-    assert "onDoubleClick={() => onOpen(t.id)}" in head
+    assert "onClick={() => ctx.select(t.id)}" in row
+    assert "onDoubleClick={() => ctx.onOpen(t.id)}" in row
 
 
 def test_the_link_is_visible_before_it_is_clicked():
-    """The bug was an invisible affordance, so the hover state IS the fix."""
-    assert ".tt-go" in CSS
-    assert ".tt-row:hover .tt-go" in CSS
-    assert ".tt-name:hover .tt-text" in CSS
-    # A button in a grid cell reverts to centred text with default padding,
-    # which breaks the title column's ellipsis.
-    block = CSS[CSS.index("\n.tt-name {"):]
+    """The bug was an invisible affordance, so the hover state IS the fix — and
+    a button reverts to centred text with a border unless told otherwise."""
+    assert ".tt-title:hover { text-decoration: underline; }" in CSS
+    block = CSS[CSS.index("\n.tt-title {"):]
     block = block[:block.index("}")]
-    assert "text-align: left" in block
-    assert "border: 0" in block
+    assert "text-align: left" in block and "border: 0" in block
+    assert "text-overflow: ellipsis" in block
 
 
-def test_a_long_title_does_not_swallow_its_own_chevron():
-    """Most titles overflow this column. With the chevron inside the ellipsised
-    element, the affordance is clipped on exactly the rows that need it — and
-    that is what the browser check caught."""
-    for line, text, go in ((".tt-title", ".tt-text", ".tt-go"),
-                           (".partner-line", ".pc-text", ".partner-go")):
-        row = CSS[CSS.index(f"\n{line} {{"):]
-        row = row[:row.index("}")]
-        assert "display: flex" in row, line
-        cell = CSS[CSS.index(f"\n{text} {{"):]
-        cell = cell[:cell.index("}")]
-        assert "text-overflow: ellipsis" in cell, text
-        chev = CSS[CSS.index(f"\n{go} {{"):]
-        chev = chev[:chev.index("}")]
-        assert "flex: none" in chev, go
+def test_a_long_partner_title_does_not_swallow_its_own_chevron():
+    """With the chevron inside the ellipsised element, the affordance is
+    clipped on exactly the rows that need it."""
+    row = CSS[CSS.index("\n.partner-line {"):]
+    row = row[:row.index("}")]
+    assert "display: flex" in row
+    cell = CSS[CSS.index("\n.pc-text {"):]
+    assert "text-overflow: ellipsis" in cell[:cell.index("}")]
+    chev = CSS[CSS.index("\n.partner-go {"):]
+    assert "flex: none" in chev[:chev.index("}")]
 
 
 # ── the partners rail ──────────────────────────────────────────────────────
@@ -161,13 +149,12 @@ def test_app_hands_the_detail_screen_a_way_to_change_tracks():
         "partner you are already scoped to would clear the selection instead"
 
 
-def test_the_whole_name_cell_opens_the_track():
-    """The button spans the column's WIDTH already; at content height the strips
-    above and below the two lines fell through to the row, so a click half a row
-    from the title scoped the dock instead of opening the track."""
-    block = CSS[CSS.index(".tt-name {"):]
-    block = block[:block.index("}")]
-    assert "height: 100%" in block
-    assert "display: flex" in block and "flex-direction: column" in block
-    # ...and the row still owns everything else.
-    assert "onClick={() => onSelect(t.id)}" in _row(TABLE)
+def test_the_artist_and_the_rest_of_the_row_select():
+    """Only the title opens the track; the artist beside it and every other
+    cell belong to the row, which scopes the dock."""
+    cell = TABLE[TABLE.index('case "title": {'):]
+    cell = cell[:cell.index('case "bpm":')]
+    artist = cell[cell.index('className="tt-artist"') - 10:]
+    assert "onClick" not in artist[:artist.index("</span>")]
+
+

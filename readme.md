@@ -312,38 +312,58 @@ aliases to them until the last screen is rebuilt. Canvas code reads a token with
 
 ### Library
 
-Paste a playlist or track link → **Preview** → **Save to library**. Tick **Save
-as a library group** to keep a set together; groups appear under GROUPS in the
-rail and narrow the table to that set. Every track walks the pipeline with
-per-track progress and a batch banner. Failures show a reason and **Retry**;
-suspected 30s Go+ previews get **Fix preview** (re-verify). A row's menu can
-re-run a single stage, edit BPM/key, change the source URL (resets and
-reprocesses), add to a group, or delete the track and its files.
+**＋ Import** opens the paste bar: a playlist or track link → **Preview** →
+**Save to library**. Tick **Save as a library group** to keep a set together;
+groups appear under **Crates** in the rail and narrow the table to that set.
+Every track walks the pipeline with per-track progress. Failures show a reason
+and **Retry**; suspected 30s Go+ previews get **Fix preview** (re-verify). A
+row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
+(resets and reprocesses), adds to a crate, or deletes the track and its files.
 
-- The table filters and sorts **in memory** (`GET /api/tracks` is unpaginated).
-  Column headers sort in three states: unsorted → one direction → the other →
-  unsorted, because import order is a meaningful order.
-- **Attribute** filters on anything the analysis measured — mood, Discogs
-  style, danceability, LUFS, voice… — picked from the catalogue (§4 Analysis):
-  a range for a number, a value for a category, and for a top-N list (styles,
-  moods/themes) a value among the track's top 3. A track without that
-  measurement is left out, like the BPM and year filters. Each condition shows
-  as a pill; click it to remove it.
-- **MASH** shows each track's section shape (one bar per section, coloured by
-  label, as tall as its energy, sung sections underlined) and its best pairing
-  as a percentile of every scored pair; it sorts by that. With room (≥940px of
-  table), **VOX%** (the sung share) and **PAIRS** (partners as vocal / as bed)
-  join it. All three are computed per track over the whole of
-  `mashup_candidates` (`GET /api/tracks` `mash`, `shape`), never off the dock's
-  truncated list.
-- A BPM with **×2?** / **÷2?** beside it is a suspected half/double-time read
+- The table is a **flat, virtualised list** of fixed 32px rows: only the rows
+  in the scroll window are in the DOM, so 5,000 tracks scroll like 50. It
+  filters and sorts **in memory** (`GET /api/tracks` is unpaginated). Columns:
+  art (hover ▶ previews the hook), Title / Artist (the title opens the track),
+  BPM, Key (`8A?` when the key estimate is weak), Energy (0–10, ranked against
+  this library), Genre, Year, Length, VOX% (the sung share), Best pair (its best
+  pairing as a percentile of every scored pair), Pairs V/B (partners as vocal /
+  as bed), Plays, Rating, Status; Shape, Sections, Added and any analysed
+  attribute can be added. Best pair, Pairs and VOX% are computed per track over
+  the whole of `mashup_candidates` (`GET /api/tracks` `mash`, `shape`), never off
+  the dock's truncated list.
+- **The view** — which columns show, their order (drag a header), their width
+  (drag its right edge; double-click to reset) and the sort — is saved on the
+  server (`PUT /api/prefs/library-view`, cached in `localStorage`), so every
+  browser sees the same table. **Columns ▾** shows, hides and resets them; an
+  attribute column's switch is the Analysis panel's Library switch. Headers sort
+  in three states: first direction → the other → off, because import order (a
+  crate's own running order inside a crate) is a meaningful order.
+- **The search box reads filters as you type**: `8A 124-128 house 2015+ vox`
+  previews as Key 8A · 124–128 BPM · House · 2015 or later · Vocal-forward
+  (also `126bpm`, `2010-2019`, `stems`, and the genres this library contains);
+  ⏎ pins them as filters, whatever is left searches title, artist and genre.
+- **Chips**: BPM (a 60–180 dual slider, ±6% including half/double time, genre
+  presets), Key (the 24-key Camelot wheel, plus *compatible with the selected
+  track* — its key, ±1 and the relative), Genre / Style (each genre with the
+  Discogs styles its tracks lead with), Year, Plays, Vocal-forward (sung share
+  ≥ 45%), Has stems, Status, and **+ Attribute** — anything the analysis
+  measured, picked from the catalogue (§4 Analysis): ≥ a value for a number, a
+  value for a category, and for a top-N list (styles, moods/themes) a value
+  among the track's top 3. A track without that measurement is left out, like
+  the BPM and year filters. Active filters show as removable pills, with
+  **Clear all** and the live count.
+- **Saved ▾** names the current filters as a preset
+  (`/api/prefs/filter-presets`); presets are listed there, under **Saved
+  views** in the rail (after the built-in Ready to mash / Recently added / Needs
+  attention) and in ⌘K. Deleting one offers Undo.
+- A BPM with **×2?** / **÷2?** before it is a suspected half/double-time read
   (`tracks.tempo_hint`: the analyser's own alternative votes at ×2 or ÷2, else
-  a tempo outside 80–175). One click corrects it; the BPM editor in the row
-  menu has ×2 and ÷2 too. Then **Score library**.
-- **Columns drag to resize** by the handle on a header's right edge;
-  double-click it to restore the default. Widths persist per column id in
-  `localStorage`. Title/artist and genre both flex, so a wide window gives
-  genre room instead of handing every spare pixel to the title.
+  a tempo outside 80–175). One click corrects it (`PATCH /features`); the BPM
+  editor in the row menu has ×2 and ÷2 too. Then **Score library**.
+- **Keys** (table focused): ↑↓, PgUp/PgDn, Home/End move the selection; space
+  loops the track's hook (`GET /api/tracks/{id}/hook`) on the player bar; ⏎
+  opens the track; esc clears the selection; tab moves on to the pair dock,
+  whose keys work once the table no longer has focus.
 - Click a row to **scope the pair dock** to it (a click selects; it never
   toggles — the ✕ on the dock's scope line, or `esc`, goes back to the whole
   library); click anywhere in the **title/artist column** to open the track
@@ -1734,16 +1754,24 @@ Existing databases migrate on start.
   labelled LBL cannot come to mean something else. Sorting the dock's page
   client-side would rank a top-40 the server already truncated by score — a
   page, not a library. An unmeasured term sorts last, never as zero.
-- **Library column widths are keyed by column id**, not position
-  (`hooks/useColumnWidths.js`). An index re-points every stored width the first
-  time a column moves, and the symptom looks nothing like the cause. Each
-  `HEADS` entry stays on one line — a test parses the block line-by-line.
+- **The Library view is keyed by column id**, not position
+  (`hooks/useColumnWidths.js` `useLibraryView`, stored by
+  `/api/prefs/library-view`). An index re-points every stored width the first
+  time a column moves, and the symptom looks nothing like the cause. A column
+  the stored order has never seen goes where `TrackTable` `COLUMNS` puts it;
+  each `COLUMNS` entry stays on one line — a test parses the block line by line.
+- **The Library table is virtualised on fixed 32px rows** (`TrackTable`
+  `ROW_H`): the rendered window is computed from `scrollTop`, so a row taller
+  than 32px misplaces every row below it. Rows are memoised; the handlers they
+  call go through a ref, so a parent render does not re-render the window.
+  Keys the table handles stop at the table, so the pair dock's window keys only
+  act when the table does not have focus.
 - **Attributes are defined once**, in `analysis/attributes.py`: the Analysis
   panel, the Library's `attr:<id>` columns and Track detail's card all read
   that catalogue and the `attrs` each track carries, so a label, unit or source
-  cannot differ between them. Add an attribute there, never in the JSX. Toggled
-  columns are spliced in before RATING at render time — `HEADS` is unchanged —
-  and table cells drop the unit (the header names it). Visibility lives in
+  cannot differ between them. Add an attribute there, never in the JSX. An attribute
+  column shows when its Analysis-panel Library switch is on (the Columns menu
+  flips the same switch), and table cells drop the unit (the header names it). Visibility lives in
   `app_prefs` (`attribute_visibility`) and is fetched once in `App.jsx`.
 - **Library, judgements and groups are fetched once, in `App.jsx`.** The Queue
   screen reads that library and polls only `/api/jobs` + `/api/jobs/queue`.
@@ -2114,7 +2142,8 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    worked through its `TRANSITION.md` one step per commit). Done: B1 (pair
    payload audit: `compat.key.known`, `/by-vocal` enriched) and step 0 (tokens,
    collapsible rail, ⌘K palette, player bar, toast, `?styleguide`; tiers read
-   from `confidence_tier`, `tierFor` gone). Next: 1a Library, 1b pair dock,
+   from `confidence_tier`, `tierFor` gone), 1a (the Library: virtualised table,
+   parsing search, chip popovers, presets, the view on the server). Next: 1b pair dock,
    1c track detail, 2 Queue, 3 Analysis, 4 Discover, 5 Mixes, B3/B4 then 6
    Sets, B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
    screen's step lands it keeps its old rail-slot block.

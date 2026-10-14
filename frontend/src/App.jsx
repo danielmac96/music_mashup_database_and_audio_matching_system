@@ -26,6 +26,7 @@ import { useAttributes } from "./hooks/useAttributes";
 import { usePairDock } from "./hooks/usePairDock";
 import { useSets } from "./hooks/useSets";
 import { usePairNotes } from "./hooks/usePairNotes";
+import { useFilterPresets } from "./hooks/useFilterPresets";
 import { usePlayer } from "./hooks/usePlayer";
 import { isActiveJob } from "./hooks/useQueue";
 import { api } from "./api";
@@ -158,6 +159,10 @@ export default function App() {
   // add to the same active set.
   const sets = useSets();
   const notes = usePairNotes();
+  // Named Library filters: the Library's Saved ▾, the rail and ⌘K list them.
+  const presets = useFilterPresets();
+  // A preset applied from outside the Library (⌘K); `at` re-applies the same one.
+  const [libraryPreset, setLibraryPreset] = useState(null);
 
   useEffect(() => {
     if (!settingsOpen) return undefined;
@@ -434,6 +439,8 @@ export default function App() {
                 onRailSlot={setRailSlot}
                 onStatus={setHeaderStatus}
                 onOpenQueue={openQueue}
+                presets={presets}
+                applyPreset={libraryPreset}
               />
             </main>
             <PairDock dock={dock} ratings={ratings}
@@ -573,6 +580,10 @@ export default function App() {
             { key: "a:help", glyph: "?", label: "How it works", hint: "?", run: openHelp },
             { key: "a:settings", glyph: "⚙", label: "Settings", run: () => setSettingsOpen(true) },
           ]}
+          views={presets.presets.map((p) => ({
+            key: `v:${p.id}`, glyph: "◇", label: p.name,
+            run: () => { setRoute("library"); setLibraryPreset({ filters: p.filters, at: Date.now() }); },
+          }))}
           tracks={library.tracks}
           pairs={dock.rows}
           onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}

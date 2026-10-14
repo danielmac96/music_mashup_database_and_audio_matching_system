@@ -105,7 +105,7 @@ export function Styleguide() {
           </div>
           <div className="sg-radii">
             <div className="r3">r 3</div><div className="r6">r 6</div>
-            <div className="pop">pop</div><div className="modal">modal</div>
+            <div className="pop-demo">pop</div><div className="modal">modal</div>
           </div>
           <p className="muted">Motion: 120 ms ease for hover, width and colour. Nothing animates
             longer than 150 ms. Running state pulses at 1.4 s.</p>

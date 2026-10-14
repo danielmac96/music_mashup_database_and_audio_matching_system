@@ -210,16 +210,16 @@ def test_the_year_column_sorts_by_the_number_it_displays():
 
 
 def test_the_library_table_sorts_the_same_way():
+    """Every Library column with a value sorts; the art cell and the section
+    shape are pictures, not values, and stay inert."""
     table = _read("components/TrackTable.jsx")
-    assert "<SortHead" in table
-    for key in ("title", "artist", "genre", "year", "plays", "bpm", "key",
-                "rating", "duration"):
-        assert f'"{key}"' in table, key
-    # PIPE is four assembled booleans, not a value — it stays inert.
-    heads = table[table.index("const HEADS = ["):]
-    heads = heads[:heads.index("];")]
-    pipe = [ln for ln in heads.splitlines() if "PIPE" in ln][0]
-    assert "key:" not in pipe
+    hook = _read("hooks/useLibraryFilters.js")
+    for key in ("title", "genre", "year", "plays", "bpm", "key", "rating", "len"):
+        assert f'sort: "{key}"' in table, key
+        assert f"  {key}: {{ get:" in hook, key
+    for inert in ('{ id: "art"', '{ id: "shape"'):
+        line = next(l for l in table.splitlines() if l.strip().startswith(inert))
+        assert "nosort: true" in line
 
 
 def test_a_third_click_returns_to_the_natural_order():

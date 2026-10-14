@@ -71,23 +71,20 @@ def test_the_rail_count_is_what_the_filter_will_show():
 
 
 def test_a_group_and_the_rail_agree_on_which_one_is_active():
-    """Ids arrive as numbers from the API and as strings from the chip, and ===
+    """Ids arrive as numbers from the API and as strings from the rail, and ===
     between them is silently false — the filter would match nothing."""
     assert 'String(active) === String(g.id)' in SCREEN
-    assert 'String(filters.group) === String(g.id)' in BAR
+    assert 'String(filters.group) === String(id)' in SCREEN
     assert "String(id) === String(groupId)" in GROUPS
 
 
-def test_group_order_needs_a_group():
-    """It is a position INSIDE one group. With none chosen every row is
-    unplaced, so it sorts nothing rather than inventing an order across
-    shelves."""
-    assert '["group", "group order"]' in HOOK
-    fn = HOOK[HOOK.index("function compare("):]
-    fn = fn[:fn.index("\n// Unsorted")]
-    block = fn[fn.index('if (key === "group")'):]
-    assert "groupId ? groups.positionOf(groupId, a.id) : null" in block
-    assert "(pick a group)" in BAR
+def test_inside_a_group_unsorted_is_the_groups_own_order():
+    """A crate's running order is most of why you saved it as one. With no
+    group chosen, unsorted is import order."""
+    fn = HOOK[HOOK.index("export function sortLibrary"):]
+    fn = fn[:fn.index("\n}")]
+    assert "if (!groupId) return rows;" in fn
+    assert "groups.positionOf(groupId, t.id)" in fn
 
 
 def test_the_importer_can_name_a_group_and_reports_it():

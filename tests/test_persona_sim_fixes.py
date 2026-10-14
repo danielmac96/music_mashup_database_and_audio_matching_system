@@ -458,8 +458,9 @@ def test_library_summarises_each_track_as_mashup_material(one_vocal_many_beds):
     assert rows[beds[2]]["mash"]["as_bed"] == 1 and rows[beds[2]]["mash"]["best_pct"] < 1.0
     assert rows[beds[2]]["mash"]["vocal_coverage"] is None, "unmeasured, not zero"
     table = _read("components/TrackTable.jsx")
-    assert 'id: "mash"' in table and "function ShapeThumb" in table
-    assert "best: (t) => t.mash?.best_pct" in _read("hooks/useLibraryFilters.js")
+    assert '{ id: "best"' in table and '{ id: "shape"' in table
+    assert "function ShapeThumb" in table
+    assert "best: { get: (t) => t.mash?.best_pct" in _read("hooks/useLibraryFilters.js")
 
 
 # ── 14 / 15. track detail strip, Studio fades/filters/undo/export ───────────
@@ -536,7 +537,7 @@ def test_tempo_hint_flags_octave_errors():
 
 
 def test_library_and_editor_offer_the_octave_fix():
-    assert "tt-tempo-hint" in _read("components/TrackTable.jsx")
+    assert "tt-fix" in _read("components/TrackTable.jsx")
     assert "onFixTempo" in _read("components/LibraryScreen.jsx")
     editor = _read("components/TrackEditor.jsx")
     assert ">×2</button>" in editor and ">÷2</button>" in editor

@@ -22,8 +22,10 @@ def test_the_api_has_both_calls():
 
 
 def test_attribute_columns_are_keyed_by_id():
-    js = _read("attributes.js")
-    assert '"attr:" + ' in js or "`attr:${" in js
+    # Ids are "attr:<id>", so a dragged width or a moved column follows its
+    # attribute rather than a position.
+    js = _read("components/LibraryScreen.jsx")
+    assert "`attr:${a.id}`" in js
 
 
 def test_the_rail_has_analysis_between_queue_and_discover():
@@ -48,12 +50,14 @@ def test_the_panel_toggles_library_and_detail_and_never_recomputes():
     assert "bulk" not in jsx and "reanalys" not in jsx.lower()
 
 
-def test_attribute_columns_sit_before_rating_and_heads_is_untouched():
-    tt = _read("components/TrackTable.jsx")
-    assert "attrColumns(" in tt
-    heads = tt[tt.index("const HEADS = ["):tt.index("];", tt.index("const HEADS = ["))]
-    assert "attr:" not in heads                     # HEADS itself is unchanged
-    assert "useColumnWidths(columns)" in tt          # widths keyed over every column
+def test_attribute_columns_come_from_the_catalogue_and_the_panel_switches():
+    """Any catalogue attribute can be a Library column; whether it shows is the
+    Analysis panel's Library switch, so the Columns menu and the panel agree."""
+    screen = _read("components/LibraryScreen.jsx")
+    assert "const attrColumn = (a)" in screen and "id: `attr:${a.id}`" in screen
+    assert 'attributes.toggle("library", c.attr.id)' in screen
+    view = _read("hooks/useColumnWidths.js")
+    assert "const visible = c.attr ? attrSet.has(id)" in view
 
 
 def test_attribute_sort_keys_are_understood():
@@ -71,13 +75,14 @@ def test_track_detail_shows_the_detail_attributes():
 
 def test_table_cells_are_compact_and_small_numbers_stay_readable():
     """Seen in the browser: '-10.4 LU…' (the unit repeated in every cell, the
-    header already says LUFS), 'Hands…' (a style name in a 64px column) and
+    header already says LUFS), 'Hands…' (a style name in a narrow column) and
     Energy as 0.000 (values around 2e-4 at three decimals)."""
     js = _read("attributes.js")
     assert "withUnit" in js and "toPrecision(" in js
-    assert '"96px"' in js                                  # text columns are wider
+    screen = _read("components/LibraryScreen.jsx")
+    assert 'w: a.kind === "number" ? 70 : 110' in screen      # text columns are wider
     tt = _read("components/TrackTable.jsx")
-    assert "fmtAttr(c.attr, t.attrs?.[c.attr.id], false)" in tt
+    assert "fmtAttr(col.attr, v, false)" in tt
 
 
 def test_compare_says_whether_the_two_tracks_mash():

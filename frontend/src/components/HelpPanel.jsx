@@ -28,6 +28,8 @@ const GLOSSARY = [
 ];
 
 const KEYS = [
+  ["Library table", "↑↓ move · PgUp/PgDn · Home/End · space preview the hook · ⏎ open the track · esc clear the selection · tab → the pair dock"],
+  ["Library search", "type 8A 124-128 house 2015+ vox stems — read as filters · ⏎ pin them · ↓ into the table · esc clear"],
   ["Pair dock", "↑↓ move · space loop · 1–5 rate (again to clear) · V/B solo vocal/bed · h hide · a add to set · c compare · ⏎ Studio"],
   ["Studio", "space play · ←→ nudge a lane · L loop · [ ] timing options · 1–6 jump · ctrl/⌘+Z undo · shift+ctrl/⌘+Z redo · ⌫ remove lane"],
   ["Everywhere", "⌘K / ctrl+K command palette (↑↓ move · ⏎ open · esc close) · / focus search · space play/pause the player bar · esc back one layer · ? this help"],

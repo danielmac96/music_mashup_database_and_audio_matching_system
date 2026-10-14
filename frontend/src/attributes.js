@@ -13,14 +13,3 @@ export function fmtAttr(attr, value, withUnit = true) {
   const n = x !== 0 && Math.abs(x) < 10 ** -dec ? x.toPrecision(2) : x.toFixed(dec);
   return withUnit && attr.unit ? `${n} ${attr.unit}` : n;
 }
-
-// Library columns for the toggled attributes. Ids are "attr:" + the attribute
-// id, so a dragged width stays with its column (hooks/useColumnWidths.js).
-export function attrColumns(byId, ids) {
-  return ids.filter((id) => byId[id]).map((id) => {
-    const a = byId[id];
-    return { id: "attr:" + id, label: a.short, key: "attr:" + id,
-             numeric: a.kind === "number", w: a.kind === "number" ? "64px" : "96px",
-             min: 40, grip: true, attr: a };
-  });
-}

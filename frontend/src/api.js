@@ -540,6 +540,22 @@ export const api = {
     method: "PUT", body: JSON.stringify(vis),
   }),
 
+  // The Library's columns / order / sort, and named filter presets (§5.13).
+  getLibraryView: () => jsonFetch("/api/prefs/library-view"),
+  putLibraryView: (view) => jsonFetch("/api/prefs/library-view", {
+    method: "PUT", body: JSON.stringify(view),
+  }),
+  getFilterPresets: () => jsonFetch("/api/prefs/filter-presets"),
+  saveFilterPreset: (name, filters) => jsonFetch("/api/prefs/filter-presets", {
+    method: "POST", body: JSON.stringify({ name, filters }),
+  }),
+  deleteFilterPreset: (id) => jsonFetch(`/api/prefs/filter-presets/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  }),
+
+  // The 16 bars of a track worth previewing (role: vocal | bed).
+  getHook: (id, role = "vocal") => jsonFetch(`/api/tracks/${id}/hook?role=${role}`),
+
   // ── Discovery (SoundCloud search/browse) + crates ──────────────────────────
   // Every track row comes back with `in_library` already resolved server-side,
   // so the browser never has to reconcile results against the library itself.

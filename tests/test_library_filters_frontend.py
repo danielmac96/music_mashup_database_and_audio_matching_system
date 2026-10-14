@@ -39,15 +39,21 @@ def test_the_table_renders_what_the_filter_returned():
     count that describes the filtered ones is how a filter appears to do
     nothing."""
     screen = _read("components/LibraryScreen.jsx")
-    assert "visible.map(" in screen
-    assert "tracks.map(" not in screen
+    assert "tracks={visible}" in screen
+    assert "visible.length.toLocaleString()" in screen
 
 
-def test_unsorted_is_the_default():
+def test_unsorted_is_the_default_and_a_header_cycles_back_to_it():
     """Rows arrive in import order, which is the order you added them, and that
-    is often exactly what you are looking for."""
-    assert re.search(r'primary:\s*""', HOOK)
-    assert HOOK.index('["", "unsorted"]') < HOOK.index('["added"')
+    is often exactly what you are looking for: a header click cycles first
+    direction → the other → off."""
+    fn = HOOK[HOOK.index("export function cycleSort"):]
+    fn = fn[:fn.index("\n}")]
+    assert "return { id, dir: first };" in fn
+    assert "return { id, dir: other };" in fn
+    assert "return { id: null, dir: null };" in fn
+    view = _read("hooks/useColumnWidths.js")
+    assert "sort: { id: null, dir: null }" in view
 
 
 def test_missing_values_sort_last_in_both_directions():
@@ -55,8 +61,9 @@ def test_missing_values_sort_last_in_both_directions():
     is applied only after the null checks, so nulls sink either way."""
     fn = HOOK[HOOK.index("function compare("):]
     fn = fn[:fn.index("\n// Unsorted")]
-    assert fn.count("if (x == null) return 1;") >= 2
-    assert fn.count("if (y == null) return -1;") >= 2
+    assert "if (x == null) return 1;" in fn
+    assert "if (y == null) return -1;" in fn
+    assert fn.index("if (x == null) return 1;") < fn.index("* sign")
 
 
 def test_a_range_filter_excludes_rows_with_no_value():
@@ -96,7 +103,7 @@ def test_the_filter_chips_cannot_shrink():
     block = block[:block.index("}")]
     assert "flex: none" in block
     assert "white-space: nowrap" in block
-    bar = css[css.index(".filter-bar {"):]
+    bar = css[css.index("\n.filter-bar {"):]
     assert "flex-wrap: wrap" in bar[:bar.index("}")]
 
 
@@ -123,47 +130,82 @@ def test_a_track_star_is_the_best_pairing_it_appears_in():
 # rows share one string; two copies would drift and every cell below the header
 # would draw under the wrong column.
 
-def test_the_head_and_the_rows_share_one_template():
-    assert TABLE.count("gridTemplateColumns: template") == 1
-    assert "gridTemplateColumns: cols" in TABLE
-    assert "<TrackRow key={t.id} t={t} cols={template}" in TABLE
+def test_the_head_and_the_rows_share_one_width():
+    """Header cells and row cells are sized by the same widthOf(c), so a cell
+    can never draw under the wrong column."""
+    assert TABLE.count("style={{ width: widthOf(c) }}") == 1          # the header
+    assert "visible.map((c) => [c, widthOf(c)])" in TABLE             # the rows
+    assert "style={{ width: w }}" in TABLE
 
 
 def test_every_column_declares_an_id_and_a_width():
-    """Widths are stored per id. An index would silently re-point every stored
-    width the first time a column moved, and the symptom — one narrow column
-    somewhere else — looks nothing like the cause."""
-    heads = TABLE[TABLE.index("const HEADS = ["):]
-    heads = heads[:heads.index("];")]
-    entries = [l for l in heads.split("\n") if l.strip().startswith("{ id:")]
-    # 11 original columns + MASH, VOX%, PAIRS (mashup columns).
-    assert len(entries) == 14, entries
+    """Widths and order are stored per id. An index would silently re-point
+    every stored width the first time a column moved, and the symptom — one
+    narrow column somewhere else — looks nothing like the cause."""
+    cols = TABLE[TABLE.index("export const COLUMNS = ["):]
+    cols = cols[:cols.index("];")]
+    entries = [l for l in cols.split("\n") if l.strip().startswith("{ id:")]
+    ids = [e.split('"')[1] for e in entries]
+    assert ids[:14] == ["art", "title", "bpm", "key", "energy", "genre", "year", "len",
+                        "vox", "best", "pairs", "plays", "rating", "status"], ids
     for line in entries:
-        assert " w: " in line, line
-    # Each entry stays on ONE line: test_sc_preview_frontend parses this block
-    # line-by-line to assert PIPE carries no sort key.
-    assert "\n" not in "".join(e for e in entries if e.count("{") != e.count("}"))
+        assert " w: " in line and " min: " in line, line
 
 
-def test_title_and_genre_both_flex():
-    """Title used to be the only 1fr, so it absorbed every pixel of slack on a
-    wide desktop while GENRE sat at its floor and truncated the one thing it
-    exists to show."""
-    heads = TABLE[TABLE.index("const HEADS = ["):]
-    heads = heads[:heads.index("];")]
-    name = next(l for l in heads.split("\n") if '{ id: "name"' in l)
-    genre = next(l for l in heads.split("\n") if '{ id: "genre"' in l)
-    assert "fr)" in name and "minmax(" in name
-    assert "fr)" in genre and "minmax(" in genre
+def test_the_title_takes_the_slack():
+    """Widths are fixed px; on a wide window the title takes what is left over
+    rather than the table leaving a gap at the right."""
+    assert "const slack = Math.max(0, box.w - sum);" in TABLE
+    assert 'c.width + (c.id === "title" ? slack : 0)' in TABLE
 
 
 def test_a_grip_drag_never_reaches_the_sort_header():
     grip = TABLE[TABLE.index("const onGrab"):]
-    grip = grip[:grip.index("return (")]
+    grip = grip[:grip.index("const handlers")]
     assert "e.stopPropagation()" in grip
-    assert "getBoundingClientRect" in grip, "a fr column has no stored width to read"
+    assert "resizing.current = true" in grip, "a resize must not start a column drag"
     assert 'className="tt-grip"' in TABLE
-    assert "resetColumn" in TABLE, "double-click should restore the default"
+    assert "onResetWidth(c.id)" in TABLE, "double-click should restore the default"
+    assert "if (resizing.current) { e.preventDefault(); return; }" in TABLE
+
+
+def test_the_table_is_virtualised_with_fixed_rows():
+    """5,000 tracks: only the rows in (and just around) the scroll window are in
+    the DOM, at a fixed 32px."""
+    assert "export const ROW_H = 32;" in TABLE
+    assert "tracks.slice(first, first + count)" in TABLE
+    assert "height: tracks.length * ROW_H" in TABLE
+    assert "const Row = memo(" in TABLE
+    css = _read("styles.css")
+    row = css[css.index("\n.tt-row {"):]
+    assert "height: 32px" in row[:row.index("}")]
+
+
+def test_the_view_lives_on_the_server():
+    """Columns, order, widths and sort go to /api/prefs/library-view; the local
+    copy is only a cache."""
+    view = _read("hooks/useColumnWidths.js")
+    assert "api.getLibraryView()" in view and "api.putLibraryView(" in view
+    assert "export function useLibraryView" in view
+
+
+def test_the_search_box_parses_filters():
+    """'8A 124-128 house 2015+ vox' reads as a key, a BPM range, a genre this
+    library has, a year and vocal-forward; ⏎ pins them."""
+    fn = HOOK[HOOK.index("export function parseQuery"):]
+    fn = fn[:fn.index("\n}")]
+    for token in ("([ab])$/i", "(\\d{2,3})[-–](\\d{2,3})$", "bpm$/i", "\\+$/",
+                  '"vox"', 'lo === "stems"'):
+        assert token in fn, token
+    assert "onPin()" in BAR and 'e.key === "Enter"' in BAR
+
+
+def test_presets_are_saved_on_the_server():
+    presets = _read("hooks/useFilterPresets.js")
+    assert "api.saveFilterPreset(" in presets and "api.deleteFilterPreset(" in presets
+    assert 'label: "Undo"' in presets           # a delete can be undone
+    for banned in ("fetch(", "api."):
+        assert banned not in BAR
 
 
 def test_stored_widths_survive_a_column_change():
