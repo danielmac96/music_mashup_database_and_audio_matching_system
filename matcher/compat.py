@@ -152,6 +152,9 @@ def pair_compat(row: Dict, facts: Optional[Dict] = None) -> Dict:
         "relation": "clash" if clash else key_relation(v_cam, b_cam),
         "steps": camelot_steps(v_cam, b_cam),
         "shift_st": None if shift is None else int(shift),
+        # Both keys read as Camelot codes — the card's "key ?" otherwise.
+        "known": _parse_camelot(v_cam or "") is not None
+                 and _parse_camelot(b_cam or "") is not None,
     }
 
     v_bpm, b_bpm = _num(row.get("vocal_bpm")), _num(row.get("inst_bpm"))
