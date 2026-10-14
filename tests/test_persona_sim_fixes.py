@@ -629,7 +629,7 @@ def test_help_opens_from_the_rail_and_the_question_mark():
 
 def test_analysis_compares_two_tracks():
     a = _read("components/AnalysisScreen.jsx")
-    assert "function TrackCompare" in a and "an-compare-table" in a
+    assert "function TrackCompare" in a and "an-diffrow" in a and "Only where they differ" in a
     assert "tracks={library.tracks}" in _read("App.jsx")
 
 

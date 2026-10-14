@@ -162,7 +162,7 @@ def test_new_shell_files_carry_no_hex():
                 "components/TrackTable.jsx", "components/KeyChip.jsx",
                 "components/PairDock.jsx", "components/PairCard.jsx",
                 "components/TrackDetail.jsx", "components/StructureStrip.jsx",
-                "components/SectionTable.jsx", "components/QueueScreen.jsx"):
+                "components/SectionTable.jsx", "components/QueueScreen.jsx", "components/AnalysisScreen.jsx"):
         assert not re.search(r"#[0-9a-fA-F]{3,8}\b", _read(rel)), rel
 
 

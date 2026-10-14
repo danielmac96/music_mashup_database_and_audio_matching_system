@@ -2169,7 +2169,10 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    Library column beside the dock: hero, stat strip, a 156px structure canvas,
    the section table, five remembered disclosures), 2 (Queue: header tabs, pool
    cards with the bottleneck, Timeline rows on the API's summary and ETA, the
-   inspector). Next: 3 Analysis, 4 Discover, 5 Mixes, B3/B4 then 6
+   inspector), 3 (Analysis: Attributes / Compare tabs, status strip, 24-bin
+   p1–p99 histograms from the library in memory, Library/Detail switches,
+   searchable pickers, verdict pair cards, attribute diff with range dots).
+   Next: 4 Discover, 5 Mixes, B3/B4 then 6
    Sets, B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
    screen's step lands it keeps its old rail-slot block.
 
