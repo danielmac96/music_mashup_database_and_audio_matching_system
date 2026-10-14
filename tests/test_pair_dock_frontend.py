@@ -175,10 +175,10 @@ def test_cards_scroll_rather_than_compress():
 def test_the_keyboard_is_gated_on_the_visible_screen():
     """A window listener that ignores which screen is showing is how two
     keyboard models end up fighting over the space bar. The dock's is bound
-    only while the library is the visible route."""
+    only while the Library (or its Track detail, minus space) is showing."""
     assert "bindKeys" in DOCK_HOOK
     app = _read("App.jsx")
-    assert 'dock.bindKeys(route === "library")' in app
+    assert 'dock.bindKeys(route === "library" || route === "track",' in app
     assert "if (!enabled) return undefined;" in DOCK_HOOK
 
 
@@ -266,6 +266,6 @@ def test_score_library_lives_with_the_knobs_it_re_applies():
     assert "api.startScoring" in hook and "onRescoreRequest" in hook
     # ...and nothing still sends the user to Discover to find it.
     for rel in ("components/PairDock.jsx", "components/TuningPanel.jsx",
-                "components/PartnersRail.jsx"):
+                "components/TrackDetail.jsx"):
         src = _read(rel)
         assert "Score library" not in src or "Discover" not in src, rel

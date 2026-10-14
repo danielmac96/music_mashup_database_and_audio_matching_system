@@ -189,7 +189,7 @@ function TrackCompare({ tracks, catalogue, categories, onPlayPair = null,
   const boxRef = useRef(null);
   useEffect(() => {
     if (!seed) return;
-    setA(String(seed.a)); setB(String(seed.b));
+    setA(String(seed.a)); setB(seed.b == null ? "" : String(seed.b));
     setTimeout(() => boxRef.current?.scrollIntoView({ block: "start" }), 50);
   }, [seed]);
   // The question behind comparing two tracks is "do they mash?": the scored

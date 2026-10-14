@@ -360,7 +360,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   // rate (and advance), ⏎ expand, V/B solo, h hide, a + set, c compare.
   // `enabled` stops it firing while another screen is on top. The Library
   // table stops its own keys, so these act when the table is not focused.
-  const bindKeys = useCallback((enabled) => {
+  const bindKeys = useCallback((enabled, { space = true } = {}) => {
     if (!enabled) return undefined;
     const onKey = (e) => {
       const el = e.target;
@@ -372,7 +372,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
 
       if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); move(1); return; }
       if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); move(-1); return; }
-      if (e.key === " ") { e.preventDefault(); play(row); return; }
+      if (e.key === " ") { if (!space) return; e.preventDefault(); play(row); return; }
       if (e.key === "Enter") { e.preventDefault(); toggleExpand(row); return; }
       if ((e.key === "c" || e.key === "C") && row && onCompare) {
         e.preventDefault(); onCompare(row); return;

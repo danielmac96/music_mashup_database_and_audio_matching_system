@@ -496,39 +496,60 @@ re-score since one arrived).
 
 ### Track detail
 
-Under the title, **where the audio came from**: the imported link, and — when
-the file is not that link — the YouTube upload substituted for it (a `YT` chip
-marks those rows in the library; `YT?` marks ones downloaded before substitutes
-were verified). **Wrong audio?** (also in the row menu) lists YouTube uploads
-with the same verdict the downloader applies — ✓ or the reason it was rejected,
-and the length difference — and **Use this** re-downloads and reprocesses. A
-pick is recorded as yours and never flagged. **✓ Sounds right** (on `YT` and
-`YT?` audio) records that you listened and it is the record: `YT?` becomes `YT`,
-the line says "confirmed by you", and the track leaves the suspect count. The
-confirmation is pinned to the link the audio came from — re-downloading that
-link keeps it, audio from any other link starts unconfirmed. Settings' bulk bar offers
-**Re-download** for suspect tracks: it re-fetches each one's SoundCloud link,
-length and credited artist, then downloads through the verified fallback.
+Opened from a row's title (or ⏎ in the table), it **replaces the table and the
+pair dock stays**; the Library stays mounted underneath, so `esc` (or **←
+Library**) lands back on the same filters, selection and scroll. A hero — art
+with a ▶ that loops the track's **hook** (`space`), title, artist, where the
+audio came from, the status pill, the best rating, its crates — and a **stat
+strip**: BPM (grid confidence), key (`⚠ low confidence` under 0.012), energy
+(0–10, ranked against this library), loudness (LUFS), vocal share, genre and
+Discogs styles, moods, year, best pair, partners (as vocal · as bed).
 
-**Dig on SoundCloud: acapella / instrumental** opens Discover searching for an
-official acapella or instrumental of the track (separated stems are good; the
-real thing is better).
+The **structure** canvas (156px): a numbered **bar ruler** from the stored
+downbeats (phrase starts labelled, spacing clamped to 4–16 bars), the section
+blocks, the vocal and bed waveforms (**Full / Vocals / Bed** — the chosen one
+prominent, the other dimmed; switching it moves the live audio too), both
+stems' envelopes with the **section energy** dashed over them, and a **key
+band** with each section's Camelot key — plus the loop window and the playhead.
+Click a section block to loop it; click or drag anywhere else to scrub (an idle
+track starts there). One axis, seconds: the last section's end, or the
+duration when there is no structure.
 
-Stats, a **structure strip** (a numbered **bar ruler** from the stored
-downbeats — phrase starts labelled, spacing clamped to 4–16 bars — sections,
-vocal and bed envelopes, the **section energy** curve, a **key lane** with each
-section's Camelot key, loop window, playhead — click or drag to seek), a
-section table with loop buttons —
-span, bars, BPM, key, **energy** (bar + rising/falling/holding), **VOX**
-(vocal activity), **SUNG** range (10th–90th percentile note), **PHR** phrase
-length, class and pair count; a dash is unmeasured, and `prov` marks a
-provisional (quick-tier) section; under each section that sings, its
-**line** — the lyric cue you type once ("Shout it out — 1st chorus"), shown on
-every pair card that uses the section (`section_lines`, anchored to the
-section's midpoint in seconds so it follows the music through a re-cut;
-automatic transcription is not built, §9) —
-Full/Vocals/Bed switching, a ▶ for the whole track, and a **partners rail**.
-Clicking a partner opens *its* track with the role flipped. `esc` returns.
+The **section table**: ▶, label, span, bars and energy per section; its chevron
+opens **VOX** (vocal activity), **SUNG** range (10th–90th percentile note),
+**PHR** phrase length, the section's own BPM and key, its class and how many
+pairs use it — a dash is unmeasured, `prov` marks a provisional (quick-tier)
+section — and the section's **line**: the lyric cue you type once ("Shout it
+out — 1st chorus"), shown on every pair card that uses the section
+(`section_lines`, anchored to the section's midpoint in seconds so it follows
+the music through a re-cut; automatic transcription is not built, §9).
+
+Five groups, collapsed until opened and remembered (`mashup.detailGroups.v1`):
+
+- **Analysis attributes** — the ones switched on for Detail in Analysis, with
+  **Choose attributes…** and **Compare with…** (Analysis › Compare).
+- **Stems & quality** — the separator, which stems exist, the vocal and bed
+  stem quality and the residual vocal in the bed.
+- **Source & provenance** — **where the audio came from**: the imported link,
+  and — when the file is not that link — the YouTube upload substituted for it
+  (a `YT` chip marks those rows in the library; `YT?` marks ones downloaded
+  before substitutes were verified). **Wrong audio?** (also in the row menu)
+  lists YouTube uploads with the same verdict the downloader applies — ✓ or the
+  reason it was rejected, and the length difference — and **Use this**
+  re-downloads and reprocesses. A pick is recorded as yours and never flagged.
+  **✓ Sounds right** (on `YT` and `YT?` audio) records that you listened and it
+  is the record: `YT?` becomes `YT`, the line says "confirmed by you", and the
+  track leaves the suspect count. The confirmation is pinned to the link the
+  audio came from — re-downloading that link keeps it, audio from any other
+  link starts unconfirmed. Settings' bulk bar offers **Re-download** for
+  suspect tracks: it re-fetches each one's SoundCloud link, length and credited
+  artist, then downloads through the verified fallback. **Dig: acapella /
+  instrumental** opens Discover searching for an official acapella or
+  instrumental (separated stems are good; the real thing is better).
+- **Partners** — the best few on each side: the partner's name opens *its*
+  track with the role flipped, ▶ loops the pair, ◫ opens it in Studio.
+- **Actions** — re-run stems, analysis or structure, retry a failed pipeline,
+  BPM ×2 / ÷2, and **Edit key…** (the BPM/key/source editor).
 
 ### Discover
 
@@ -2132,8 +2153,9 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    parsing search, chip popovers, presets, the view on the server), 1b (the
    pair dock: variant C cards and their expanded state, tier chips and groups,
    loaded-pairs filters that never refetch, every library-wide control kept,
-   resizable; `c` hands off to Analysis › Compare). Next:
-   1c track detail, 2 Queue, 3 Analysis, 4 Discover, 5 Mixes, B3/B4 then 6
+   resizable; `c` hands off to Analysis › Compare), 1c (Track detail inside the
+   Library column beside the dock: hero, stat strip, a 156px structure canvas,
+   the section table, five remembered disclosures). Next: 2 Queue, 3 Analysis, 4 Discover, 5 Mixes, B3/B4 then 6
    Sets, B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
    screen's step lands it keeps its old rail-slot block.
 

@@ -468,8 +468,9 @@ def test_library_summarises_each_track_as_mashup_material(one_vocal_many_beds):
 
 def test_structure_strip_has_a_bar_ruler_energy_curve_and_key_lane():
     strip = _read("components/StructureStrip.jsx")
-    assert "struct-ruler" in strip and "downbeats" in strip
-    assert "struct-energy" in strip and "struct-keys" in strip
+    assert "// bar ruler" in strip and "downbeats" in strip
+    assert "energy_absolute ?? s.energy" in strip and "[3, 3]" in strip     # dashed energy
+    assert "// key band" in strip and "s.camelot" in strip
 
 
 def test_render_fades_and_filters():
@@ -551,7 +552,7 @@ def test_compare_goes_to_analysis_and_the_card_carries_notes():
     assert 'e.key === "c"' in hook and "onCompare(row)" in hook
     assert "setCompareSeed({ a: c.vocal_song_id, b: c.inst_song_id" in app
     assert "compareSeed={compareSeed}" in app
-    assert "setA(String(seed.a)); setB(String(seed.b));" in _read("components/AnalysisScreen.jsx")
+    assert "setA(String(seed.a));" in _read("components/AnalysisScreen.jsx")
     dock = _read("components/PairDock.jsx")
     assert "notes.noteOf(c)" in dock and "pcx-note" in _read("components/PairCard.jsx")
     assert "export function usePairNotes" in _read("hooks/usePairNotes.js")

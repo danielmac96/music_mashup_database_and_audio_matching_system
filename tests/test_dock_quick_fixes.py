@@ -177,7 +177,7 @@ def test_a_click_selects_and_the_scope_line_clears():
     app = _read("App.jsx")
     assert "const selectTrack = (id) => setSelectedTrackId(id);" in app
     assert "cur === id ? null : id" not in app
-    assert "onClearScope={clearSelection}" in app
+    assert 'onClearScope={route === "track" ? null : clearSelection}' in app
     dock = _read("components/PairDock.jsx")
     assert "pd-scope-x" in dock and "onClick={onClearScope}" in dock
 

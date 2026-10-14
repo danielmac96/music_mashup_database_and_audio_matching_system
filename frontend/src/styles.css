@@ -1943,73 +1943,19 @@ input, select { font-family: inherit; }
  * Track detail (screen 1b)
  * ══════════════════════════════════════════════════════════════════════════ */
 
-.detail { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.detail-body {
-  flex: 1; min-height: 0;
-  display: grid; grid-template-columns: minmax(0, 1fr) 392px;
-}
-.detail-main { min-width: 0; overflow: auto; padding: 18px; }
-
 .crumb {
   cursor: pointer; border: none; background: transparent; padding: 0;
   font: 500 12px var(--font-ui); color: var(--muted);
 }
 .crumb:hover { color: var(--text-2); }
-.crumb-sep { color: var(--faint-2); }
-.crumb-here {
-  font: 600 13px var(--font-ui); color: var(--text);
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.detail-id { margin-left: auto; font-size: 11px; color: var(--faint); }
 
 /* ── hero ──────────────────────────────────────────────────────────────── */
-.hero { display: flex; gap: 16px; margin-bottom: 18px; }
-.hero-art { width: 112px; height: 112px; flex: none; border-radius: 9px; }
-.hero-text { min-width: 0; flex: 1; }
-.hero-text h1 {
-  margin: 0 0 3px; font: 600 22px var(--font-ui); letter-spacing: -0.02em;
-}
-.hero-meta { font: 400 13px var(--font-ui); color: var(--muted); margin-bottom: 12px; }
-.hero-right {
-  flex: none; display: flex; flex-direction: column; gap: 6px; align-items: flex-end;
-}
-.hero-sep { font-size: 10.5px; color: var(--faint); }
 
 /* Play the whole record, on the stem the segmented control is showing. The
    library row could do this and the track's own screen could not — it only
    offered twelve-second sections of the thing you came here to hear. */
-.hero-transport { display: flex; align-items: center; gap: 7px; }
-.hero-play {
-  width: 28px; height: 28px; flex: none; cursor: pointer; border: none;
-  border-radius: 7px; background: var(--accent); color: #07090d; font-size: 10px;
-}
-.hero-play:hover { background: var(--accent-light); }
-
-.tiles { display: flex; gap: 7px; flex-wrap: wrap; }
-.tile {
-  display: flex; align-items: center; gap: 7px;
-  background: var(--panel); border: 1px solid var(--border);
-  border-radius: 7px; padding: 6px 11px;
-}
-.tile-label { font-size: 9px; font-weight: 600; letter-spacing: 0.08em; color: var(--faint); }
-.tile-value { font-size: 14px; font-weight: 600; color: var(--text); }
-.tile-key { font-size: 12px; font-weight: 600; color: #07090d; padding: 2px 6px; border-radius: 4px; }
-.tile-note { font: 400 11.5px var(--font-ui); color: var(--muted); }
-.tile-dim { color: var(--faint-2); }
 
 /* ── structure strip ───────────────────────────────────────────────────── */
-.struct {
-  background: var(--inset-2); border: 1px solid var(--border);
-  border-radius: 9px; overflow: hidden; margin-bottom: 14px;
-}
-.struct-head {
-  display: flex; align-items: center; gap: 10px;
-  padding: 8px 12px; background: var(--inset);
-  border-bottom: 1px solid var(--hair);
-}
-.struct-hint { font: 400 11px var(--font-ui); color: var(--muted); }
-.struct-meta { margin-left: auto; font-size: 10.5px; color: var(--faint); }
-.struct-body { padding: 12px; }
 
 /* Blocks are absolutely positioned in SECONDS, on the same axis as the loop and
    the playhead below. They used to be flex children sized by bar count, which
@@ -2018,107 +1964,18 @@ input, select { font-family: inherit; }
    proportional split while the percentage-positioned playhead paid nothing. On a
    700px strip with 12 sections that is ~3.3% of the width, drifting worst at the
    end of the track. Hence: no gap, no border-right, one axis. */
-.struct-labels { position: relative; height: 15px; margin-bottom: 7px; }
-.struct-label {
-  position: absolute; top: 0; min-width: 0; padding: 0; border: none;
-  background: transparent; cursor: pointer;
-}
-.struct-label > span {
-  display: flex; align-items: center; height: 15px; padding: 0 5px;
-  border-radius: 3px 3px 0 0; overflow: hidden; white-space: nowrap;
-  font: 600 8.5px var(--font-mono); letter-spacing: 0.06em; color: #07090d;
-  /* The hairline that the removed flex gap used to draw. */
-  box-shadow: inset -1px 0 0 rgba(7, 9, 13, 0.45);
-}
-.struct-label:hover > span { filter: brightness(1.18); }
 
 /* A seek surface, not a picture. touch-action keeps a drag from scrolling the
    page out from under the playhead. */
-.struct-wave {
-  position: relative; height: 78px; background: var(--bg);
-  border-radius: 0 0 3px 3px; overflow: hidden;
-  cursor: pointer; touch-action: none;
-}
-.struct-wave svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-.struct-dividers { position: absolute; inset: 0; pointer-events: none; }
-.struct-dividers > div {
-  position: absolute; top: 0; bottom: 0;
-  border-left: 1px solid rgba(35, 44, 61, 0.85);
-}
-.struct-loop {
-  position: absolute; top: 0; bottom: 0;
-  background: rgba(91, 140, 255, 0.16);
-  border-left: 1.5px solid var(--accent); border-right: 1.5px solid var(--accent);
-}
-.struct-playhead {
-  position: absolute; top: 0; bottom: 0; width: 1.5px; background: var(--playhead);
-}
 /* 1.5px is not a grab target, so widen the hit area without widening the line. */
-.struct-grab {
-  position: absolute; top: 0; bottom: 0; left: -5px; width: 12px;
-  cursor: grab;
-}
-.struct-wave:hover .struct-playhead { width: 3px; margin-left: -0.75px; }
-.struct-nowave {
-  position: absolute; inset: 0; display: flex; align-items: center;
-  justify-content: center; font-size: 11px; color: var(--faint);
-}
-.struct-legend {
-  display: flex; gap: 14px; margin-top: 8px;
-  font-size: 10px; font-weight: 500; color: var(--faint);
-}
 /* Which stem the selected layer actually is. */
-.struct-legend .live { color: var(--text-2); font-weight: 600; }
-.struct-legend i { font-style: normal; }
 
 /* ── section table ─────────────────────────────────────────────────────── */
-.sectab {
-  background: var(--inset-2); border: 1px solid var(--border);
-  border-radius: 9px; overflow: hidden;
-}
-.sectab-head {
-  display: grid; gap: 8px; align-items: center;
-  padding: 7px 12px; background: var(--inset);
-  border-bottom: 1px solid var(--border);
-  font: 600 9.5px var(--font-mono); letter-spacing: 0.08em; color: var(--faint);
-}
-.sectab-head .right, .sectab-row .right { text-align: right; }
-.sectab-row {
-  display: grid; gap: 8px; align-items: center; cursor: pointer;
-  padding: 0 12px; min-height: 36px; border-bottom: 1px solid var(--panel);
-  font-size: 11.5px; color: var(--text-2);
-}
-.sectab-row:hover { background: var(--panel); }
-.sectab-row.playing { background: var(--accent-tint); }
-.sectab-play { font-size: 8px; color: var(--muted); }
-.sectab-label { display: flex; align-items: center; gap: 7px; font: 500 12px var(--font-ui); }
-.sectab-label .dot { width: 7px; height: 7px; border-radius: 2px; flex: none; }
-.sectab-span { color: var(--text-2); }
-.sectab-dim { color: var(--faint-2); }
-.sectab-key { font-size: 10.5px; font-weight: 600; color: #07090d; padding: 2px 5px; border-radius: 4px; }
-.sectab-class { font-size: 10px; letter-spacing: 0.05em; }
-.sectab-pairs { color: var(--accent-light); }
-.sectab-foot { padding: 7px 12px; font-size: 10.5px; color: var(--faint); }
 
 /* ── partners rail ─────────────────────────────────────────────────────── */
 .partners {
   min-width: 0; border-left: 1px solid var(--border-top); background: var(--topbar);
   display: flex; flex-direction: column; overflow: hidden;
-}
-.partners-head {
-  height: 44px; flex: none; display: flex; align-items: center; gap: 8px;
-  padding: 0 14px; border-bottom: 1px solid var(--border-top);
-}
-.partners-title { font: 600 13px var(--font-ui); }
-.partners-sub { font-size: 10.5px; color: var(--faint); }
-.partners-list {
-  flex: 1; min-height: 0; overflow: auto;
-  padding: 10px; display: flex; flex-direction: column; gap: 7px;
-}
-.partners-foot {
-  flex: none; border-top: 1px solid var(--border-top); padding: 9px 14px;
-  background: var(--inset-2);
-  font: 400 11px/1.5 var(--font-ui); color: var(--faint);
 }
 
 .partner {
@@ -2128,34 +1985,17 @@ input, select { font-family: inherit; }
 }
 .partner:hover { border-color: var(--border-ctrl); }
 .partner.playing { box-shadow: inset 3px 0 0 var(--green); }
-.partner-top { display: flex; align-items: center; gap: 9px; }
-.partner-score { font-size: 17px; font-weight: 600; line-height: 1; }
-.partner-tags { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
 
 /* The partner's title walks to ITS track. Scoped under .partner on purpose:
    .pc-title is shared with PairCard, where nothing is clickable, and giving
    that class a link treatment would put a phantom affordance on every pair. */
-.partner-open {
-  display: block; width: 100%; min-width: 0; text-align: left;
-  padding: 0; background: none; border: 0; cursor: pointer;
-}
 /* Same trick as .tt-title: the ellipsis lives on the text, not on the line, or
    a long partner title swallows its own chevron. */
-.partner-line { display: flex; align-items: baseline; min-width: 0; }
 .pc-text {
   min-width: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.partner-go {
-  flex: none; margin-left: 5px; font-size: 10.5px; color: var(--faint-2);
-  opacity: 0; transition: opacity 0.12s, color 0.12s;
-}
 .partner:hover .partner-go { opacity: 1; }
-.partner-open:hover .pc-text {
-  color: var(--accent-light);
-  text-decoration: underline; text-underline-offset: 2px;
-}
-.partner-open:hover .partner-go { color: var(--accent-light); opacity: 1; }
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Studio (screen 1c) — re-layout
@@ -2677,10 +2517,6 @@ input, select { font-family: inherit; }
 
 /* On the track screen: which shelves this record is on. .crate-chip already
    says "a crate holds this", and it is the same claim. */
-.hero-groups {
-  display: flex; flex-wrap: wrap; gap: 4px; margin: -6px 0 12px;
-}
-.hero-groups .crate-chip { max-width: 180px; cursor: default; }
 
 /* The importer's "save this import as a group" box. It sits between the preview
    and the Save button because that is the order the decision happens in: you
@@ -2781,34 +2617,12 @@ input, select { font-family: inherit; }
 .an-toggle { font-size: 12px; display: flex; align-items: center; gap: 4px; cursor: pointer; }
 
 /* Attribute columns in the Library and the Track detail card (readme §9, C) */
-.attr-card { margin-top: 14px; padding: 10px 12px; background: var(--panel);
-             border: 1px solid var(--border); border-radius: 8px; }
-.attr-card h4 { margin: 0 0 8px; font-size: 12px; letter-spacing: .08em;
-                text-transform: uppercase; color: var(--muted); }
-.attr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px 14px; }
-.attr-item { display: flex; flex-direction: column; min-width: 0; }
-.attr-label { font-size: 11px; color: var(--muted); }
-.attr-val { font-size: 13px; color: var(--text); }
-.attr-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.attr-chip { font-size: 11px; padding: 1px 6px; border-radius: 8px; background: var(--accent-tint); color: var(--accent-light); }
 
 /* Pair dock: search, filters, paging, batch export. */
 
 /* Section table: measured per-section columns. */
-.sectab-prov {
-  font-size: 9px; color: var(--amber); border: 1px solid rgba(245, 166, 35, 0.4);
-  border-radius: 3px; padding: 0 3px;
-}
-.sectab-energy { display: flex; align-items: center; gap: 4px; }
-.sectab-ebar {
-  flex: 1; height: 5px; border-radius: 3px; background: var(--hair); overflow: hidden;
-}
-.sectab-ebar > span { display: block; height: 100%; background: var(--amber); }
-.sectab-trend { font-size: 11px; color: var(--muted); width: 10px; }
-.sectab-sung { font-size: 10.5px; color: var(--text-2); white-space: nowrap; }
 
 /* Library: attribute filter menu. */
-.attr-pill .fchip-caret { color: var(--muted); }
 
 /* Queue: per-pool typical time and ETA. */
 .q-pool-eta { font-size: 10.5px; color: var(--faint); }
@@ -2972,23 +2786,6 @@ input, select { font-family: inherit; }
 .tt-shape { width: 100%; height: 18px; display: block; }
 
 /* ── Structure strip: bar ruler, energy curve, key lane ──────────────────── */
-.struct-ruler { position: relative; height: 14px; margin-bottom: 4px; }
-.struct-bar {
-  position: absolute; bottom: 0; width: 1px; height: 4px; background: var(--faint-2);
-}
-.struct-bar.phrase { height: 8px; background: var(--faint); }
-.struct-bar b {
-  position: absolute; bottom: 7px; left: 2px; font-size: 9px; font-weight: 500;
-  color: var(--muted); white-space: nowrap;
-}
-.struct-energy { opacity: 0.9; }
-.struct-keys { position: relative; height: 16px; margin-top: 4px; font-size: 9.5px; }
-.struct-keys > span {
-  position: absolute; top: 0; height: 16px; display: flex; align-items: center;
-  justify-content: center; border-left: 1px solid var(--hair); color: var(--text-2);
-  overflow: hidden; white-space: nowrap;
-}
-.struct-keys.steady > span { color: var(--faint); }
 
 /* ── Studio rail: per-lane filters ───────────────────────────────────────── */
 .rail-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0 8px; }
@@ -3014,7 +2811,6 @@ input, select { font-family: inherit; }
 .sc-fit .sc-role.instrumental { color: var(--cyan); background: rgba(56, 189, 248, 0.12); }
 .sc-fit .fits { color: var(--green); }
 .sc-fit .nofit { color: var(--faint); }
-.hero-dig { display: flex; gap: 6px; align-items: center; margin: 6px 0 4px; font-size: 11.5px; }
 .disc-main.gaps { padding: 16px 22px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
 .gap-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
 .gap-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; }
@@ -3057,15 +2853,6 @@ input, select { font-family: inherit; }
   text-transform: uppercase; padding-top: 10px; }
 
 /* ── Section lines (lyric cues) ──────────────────────────────────────────── */
-.sectab-line { grid-column: 1 / -1; padding: 0 0 4px 30px; }
-.sectab-line button {
-  background: none; border: none; padding: 0; cursor: text; color: var(--violet);
-  font: italic 11.5px var(--font-ui); text-align: left;
-}
-.sectab-line input {
-  width: 70%; background: var(--inset); border: 1px solid var(--border-ctrl); border-radius: 6px;
-  color: var(--text-2); font: 11.5px var(--font-ui); padding: 3px 7px;
-}
 
 /* Settings → Tuning: what your ratings say about each scored term. */
 .term-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
@@ -3773,3 +3560,155 @@ input, select { font-family: inherit; }
 .ui-btn.ghosted { background: none; color: var(--muted); }
 .sg-cards { display: flex; flex-direction: column; gap: 12px; width: 400px; max-width: 100%; }
 .pd-filterdone { margin-left: auto; }
+
+/* ========================================================================== *
+ * Track detail (revamp 1c) — inside the Library column, beside the dock
+ * ========================================================================== */
+/* The Library stays mounted under its Track detail so esc returns to the same
+   filters, selection and scroll; hidden, not unmounted. */
+.lib-main { position: relative; }
+.lib-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.lib-pane.away { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
+
+.detail { flex: 1; min-height: 0; overflow: auto; outline: none; }
+.dt-pad { padding: 8px 16px; }
+.dt-crumb {
+  height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.dt-crumb .ui-btn { height: 26px; padding: 0 8px; }
+.dt-crumbtitle { color: var(--fg-2); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+.dt-hero {
+  display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 16px; padding: 14px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.dt-art { position: relative; width: 96px; height: 96px; }
+.dt-artimg { width: 96px; height: 96px; border-radius: 6px; }
+.dt-artplay {
+  position: absolute; right: 6px; bottom: 6px; width: 32px; height: 32px; border-radius: 50%;
+  border: 0; background: var(--fg); color: var(--bg); font-size: 12px; cursor: pointer;
+}
+.dt-herotext { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.dt-titlerow { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.dt-titlerow h1 {
+  margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dt-artist { font-size: 14px; color: var(--muted); white-space: nowrap; }
+.dt-src {
+  height: 20px; display: inline-flex; align-items: center; padding: 0 7px; border-radius: 4px;
+  border: 1px solid var(--line-2); font-size: 10.5px; color: var(--fg-2);
+}
+.dt-crate { font-size: 11px; color: var(--fg-2); background: var(--raised); border-radius: 4px; padding: 1px 6px; }
+.dt-stats {
+  display: flex; flex-wrap: wrap; overflow: hidden;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--well);
+}
+.dt-stat {
+  padding: 7px 12px; display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 0 auto;
+  border-right: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft); margin-bottom: -1px;
+}
+.dt-statval { display: flex; align-items: baseline; gap: 4px; white-space: nowrap; min-height: 20px; }
+.dt-statval .key-chip { font-size: 13px; padding: 1px 6px; }
+.dt-num { font-size: 15px; font-weight: 500; color: var(--fg); }
+.dt-unit { font-size: 10.5px; color: var(--muted); }
+.dt-statsub { font-size: 10.5px; color: var(--muted); white-space: nowrap; }
+.dt-tag {
+  height: 20px; display: inline-flex; align-items: center; padding: 0 7px; border-radius: 4px;
+  background: var(--raised); color: var(--fg-2); font-size: 11.5px;
+}
+.dt-statval .dt-tag + .dt-tag, .dt-chips .dt-tag + .dt-tag { margin-left: 4px; }
+
+.dt-struct {
+  padding: 10px 16px 12px; border-bottom: 1px solid var(--line-soft);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.dt-structhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.dt-structhead b { font-size: 12.5px; font-weight: 600; }
+.dt-legend { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg-2); }
+.dt-legend i { width: 10px; height: 3px; display: inline-block; }
+.dt-legend i.vox { background: var(--vocal); }
+.dt-legend i.bed { background: var(--bed); }
+.dt-legend i.nrg { height: 0; border-top: 1px dashed var(--fg); }
+.dt-seg { display: flex; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.dt-seg button {
+  height: 24px; padding: 0 10px; border: 0; background: none; color: var(--muted); cursor: pointer;
+  font: 400 11.5px var(--font-ui);
+}
+.dt-seg button:disabled { color: var(--disabled); cursor: not-allowed; }
+.dt-seg button.on { color: var(--fg); background: var(--accent-bg); }
+.dt-seg button.vocals.on { background: var(--vocal-bg); }
+.dt-seg button.instrumental.on { background: var(--bed-bg); }
+.struct-canvas {
+  width: 100%; height: 156px; display: block; cursor: pointer; border-radius: 6px;
+  background: var(--bg-sunk); touch-action: none;
+}
+
+/* sections */
+.sectab { padding: 8px 16px; display: flex; flex-direction: column; gap: 2px; }
+.sectab-head, .sectab-row {
+  display: grid; grid-template-columns: 24px 130px 110px 64px minmax(0, 1fr) 24px; gap: 8px; align-items: center;
+}
+.sectab-head { padding: 2px 8px 4px; }
+.sectab-row { height: 28px; padding: 0 8px; border-radius: 6px; cursor: pointer; font-size: 11.5px; }
+.sectab-row:hover { background: var(--panel); }
+.sectab-row.playing { background: var(--accent-bg); }
+.sectab-row .mono { font-size: 11px; color: var(--fg-2); }
+.sectab-play { font-size: 10px; color: var(--muted); }
+.sectab-row.playing .sectab-play { color: var(--link); }
+.sectab-chip { display: inline-block; padding: 1px 7px; border-radius: var(--r-chip); font-size: 11.5px; color: var(--fg); text-transform: capitalize; }
+.sectab-prov { margin-left: 6px; font-size: 9.5px; color: var(--warn-soft); }
+.sectab-energy { display: flex; align-items: center; gap: 6px; }
+.sectab-energy .bar { height: 4px; background: var(--line-soft); border-radius: 2px; flex: 1; max-width: 160px; overflow: hidden; }
+.sectab-energy .bar span { display: block; height: 100%; background: var(--muted); }
+.sectab-energy .trend { font-size: 10px; color: var(--muted); }
+.sectab-chev {
+  width: 22px; height: 22px; border: 0; border-radius: 4px; background: none; color: var(--muted); cursor: pointer;
+}
+.sectab-chev:hover { background: var(--line); color: var(--fg); }
+.sectab-detail {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 4px 8px 8px 40px;
+  font-size: 11px; color: var(--fg-2);
+}
+.sectab-detail .vox { color: var(--vocal-label); }
+.sectab-detail .key-chip { font-size: 10px; }
+.sectab-noline { font-family: var(--font-ui); color: var(--muted); }
+.sectab-line button {
+  border: 0; background: none; padding: 0; cursor: pointer; color: var(--fg-2);
+  font: italic 400 11.5px var(--font-ui); text-align: left;
+}
+.sectab-line input {
+  min-width: 320px; height: 24px; border-radius: 5px; border: 1px solid var(--line-2);
+  background: var(--well); color: var(--fg); padding: 0 6px; font: 400 11.5px var(--font-ui);
+}
+.sectab-foot { padding: 6px 8px 0; font-size: 10.5px; color: var(--faint); }
+
+/* the five disclosure groups */
+.dt-groups { padding: 6px 16px 24px; display: flex; flex-direction: column; gap: 6px; }
+.dt-groups .disclosure-head { height: 36px; font-weight: 500; }
+.dt-groups .disclosure-body { padding: 2px 12px 12px 32px; display: flex; flex-direction: column; gap: 8px; }
+.dt-kvgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 2px 20px; }
+.dt-kv {
+  display: flex; justify-content: space-between; gap: 8px; font-size: 12px;
+  border-bottom: 1px solid var(--line-soft); padding: 4px 0; min-width: 0;
+}
+.dt-kv .mono { color: var(--fg-2); text-align: right; overflow: hidden; text-overflow: ellipsis; }
+.dt-chips { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; }
+.dt-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.dt-actions .ui-btn { display: inline-flex; align-items: center; text-decoration: none; }
+.dt-note { font-size: 11.5px; color: var(--muted); }
+.dt-partner {
+  display: grid; grid-template-columns: 32px minmax(0, 1fr) 40px 48px 26px 26px; gap: 8px;
+  align-items: center; height: 28px; font-size: 12px;
+}
+.dt-role { font-size: 9px; font-weight: 600; }
+.dt-role.vox { color: var(--vocal-label); }
+.dt-role.bed { color: var(--bed-label); }
+.dt-partnername {
+  border: 0; background: none; padding: 0; color: var(--fg); cursor: pointer; text-align: left;
+  font: 400 12px var(--font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dt-partnername:hover { text-decoration: underline; }
+.dt-partner .mono { font-size: 11.5px; text-align: right; }
+.sectab-item { display: flex; flex-direction: column; }

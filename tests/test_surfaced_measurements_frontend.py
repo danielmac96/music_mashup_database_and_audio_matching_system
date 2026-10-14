@@ -98,13 +98,15 @@ def test_studio_shows_the_armed_timings_harmony_and_bass_advice():
 # ── section table ────────────────────────────────────────────────────────────
 
 def test_section_table_shows_the_per_section_measurements():
+    """Each row: label, span, bars and energy; its chevron opens VOX, SUNG and
+    PHR (plus the section's own BPM, key, class and pairs) and the line it
+    sings."""
     tab = _read("components/SectionTable.jsx")
-    heads = tab[tab.index("const HEADS"):]
-    heads = heads[:heads.index("];")]
-    for h in ("ENERGY", "VOX", "SUNG", "PHR"):
-        assert f'"{h}"' in heads, h
-    cols = re.search(r'const COLS = "([^"]+)"', tab).group(1)
-    assert len(cols.split()) == heads.count('"') // 2, "one grid column per header"
+    for h in ("<span>Section</span>", "<span>Time</span>", "<span>Bars</span>", "<span>Energy</span>"):
+        assert h in tab, h
+    detail = tab[tab.index('className="sectab-detail mono"'):]
+    for label in ("VOX ", "SUNG ", "PHR ", "BPM ", "KEY ", "CLASS ", "PAIRS "):
+        assert label in detail, label
     for field in ("s.vocal_activity", "s.f0?.p10_midi", "s.phrase_length_bars",
                   "s.energy_trend", "s.provisional"):
         assert field in tab, field

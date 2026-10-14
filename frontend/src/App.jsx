@@ -180,9 +180,14 @@ export default function App() {
       .catch(() => setConfigured(true));
   }, []);
 
+  // Library and its Track detail share the rail's Saved views / Crates (the
+  // Library stays mounted underneath), so moving between them keeps the slot.
+  const LIB_ROUTES = ["library", "track"];
   const setRoute = (next) => {
-    setHeaderStatus(null);
-    setRailSlot(null);
+    if (!(LIB_ROUTES.includes(route) && LIB_ROUTES.includes(next))) {
+      setHeaderStatus(null);
+      setRailSlot(null);
+    }
     setRouteState(next);
   };
 
@@ -273,7 +278,10 @@ export default function App() {
   // The dock owns the keyboard only while the Library screen is the one you are
   // looking at. Discover has its own model over the same rows, and two window
   // listeners racing for the space bar is exactly the bug this avoids.
-  useEffect(() => dock.bindKeys(route === "library"), [dock.bindKeys, route]);
+  // On Track detail the dock still answers its keys — except space, which
+  // plays the track there.
+  useEffect(() => dock.bindKeys(route === "library" || route === "track",
+    { space: route === "library" }), [dock.bindKeys, route]);
 
   // Studio's timeline IS its player, and it drives an engine of its own. Two
   // transports on screen would fight over the space bar and over the speakers,
@@ -286,7 +294,7 @@ export default function App() {
   // Space is the app-wide play/pause everywhere the dock is not already using
   // it for its own "loop this pair".
   useEffect(() => {
-    if (route === "library" || route === "studio") return undefined;
+    if (route === "library" || route === "track" || route === "studio") return undefined;
     const onKey = (e) => {
       const el = e.target;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
@@ -435,29 +443,60 @@ export default function App() {
               setSelectedTrackId(vocalId); setDockRole("vocal"); setRoute("library");
             }} />
         )}
-        {route === "library" && (
+        {/* The Library and its Track detail share one layout: the detail
+            replaces the table while the pair dock stays. The Library stays
+            mounted underneath (hidden) so esc lands back on the same filters,
+            selection and scroll. */}
+        {(route === "library" || route === "track") && (
           <div className="lib-layout">
             <main className="lib-main">
-              <LibraryScreen
-                library={library}
-                attributes={attributes}
-                ratings={ratings}
-                groups={groups}
-                player={player}
-                selectedId={selectedTrackId}
-                onSelect={selectTrack}
-                onOpen={(id) => { setSelectedTrackId(id); setRoute("track"); }}
-                onRailSlot={setRailSlot}
-                onStatus={setHeaderStatus}
-                onOpenQueue={openQueue}
-                presets={presets}
-                applyPreset={libraryPreset}
-              />
+              <div className={`lib-pane${route === "track" ? " away" : ""}`}
+                aria-hidden={route === "track"}>
+                <LibraryScreen
+                  library={library}
+                  attributes={attributes}
+                  ratings={ratings}
+                  groups={groups}
+                  player={player}
+                  selectedId={selectedTrackId}
+                  onSelect={selectTrack}
+                  onOpen={(id) => { setSelectedTrackId(id); setRoute("track"); }}
+                  onRailSlot={setRailSlot}
+                  onStatus={setHeaderStatus}
+                  onOpenQueue={openQueue}
+                  presets={presets}
+                  applyPreset={libraryPreset}
+                />
+              </div>
+              {route === "track" && (
+                <TrackDetail
+                  track={selectedTrack}
+                  attributes={attributes}
+                  tracks={library.tracks}
+                  ratings={ratings}
+                  groups={groups}
+                  player={player}
+                  role={dockRole}
+                  onRole={setDockRole}
+                  onBack={() => setRoute("library")}
+                  onStudio={pairToStudio}
+                  onOpenTrack={setSelectedTrackId}
+                  onStatus={setHeaderStatus}
+                  onChanged={() => library.refresh(true)}
+                  onDiscover={discoverSearch}
+                  onLinesChanged={dock.reload}
+                  onPlayPair={dock.play}
+                  onCompareWith={(id) => { setCompareSeed({ a: id, b: null, at: Date.now() }); setRoute("analysis"); }}
+                  onChooseAttributes={() => setRoute("analysis")}
+                  onOpenQueue={openQueue}
+                  running={library.pipeJobs.some((j) => j.song_id === selectedTrackId && j.status === "running")}
+                />
+              )}
             </main>
             <PairDock dock={dock} ratings={ratings}
               onAddToSet={sets.addPair} setName={sets.active?.name || null}
               notes={notes}
-              scopeTrack={selectedTrack} onClearScope={clearSelection}
+              scopeTrack={selectedTrack} onClearScope={route === "track" ? null : clearSelection}
               onCompare={compareInAnalysis} durationOf={durationOf}
               freshness={freshness}
               role={dockRole} onRole={setDockRole} />
@@ -474,25 +513,6 @@ export default function App() {
           <AnalysisScreen attributes={attributes} onRailSlot={setRailSlot}
             compareSeed={compareSeed}
             tracks={library.tracks} onPlayPair={dock.play} onOpenPair={pairToStudio} />
-        )}
-        {route === "track" && (
-          <TrackDetail
-            track={selectedTrack}
-            attributes={attributes}
-            tracks={library.tracks}
-            ratings={ratings}
-            groups={groups}
-            player={player}
-            role={dockRole}
-            onRole={setDockRole}
-            onBack={() => setRoute("library")}
-            onStudio={pairToStudio}
-            onOpenTrack={setSelectedTrackId}
-            onStatus={setHeaderStatus}
-            onChanged={() => library.refresh(true)}
-            onDiscover={discoverSearch}
-            onLinesChanged={dock.reload}
-          />
         )}
         {route === "discovery" && (
           <Discovery

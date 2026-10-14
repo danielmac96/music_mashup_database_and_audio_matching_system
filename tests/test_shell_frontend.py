@@ -28,11 +28,10 @@ CSS = _read("styles.css")
 
 
 def test_the_dock_lives_beside_the_library_not_behind_a_tab():
-    """PairDock is rendered inside the library route, next to LibraryScreen —
-    not as a route of its own."""
-    # From the JSX, not from the keyboard gate that mentions the same route.
-    lib = APP[APP.index('{route === "library" && ('):]
-    lib = lib[:lib.index('{route === "track" && (')]
+    """PairDock is rendered beside the Library (and its Track detail) — not as
+    a route of its own."""
+    lib = APP[APP.index('{(route === "library" || route === "track") && ('):]
+    lib = lib[:lib.index('{route === "queue" && (')]
     assert "<LibraryScreen" in lib
     assert "<PairDock" in lib
     # The player bar is deliberately NOT in here — see
@@ -161,7 +160,9 @@ def test_new_shell_files_carry_no_hex():
                 "components/ui/primitives.jsx", "components/PlayerBar.jsx",
                 "components/LibraryScreen.jsx", "components/LibraryFilters.jsx",
                 "components/TrackTable.jsx", "components/KeyChip.jsx",
-                "components/PairDock.jsx", "components/PairCard.jsx"):
+                "components/PairDock.jsx", "components/PairCard.jsx",
+                "components/TrackDetail.jsx", "components/StructureStrip.jsx",
+                "components/SectionTable.jsx"):
         assert not re.search(r"#[0-9a-fA-F]{3,8}\b", _read(rel)), rel
 
 

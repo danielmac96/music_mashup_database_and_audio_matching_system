@@ -125,10 +125,10 @@ def test_the_track_screen_chips_are_read_only():
     """Same decision as Discover's crate chip: the place that edits a group is
     the row menu in the library, next to the track you are deciding about."""
     src = _read("components/TrackDetail.jsx")
-    block = src[src.index('className="hero-groups"'):]
-    block = block[:block.index("</div>")]
+    block = src[src.index("{myGroups.map((g) => ("):]
+    block = block[:block.index("))}")]
     assert "<button" not in block
-    assert "crate-chip" in block
+    assert 'className="dt-crate"' in block
 
 
 def test_removing_is_only_offered_for_the_group_you_can_see():
