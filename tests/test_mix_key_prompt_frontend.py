@@ -43,7 +43,9 @@ def test_import_and_ingest_are_polled_as_jobs():
 
 def test_a_running_job_reports_its_progress():
     # A multi-minute wait with a frozen button is what this replaced.
-    assert "ingestJob?.message" in SRC
+    # Ingest and auto-link share one progress line under the toolbar.
+    assert "const jobLine = ingesting ? ingestJob : resolving ? resolveJob : null;" in SRC
+    assert "jobLine.message" in SRC
     assert "importJob.message" in SRC
 
 

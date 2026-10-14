@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -9,6 +9,40 @@ import { toast } from "../toast";
 import { useJobPolling } from "../hooks/useJobPolling";
 import { MixMatchBoard } from "./MixMatchBoard";
 import { keyOf } from "./pairs/pairModel";
+import { Disclosure, TierBadge } from "./ui/primitives";
+import { fmtDur, fmtPlays } from "../theme";
+
+// Mixes (revamp step 5): import a DJ set's tracklist (scrape, paste, or the
+// bookmarklet when the scrape is walled), link each entry to SoundCloud or
+// YouTube, match the vocals to the beds they went over, and ingest. The left
+// column is how a mix GETS here; the main column is the mix you are working on.
+
+// What tells a bookmarklet capture from plain pasted text: every captured row
+// carries a link to the track's own 1001tracklists page, absolute or relative.
+// Mirrors _TRACK_LINK_RE in ingest/firecrawl_scrape.py.
+const CAPTURE_RE =
+  /\]\((?:https?:\/\/(?:www\.)?1001tracklists\.com)?\/track\/|\[no track page\]/i;
+
+// Ingest pipeline stages a song passes through, in order — the Processing
+// disclosure's four dots.
+const INGEST_STAGES = ["queued", "downloaded", "stemmed", "analysed"];
+
+// A destructive action waits this long behind its Undo toast before it is
+// sent — the toast's own lifetime when it carries an action.
+const UNDO_MS = 7000;
+
+const label = (t) => `${t.artist ? `${t.artist} — ` : ""}${t.title}`;
+const isVocal = (t) => t.role === "vocal" || ((t.role || "unassigned") === "unassigned" && !!t.is_overlay);
+const flaggedOf = (t) => !t.song_id && t.resolved_url && t.resolve_status === "auto" && !t.trusted;
+
+// The filter chips. Each row is in exactly one of the four narrow groups.
+const FILTERS = [
+  ["all", "All", () => true],
+  ["lib", "In library", (t) => !!t.song_id],
+  ["linked", "Linked", (t) => !t.song_id && !!t.resolved_url && !flaggedOf(t)],
+  ["flagged", "Check ⚠", flaggedOf],
+  ["needs", "Needs link", (t) => !t.song_id && !t.resolved_url],
+];
 
 // The DJ's documented pairs, as the engine sees them: play one, open it in
 // Studio, ask for pairs like it, and see whether the engine agrees — its
@@ -19,12 +53,12 @@ function DocumentedPairs({ pairs, player, onOpenStudio, onFindSimilar }) {
   const agreeing = pairs.filter((p) => p.engine_rank && p.engine_rank <= 3).length;
   const scored = pairs.filter((p) => p.engine).length;
   return (
-    <div className="mix-docpairs">
-      <div className="mix-ingest-head">
-        <strong>Documented pairs</strong>
-        <span className="faint">
+    <section className="mx-doc">
+      <div className="mx-sechead">
+        <b>Documented pairs</b>
+        <span className="muted small">
           {scored
-            ? `the engine scores ${scored} of ${pairs.length}; ${agreeing} rank in that vocal's top 3 beds`
+            ? `the engine scores ${scored} of ${pairs.length}; ${agreeing} rank in that vocal’s top 3 beds`
             : "ingest and analyse both sides to hear and score them"}
         </span>
       </div>
@@ -33,203 +67,104 @@ function DocumentedPairs({ pairs, player, onOpenStudio, onFindSimilar }) {
         const pct = e?.score_percentile != null ? Math.round(e.score_percentile * 100) : null;
         const k = e ? keyOf(e) : null;
         return (
-          <div key={p.id} className="mix-docpair">
-            <div className="mix-docpair-text">
-              <span className="pc-role mono vox">VOX</span>
-              <span className="t">{p.vocal_artist ? `${p.vocal_artist} — ` : ""}{p.vocal_title}</span>
-              <span className="faint">over</span>
-              <span className="pc-role mono bed">BED</span>
-              <span className="t">{p.inst_artist ? `${p.inst_artist} — ` : ""}{p.inst_title}</span>
+          <div key={p.id} className="mx-docpair">
+            <div className="mx-docnames">
+              <span className="mx-side vox"><span className="tag mono">VOX</span>
+                <span className="t">{p.vocal_artist ? `${p.vocal_artist} — ` : ""}{p.vocal_title}</span></span>
+              <span className="mx-side bed"><span className="tag mono">BED</span>
+                <span className="t">{p.inst_artist ? `${p.inst_artist} — ` : ""}{p.inst_title}</span></span>
             </div>
-            <div className="mix-docpair-engine mono"
+            <span className="mx-engine mono"
               title={e ? `${e.reason || ""}\nRank ${p.engine_rank} of ${p.engine_field} beds the engine scored for this vocal`
                 : p.engine_state}>
               {e ? (
                 <>
-                  <span className={pct >= 75 ? "good" : pct >= 50 ? "ok" : "low"}>engine {pct}</span>
-                  <span className="faint"> · #{p.engine_rank} of {p.engine_field}</span>
+                  {e.confidence_tier && <TierBadge tier={e.confidence_tier} />}
+                  <span>engine {pct}</span>
+                  <span className="muted"> · #{p.engine_rank} of {p.engine_field}</span>
                 </>
-              ) : <span className="faint">{p.engine_state}</span>}
-            </div>
-            <div className="mix-docpair-actions">
-              <button disabled={!e || !player} onClick={() => player.toggle({
+              ) : <span className="muted">{p.engine_state}</span>}
+            </span>
+            <div className="mx-docact">
+              <button className="ui-btn" disabled={!e || !player} onClick={() => player.toggle({
                 kind: "pair", key: k, candidate: e,
                 title: e.vocal_title, subtitle: `over ${e.inst_title}`,
               })}>{k && playingKey === k ? "◍ stop" : "▶ loop"}</button>
-              <button disabled={!(p.vocal_song_id && p.inst_song_id) || !onOpenStudio}
+              <button className="ui-btn" disabled={!(p.vocal_song_id && p.inst_song_id) || !onOpenStudio}
                 onClick={() => onOpenStudio(e || {
                   vocal_song_id: p.vocal_song_id, inst_song_id: p.inst_song_id,
                 })}>Studio</button>
-              <button disabled={!p.vocal_song_id || !onFindSimilar}
+              <button className="ui-btn" disabled={!p.vocal_song_id || !onFindSimilar}
                 title="The pair dock, scoped to this vocal: every bed the engine likes under it"
                 onClick={() => onFindSimilar(p.vocal_song_id)}>Similar →</button>
             </div>
           </div>
         );
       })}
-    </div>
+    </section>
   );
 }
 
-function SortableRow({ track, children }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: track.id });
-  const style = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.5 : 1,
-  };
-  return (
-    <div ref={setNodeRef} style={style} className="mix-row">
-      <span className="drag-handle" {...attributes} {...listeners}
-        title="Drag to reorder" style={{ cursor: "grab", userSelect: "none" }}>⋮⋮</span>
-      {children}
-    </div>
-  );
-}
-
-// Ingest pipeline stages a song passes through, in order. Drives the per-mix
-// processing tracker so a heavy, multi-session ingest stays legible.
-const INGEST_STAGES = ["queued", "downloaded", "stemmed", "analysed"];
-
-function StageStepper({ status, error }) {
+function StageDots({ status, error }) {
   const s = status || "queued";
   const isErr = String(s).startsWith("error");
   const reached = isErr ? -1 : INGEST_STAGES.indexOf(s);
+  const done = s === "analysed";
   return (
-    <span className="stage-stepper" title={isErr ? (error || s) : `stage: ${s}`}>
-      {INGEST_STAGES.map((st, i) => (
-        <span key={st}
-          className={`stage-dot${i <= reached ? " on" : ""}${isErr ? " err" : ""}`} />
-      ))}
-      <span className={`stage-label${isErr ? " err" : ""}`}>{isErr ? "error" : s}</span>
+    <span className={`mx-stage${isErr ? " err" : done ? " done" : ""}`} title={isErr ? (error || s) : `stage: ${s}`}>
+      {INGEST_STAGES.map((st, i) => <i key={st} className={i <= reached ? "on" : ""} />)}
+      <span className="mono">{isErr ? "error" : s}</span>
     </span>
   );
 }
 
-// Mixes tab: import a DJ-set tracklist by URL, resolve each entry to a
-// SoundCloud/YouTube link, then ingest the resolved tracks through the normal
-// pipeline.
-
-// What tells a bookmarklet capture from plain pasted text: every captured row
-// carries a link to the track's own 1001tracklists page, absolute or relative.
-// Mirrors _TRACK_LINK_RE in ingest/firecrawl_scrape.py.
-const CAPTURE_RE =
-  /\]\((?:https?:\/\/(?:www\.)?1001tracklists\.com)?\/track\/|\[no track page\]/i;
-
-function ResolveInput({ track, onResolved }) {
-  const [url, setUrl] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const submit = async () => {
-    const u = url.trim();
-    if (!u) return;
-    if (classifyUrl(u).source === "unknown") {
-      toast("Paste a SoundCloud or YouTube track link");
-      return;
-    }
-    setBusy(true);
-    try {
-      const updated = await api.resolveMixTrack(track.id, u);
-      onResolved(updated);
-      setUrl("");
-    } catch (e) {
-      toast(`Resolve failed: ${e.message}`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="mix-resolve">
-      <input
-        placeholder="paste track link…"
-        value={url}
-        onChange={(e) => setUrl(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && submit()}
-      />
-      <button className="mini-btn" onClick={submit} disabled={busy || !url.trim()}>
-        {busy ? "…" : "link"}
-      </button>
-    </div>
-  );
-}
-
-// A URL that wraps at path boundaries instead of mid-word. <wbr> marks each "/"
-// as a break opportunity, so a long link continues on the next line at a
-// readable seam rather than splitting a slug in half. The "//" after the scheme
-// is skipped so it never breaks inside "https://".
+// A URL that wraps at path boundaries instead of mid-word.
 function BreakableUrl({ url }) {
-  const parts = String(url).split("/");
+  const parts = String(url).replace(/^https?:\/\/(www\.)?/, "").split("/");
   return (
     <>
       {parts.map((part, i) => (
-        <Fragment key={i}>
-          {i > 0 && "/"}
-          {i > 0 && part !== "" && parts[i - 1] !== "" && <wbr />}
-          {part}
-        </Fragment>
+        <Fragment key={i}>{i > 0 && "/"}{i > 0 && <wbr />}{part}</Fragment>
       ))}
     </>
   );
 }
 
-// Where this track's link points, as its own column so the tracklist can be
-// scanned for "which of these came from YouTube?" at a glance.
+// How the link was arrived at and how much to trust it.
+function LinkFlag({ track }) {
+  if (track.song_id) return <span className="mx-flag lib" title={`In your library as #${track.song_id}`}>in library</span>;
+  if (!track.resolved_url) return <span className="mx-flag needs" title="No link yet — auto-link, pick a result or paste one">needs link</span>;
+  if (track.resolve_status === "auto") {
+    return track.trusted
+      ? <span className="mx-flag ok" title="Auto-found, high confidence — counts as training data">auto-linked ✓</span>
+      : <span className="mx-flag check" title="Auto-found but low confidence — check it, then confirm">auto-linked ⚠</span>;
+  }
+  return (
+    <span className="mx-flag ok" title={track.resolve_status === "scraped" ? "Scraped from the track’s 1001tracklists page"
+      : track.resolve_status === "library" ? "Matched by name to a song in your library" : "Linked by you"}>linked</span>
+  );
+}
+
 function SourceTag({ track }) {
   if (!track.resolved_url) return null;
   const source = track.link_platform || classifyUrl(track.resolved_url).source;
   if (source !== "youtube" && source !== "soundcloud") return null;
-  return (
-    <span className={`mix-src ${source}`}>
-      {source === "youtube" ? "YouTube" : "SoundCloud"}
-    </span>
-  );
+  return <span className={`mx-src ${source}`}>{source === "youtube" ? "YouTube" : "SoundCloud"}</span>;
 }
 
-// How the link was arrived at and how much to trust it.
-function LinkStatus({ track }) {
-  if (track.song_id) {
-    return <span className="mix-flag ok">in library #{track.song_id}</span>;
-  }
-  if (!track.resolved_url) {
-    return <span className="mix-flag failed">needs link</span>;
-  }
-  if (track.resolve_status === "auto") {
-    return track.trusted
-      ? <span className="mix-flag ok"
-          title="Auto-found, high confidence — counts as training data">auto-linked ✓</span>
-      : <span className="mix-flag auto"
-          title="Auto-found but low confidence — verify it's the right track, then Confirm">
-          auto-linked ⚠
-        </span>;
-  }
-  return <span className="mix-flag ok">linked</span>;
-}
-
-const fmtPlays = (n) =>
-  !n ? "" : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M plays`
-    : n >= 1e3 ? `${Math.round(n / 1e3)}k plays` : `${n} plays`;
-
-const fmtDur = (secs) => {
-  if (!secs) return "";
-  const s = Math.round(secs);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-};
-
-// The ranked search hits behind a link. Auto-link picks the top one; when it
-// picks wrong the right answer is usually right here, so let it be chosen
-// directly instead of making the user hunt down a URL to paste. Normally served
-// from what auto-link already fetched (track.has_candidates), so it's instant.
-function CandidatePicker({ track, platform, onResolved }) {
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
+// "▾ others": the ranked search hits behind a link (auto-link picks the top
+// one; when it picks wrong the right answer is usually here), a box to paste a
+// link, and — when the tracklist gave the track its own page — the exact link
+// scraped from that page.
+function OthersPanel({ track, platform, onResolved }) {
+  const [loading, setLoading] = useState(true);
   const [hits, setHits] = useState(null);
   const [cached, setCached] = useState(false);
   const [picking, setPicking] = useState(null);
-
+  const [url, setUrl] = useState("");
+  const [scraping, setScraping] = useState(false);
   // 'both' is a resolve strategy, not a searchable platform — show SoundCloud,
-  // which is what 'both' tries first and what we prefer for audio anyway.
+  // which is what 'both' tries first.
   const searchPlatform = platform === "youtube" ? "youtube" : "soundcloud";
 
   const load = async (refresh = false) => {
@@ -238,80 +173,83 @@ function CandidatePicker({ track, platform, onResolved }) {
       const d = await api.mixTrackCandidates(track.id, searchPlatform, 5, refresh);
       setHits(d.candidates || []);
       setCached(!!d.cached);
-      return true;
     } catch (e) {
       toast(`Search failed: ${e.message}`);
-      return false;
+      setHits([]);
     } finally {
       setLoading(false);
     }
   };
+  useEffect(() => { load(); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const toggle = async () => {
-    if (open) { setOpen(false); return; }
-    setOpen(true);
-    if (hits) return;
-    if (!(await load())) setOpen(false);
+  const pick = async (u) => {
+    setPicking(u);
+    try { onResolved(await api.resolveMixTrack(track.id, u)); }
+    catch (e) { toast(`Link failed: ${e.message}`); }
+    finally { setPicking(null); }
   };
-
-  const pick = async (url) => {
-    setPicking(url);
+  const paste = async () => {
+    const u = url.trim();
+    if (!u) return;
+    if (classifyUrl(u).source === "unknown") { toast("Paste a SoundCloud or YouTube track link"); return; }
+    await pick(u);
+    setUrl("");
+  };
+  const scrape = async () => {
+    setScraping(true);
     try {
-      onResolved(await api.resolveMixTrack(track.id, url));
-    } catch (e) {
-      toast(`Link failed: ${e.message}`);
-    } finally {
-      setPicking(null);
-    }
+      onResolved(await api.scrapeMixTrackLink(track.id));
+      toast("Linked from the track’s 1001tracklists page");
+    } catch (e) { toast(`Scrape failed: ${e.message}`); }
+    finally { setScraping(false); }
   };
 
   return (
-    <>
-      <button className="mini-btn" onClick={toggle}
-        title={track.has_candidates
-          ? `Show the ${searchPlatform} results auto-link found for this track`
-          : `Search ${searchPlatform} for other matches`}>
-        {open ? "▴ hide" : "▾ others"}
-      </button>
-      {open && (
-        <div className="mix-candidates">
-          {loading && <span className="faint">searching {searchPlatform}…</span>}
-          {!loading && hits && hits.length === 0 && (
-            <span className="faint">No results — try pasting a link.</span>
-          )}
-          {!loading && hits && (
-            <div className="mix-candidates-head faint">
-              <span>{cached ? "from the last search" : `live ${searchPlatform} search`}</span>
-              <button className="mini-btn" onClick={() => load(true)}
-                title="Search the platform again instead of reusing the last results">
-                ↻ search again
-              </button>
-            </div>
-          )}
-          {!loading && (hits || []).map((h) => (
-            <button
-              key={h.url}
-              className={`mix-candidate${h.url === track.resolved_url ? " current" : ""}`}
-              onClick={() => pick(h.url)}
-              disabled={!!picking}
-              title={h.url}
-            >
-              <span className="mix-candidate-title">{h.title || h.url}</span>
-              <span className="faint">
-                {[h.uploader, fmtDur(h.duration_secs), fmtPlays(h.playback_count),
-                  `match ${Math.round((h.score || 0) * 100)}%`]
-                  .filter(Boolean).join(" · ")}
-                {h.url === track.resolved_url ? " · current" : ""}
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
-    </>
+    <div className="mx-others">
+      <div className="mx-othershead muted small">
+        <span>{loading ? `searching ${searchPlatform}…` : cached ? `from the last search · ${searchPlatform}` : `live search · ${searchPlatform}`}</span>
+        <button className="ui-link" onClick={() => load(true)} disabled={loading}
+          title="Search the platform again instead of reusing the last results">↻ search again</button>
+        {track.tl_track_url && (
+          <button className="ui-link" onClick={scrape} disabled={scraping}
+            title="Read the exact link off this track’s 1001tracklists page (one Firecrawl request)">
+            {scraping ? "scraping…" : "⤓ scrape its link"}
+          </button>
+        )}
+      </div>
+      {!loading && hits?.length === 0 && <span className="muted small">No results — paste a link below.</span>}
+      {!loading && (hits || []).map((h) => (
+        <button key={h.url} className={`mx-cand${h.url === track.resolved_url ? " current" : ""}`}
+          onClick={() => pick(h.url)} disabled={!!picking} title={h.url}>
+          <span className="t">{h.title || h.url}</span>
+          <span className="muted">{h.uploader}</span>
+          <span className="mono muted">{[fmtDur(h.duration_secs), h.playback_count ? fmtPlays(h.playback_count) : null].filter(Boolean).join(" · ")}</span>
+          <span className="mono">{Math.round((h.score || 0) * 100)}%</span>
+        </button>
+      ))}
+      <div className="mx-pasterow">
+        <input className="mx-in" value={url} aria-label="Paste a track link"
+          placeholder="…or paste a SoundCloud / YouTube link"
+          onChange={(e) => setUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && paste()} />
+        <button className="ui-btn" onClick={paste} disabled={!!picking || !url.trim()}>Link</button>
+      </div>
+    </div>
   );
 }
 
-export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar = null } = {}) {
+function SortableRow({ id, className, children }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  return (
+    <div ref={setNodeRef} className={className}
+      style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.5 : 1 }}>
+      <span className="mx-grip" {...attributes} {...listeners} title="Drag to reorder">⋮⋮</span>
+      {children}
+    </div>
+  );
+}
+
+export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar = null,
+                              onOpenTrack = null } = {}) {
   const [mixes, setMixes] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [detail, setDetail] = useState(null);
@@ -320,10 +258,10 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
   const [ingesting, setIngesting] = useState(false);
   const [error, setError] = useState(null);
   // Paste is the path that does not depend on anyone letting us render their
-  // page. It opens by itself when a scrape comes back walled — being told to
-  // paste and then having to find the control is two steps too many.
+  // page. It opens by itself when a scrape comes back walled.
   const [paste, setPaste] = useState("");
   const [showPaste, setShowPaste] = useState(false);
+  const [showBm, setShowBm] = useState(false);
   const [copiedBm, setCopiedBm] = useState(false);
   // /import answers 501 for exactly one thing — a Firecrawl key would fix it —
   // so that status is what raises the key prompt.
@@ -332,6 +270,8 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
   const [platform, setPlatform] = useState("both");
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [viewMode, setViewMode] = useState("list"); // 'list' | 'match'
+  const [filter, setFilter] = useState("all");
+  const [openCand, setOpenCand] = useState(null);
   const [newTrack, setNewTrack] = useState({ artist: "", title: "", link: "" });
   const [addingTrack, setAddingTrack] = useState(false);
   const [resolveJobId, setResolveJobId] = useState(null);
@@ -344,72 +284,102 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
   const { job: ingestJob, error: ingestPollError } = useJobPolling(ingestJobId);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 4 } }));
 
-  const onReorder = async ({ active, over }) => {
-    if (!over || active.id === over.id || !detail) return;
-    const ids = detail.tracks.map((t) => t.id);
-    const next = arrayMove(ids, ids.indexOf(active.id), ids.indexOf(over.id));
-    const byId = Object.fromEntries(detail.tracks.map((t) => [t.id, t]));
-    setDetail({ ...detail, tracks: next.map((id, i) => ({ ...byId[id], idx: i })) });
-    try {
-      setDetail(await api.reorderMixTracks(detail.id, next));
-    } catch (e) {
-      toast(`Reorder failed: ${e.message}`);
-      api.getMix(detail.id).then(setDetail).catch(() => {});
-    }
-  };
+  // Undo instead of confirm: a removal or an unlink shows at once, and is only
+  // sent when its Undo toast has run out. `pending` holds what is waiting.
+  const [pending, setPending] = useState({ removed: new Set(), unlinked: new Set() });
+  const pendingOps = useRef(new Map());   // op id → { timer, commit }
+  const activeRef = useRef(activeId);
+  activeRef.current = activeId;
 
   const loadMixes = () =>
     api.getMixes().then((d) => setMixes(d.mixes)).catch((e) => setError(e.message));
-
   useEffect(() => { loadMixes(); }, []);
+
+  const flushPending = async () => {
+    const ops = [...pendingOps.current.values()];
+    pendingOps.current.clear();
+    for (const op of ops) { clearTimeout(op.timer); await op.commit(); }
+  };
+  // Leaving the screen sends what is waiting rather than dropping it.
+  useEffect(() => () => { flushPending(); }, []);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const defer = (message, apply, revert, commit) => {
+    const id = Math.random().toString(36).slice(2);
+    apply();
+    const run = async () => {
+      pendingOps.current.delete(id);
+      try { await commit(); } catch (e) { toast(`${e.message}`); revert(); }
+    };
+    pendingOps.current.set(id, { timer: setTimeout(run, UNDO_MS), commit: run });
+    toast(message, {
+      label: "Undo",
+      onClick: () => {
+        const op = pendingOps.current.get(id);
+        if (!op) return;
+        clearTimeout(op.timer);
+        pendingOps.current.delete(id);
+        revert();
+      },
+    });
+  };
+  const pendingAdd = (kind, ids) => setPending((p) => ({ ...p, [kind]: new Set([...p[kind], ...ids]) }));
+  const pendingDrop = (kind, ids) => setPending((p) => {
+    const next = new Set(p[kind]);
+    ids.forEach((i) => next.delete(i));
+    return { ...p, [kind]: next };
+  });
+
+  const selectMix = async (id) => {
+    await flushPending();
+    setActiveId(id);
+  };
 
   useEffect(() => {
     setDetail(null);
     setSelectedIds(new Set());   // fresh selection per mix
+    setOpenCand(null);
+    setFilter("all");
     if (activeId == null) return;
     api.getMix(activeId).then(setDetail).catch((e) => setError(e.message));
   }, [activeId]);
 
-  const toggleSelected = (id) =>
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
+  // The mix as it will be once the waiting removals and unlinks land.
+  const tracks = useMemo(() => (detail?.tracks || [])
+    .filter((t) => !pending.removed.has(t.id))
+    .map((t) => (pending.unlinked.has(t.id) && !t.song_id
+      ? { ...t, resolved_url: null, link_platform: null, resolve_status: "unresolved", trusted: false }
+      : t)), [detail, pending]);
 
-  // Anything not yet in the library can be selected. One selection drives all
-  // three bulk actions; each derives its own eligible subset below, so a button's
-  // count always means what it says.
-  const tracks = detail?.tracks || [];
+  const toggleSelected = (id) => setSelectedIds((prev) => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  // One selection drives the bulk actions; each derives its own eligible
+  // subset, so a button's count always means what it says.
   const idsWhere = (pred) => tracks.filter(pred).map((t) => t.id);
   const selected = (ids) => ids.filter((id) => selectedIds.has(id));
-
   const selectableIds = idsWhere((t) => !t.song_id);
-  const allSelected = selectableIds.length > 0 &&
-    selected(selectableIds).length === selectableIds.length;
-
+  const allSelected = selectableIds.length > 0 && selected(selectableIds).length === selectableIds.length;
   const selectedLinkable = selected(idsWhere((t) => !t.song_id && !t.resolved_url));
-  const selectedRelinkable = selected(
-    idsWhere((t) => !t.song_id && t.resolved_url && t.resolve_status === "auto"));
+  const selectedRelinkable = selected(idsWhere((t) => !t.song_id && t.resolved_url && t.resolve_status === "auto"));
   const selectedUnlinkable = selected(idsWhere((t) => !t.song_id && t.resolved_url));
-
-  // Auto-linked but low confidence, and not yet ingested — what "Re-link" falls
-  // back to when nothing is selected (manual/scraped links are off-limits).
-  const flaggedIds = idsWhere((t) => !t.song_id && t.resolved_url &&
-                                     t.resolve_status === "auto" && !t.trusted);
+  // Auto-linked but low confidence — what Re-link falls back to when nothing
+  // is selected (manual and scraped links are off-limits).
+  const flaggedIds = idsWhere(flaggedOf);
   const relinkIds = selectedRelinkable.length ? selectedRelinkable : flaggedIds;
-
-  const toggleSelectAll = () =>
-    setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
+  const toggleSelectAll = () => setSelectedIds(allSelected ? new Set() : new Set(selectableIds));
+  const ingestable = tracks.filter((t) => t.resolved_url && !t.song_id).length;
 
   // When an auto-resolve job finishes, pull the freshly-linked tracks back in.
   useEffect(() => {
     if (!resolveJob || !detail) return;
     if (resolveJob.status === "completed") {
       const r = resolveJob.result || {};
-      toast(`${r.relink ? "Re-linked" : "Auto-linked"} ${r.resolved ?? 0} ` +
-            `track${r.resolved === 1 ? "" : "s"} on ${r.platform || platform}` +
-            (r.failed ? ` · ${r.failed} not found` : ""));
+      toast(`${r.relink ? "Re-linked" : "Auto-linked"} ${r.resolved ?? 0} `
+            + `track${r.resolved === 1 ? "" : "s"} on ${r.platform || platform}`
+            + (r.failed ? ` · ${r.failed} not found` : ""));
       api.getMix(detail.id).then(setDetail).catch((e) => setError(e.message));
       loadMixes();
       setResolveJobId(null);
@@ -419,10 +389,8 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     }
   }, [resolveJob]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A scraped mix arrives one of two ways: a plain-HTML page answers with the
-  // mix, a 1001tracklists page answers with a job_id the effect below follows.
-  // The scraper says so in its own words (ingest/firecrawl_scrape.py); match
-  // on that rather than re-deriving which failures are walls.
+  // The scraper says when a page is walled in its own words
+  // (ingest/firecrawl_scrape.py); match on that rather than re-deriving it.
   const failImport = (msg) => {
     setError(msg);
     if (/paste the tracklist/i.test(msg || "")) setShowPaste(true);
@@ -431,10 +399,9 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
   // A capture is recognised by the per-track link; plain pasted text has none.
   const isCapture = CAPTURE_RE.test(paste);
 
-  // One box, two payloads. A bookmarklet capture carries a link to each track's
-  // page; plain text does not. Branching on the content beats asking the user to
-  // know which kind of paste they are holding — and the capture is worth
-  // detecting, because those links are what "Scrape link" needs later.
+  // One box, two payloads — branching on the content beats asking which kind
+  // of paste you are holding, and a capture's links are what "scrape its
+  // link" needs later.
   const importPaste = async () => {
     setError(null);
     setBusy(true);
@@ -455,7 +422,7 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     toast(`Imported “${mix.title}” (${mix.track_count} tracks)`);
     setUrl("");
     await loadMixes();
-    setActiveId(mix.id);
+    await selectMix(mix.id);
   };
 
   const importUrl = async (refresh = false) => {
@@ -478,9 +445,6 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     setBusy(false);
   };
 
-  // The scrape job. A Firecrawl key that turns out to be bad is only discovered
-  // once the job runs, so the key prompt is raised off result.needs_key here —
-  // the route's own 501 (no key at all) still raises it above.
   useEffect(() => {
     if (!importPollError) return;
     setError(importPollError);
@@ -495,15 +459,15 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     setIngesting(false);
   }, [ingestPollError]);
 
+  // The scrape job. A bad Firecrawl key is only discovered once the job runs,
+  // so the key prompt is raised off result.needs_key here too.
   useEffect(() => {
     if (!importJob) return;
     if (importJob.status === "completed") {
       const r = importJob.result || {};
       setImportJobId(null);
       setBusy(false);
-      api.getMix(r.mix_id)
-        .then((mix) => finishImport(mix))
-        .catch((e) => setError(e.message));
+      api.getMix(r.mix_id).then((mix) => finishImport(mix)).catch((e) => setError(e.message));
     } else if (importJob.status === "failed") {
       failImport(importJob.error || "Tracklist scrape failed");
       setNeedsKey(!!(importJob.result || {}).needs_key);
@@ -531,8 +495,9 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
   };
 
   const autoResolve = async () => {
-    if (!detail) return;
+    if (!detail || !selectedLinkable.length) return;
     setError(null);
+    await flushPending();
     try {
       const res = await api.autoResolveMix(detail.id, platform, selectedLinkable);
       setResolveJobId(res.job_id);
@@ -542,27 +507,28 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     }
   };
 
-  // Tracks you already own, linked by name with no search at all. Import does
-  // this too; the button is for mixes imported before it did, or after more of
-  // their tracks reached the library.
+  // Tracks you already own, linked by name with no search at all.
   const findInLibrary = async () => {
     if (!detail) return;
     setError(null);
+    await flushPending();
     try {
       const res = await api.matchMixToLibrary(detail.id);
       setDetail(res);
       toast(res.linked ? `Linked ${res.linked} track${res.linked === 1 ? "" : "s"} already in your library`
         : "No other tracks of this mix are in your library");
+      loadMixes();
     } catch (e) {
       setError(e.message);
     }
   };
 
-  // Re-search links a previous auto-link got wrong. `trackIds` narrows it to one
-  // row (the per-row ↻); omitted, it uses the selection, or every flagged row.
+  // Re-search links a previous auto-link got wrong. `trackIds` narrows it to
+  // one row (the per-row ↻); omitted, the selection, or every flagged row.
   const relink = async (trackIds = relinkIds) => {
     if (!detail || !trackIds.length) return;
     setError(null);
+    await flushPending();
     try {
       const res = await api.autoResolveMix(detail.id, platform, trackIds, true);
       setResolveJobId(res.job_id);
@@ -572,27 +538,35 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     }
   };
 
-  // Clear links so the tracks go back to "needs link". Destructive and there's no
-  // undo, so anything beyond a single row asks first.
-  const unlink = async (trackIds = selectedUnlinkable) => {
+  // Clear links so the tracks go back to "needs link" — undoable for as long
+  // as its toast shows.
+  const unlink = (trackIds = selectedUnlinkable) => {
     if (!detail || !trackIds.length) return;
-    if (trackIds.length > 1 &&
-        !window.confirm(`Remove the links from ${trackIds.length} tracks? ` +
-                        `They'll go back to "needs link" and you can auto-link them again.`)) {
-      return;
-    }
-    setError(null);
-    try {
-      const res = await api.unlinkMixTracks(detail.id, trackIds);
-      setDetail(res);
-      setSelectedIds(new Set());
-      toast(`Unlinked ${res.unlinked} track${res.unlinked === 1 ? "" : "s"}` +
-            (res.skipped_ingested
-              ? ` · ${res.skipped_ingested} already in the library, left alone` : ""));
-      loadMixes();
-    } catch (e) {
-      setError(e.message);
-    }
+    const mixId = detail.id;
+    setSelectedIds(new Set());
+    defer(`Unlinked ${trackIds.length} track${trackIds.length === 1 ? "" : "s"}`,
+      () => pendingAdd("unlinked", trackIds),
+      () => pendingDrop("unlinked", trackIds),
+      async () => {
+        const res = await api.unlinkMixTracks(mixId, trackIds);
+        if (activeRef.current === mixId) setDetail(res);
+        pendingDrop("unlinked", trackIds);
+        loadMixes();
+      });
+  };
+
+  const removeTrack = (t) => {
+    if (!detail) return;
+    const mixId = detail.id;
+    defer(`Removed “${label(t)}”`,
+      () => pendingAdd("removed", [t.id]),
+      () => pendingDrop("removed", [t.id]),
+      async () => {
+        const res = await api.deleteMixTrack(mixId, t.id);
+        if (activeRef.current === mixId) setDetail(res);
+        pendingDrop("removed", [t.id]);
+        loadMixes();
+      });
   };
 
   const resolving = !!resolveJobId &&
@@ -602,6 +576,7 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     if (!detail) return;
     setIngesting(true);
     setError(null);
+    await flushPending();
     try {
       const res = await api.ingestMix(detail.id);
       setIngestJobId(res.job_id);
@@ -614,18 +589,19 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     }
   };
 
-  // The ingest job. It walks the mix in batches, so `message` is the live
+  // The ingest job walks the mix in batches, so `message` is the live
   // "n–m of 206" and the mix is only re-read once it is done.
   useEffect(() => {
     if (!ingestJob) return;
     if (ingestJob.status === "completed") {
       const r = ingestJob.result || {};
-      toast(`Auto-processing ${r.count ?? 0} track${r.count === 1 ? "" : "s"}` +
-            (r.linked_count ? ` · ${r.linked_count} already in the library` : "") +
-            (r.unresolvable_count ? ` · ${r.unresolvable_count} unusable` : ""));
+      toast(`Auto-processing ${r.count ?? 0} track${r.count === 1 ? "" : "s"}`
+            + (r.linked_count ? ` · ${r.linked_count} already in the library` : "")
+            + (r.unresolvable_count ? ` · ${r.unresolvable_count} unusable` : ""));
       setIngestJobId(null);
       setIngesting(false);
       if (detail) api.getMix(detail.id).then(setDetail).catch((e) => setError(e.message));
+      loadMixes();
     } else if (ingestJob.status === "failed") {
       setError(ingestJob.error || "Ingest failed");
       setIngestJobId(null);
@@ -635,11 +611,29 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
   }, [ingestJob]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onTrackResolved = (updated) => {
-    setDetail((d) => d && {
-      ...d,
-      resolved_count: d.tracks.filter((t) => (t.id === updated.id ? updated.resolved_url : t.resolved_url)).length,
-      tracks: d.tracks.map((t) => (t.id === updated.id ? updated : t)),
-    });
+    setOpenCand(null);
+    setDetail((d) => d && { ...d, tracks: d.tracks.map((t) => (t.id === updated.id ? updated : t)) });
+    loadMixes();
+  };
+
+  const confirm = async (t) => {
+    try { onTrackResolved(await api.confirmMixTrack(t.id)); }
+    catch (e) { toast(`Confirm failed: ${e.message}`); }
+  };
+
+  const onReorder = async ({ active, over }) => {
+    if (!over || active.id === over.id || !detail) return;
+    await flushPending();
+    const ids = detail.tracks.map((t) => t.id);
+    const next = arrayMove(ids, ids.indexOf(active.id), ids.indexOf(over.id));
+    const byId = Object.fromEntries(detail.tracks.map((t) => [t.id, t]));
+    setDetail({ ...detail, tracks: next.map((id, i) => ({ ...byId[id], idx: i })) });
+    try {
+      setDetail(await api.reorderMixTracks(detail.id, next));
+    } catch (e) {
+      toast(`Reorder failed: ${e.message}`);
+      api.getMix(detail.id).then(setDetail).catch(() => {});
+    }
   };
 
   const addTrack = async () => {
@@ -653,14 +647,8 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     }
     setAddingTrack(true);
     try {
-      const row = await api.addMixTrack(detail.id, {
-        artist: newTrack.artist.trim(), title, link });
-      setDetail((d) => d && {
-        ...d,
-        tracks: [...d.tracks, row],
-        track_count: (d.track_count ?? d.tracks.length) + 1,
-        resolved_count: d.resolved_count + (row.resolved_url ? 1 : 0),
-      });
+      const row = await api.addMixTrack(detail.id, { artist: newTrack.artist.trim(), title, link });
+      setDetail((d) => d && { ...d, tracks: [...d.tracks, row] });
       setNewTrack({ artist: "", title: "", link: "" });
       toast(link ? "Track added" : "Track added — use Auto-link to find its URL");
       loadMixes();
@@ -671,416 +659,328 @@ export function MixImporter({ player = null, onOpenStudio = null, onFindSimilar 
     }
   };
 
-  const removeTrack = async (t) => {
-    if (!detail) return;
-    const label = `${t.artist ? `${t.artist} — ` : ""}${t.title}`;
-    if (!window.confirm(`Remove “${label}” from this mix?`)) return;
-    try {
-      setDetail(await api.deleteMixTrack(detail.id, t.id));
-      loadMixes();
-    } catch (e) {
-      toast(`Remove failed: ${e.message}`);
-    }
-  };
-
-  // Live-refresh the ingest tracker while any of this mix's songs is still mid-
-  // pipeline. Ingest runs after matching, so this rarely overlaps board editing.
+  // Live-refresh the Processing dots while any of this mix's songs is still
+  // mid-pipeline.
   useEffect(() => {
     if (!detail) return;
-    const busy = (detail.tracks || []).some((t) =>
-      t.song_id && t.song_status && t.song_status !== "analysed" &&
-      !String(t.song_status).startsWith("error"));
-    if (!busy) return;
-    const h = setInterval(() => {
-      api.getMix(detail.id).then(setDetail).catch(() => {});
-    }, 3000);
+    const moving = (detail.tracks || []).some((t) =>
+      t.song_id && t.song_status && t.song_status !== "analysed"
+      && !String(t.song_status).startsWith("error"));
+    if (!moving) return;
+    const h = setInterval(() => { api.getMix(detail.id).then(setDetail).catch(() => {}); }, 3000);
     return () => clearInterval(h);
   }, [detail]);
 
+  // ── derived for the main column ─────────────────────────────────────────────
+  const counts = Object.fromEntries(FILTERS.map(([id, , f]) => [id, tracks.filter(f).length]));
+  const shown = tracks.filter(FILTERS.find(([id]) => id === filter)[2]);
+  let bedNo = 0;
+  const bedNumber = {};
+  tracks.forEach((t) => { if (!isVocal(t)) bedNumber[t.id] = ++bedNo; });
+  const ingested = tracks.filter((t) => t.song_id);
+  const analysed = ingested.filter((t) => t.song_status === "analysed").length;
+  const host = detail?.source_url ? detail.source_url.replace(/^https?:\/\/(www\.)?/, "").split("/")[0] : null;
+  const jobLine = ingesting ? ingestJob : resolving ? resolveJob : null;
+
   return (
-    <div className="mixes-screen">
-      {/* The importer lives in the rail: it is how a mix GETS here, not
-          something you use while working on one, and at the top of the page it
-          pushed the tracklist below the fold. */}
-      <div className="mix-rail">
-        <div className="mix-rail-block">
-          <span className="micro-label">IMPORT A SET</span>
-          <input className="mix-url-input" type="url"
-            placeholder="tracklist URL…"
-            value={url} onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && url.trim()) importUrl(); }} />
-          <button className="mix-scrape" onClick={() => importUrl()}
-            disabled={busy || !url.trim()}>
-            {busy ? "Scraping…" : "Scrape tracklist"}
-          </button>
-          {busy && importJob && (
-            <span className="hint">
-              <span className="spin-dot" /> {importJob.message || "Queued…"}
-            </span>
+    <div className="mx-screen">
+      {/* The importer: how a mix GETS here, not something used while working
+          on one, so it sits in its own column. */}
+      <aside className="mx-sidecol">
+        <div className="mx-import">
+          <span className="caps">Import a set</span>
+          <div className="mx-row">
+            <input className="mx-in" type="url" aria-label="Tracklist URL"
+              placeholder="1001tracklists / set page URL"
+              value={url} onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && url.trim()) importUrl(); }} />
+            <button className="btn-primary" onClick={() => importUrl()} disabled={busy || !url.trim()}
+              title="Scrape the tracklist">{busy && !paste ? "…" : "Scrape"}</button>
+          </div>
+          {busy && importJob && <span className="mx-progress small">◍ {importJob.message || "Queued…"}</span>}
+          <div className="mx-row">
+            <button className="ui-link" aria-expanded={showPaste} onClick={() => setShowPaste((v) => !v)}>
+              {showPaste ? "Hide paste box" : "Paste a tracklist"}
+            </button>
+            <button className="ui-link" aria-expanded={showBm} onClick={() => setShowBm((v) => !v)}>
+              Scrape blocked?
+            </button>
+          </div>
+          {showPaste && (
+            <>
+              <textarea className="mx-paste" rows={6} value={paste} aria-label="Pasted tracklist"
+                onChange={(e) => setPaste(e.target.value)}
+                placeholder={"1. Artist - Title\n2. [12:34] Artist - Title\n   w/ Artist - Title"} />
+              <button className="ui-btn" onClick={importPaste} disabled={busy || !paste.trim()}>
+                {busy ? "Parsing…" : isCapture ? "Import captured tracklist" : "Parse pasted tracklist"}
+              </button>
+              <span className="muted small">
+                {isCapture
+                  ? "A bookmarklet capture — each track keeps its 1001tracklists link and cue time."
+                  : "Numbered lines are beds; w/ lines are the vocals over them."}
+                {" "}Fill in the URL too and this stays the same mix — re-pasting replaces its
+                tracks and keeps the links you already resolved.
+              </span>
+            </>
           )}
-          <span className="hint">
-            1001tracklists, Big Bootie, festival set pages. Add or remove tracks
-            after.
-          </span>
-          <button className="linklike" onClick={() => setShowPaste((v) => !v)}>
-            {showPaste ? "hide the paste box" : "or paste the tracklist text"}
-          </button>
-        </div>
-
-        {showPaste && (
-          <div className="mix-rail-block">
-            <span className="micro-label">PASTE A TRACKLIST</span>
-            <textarea className="mix-paste" rows={8} value={paste}
-              onChange={(e) => setPaste(e.target.value)}
-                placeholder={"1. Artist - Title\n2. [12:34] Artist - Title\n   w/ Artist - Title\n…"} />
-            <button className="mix-scrape" onClick={importPaste}
-              disabled={busy || !paste.trim()}>
-              {busy ? "Parsing…"
-                : isCapture ? "Import captured tracklist"
-                : "Parse pasted tracklist"}
-            </button>
-            <span className="hint">
-              {isCapture
-                ? "A bookmarklet capture — each track keeps its 1001tracklists link and cue time."
-                : "Numbered lines are beds, w/ lines are the vocals over them."}
-              {" "}Fill in the URL above too and this stays the same mix —
-              re-pasting replaces its tracks and keeps the links you have
-              already resolved.
-            </span>
-          </div>
-        )}
-
-        {/* The way in when the scrape is blocked. Your browser renders these
-            pages because you are a person; the bookmarklet reads the tracklist
-            out of the page you are already looking at. */}
-        <div className="mix-rail-block">
-          <span className="micro-label">GRAB FROM YOUR BROWSER</span>
-          <a className="mix-bookmarklet" href={GRAB_BOOKMARKLET}
-            onClick={(e) => e.preventDefault()}
-            title="Drag me to your bookmarks bar">
-            ⤓ Grab tracklist
-          </a>
-          <button className="mini-btn"
-            onClick={() => {
-              navigator.clipboard.writeText(GRAB_BOOKMARKLET)
-                .then(() => setCopiedBm(true), () => setCopiedBm(false));
-            }}>
-            {copiedBm ? "copied ✓" : "copy the bookmarklet"}
-          </button>
-          <span className="hint">
-            Drag the link to your bookmarks bar. On a set page, click it: it
-            shows what it found, you copy, and paste above. Use this when the
-            scrape is blocked.
-          </span>
-        </div>
-
-        {error && <div className="error-text" style={{ padding: "0 12px" }}>{error}</div>}
-        {needsKey && (
-          <div className="mix-rail-block">
-            <span className="micro-label">FIRECRAWL API KEY</span>
-            <input className="mix-url-input" type="password" autoComplete="off"
-              placeholder="fc-…" value={fcKey}
-              onChange={(e) => setFcKey(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && fcKey.trim()) saveKeyAndRetry(); }} />
-            <button className="mix-scrape" onClick={saveKeyAndRetry}
-              disabled={busy || !fcKey.trim() || !url.trim()}>
-              {busy ? "Scraping…" : "Save key & retry"}
-            </button>
-            <span className="hint">
-              Get one at{" "}
-              <a href="https://www.firecrawl.dev/app/api-keys" target="_blank"
-                rel="noreferrer">firecrawl.dev</a>. Saved on this machine; a set
-              costs about 9 credits to scrape.
-            </span>
-          </div>
-        )}
-      </div>
-
-      <div className="mix-column">
-        <div className="pd-head">
-          <span className="pd-title">Mixes</span>
-          <span className="pd-count mono">{mixes.length}</span>
-        </div>
-        <div className="mix-column-list">
-          {mixes.length === 0 && (
-            <div className="pd-msg">
-              No sets yet.
-              <span className="hint">
-                Paste a tracklist URL on the left. A scrape imports the whole
-                running order at once.
+          {/* The way in when the scrape is blocked: your browser renders these
+              pages because you are a person, and the bookmarklet reads the
+              tracklist out of the page you are already looking at. */}
+          {showBm && (
+            <>
+              <div className="mx-row">
+                <a className="mx-bookmarklet" href={GRAB_BOOKMARKLET} onClick={(e) => e.preventDefault()}
+                  title="Drag me to your bookmarks bar">⤓ Grab tracklist</a>
+                <button className="ui-btn" onClick={() => {
+                  navigator.clipboard.writeText(GRAB_BOOKMARKLET)
+                    .then(() => setCopiedBm(true), () => setCopiedBm(false));
+                }}>{copiedBm ? "Copied ✓" : "Copy"}</button>
+              </div>
+              <span className="muted small">
+                Drag it to your bookmarks bar. On a set page, click it, copy what it found and paste it above.
+              </span>
+            </>
+          )}
+          {error && <div className="error-text small">{error}</div>}
+          {needsKey && (
+            <div className="mx-key">
+              <span className="caps">Firecrawl API key</span>
+              <input className="mx-in" type="password" autoComplete="off" aria-label="Firecrawl API key"
+                placeholder="fc-…" value={fcKey}
+                onChange={(e) => setFcKey(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && fcKey.trim()) saveKeyAndRetry(); }} />
+              <button className="ui-btn" onClick={saveKeyAndRetry} disabled={busy || !fcKey.trim() || !url.trim()}>
+                {busy ? "Scraping…" : "Save key & retry"}
+              </button>
+              <span className="muted small">
+                Get one at <a href="https://www.firecrawl.dev/app/api-keys" target="_blank" rel="noreferrer">firecrawl.dev</a>.
+                Saved on this machine; a set costs about 9 credits to scrape.
               </span>
             </div>
           )}
+        </div>
+
+        <div className="mx-listhead"><b>Mixes</b><span className="mono muted">{mixes.length}</span></div>
+        <div className="mx-cards">
+          {mixes.length === 0 && (
+            <div className="muted small mx-pad">No sets yet. Import one above — a scrape brings the whole running order.</div>
+          )}
           {mixes.map((m) => {
-            const done = m.track_count ? m.resolved_count / m.track_count : 0;
+            const s = m.summary || {};
+            const n = s.tracks || m.track_count || 0;
+            const lib = s.library != null ? s.ingested || 0 : 0;
+            const linked = Math.max(0, (s.linked ?? m.resolved_count ?? 0) - lib);
+            const w = (k) => (n ? `${Math.round((k / n) * 100)}%` : "0%");
             return (
-              <button key={m.id}
-                className={`mix-card${m.id === activeId ? " active" : ""}`}
-                onClick={() => setActiveId(m.id)}>
-                <div className="mix-card-title">{m.title}</div>
-                <div className="mix-card-meta mono">
-                  <span>{m.track_count} tracks</span>
-                  <span className="done">{m.resolved_count} matched</span>
-                </div>
-                <div className="mix-card-bar">
-                  <span style={{ width: `${Math.round(done * 100)}%` }} />
-                </div>
+              <button key={m.id} className={`mx-card${m.id === activeId ? " on" : ""}`}
+                aria-current={m.id === activeId} onClick={() => selectMix(m.id)}>
+                <span className="t">{m.title}</span>
+                <span className="mono m">
+                  <span>{n} tracks</span>
+                  <span className="lnk">{linked + lib} linked</span>
+                  <span className="lib">{lib} in library</span>
+                </span>
+                <span className="mx-bar"><i className="lib" style={{ width: w(lib) }} /><i className="lnk" style={{ width: w(linked) }} /></span>
               </button>
             );
           })}
         </div>
-      </div>
+      </aside>
 
-      <main className="mix-board">
-        <div className="mix-detail">
-          {!detail ? (
-            <p className="empty">Select a mix to see its tracklist.</p>
-          ) : (
-            <>
-              <div className="mix-detail-head">
-                <div>
-                  <div style={{ fontWeight: 600 }}>{detail.title}</div>
-                  <div className="faint" style={{ fontSize: 11 }}>
-                    {detail.track_count} tracks · {detail.resolved_count} linked
-                    {detail.source_url ? <> · <a href={detail.source_url} target="_blank" rel="noreferrer">source</a></> : null}
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                  <div className="seg-toggle" role="tablist" aria-label="Mix view">
-                    <button
-                      className={`seg${viewMode === "list" ? " active" : ""}`}
-                      role="tab" aria-selected={viewMode === "list"}
-                      onClick={() => setViewMode("list")}
-                    >
-                      Tracklist
+      <main className="mx-main">
+        {!detail ? (
+          <div className="mx-empty">
+            <b>{activeId == null ? "Pick a mix, or import one." : "Loading the mix…"}</b>
+            <span className="muted">Numbered entries are beds; w/ lines are the vocals the DJ laid over
+              them. Link them, match them, then Ingest — each documented pair becomes training data.</span>
+          </div>
+        ) : (
+          <>
+            <header className="mx-head">
+              <div className="mx-title">
+                <h1>{detail.title}</h1>
+                <span className="mono muted small">
+                  {tracks.length} tracks · {tracks.filter((t) => t.resolved_url || t.song_id).length} linked
+                  · {ingested.length} in library · {detail.match_count || 0} documented pairs
+                  {host && <> · <a href={detail.source_url} target="_blank" rel="noreferrer">{host}</a></>}
+                </span>
+              </div>
+              <div className="d-tabs" role="tablist" aria-label="Mix view">
+                <button role="tab" aria-selected={viewMode === "list"} className={viewMode === "list" ? "on" : ""}
+                  title="Every track and its link" onClick={() => setViewMode("list")}>Tracklist</button>
+                <button role="tab" aria-selected={viewMode === "match"} className={viewMode === "match" ? "on" : ""}
+                  title="Match vocals to the beds they were mashed over" onClick={() => setViewMode("match")}>
+                  Match{detail.match_count ? ` (${detail.match_count})` : ""}
+                </button>
+              </div>
+              <button className="btn-primary" onClick={ingest} disabled={ingesting || !ingestable}
+                title="Save every linked track to the library and auto-process it">
+                {ingesting ? "Ingesting…" : ingestable ? `⇣ Ingest ${ingestable} linked`
+                  : ingested.length ? "All linked tracks in library" : "⇣ Ingest — link tracks first"}
+              </button>
+            </header>
+
+            {viewMode === "list" && (
+              <div className="mx-toolbar">
+                <button className="ui-btn" onClick={toggleSelectAll} disabled={resolving || !selectableIds.length}
+                  title="Select every track not in the library yet">
+                  <span className={`cbox${allSelected ? " on" : ""}`}>{allSelected ? "✓" : ""}</span>
+                  All ({selected(selectableIds).length}/{selectableIds.length})
+                </button>
+                <select className="mx-select" value={platform} aria-label="Search platform"
+                  onChange={(e) => setPlatform(e.target.value)} disabled={resolving}>
+                  <option value="both">Both (SC → YT)</option>
+                  <option value="soundcloud">SoundCloud</option>
+                  <option value="youtube">YouTube</option>
+                </select>
+                <button className="ui-btn" onClick={findInLibrary} disabled={resolving}
+                  title="Link rows to songs already in your library, by artist and title — no search, no network">
+                  Find in library
+                </button>
+                <button className="ui-btn" onClick={autoResolve} disabled={resolving || !selectedLinkable.length}
+                  title={selectedLinkable.length ? "Search the chosen platform and auto-link the selected tracks"
+                    : "Select tracks without a link first"}>
+                  {resolving ? "Searching…" : `⚡ Auto-link (${selectedLinkable.length})`}
+                </button>
+                <button className="ui-btn" onClick={() => relink()} disabled={resolving || !relinkIds.length}
+                  title="Search again for low-confidence auto links. Links you pasted or confirmed are left alone.">
+                  ↻ Re-link ({relinkIds.length}){selectedRelinkable.length ? "" : " flagged"}
+                </button>
+                <button className="ui-btn danger" onClick={() => unlink()} disabled={resolving || !selectedUnlinkable.length}
+                  title="Clear the links on the selected tracks, returning them to “needs link”. Undo on the toast.">
+                  ✕ Unlink ({selectedUnlinkable.length})
+                </button>
+                <span className="grow" />
+                <div className="mx-chips" role="group" aria-label="Show">
+                  {FILTERS.map(([id, text]) => (
+                    <button key={id} className={`mx-chip ${id}${filter === id ? " on" : ""}`}
+                      aria-pressed={filter === id} title="Show only these"
+                      onClick={() => setFilter(filter === id && id !== "all" ? "all" : id)}>
+                      {text}<span className="mono">{counts[id]}</span>
                     </button>
-                    <button
-                      className={`seg${viewMode === "match" ? " active" : ""}`}
-                      role="tab" aria-selected={viewMode === "match"}
-                      onClick={() => setViewMode("match")}
-                      title="Match vocals to the instrumentals they were mashed over"
-                    >
-                      Match {detail.match_count ? `(${detail.match_count})` : ""}
-                    </button>
-                  </div>
-                  {viewMode === "match" && (
-                    <span className={`match-checkpoint${detail.match_count ? " ok" : ""}`}
-                      title="Matches save automatically as you arrange them — you can leave and resume later, then Ingest.">
-                      {detail.match_count
-                        ? `✓ ${detail.match_count} match${detail.match_count === 1 ? "" : "es"} saved`
-                        : "no matches yet"}
-                    </span>
-                  )}
-                  {viewMode === "list" && selectableIds.length > 0 && (
-                    <label className="faint" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12 }}
-                      title="Select / deselect every track that isn't in the library yet">
-                      <input type="checkbox" checked={allSelected}
-                        onChange={toggleSelectAll} disabled={resolving} />
-                      All ({selected(selectableIds).length}/{selectableIds.length})
-                    </label>
-                  )}
-                  <select
-                    className="mini-select"
-                    value={platform}
-                    onChange={(e) => setPlatform(e.target.value)}
-                    disabled={resolving}
-                    title="Which platform to search for links"
-                  >
-                    <option value="both">Both (SC → YT)</option>
-                    <option value="soundcloud">SoundCloud</option>
-                    <option value="youtube">YouTube</option>
-                  </select>
-                  <button
-                    className="btn ghost"
-                    onClick={findInLibrary}
-                    disabled={resolving}
-                    title="Link rows to songs already in your library, by artist and title — no search, no network"
-                  >
-                    Find in library
-                  </button>
-                  <button
-                    className="btn ghost"
-                    onClick={autoResolve}
-                    disabled={resolving || selectedLinkable.length === 0}
-                    title="Search the chosen platform and auto-link the selected tracks"
-                  >
-                    {resolving ? "Searching…" : `⚡ Auto-link (${selectedLinkable.length})`}
-                  </button>
-                  {viewMode === "list" && relinkIds.length > 0 && (
-                    <button
-                      className="btn ghost"
-                      onClick={() => relink()}
-                      disabled={resolving}
-                      title={selectedRelinkable.length
-                        ? "Search again for the selected auto-linked tracks"
-                        : "Search again for every low-confidence auto link. Links you pasted or confirmed are left alone."}
-                    >
-                      ↻ Re-link ({relinkIds.length}){selectedRelinkable.length ? "" : " flagged"}
-                    </button>
-                  )}
-                  {viewMode === "list" && selectedUnlinkable.length > 0 && (
-                    <button
-                      className="btn ghost danger"
-                      onClick={() => unlink()}
-                      disabled={resolving}
-                      title="Clear the links on the selected tracks, returning them to “needs link”. Tracks already in the library are left alone."
-                    >
-                      ✕ Unlink ({selectedUnlinkable.length})
-                    </button>
-                  )}
-                  <button
-                    className="btn"
-                    onClick={ingest}
-                    disabled={ingesting || detail.resolved_count === 0}
-                    title="Save every linked track to the library and auto-process it"
-                  >
-                    {ingesting ? "Ingesting…" : `⇣ Ingest ${detail.resolved_count} linked`}
-                  </button>
+                  ))}
                 </div>
               </div>
-              {ingesting && (
-                <div className="hint" style={{ margin: "2px 0 8px" }}>
-                  <span className="spin-dot" /> {ingestJob?.message || "Queued…"}
-                  {typeof ingestJob?.progress === "number" && ingestJob.progress > 0
-                    ? ` (${ingestJob.progress}%)` : ""}
-                </div>
-              )}
-              {resolving && (
-                <div className="hint" style={{ margin: "2px 0 8px" }}>
-                  <span className="spin-dot" /> {resolveJob?.message || "Queued…"}
-                  {typeof resolveJob?.progress === "number" && resolveJob.progress > 0
-                    ? ` (${resolveJob.progress}%)` : ""}
-                </div>
-              )}
-              {detail.ingested_count > 0 && (
-                <div className="mix-ingest-tracker">
-                  <div className="mix-ingest-head">
-                    <strong>Processing</strong>
-                    <span className="faint">
-                      {detail.analysed_count}/{detail.ingested_count} analysed
-                      {detail.analysed_count < detail.ingested_count
-                        ? " · runs in the background, resumes automatically across sessions" : " ✓"}
-                    </span>
-                  </div>
-                  <div className="mix-ingest-rows">
-                    {detail.tracks.filter((t) => t.song_id).map((t) => (
-                      <div key={t.id} className="mix-ingest-row">
-                        <span className="mix-ingest-title" title={t.song_last_error || undefined}>
-                          {t.artist ? `${t.artist} — ` : ""}{t.title}
-                        </span>
-                        <StageStepper status={t.song_status} error={t.song_last_error} />
+            )}
+
+            {jobLine && (
+              <div className="mx-busy small">
+                <span className="bar"><i style={{ width: `${Math.max(4, Number(jobLine.progress) || 0)}%` }} /></span>
+                {jobLine.message || "Queued…"}
+              </div>
+            )}
+
+            {viewMode === "match" ? (
+              <MixMatchBoard mix={detail} onMixUpdated={setDetail} />
+            ) : (
+              <div className="mx-scroll">
+                {ingested.length > 0 && (
+                  <div className="mx-pad">
+                    <Disclosure id="processing" storageKey="mashup.mixes.v1" title="Processing"
+                      meta={`${analysed}/${ingested.length} analysed${analysed < ingested.length
+                        ? " · runs in the background and resumes across sessions" : " ✓"}`}>
+                      <div className="mx-proc">
+                        {ingested.map((t) => (
+                          <div key={t.id} className="mx-procrow" title={t.song_last_error || undefined}>
+                            <span className="t">{label(t)}</span>
+                            <StageDots status={t.song_status} error={t.song_last_error} />
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    </Disclosure>
                   </div>
-                </div>
-              )}
-              {viewMode === "list" && (
+                )}
+
                 <DocumentedPairs pairs={detail.pairs} player={player}
                   onOpenStudio={onOpenStudio} onFindSimilar={onFindSimilar} />
-              )}
-              {viewMode === "match" && (
-                <MixMatchBoard mix={detail} onMixUpdated={setDetail} />
-              )}
-              <div className="mix-rows" style={viewMode === "match" ? { display: "none" } : undefined}>
-                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onReorder}>
-                <SortableContext items={detail.tracks.map((t) => t.id)} strategy={verticalListSortingStrategy}>
-                {detail.tracks.map((t) => (
-                  <SortableRow key={t.id} track={t}>
-                    {!t.song_id ? (
-                      <input
-                        type="checkbox"
-                        className="mix-select"
-                        checked={selectedIds.has(t.id)}
-                        onChange={() => toggleSelected(t.id)}
-                        disabled={resolving}
-                        title="Select this track for auto-link / re-link / unlink"
-                      />
-                    ) : (
-                      <span className="mix-select" />
-                    )}
-                    <span className="mix-num">{t.idx + 1}</span>
-                    <div className="mix-info">
-                      <span className="mix-title" title={`${t.artist ? `${t.artist} — ` : ""}${t.title}`}>
-                        {t.artist ? `${t.artist} — ` : ""}{t.title}
-                      </span>
-                      {t.resolved_url
-                        ? <a className="mix-url" href={t.resolved_url} target="_blank"
-                            rel="noreferrer" title={t.resolved_url}>
-                            <BreakableUrl url={t.resolved_url} />
-                          </a>
-                        : <span className="mix-url none">no link yet</span>}
-                    </div>
-                    <span className="mix-status"><LinkStatus track={t} /></span>
-                    <span className="mix-source"><SourceTag track={t} /></span>
-                    <div className="mix-actions">
-                      {!t.song_id && t.resolved_url && t.resolve_status === "auto" && !t.trusted && (
-                        <button
-                          className="mini-btn"
-                          title="Confirm this auto-found link is correct (promotes it to trusted)"
-                          onClick={async () => {
-                            try {
-                              const updated = await api.confirmMixTrack(t.id);
-                              onTrackResolved(updated);
-                            } catch (e) {
-                              toast(`Confirm failed: ${e.message}`);
-                            }
-                          }}
-                        >
-                          ✓ confirm
-                        </button>
-                      )}
-                      {!t.song_id && t.resolved_url && t.resolve_status === "auto" && (
-                        <button
-                          className="mini-btn"
-                          disabled={resolving}
-                          title="Search again for this track and replace the link"
-                          onClick={() => relink([t.id])}
-                        >
-                          ↻
-                        </button>
-                      )}
-                      {/* Available on every row, not just flagged ones: auto-link
-                          already fetched these hits, so opening the list is free.
-                          Keyed on the link so re-linking or unlinking drops the
-                          panel's stale results instead of showing hits for a link
-                          that's gone. */}
-                      {!t.song_id && (
-                        <CandidatePicker key={`cand-${t.id}-${t.resolved_url || ""}`}
-                          track={t} platform={platform}
-                          onResolved={onTrackResolved} />
-                      )}
-                      {!t.song_id && <ResolveInput track={t} onResolved={onTrackResolved} />}
-                      {!t.song_id && (
-                        <button className="mini-btn danger" title="Remove this track from the mix"
-                          onClick={() => removeTrack(t)}>✕</button>
-                      )}
-                    </div>
-                  </SortableRow>
-                ))}
-                </SortableContext>
-                </DndContext>
-                <div className="mix-add-track">
-                  <span className="mix-add-label">+ Add track</span>
-                  <input className="mix-add-in" placeholder="Artist (optional)"
-                    value={newTrack.artist}
-                    onChange={(e) => setNewTrack((n) => ({ ...n, artist: e.target.value }))} />
-                  <input className="mix-add-in" placeholder="Title"
-                    value={newTrack.title}
-                    onChange={(e) => setNewTrack((n) => ({ ...n, title: e.target.value }))}
-                    onKeyDown={(e) => e.key === "Enter" && addTrack()} />
-                  <input className="mix-add-in wide" placeholder="SoundCloud/YouTube link (optional)"
-                    value={newTrack.link}
-                    onChange={(e) => setNewTrack((n) => ({ ...n, link: e.target.value }))}
-                    onKeyDown={(e) => e.key === "Enter" && addTrack()} />
-                  <button className="mini-btn" onClick={addTrack}
-                    disabled={addingTrack || !newTrack.title.trim()}>
-                    {addingTrack ? "…" : "Add"}
-                  </button>
+
+                <div className="mx-table">
+                  <div className="mx-thead caps">
+                    <span /><span /><span>#</span><span>Track · link</span><span>Status</span><span>Source</span><span />
+                  </div>
+                  <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onReorder}>
+                    <SortableContext items={shown.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                      {shown.map((t) => {
+                        const vocal = isVocal(t);
+                        const open = openCand === t.id;
+                        return (
+                          <div key={t.id} className="mx-rowwrap">
+                            <SortableRow id={t.id}
+                              className={`mx-trow${vocal ? " vocal" : ""}${selectedIds.has(t.id) ? " picked" : ""}`}>
+                              {!t.song_id ? (
+                                <button className={`cbox${selectedIds.has(t.id) ? " on" : ""}`} aria-label="Select"
+                                  disabled={resolving} onClick={() => toggleSelected(t.id)}
+                                  title="Select for auto-link / re-link / unlink">{selectedIds.has(t.id) ? "✓" : ""}</button>
+                              ) : <span />}
+                              <span className="mono muted">{vocal ? "" : bedNumber[t.id]}</span>
+                              <div className="mx-track">
+                                <span className="mx-name" title={t.raw_label || label(t)}>
+                                  {vocal && <span className="mx-wv mono" title="A w/ line — the vocal over the bed above">w/</span>}
+                                  {t.cue_secs != null && <span className="mono muted">{fmtDur(t.cue_secs) || "0:00"}</span>}
+                                  {t.is_id ? <span className="mx-id mono">ID</span> : null}
+                                  <span className="t">{label(t)}</span>
+                                </span>
+                                {t.resolved_url
+                                  ? <a className="mx-url mono" href={t.resolved_url} target="_blank" rel="noreferrer"
+                                      title={t.resolved_url}><BreakableUrl url={t.resolved_url} /></a>
+                                  : <span className="mx-url mono none">no link yet</span>}
+                              </div>
+                              <LinkFlag track={t} />
+                              <SourceTag track={t} />
+                              <div className="mx-act">
+                                {flaggedOf(t) && (
+                                  <button className="ui-btn" onClick={() => confirm(t)}
+                                    title="Confirm this auto-found link is right (promotes it to trusted)">✓ confirm</button>
+                                )}
+                                {!t.song_id && t.resolved_url && t.resolve_status === "auto" && (
+                                  <button className="ui-btn" disabled={resolving} aria-label="Re-link"
+                                    title="Search again and replace the link" onClick={() => relink([t.id])}>↻</button>
+                                )}
+                                {!t.song_id && (
+                                  <>
+                                    <button className={`ui-btn${open ? " on" : ""}`} aria-expanded={open}
+                                      title="Other search results, or paste a link"
+                                      onClick={() => setOpenCand(open ? null : t.id)}>{open ? "▴ hide" : "▾ others"}</button>
+                                    <button className="ui-btn danger" aria-label="Remove from the mix"
+                                      title="Remove from the mix (Undo on the toast)" onClick={() => removeTrack(t)}>✕</button>
+                                  </>
+                                )}
+                                {t.song_id && onOpenTrack && (
+                                  <button className="ui-btn" onClick={() => onOpenTrack(t.song_id)}>Open track</button>
+                                )}
+                              </div>
+                            </SortableRow>
+                            {open && (
+                              <OthersPanel key={`cand-${t.id}-${t.resolved_url || ""}`} track={t}
+                                platform={platform} onResolved={onTrackResolved} />
+                            )}
+                          </div>
+                        );
+                      })}
+                    </SortableContext>
+                  </DndContext>
+                  {!shown.length && <div className="muted small mx-pad">Nothing in this filter.</div>}
+                  <div className="mx-add">
+                    <span className="muted small">+ Add track</span>
+                    <input className="mx-in" placeholder="Artist (optional)" aria-label="Artist"
+                      value={newTrack.artist}
+                      onChange={(e) => setNewTrack((n) => ({ ...n, artist: e.target.value }))} />
+                    <input className="mx-in" placeholder="Title" aria-label="Title" value={newTrack.title}
+                      onChange={(e) => setNewTrack((n) => ({ ...n, title: e.target.value }))}
+                      onKeyDown={(e) => e.key === "Enter" && addTrack()} />
+                    <input className="mx-in wide" placeholder="SoundCloud / YouTube link (optional)" aria-label="Link"
+                      value={newTrack.link}
+                      onChange={(e) => setNewTrack((n) => ({ ...n, link: e.target.value }))}
+                      onKeyDown={(e) => e.key === "Enter" && addTrack()} />
+                    <button className="ui-btn" onClick={addTrack} disabled={addingTrack || !newTrack.title.trim()}>
+                      {addingTrack ? "…" : "Add"}
+                    </button>
+                  </div>
                 </div>
               </div>
-            </>
-          )}
-        </div>
+            )}
+          </>
+        )}
       </main>
     </div>
   );

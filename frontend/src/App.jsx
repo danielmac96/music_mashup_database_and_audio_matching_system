@@ -439,6 +439,7 @@ export default function App() {
 
         {route === "mixes" && (
           <MixImporter player={player} onOpenStudio={pairToStudio}
+            onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}
             onFindSimilar={(vocalId) => {
               setSelectedTrackId(vocalId); setDockRole("vocal"); setRoute("library");
             }} />

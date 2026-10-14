@@ -687,10 +687,6 @@ input, select { font-family: inherit; }
 }
 .key-map .arrow { font-size: 12px; }
 
-.mix-row { display: flex; align-items: center; gap: 9px; margin-bottom: 11px; }
-
-.mix-row .db { font-family: var(--font-mono); font-size: 10px; color: var(--muted); width: 40px; text-align: right; }
-
 .snap-seg { flex: 1; display: flex; background: var(--inset-2); border: 1px solid var(--border-ctrl); border-radius: 7px; padding: 2px; }
 .snap-seg button {
   cursor: pointer; flex: 1; text-align: center; border-radius: 5px; padding: 3px; font-size: 10px;
@@ -851,23 +847,6 @@ input, select { font-family: inherit; }
    need — the name/link column keeps the rest. Rows stay real boxes, which
    dnd-kit's drag transform, the hover state and the candidates dropdown's
    positioning all depend on. */
-.mix-rows {
-  display: grid;
-  /* The name/link column is sized for a URL — wide enough that a typical
-     SoundCloud permalink sits on one line, capped so the rest of the row stays
-     put. Longer links wrap inside it (see .mix-url). The action column takes the
-     slack so it stays pinned right. */
-  grid-template-columns:
-    16px 16px 30px minmax(300px, 560px) 108px 96px minmax(max-content, 1fr);
-  gap: 1px 8px;
-}
-.mix-row {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: subgrid;
-  align-items: center;
-  padding: 5px 0; border-radius: 6px; font-size: 13px;
-}
 /* Engines without subgrid keep the old per-row grid; fixed tracks are the only
    way to align columns there, so long links ellipsise as they used to. */
 @supports not (grid-template-columns: subgrid) {
@@ -877,10 +856,7 @@ input, select { font-family: inherit; }
     gap: 8px; padding: 5px 8px;
   }
 }
-.mix-row:hover { background: rgba(255,255,255,0.03); }
-.mix-row.overlay .mix-num { color: var(--accent-light); font-style: italic; }
 .drag-handle { color: var(--text-2); cursor: grab; font-size: 12px; user-select: none; line-height: 1; }
-.mix-select { width: 16px; flex: 0 0 16px; margin: 0; cursor: pointer; justify-self: center; }
 .mix-num { font-weight: 600; color: var(--text-2); text-align: center; font-size: 12px; }
 /* Track name on its own line with its link directly underneath, same font and
    size, so the pair reads as one unit. The link is never truncated: it gets the
@@ -901,51 +877,13 @@ input, select { font-family: inherit; }
 .mix-url { color: var(--text-2); text-decoration: none; }
 .mix-url:hover { color: var(--accent-light); text-decoration: underline; }
 .mix-url.none { color: var(--text-2); opacity: 0.5; font-style: italic; }
-.mix-status, .mix-source { min-width: 0; display: flex; }
 /* Which platform the audio comes from — SoundCloud is the primary source, so a
    YouTube link is worth spotting in a scan. Brand-ish colours, not status ones. */
-.mix-src {
-  font-size: 10px; padding: 1px 6px; border-radius: 4px;
-  white-space: nowrap; letter-spacing: 0.02em;
-}
-.mix-src.youtube { color: var(--red); background: rgba(248,113,113,0.13); }
-.mix-src.soundcloud { color: #ff8a3d; background: rgba(255,138,61,0.13); }
-.mix-actions {
-  display: flex; align-items: center; gap: 4px; flex-wrap: nowrap;
-  justify-content: flex-end; position: relative;   /* anchors .mix-candidates */
-}
 /* Rows carry different button sets; let none of them shrink, or the widest row
    compresses its labels into two lines while its neighbours stay single-line. */
-.mix-actions > * { flex: 0 0 auto; }
-.mix-actions .mini-btn, .mix-resolve .mini-btn { white-space: nowrap; }
 /* Search hits behind a low-confidence auto link. The tracklist rows are a tight
    grid, so this hangs off the row's actions as a dropdown rather than pushing
    the layout around. */
-.mix-candidates {
-  position: absolute; top: calc(100% + 4px); right: 0; z-index: 20;
-  display: flex; flex-direction: column; gap: 2px;
-  min-width: 420px; max-width: min(560px, 80vw); padding: 6px;
-  background: var(--panel); border: 1px solid var(--border-ctrl);
-  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-}
-.mix-candidate {
-  display: flex; flex-direction: column; align-items: flex-start; gap: 1px;
-  padding: 5px 8px; border: 1px solid transparent; border-radius: 6px;
-  background: none; color: var(--text); font-size: 12px; text-align: left;
-  cursor: pointer; min-width: 0;
-}
-.mix-candidate:hover:not(:disabled) { background: var(--accent-tint); border-color: var(--accent); }
-.mix-candidate:disabled { opacity: 0.5; cursor: default; }
-.mix-candidate.current { border-color: var(--border-ctrl); background: var(--inset-2); }
-.mix-candidate > span {
-  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.mix-candidate-title { font-weight: 500; }
-.mix-candidates-head {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 0 4px 4px; font-size: 11px; border-bottom: 1px solid var(--border);
-  margin-bottom: 2px;
-}
 .btn.ghost.danger { color: var(--red); border-color: rgba(220,80,80,.35); }
 .btn.ghost.danger:hover:not(:disabled) { background: rgba(220,80,80,.12); }
 .mix-flag { font-size: 10px; padding: 1px 5px; border-radius: 4px; }
@@ -960,57 +898,12 @@ input, select { font-family: inherit; }
   display: inline-block; width: 8px; height: 8px; border-radius: 50%;
   background: var(--accent); animation: procpulse 1.2s infinite; vertical-align: middle;
 }
-.mix-resolve { display: flex; gap: 4px; }
-.mix-resolve input {
-  background: var(--panel); border: 1px solid var(--border-ctrl); border-radius: 6px;
-  color: var(--text); padding: 3px 8px; font-size: 12px; width: 130px;
-}
 .mini-btn.danger { color: var(--red); border-color: rgba(220,80,80,.35); }
 .mini-btn.danger:hover:not(:disabled) { background: rgba(220,80,80,.12); }
 
 /* Manual "+ Add track" row at the foot of the tracklist. */
-.mix-add-track {
-  grid-column: 1 / -1;   /* sits in .mix-rows' grid — span it, don't become a cell */
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  margin-top: 10px; padding: 8px 9px;
-  border: 1px dashed var(--border-ctrl); border-radius: 8px; background: var(--inset-2);
-}
-.mix-add-label { font-size: 11px; font-weight: 600; color: var(--muted); flex: none; }
-.mix-add-in {
-  background: var(--panel); border: 1px solid var(--border-ctrl); border-radius: 6px;
-  color: var(--text); padding: 4px 8px; font: inherit; font-size: 12px; width: 140px;
-}
-.mix-add-in.wide { flex: 1; min-width: 200px; }
 
 /* Per-mix ingest / processing tracker (item 4). */
-.mix-ingest-tracker {
-  border: 1px solid var(--border); border-radius: 10px; background: var(--panel);
-  padding: 9px 11px; margin: 6px 0 10px;
-}
-.mix-ingest-head {
-  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-  margin-bottom: 7px; font-size: 12px;
-}
-.mix-ingest-head .faint { font-size: 11px; }
-.mix-ingest-rows { display: flex; flex-direction: column; gap: 4px; }
-.mix-ingest-row {
-  display: flex; align-items: center; gap: 10px; justify-content: space-between;
-  font-size: 12px;
-}
-.mix-ingest-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.stage-stepper { display: inline-flex; align-items: center; gap: 4px; flex: none; }
-.stage-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--inset); border: 1px solid var(--border-ctrl);
-}
-.stage-dot.on { background: var(--green); border-color: var(--green); }
-.stage-dot.err { background: var(--red); border-color: var(--red); }
-.stage-label {
-  font-size: 10px; color: var(--muted); font-family: var(--font-mono);
-  min-width: 74px; text-align: right;
-}
-.stage-label.err { color: var(--red); }
 
 /* ── ML panel (datasets + models) ────────────────────────────────────────── */
 .ml-panel {
@@ -1162,177 +1055,6 @@ input, select { font-family: inherit; }
 
 /* ── Library bottom player bar ──────────────────────────────────────────── */
 
-/* ── Mixes: vocal/instrumental matching board ────────────────────────────── */
-
-.seg-toggle { display: inline-flex; border: 1px solid var(--border-ctrl); border-radius: 7px; overflow: hidden; }
-.seg-toggle .seg {
-  background: var(--inset); color: var(--muted); border: none;
-  font: inherit; font-size: 12px; padding: 5px 11px; cursor: pointer;
-}
-.seg-toggle .seg + .seg { border-left: 1px solid var(--border-ctrl); }
-.seg-toggle .seg.active { background: var(--accent-tint); color: var(--accent-light); }
-
-.match-board-wrap { margin-top: 4px; }
-.match-toolbar {
-  display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
-  padding: 7px 9px; background: var(--inset-2); border: 1px solid var(--hair);
-  border-radius: 8px;
-}
-.match-filter {
-  background: var(--inset); color: var(--text); border: 1px solid var(--border-ctrl);
-  border-radius: 6px; font: inherit; font-size: 12px; padding: 5px 9px; width: 190px;
-}
-
-.match-save { font-size: 11px; }
-.match-save.saved { color: var(--green); }
-.match-save.saving { color: var(--muted); }
-.match-save.dirty { color: var(--amber-light); }
-.match-save.error { color: var(--red); }
-
-.match-board {
-  /* Instrumentals gets the wider share: it nests indented vocal rows under
-     each bed, while Vocals is a flat list. */
-  display: grid; grid-template-columns: 1.4fr 1fr; gap: 12px;
-  align-items: start;
-}
-@media (max-width: 720px) { .match-board { grid-template-columns: 1fr; } }
-
-.match-col {
-  background: var(--inset-2); border: 1px solid var(--border);
-  border-radius: 10px; padding: 9px; min-height: 240px;
-  /* min-width:0 lets each grid track honour its fr share instead of growing to
-     fit a long pill — without it the Vocals column overflows off-screen. */
-  min-width: 0;
-  transition: border-color .12s, background .12s;
-}
-.match-col.over { border-color: var(--accent); background: var(--accent-tint); }
-/* The Instrumentals column is as long as the whole tracklist while Vocals is
-   usually short, so pin Vocals to the viewport: the free-vocal list rides
-   along as you scroll down the beds instead of being left at the top. Sticky
-   travels inside the grid area (which spans the tall row), so it follows the
-   full length of the Instrumentals column. Offsets clear the 60px topbar and
-   the fixed player bar. */
-@media (min-width: 721px) {
-  .match-col.c-voc {
-    position: sticky;
-    top: 70px;
-    max-height: calc(100vh - 154px);
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-  }
-  .match-col.c-voc .match-col-body {
-    overflow-y: auto;
-    min-height: 0;
-    /* room for the scrollbar so pills don't sit under it */
-    padding-right: 2px;
-  }
-}
-.match-col-head { font-size: 12px; font-weight: 600; letter-spacing: .02em; }
-.match-col.c-inst .match-col-head { color: var(--amber-light); }
-.match-col.c-voc .match-col-head { color: var(--cyan-light); }
-.match-col-hint { font-size: 10.5px; margin: 2px 0 8px; }
-.match-col-body { display: flex; flex-direction: column; gap: 4px; }
-
-.match-pill-wrap { touch-action: none; min-width: 0; width: 100%; }
-.match-pill-wrap.ghost { opacity: .35; }
-/* Track card on a single line: position · title (ellipsised) · chips + toggle.
-   The board is wide enough that one line per track reads fine, and it roughly
-   halves the height of both columns. */
-.match-pill {
-  display: flex; flex-direction: row; align-items: center; gap: 8px;
-  width: 100%; box-sizing: border-box;
-  background: var(--raised); border: 1px solid var(--border-ctrl);
-  border-radius: 8px; padding: 4px 8px; font-size: 12px;
-  cursor: grab; user-select: none;
-}
-.match-pill.dragging { box-shadow: 0 6px 18px rgba(0,0,0,.5); cursor: grabbing; }
-.match-pill.low { border-style: dashed; border-color: var(--amber); }
-.match-pill.matched { border-color: var(--cyan); }
-.match-pill.unsorted { border-style: dashed; border-color: var(--border); }
-.match-card-title {
-  flex: 1 1 auto; min-width: 0;
-  font-size: 12.5px; line-height: 1.5;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.match-card-meta {
-  display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto;
-}
-.match-pos {
-  font-family: var(--font-mono); font-size: 10px; color: var(--muted);
-  background: var(--inset); border-radius: 999px; padding: 1px 6px; flex: none;
-}
-.match-chip {
-  flex: none; font-size: 9px; font-weight: 700; letter-spacing: .06em;
-  border-radius: 4px; padding: 1px 5px;
-}
-.match-chip.id { background: rgba(245,166,35,.16); color: var(--amber-light); }
-.match-chip.wv { background: rgba(56,189,248,.14); color: var(--cyan-light); }
-.match-chip.origin.parsed { background: rgba(56,189,248,.14); color: var(--cyan-light); }
-.match-chip.origin.manual { background: rgba(46,204,113,.15); color: var(--green); }
-.match-chip.unsorted { background: var(--inset); color: var(--muted); font-weight: 600; }
-
-.inst-group {
-  border: 1px solid var(--border-accent); border-radius: 9px;
-  background: var(--panel); padding: 4px 5px;
-  transition: border-color .12s, background .12s;
-}
-.inst-group.over { border-color: var(--amber); background: rgba(245,166,35,.07); }
-/* Keep a column of empty beds tidy: only reveal the hint on hover / drag-over. */
-.inst-group-empty { display: none; }
-.inst-group:hover .inst-group-empty,
-.inst-group.over .inst-group-empty { display: block; }
-.inst-group-head { margin-bottom: 3px; }
-.inst-group-empty { font-size: 10.5px; padding: 2px 6px; font-style: italic; }
-.inst-group-vocals {
-  display: flex; flex-direction: column; gap: 3px; min-width: 0;
-  margin-left: 10px; padding-left: 8px; border-left: 2px solid var(--border-accent);
-}
-.inst-group-vocal { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.inst-group-vocal .match-pill-wrap { flex: 1 1 auto; min-width: 0; }
-.inst-group-vocal .match-chip.origin { flex: none; }
-
-.inst-group { min-width: 0; }
-.inst-group-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.inst-group-head .match-pill-wrap { flex: 1 1 auto; min-width: 0; }
-.inst-group-count { font-size: 10px; flex: none; }
-
-/* Instrumental blocks are sortable among themselves: the ⋮⋮ handle drags the
-   bed and its matched vocals as one unit, while the pill beside it keeps its
-   own drag (re-role / pair onto another bed). */
-.inst-group-sort { min-width: 0; }
-.inst-group-head .drag-handle { flex: none; touch-action: none; }
-.inst-group-head .drag-handle:active { cursor: grabbing; }
-.inst-group-sort:hover .drag-handle { color: var(--text); }
-
-/* Explainer banner above the three-box board (item 3 clarity). */
-.match-explainer {
-  font-size: 11.5px; line-height: 1.5; color: var(--text);
-  background: var(--inset-2); border: 1px solid var(--hair);
-  border-left: 3px solid var(--accent);
-  border-radius: 8px; padding: 8px 11px; margin-bottom: 10px;
-}
-.match-explainer code {
-  font-family: var(--font-mono); font-size: 10.5px;
-  background: rgba(56,189,248,.14); color: var(--cyan-light);
-  border-radius: 4px; padding: 0 4px;
-}
-
-/* Non-drag role toggle on each pill. */
-.role-toggle { display: inline-flex; gap: 3px; margin-left: 6px; flex: none; }
-.role-btn {
-  font-size: 9px; font-weight: 700; letter-spacing: .04em;
-  border: 1px solid var(--border-ctrl); background: var(--inset);
-  color: var(--muted); border-radius: 5px; padding: 2px 5px; cursor: pointer;
-}
-.role-btn:hover { filter: brightness(1.3); }
-.role-btn.on { background: var(--accent-tint); border-color: var(--accent); color: var(--text); }
-
-.match-checkpoint {
-  font-size: 11px; color: var(--muted);
-  border: 1px solid var(--hair); border-radius: 6px; padding: 4px 9px;
-}
-.match-checkpoint.ok { color: var(--green); border-color: rgba(46,204,113,.4); }
 
 /* Backfill bar (Library) — states what the library is missing and offers to
    fix it. Amber rather than red: nothing is broken, some features are just
@@ -2114,82 +1836,9 @@ input, select { font-family: inherit; }
 }
 
 /* ── Mixes: rail + 268px list + board ──────────────────────────────────── */
-.mixes-screen {
-  flex: 1; min-height: 0;
-  display: grid; grid-template-columns: 206px 268px minmax(0, 1fr);
-}
-.mix-rail {
-  background: var(--topbar); border-right: 1px solid var(--border-top);
-  display: flex; flex-direction: column; overflow: auto; padding-top: 14px;
-}
-.mix-rail-block {
-  padding: 0 12px; display: flex; flex-direction: column; gap: 7px;
-}
-.mix-url-input {
-  font: 400 11px var(--font-mono); color: var(--text);
-  background: var(--inset-2); border: 1px solid var(--border-ctrl);
-  border-radius: 7px; padding: 7px 9px;
-}
-.mix-url-input::placeholder { color: var(--faint); }
-.mix-scrape {
-  cursor: pointer; border: none; border-radius: 7px; padding: 7px 0;
-  font: 600 11.5px var(--font-ui); color: #07090d; background: var(--accent);
-}
-.mix-scrape:hover:not(:disabled) { background: var(--accent-light); }
-.mix-scrape:disabled { opacity: 0.45; cursor: default; }
-.mix-paste {
-  width: 100%; box-sizing: border-box; resize: vertical;
-  font: 400 11px var(--font-mono); color: var(--text);
-  background: var(--inset-2); border: 1px solid var(--border-ctrl);
-  border-radius: 7px; padding: 7px 9px;
-}
-.mix-paste::placeholder { color: var(--faint); }
 /* The bookmarklet is a LINK, not a button, because installing it means dragging
    it to the bookmarks bar — only an <a href> can be dragged there. */
-.mix-bookmarklet {
-  display: block; text-align: center; cursor: grab;
-  background: var(--inset-2); border: 1px dashed var(--border-ctrl);
-  border-radius: 7px; padding: 8px 9px;
-  font: 600 11.5px var(--font-ui); color: var(--accent-light);
-  text-decoration: none;
-}
-.mix-bookmarklet:hover { border-color: var(--accent); color: var(--accent); }
-.mix-bookmarklet:active { cursor: grabbing; }
 /* A button that reads as a link — the paste toggle sits inside a sentence. */
-.mix-rail .linklike {
-  align-self: flex-start; cursor: pointer; background: none; border: 0;
-  padding: 0; font: 400 11px var(--font-ui); color: var(--accent-light);
-  text-decoration: underline;
-}
-.mix-rail .linklike:hover { color: var(--accent); }
-.mix-rail-block .hint { font-size: 10.5px; line-height: 1.5; }
-
-.mix-column {
-  min-width: 0; border-right: 1px solid var(--border-top); background: var(--inset);
-  display: flex; flex-direction: column; overflow: hidden;
-}
-.mix-column-list {
-  flex: 1; min-height: 0; overflow: auto;
-  padding: 10px; display: flex; flex-direction: column; gap: 7px;
-}
-.mix-card {
-  flex: none; cursor: pointer; text-align: left; width: 100%;
-  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-  padding: 10px; display: flex; flex-direction: column; gap: 7px;
-}
-.mix-card:hover { border-color: var(--border-ctrl); }
-.mix-card.active { border-color: var(--accent); background: var(--raised); }
-.mix-card-title { font: 500 12.5px var(--font-ui); line-height: 1.3; color: var(--text); }
-.mix-card-meta {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 10.5px; color: var(--muted);
-}
-.mix-card-meta .done { margin-left: auto; color: var(--green); }
-.mix-card-bar { height: 4px; border-radius: 2px; background: var(--raised); overflow: hidden; }
-.mix-card-bar span { display: block; height: 100%; background: var(--green); }
-
-.mix-board { min-width: 0; overflow: auto; padding: 14px 16px; }
-.mix-board .mix-detail { border: none; padding: 0; background: transparent; }
 
 /* ── Library groups ─────────────────────────────────────────────────────────
    A crate, seen from the library side. The rail rows and the Group chip reuse
@@ -2411,21 +2060,6 @@ input, select { font-family: inherit; }
 .layer-pct { color: var(--green); text-align: right; }
 
 /* ── Mixes: documented pairs as the engine sees them ─────────────────────── */
-.mix-docpairs { background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
-  padding: 10px 12px; margin: 0 0 12px; display: flex; flex-direction: column; gap: 6px; }
-.mix-docpair { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center;
-  font-size: 12.5px; }
-.mix-docpair-text { display: flex; gap: 6px; align-items: center; min-width: 0; white-space: nowrap; overflow: hidden; }
-.mix-docpair-text .t { overflow: hidden; text-overflow: ellipsis; }
-.mix-docpair-engine { font-size: 11px; white-space: nowrap; }
-.mix-docpair-engine .good { color: var(--green); }
-.mix-docpair-engine .ok { color: var(--amber-light); }
-.mix-docpair-engine .low { color: var(--red); }
-.mix-docpair-actions { display: flex; gap: 6px; }
-.mix-docpair-actions button { cursor: pointer; padding: 3px 8px; border-radius: 6px; font-size: 11px;
-  border: 1px solid var(--border-ctrl); background: transparent; color: var(--text-2); }
-.mix-docpair-actions button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-light); }
-.mix-docpair-actions button:disabled { opacity: 0.4; cursor: default; }
 
 /* ── Pair card: artists and the song-level ("track fit") bars ────────────── */
 
@@ -2663,7 +2297,8 @@ input, select { font-family: inherit; }
 .btn-ghost { border: 0; background: none; color: var(--muted); }
 .btn-ghost:hover { color: var(--fg); }
 .btn-primary { border: 0; background: var(--accent); color: var(--accent-ink); font-weight: 600; }
-.btn-primary:hover { filter: brightness(1.08); }
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.ui-btn:disabled, .btn-primary:disabled { opacity: 0.45; cursor: default; }
 .ui-link {
   height: 24px; padding: 0 8px; border: 0; background: none; cursor: pointer;
   color: var(--link); font: 400 12px var(--font-ui);
@@ -3775,3 +3410,233 @@ input, select { font-family: inherit; }
 }
 .sl-import { height: 32px; width: 100%; }
 .sl-note { font-size: 10.5px; color: var(--muted); line-height: 1.4; }
+
+/* ========================================================================== *
+ * Mixes (revamp 5)
+ * ========================================================================== */
+.mx-screen { flex: 1; min-height: 0; display: flex; }
+.mx-pad { padding: 10px 16px 0; }
+.mx-in {
+  min-width: 0; height: 28px; box-sizing: border-box; padding: 0 8px;
+  border: 1px solid var(--line-2); border-radius: var(--r-ctl); background: var(--well);
+  color: var(--fg); font: 400 12px var(--font-ui); outline: none;
+}
+.mx-in:focus { border-color: var(--accent); }
+.mx-row { display: flex; align-items: center; gap: 6px; }
+.mx-row .mx-in { flex: 1; }
+
+/* ── left column ─────────────────────────────────────────────────────────── */
+.mx-sidecol {
+  flex: none; width: 240px; min-height: 0; display: flex; flex-direction: column;
+  border-right: 1px solid var(--line); background: var(--well);
+}
+.mx-import {
+  flex: none; display: flex; flex-direction: column; gap: 8px;
+  padding: 12px; border-bottom: 1px solid var(--line-soft);
+}
+.mx-import .ui-link { padding: 0; font-size: 11.5px; white-space: nowrap; }
+.mx-import .mx-row:has(.ui-link) { gap: 14px; }
+.mx-progress { color: var(--run); }
+.mx-paste {
+  width: 100%; box-sizing: border-box; resize: vertical; padding: 6px 8px;
+  border: 1px solid var(--line-2); border-radius: var(--r-ctl); background: var(--bg-sunk);
+  color: var(--fg); font: 400 11.5px/1.45 var(--font-mono); outline: none;
+}
+.mx-paste:focus { border-color: var(--accent); }
+.mx-bookmarklet {
+  height: 26px; display: inline-flex; align-items: center; padding: 0 10px; cursor: grab;
+  border: 1px dashed var(--accent); border-radius: var(--r-ctl); color: var(--accent-light);
+  font-size: 12px; text-decoration: none; white-space: nowrap;
+}
+.mx-key { display: flex; flex-direction: column; gap: 6px; }
+.mx-listhead { flex: none; display: flex; align-items: baseline; gap: 8px; padding: 10px 12px 4px; }
+.mx-listhead b { font-size: 12.5px; font-weight: 600; }
+.mx-listhead .mono { font-size: 11px; }
+.mx-cards { flex: 1; min-height: 0; overflow: auto; padding: 4px 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+.mx-card {
+  display: flex; flex-direction: column; gap: 5px; padding: 8px 10px; text-align: left; cursor: pointer;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--card); color: var(--fg); font: inherit;
+}
+.mx-card:hover { border-color: var(--line-2); }
+.mx-card.on { border-color: var(--accent); background: var(--accent-bg); }
+.mx-card .t { font-size: 12.5px; font-weight: 500; line-height: 1.3; }
+.mx-card .m { display: flex; gap: 8px; font-size: 10.5px; color: var(--muted); }
+.mx-card .m .lnk { color: var(--ok); }
+.mx-card .m .lib { color: var(--accent-light); }
+.mx-bar { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; display: flex; }
+.mx-bar i { height: 100%; }
+.mx-bar i.lib { background: var(--accent); }
+.mx-bar i.lnk { background: var(--ok); }
+
+/* ── main column ─────────────────────────────────────────────────────────── */
+.mx-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.mx-empty { display: flex; flex-direction: column; gap: 8px; padding: 40px 24px; max-width: 560px; font-size: 12.5px; }
+.mx-head {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  padding: 12px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.mx-title { min-width: 0; flex: 1 1 260px; display: flex; flex-direction: column; gap: 2px; }
+.mx-title h1 { margin: 0; font-size: 16px; font-weight: 600; }
+.mx-title a { color: var(--link); }
+.mx-toolbar {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 8px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.mx-toolbar .ui-btn { display: inline-flex; align-items: center; gap: 6px; }
+.mx-select {
+  height: 28px; padding: 0 6px; border: 1px solid var(--line-2); border-radius: var(--r-ctl);
+  background: var(--panel); color: var(--fg); font: 400 12px var(--font-ui);
+}
+.ui-btn.danger:not(:disabled) { color: var(--fail); }
+.mx-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.mx-chip {
+  height: 24px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: var(--r-pill); background: none;
+  color: var(--fg-2); font: 400 11.5px var(--font-ui); cursor: pointer;
+}
+.mx-chip .mono { font-size: 10px; opacity: 0.75; }
+.mx-chip.on { border-color: var(--line-2); background: var(--panel); color: var(--fg); }
+.mx-chip.lib { color: var(--accent-light); }
+.mx-chip.linked { color: var(--ok); }
+.mx-chip.flagged { color: var(--warn-soft); }
+.mx-chip.needs { color: var(--fail); }
+.mx-busy { flex: none; display: flex; align-items: center; gap: 10px; padding: 6px 16px; color: var(--fg-2); border-bottom: 1px solid var(--line-soft); }
+.mx-busy .bar { flex: 0 0 160px; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.mx-busy .bar i { display: block; height: 100%; background: var(--run); transition: width 0.3s var(--ease); }
+.mx-scroll { flex: 1; min-height: 0; overflow: auto; padding-bottom: 24px; }
+
+.mx-proc { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 2px 20px; padding: 0 12px 10px 32px; }
+.mx-procrow { display: flex; align-items: center; gap: 8px; height: 24px; font-size: 12px; }
+.mx-procrow .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mx-stage { flex: none; display: inline-flex; align-items: center; gap: 3px; color: var(--run); }
+.mx-stage i { width: 7px; height: 7px; border-radius: 50%; background: var(--line-2); }
+.mx-stage i.on { background: var(--run); }
+.mx-stage.done { color: var(--ok); }
+.mx-stage.done i.on { background: var(--ok); }
+.mx-stage.err { color: var(--fail); }
+.mx-stage.err i { background: var(--fail); }
+.mx-stage .mono { margin-left: 4px; font-size: 10.5px; }
+
+.mx-doc { margin: 12px 16px 0; display: flex; flex-direction: column; gap: 6px; }
+.mx-sechead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
+.mx-sechead b { font-size: 12.5px; font-weight: 600; }
+.mx-docpair {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--well);
+}
+.mx-docnames { flex: 1 1 220px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mx-side { display: flex; align-items: baseline; gap: 6px; min-width: 0; white-space: nowrap; font-size: 12px; }
+.mx-side .t { overflow: hidden; text-overflow: ellipsis; }
+.mx-side .tag { flex: none; font-size: 9px; font-weight: 600; }
+.mx-side.vox .tag { color: var(--vocal-label); }
+.mx-side.vox .t { color: var(--vocal-title); }
+.mx-side.bed .tag { color: var(--bed-label); }
+.mx-side.bed .t { color: var(--bed-title); }
+.mx-engine { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.mx-docact { flex: none; display: flex; gap: 4px; }
+
+.mx-table { margin-top: 12px; min-width: 760px; }
+.mx-thead, .mx-trow {
+  display: grid; align-items: center; gap: 10px;
+  grid-template-columns: 14px 16px 26px minmax(0, 1fr) 104px 84px auto;
+  padding: 0 16px;
+}
+.mx-thead { height: 26px; border-bottom: 1px solid var(--line); font-size: 9.5px; }
+.mx-rowwrap { border-bottom: 1px solid var(--line-soft); }
+.mx-trow { min-height: 42px; }
+.mx-trow:hover { background: var(--panel); }
+.mx-trow.vocal { background: var(--zebra); }
+.mx-trow.vocal .mx-track { padding-left: 12px; }
+.mx-trow.picked { background: var(--accent-bg); }
+.mx-trow .cbox { cursor: pointer; padding: 0; background: none; }
+.mx-trow .cbox.on { background: var(--accent); }
+.mx-grip { color: var(--disabled); cursor: grab; user-select: none; font-size: 11px; }
+.mx-track { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
+.mx-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 12.5px; }
+.mx-name .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mx-name .mono { flex: none; font-size: 10.5px; }
+.mx-wv { flex: none; font-size: 9px; font-weight: 600; color: var(--vocal-label); }
+.mx-id { flex: none; font-size: 9px; color: var(--warn-soft); }
+.mx-url { font-size: 10.5px; color: var(--faint); text-decoration: none; word-break: break-all; }
+.mx-url:hover { color: var(--link); }
+.mx-url.none { color: var(--disabled); }
+.mx-flag {
+  justify-self: start; height: 18px; display: inline-flex; align-items: center; padding: 0 6px;
+  border-radius: var(--r-chip); font-size: 10.5px; white-space: nowrap;
+}
+.mx-flag.lib { background: var(--accent-bg); color: var(--accent-light); }
+.mx-flag.ok { background: var(--accent-bg); color: var(--ok); }
+.mx-flag.check { background: var(--warn-bg); color: var(--warn-soft); }
+.mx-flag.needs { background: var(--idle-bg); color: var(--fail); }
+.mx-src {
+  justify-self: start; height: 18px; display: inline-flex; align-items: center; padding: 0 6px;
+  border: 1px solid var(--line-2); border-radius: var(--r-chip); font-size: 10.5px;
+}
+.mx-src.soundcloud { color: var(--warn-soft); }
+.mx-src.youtube { color: var(--fail); }
+.mx-act { display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
+.mx-act .ui-btn { height: 24px; padding: 0 8px; font-size: 11.5px; }
+.mx-others { display: flex; flex-direction: column; gap: 4px; padding: 0 16px 10px 82px; }
+.mx-othershead { display: flex; align-items: center; gap: 10px; }
+.mx-cand {
+  display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto 44px; gap: 10px; align-items: center;
+  padding: 5px 8px; text-align: left; cursor: pointer; font: 400 12px var(--font-ui); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--well);
+}
+.mx-cand:hover:not(:disabled) { border-color: var(--accent); }
+.mx-cand.current { border-color: var(--accent); }
+.mx-cand .t, .mx-cand .muted { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mx-cand .mono { font-size: 10.5px; text-align: right; }
+.mx-pasterow { display: flex; gap: 6px; margin-top: 2px; }
+.mx-pasterow .mx-in { flex: 1; }
+.mx-add { display: flex; align-items: center; gap: 6px; padding: 10px 16px; }
+.mx-add .mx-in { flex: 1 1 140px; }
+.mx-add .mx-in.wide { flex: 2 1 240px; }
+
+/* ── Match ───────────────────────────────────────────────────────────────── */
+.mm { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.mm-bar {
+  flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  padding: 8px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.mm-save { white-space: nowrap; color: var(--ok); }
+.mm-save.dirty, .mm-save.saving { color: var(--muted); }
+.mm-save.error { color: var(--fail); }
+.mm-filter { width: 160px; }
+.mm-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(170px, 32%) minmax(0, 1fr); }
+.mm-vox, .mm-beds { min-height: 0; overflow: auto; padding: 10px 16px 24px; display: flex; flex-direction: column; gap: 4px; }
+.mm-vox { border-right: 1px solid var(--line-soft); }
+.mm-vocal {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center;
+  padding: 6px 8px; text-align: left; cursor: pointer; font: 400 12px var(--font-ui); color: var(--vocal-title);
+  border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--card);
+}
+.mm-vocal .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mm-vocal .mono { grid-column: 1; font-size: 10.5px; }
+.mm-vocal .mm-role { grid-row: 1 / span 2; grid-column: 2; }
+.mm-vocal.on { border-color: var(--vocal); background: var(--vocal-bg); }
+.mm-bed {
+  display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 4px 8px; align-items: center;
+  padding: 6px 8px; border: 1px solid var(--line-soft); border-radius: var(--r-ctl); background: var(--well);
+}
+.mm-bed .t { font-size: 12.5px; color: var(--bed-title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mm-bed .mono { font-size: 11px; }
+.mm-bed.picking { cursor: pointer; }
+.mm-bed.target { border-color: var(--vocal-bg); }
+.mm-bed.target:hover { border-color: var(--vocal); }
+.mm-on { grid-column: 2 / span 2; display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.mm-on:empty { display: none; }
+.mm-chip {
+  max-width: 100%; height: 22px; display: inline-flex; align-items: center; gap: 4px; padding: 0 4px 0 8px;
+  border-radius: var(--r-pill); background: var(--vocal-bg); color: var(--vocal-title); font-size: 11.5px;
+}
+.mm-chip .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mm-chip button { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 10px; padding: 0 2px; }
+.mm-chip button:hover { color: var(--fail); }
+.mm-role { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--r-ctl); overflow: hidden; }
+.mm-role button {
+  height: 20px; padding: 0 6px; border: 0; background: none; color: var(--muted);
+  font: 400 10.5px var(--font-ui); cursor: pointer;
+}
+.mm-role button.on.vox { background: var(--vocal-bg); color: var(--vocal-label); }
+.mm-role button.on.bed { background: var(--bed-bg); color: var(--bed-label); }

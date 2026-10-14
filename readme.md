@@ -613,12 +613,26 @@ through **Firecrawl** — the tab asks for a key the first time and saves it
 live); **capture it from your own browser** with the bookmarklet (below); or
 **paste the tracklist text**. All three end in the same rows. Numbered entries
 are **beds**; `w/` lines are **vocal overlays**
-paired to the preceding bed. The match board lets you re-assign roles and
-pairings (reset to original any time) and reorder the set. Rows naming a
+paired to the preceding bed. The importer and the list of mixes (a two-tone
+bar: in library / linked) sit in a 240px left column; the mix you are working
+on fills the rest, as two tabs. **Tracklist**: select rows, then **Find in
+library**, **⚡ Auto-link**, **↻ Re-link** (the flagged ones by default) or
+**✕ Unlink**; chips filter to In library / Linked / Check ⚠ / Needs link; a
+**Processing** disclosure shows four stage dots per ingested track; rows drag
+to reorder, `w/` lines indented under their bed with the cue time; **▾ others**
+on a row lists the ranked search hits, a box to paste a link, and **⤓ scrape
+its link** when the tracklist gave the track its own page. Unlink and ✕ remove
+ask nothing — they wait behind an **Undo** toast (7 s) before they are sent,
+and anything that reads the mix (re-link, ingest, a reorder, another mix)
+sends them first. **Match**: click a vocal, then the bed it went over
+(`esc` cancels the pick); a Voc / Bed switch moves a track between the
+columns, ✕ on a chip unmatches, ↶ (ctrl/⌘+Z) undoes, and **↺ Reset to
+tracklist** goes back to the `w/` grouping with Undo on its toast. Matches save
+as you go. Rows naming a
 track **already in your library** are linked to it at import, offline (§5.9);
 **Find in library** does the same later, for older mixes or tracks that
 arrived since. **Auto-link** finds
-SoundCloud/YouTube links (§5.9), **Scrape link** pulls the exact link from a
+SoundCloud/YouTube links (§5.9), **scrape its link** pulls the exact link from a
 track's 1001tracklists page, **Confirm** trusts a flagged auto-link, and
 **Ingest** sends resolved tracks into the pipeline.
 
@@ -627,12 +641,12 @@ the engine's score for it and its rank among that vocal's beds ("engine 75 ·
 #3 of 18" — does the engine agree with the DJ?), **▶ loop**, **Studio**, and
 **Similar →**, which opens the pair dock scoped to that vocal.
 
-**Grab from your browser.** Drag **⤓ Grab tracklist** from the Mixes rail to
+**Grab from your browser.** Under **Scrape blocked?**, drag **⤓ Grab tracklist** to
 your bookmarks bar. On a set page, click it: it reads the tracklist out of the
 page you are looking at, shows you what it found (a count, and the rows), and
 you copy and paste it into the same box the plain text goes in — the app tells
 the two apart by the per-track link and routes accordingly. A capture keeps each
-track's 1001tracklists link (so **Scrape link** still works) and its cue time,
+track's 1001tracklists link (so **scrape its link** still works) and its cue time,
 which the scrape never captured. Tracks the site has no page for (plain text,
 often a set's opener and closer) are captured too, marked `[no track page]`. Fill in the URL field too: `source_url` is
 UNIQUE, so it is what makes a re-capture replace the mix and keep the links you
@@ -2185,8 +2199,10 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    searchable pickers, verdict pair cards, attribute diff with range dots),
    4 (Discover: mode tabs, one shortlist column across every mode, 40px result
    rows with keyboard nav, set/artist cards, saved profiles in the empty
-   state, gap cards).
-   Next: 5 Mixes, B3/B4 then 6
+   state, gap cards), 5 (Mixes: the 240px import column with two-tone mix
+   cards, filter chips, Undo toasts in place of confirm dialogs, Match as
+   pick-then-click, ⤓ scrape its link back in the UI).
+   Next: B3/B4 then 6
    Sets, B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
    screen's step lands it keeps its old rail-slot block.
 
