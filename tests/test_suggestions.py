@@ -163,12 +163,14 @@ def test_identical_key_needs_no_transposition():
 
 
 def test_unrelated_keys_return_minimal_signed_shift():
-    """One Camelot hour = a perfect fifth = 7 semitones, folded into [-6, +6]."""
+    """Adjacent keys mix as they are; further apart, the bed moves to the
+    cheapest position within one wheel step of the vocal."""
     from matcher.match import compute_semitone_shift
-    assert compute_semitone_shift("8B", "9B") == 5    # G major bed → C major
-    assert compute_semitone_shift("8B", "7B") == -5   # F major bed → C major
+    assert compute_semitone_shift("8B", "9B") == 0    # G major bed under C major: adjacent
+    assert compute_semitone_shift("8B", "7B") == 0    # F major bed: adjacent
     assert compute_semitone_shift("8B", "10B") == -2  # D major bed → C major
     assert compute_semitone_shift("1A", "11A") == 2   # F# minor bed → G# minor
+    assert compute_semitone_shift("8B", "11B") == -2  # A major bed → 9B, adjacent to the vocal
 
 
 def test_semitone_shift_never_exceeds_a_tritone():

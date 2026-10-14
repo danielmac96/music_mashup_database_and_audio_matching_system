@@ -27,7 +27,7 @@ def test_bed_shift_prefers_the_measured_harmony():
     from matcher.recipe import bed_shift
     # 8B over 11B: (8 − 11) × 7 = −21 ≡ +3 semitones on the bed by the wheel.
     row = {"vocal_camelot": "8B", "inst_camelot": "11B"}
-    assert bed_shift(row) == 3
+    assert bed_shift(row) == -2
     assert bed_shift({**row, "harmonic_shift": 2}) == 2
     # A measured 0 is an answer, not a gap to fill from the wheel.
     assert bed_shift({**row, "harmonic_shift": 0}) == 0
@@ -44,7 +44,7 @@ def test_the_listing_plays_the_shift_the_card_prints():
     assert row["semitone_shift"] == 2
     unmeasured = _with_playback_terms([{"vocal_camelot": "8B",
                                         "inst_camelot": "11B"}])[0]
-    assert unmeasured["semitone_shift"] == 3
+    assert unmeasured["semitone_shift"] == -2
 
 
 def test_the_set_lands_with_the_same_shift():

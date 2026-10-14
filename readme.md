@@ -973,8 +973,14 @@ never score.
 
 On `vocal_over_instrumental` timbre's weight moves onto collision
 (`config._for_combo`) — sameness is the question for two beds, not for a vocal
-over a bed. The semitone shift is `7 × Camelot hour difference` folded to
-[-6, +6], ignoring the letter (relative major/minor need no transpose).
+over a bed. The Camelot semitone shift (`match.compute_semitone_shift`) is the
+smallest transpose that lands the bed **within one wheel step** of the vocal,
+ignoring the letter: same, relative and adjacent keys need none (0), and
+anything further moves the bed to whichever of the three positions round the
+vocal costs least (one hour = 7 semitones, folded; an exact landing wins a
+tie) — never more than ±2. It used to land the bed exactly on the vocal's key,
+which charged an adjacent pair a fourth (8A over 9A at +5). A measured
+harmonic shift, when the two sections had chroma, still overrides it.
 
 **Effort** (`matcher/effort.py`), each component 0 (free) to 1 (maximal work):
 

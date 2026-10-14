@@ -55,28 +55,47 @@ def camelot_score(c1: str, c2: str) -> float:
     return 0.25
 
 
+def _hours_to_semitones(hours: int) -> int:
+    """Moving a key `hours` steps round the Camelot wheel (one step = a perfect
+    fifth = 7 semitones), folded into [-6, +6]."""
+    diff = (hours * 7) % 12
+    return diff if diff <= 6 else diff - 12
+
+
 def compute_semitone_shift(vocal_camelot: str, inst_camelot: str) -> Optional[int]:
     """
-    Minimum semitones to shift the INSTRUMENTAL so it sits in the vocal's key.
-    Positive = shift up, negative = shift down. Range: -6 to +6.
-    Returns None if either Camelot code is unknown.
+    Smallest semitone shift for the INSTRUMENTAL that lands it within one step
+    of the vocal on the Camelot wheel — the same key, the relative major/minor,
+    or an adjacent hour, all of which mix as they are. Positive = shift up,
+    negative = down, range [-6, +6]. None if either Camelot code is unknown.
 
-    Derived from the Camelot pair, not from raw root notes, so the shift agrees
-    with camelot_score by construction — a pair the wheel calls compatible is
-    never handed a destructive transposition. One step around the wheel is a
-    perfect fifth, so the shift is 7 × the hour difference, folded into [-6, +6].
+    So same, relative and adjacent keys need NO transposition (0): a DJ mixes
+    8A into 9A untouched, and dragging the bed a fourth to land exactly on the
+    vocal's key was a destructive move for no harmonic gain. Further apart, the
+    bed moves to whichever of the three wheel positions round the vocal costs
+    the fewest semitones (an exact landing wins a tie).
 
     The letter is deliberately ignored: 8A and 8B (A minor / C major) are the
-    same pitch collection, so a relative major/minor pair needs no transposition
-    at all. The old root-note formula returned +3 there, dragging the bed to C
-    minor against the vocal's major third.
+    same pitch collection, so a relative major/minor pair needs no
+    transposition at all.
+
+    This is the Camelot ESTIMATE. A pair whose two sections had chroma to
+    compare plays its measured shift instead (matcher/recipe.bed_shift).
     """
     v = _parse_camelot(vocal_camelot or "")
     i = _parse_camelot(inst_camelot or "")
     if v is None or i is None:
         return None
-    diff = ((v[0] - i[0]) * 7) % 12
-    return diff if diff <= 6 else diff - 12
+    steps = (v[0] - i[0]) % 12          # hours the bed sits from the vocal
+    if steps > 6:
+        steps -= 12
+    best = None
+    for d in (steps, steps - 1, steps + 1):
+        semis = _hours_to_semitones(d)
+        key = (abs(semis), d != steps, semis)
+        if best is None or key < best[0]:
+            best = (key, semis)
+    return best[1]
 
 
 # ── BPM compatibility ─────────────────────────────────────────────────────────
