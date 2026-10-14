@@ -120,3 +120,50 @@ def test_single_stage_jobs_belong_to_their_track(env, monkeypatch):
         job = jobs.get(resp.json()["job_id"])
         assert job["kind"] == kind
         assert job["song_id"] == sid
+
+
+# ── the screen (revamp step 2) ────────────────────────────────────────────────
+
+_SRC = Path(__file__).parent.parent / "frontend" / "src"
+_SCREEN = (_SRC / "components" / "QueueScreen.jsx").read_text(encoding="utf-8")
+_CSS = (_SRC / "styles.css").read_text(encoding="utf-8")
+
+
+def test_the_tabs_live_in_the_header_not_the_rail():
+    assert 'role="tablist" aria-label="Show"' in _SCREEN
+    for label in ('"Active"', '"Waiting"', '"Failed"', '"Done"', '"All"'):
+        assert label in _SCREEN, label
+    assert "onRailSlot?.(null)" in _SCREEN and "RailSection" not in _SCREEN
+
+
+def test_rows_sort_running_then_waiting_by_line_then_failed_then_done():
+    assert "const PHASE_ORDER = { running: 0, waiting: 1, failed: 2, done: 3 };" in _SCREEN
+    sort = _SCREEN[_SCREEN.index("out.sort((a, b) => {"):]
+    sort = sort[:sort.index("return out;")]
+    assert 'if (a.phase === "waiting") return lineKey(a) - lineKey(b);' in sort
+
+
+def test_a_timeline_row_reads_the_apis_sentence_and_eta():
+    """The Now column is api/queue_eta.py's `summary`; the ETA its `eta_secs`;
+    each of the five segments is sized by √ of the stage's typical time."""
+    assert "r.latest.summary" in _SCREEN and "r.latest.eta_secs" in _SCREEN
+    assert "flex: Math.sqrt((stageSecs[key] || 10) * lenFactor)" in _SCREEN
+    assert "inset 2px 0 0 ${PHASE_COLOR[r.phase]}" in _SCREEN
+    row = _CSS[_CSS.index("\n.q-item {"):]
+    assert "height: 44px" in row[:row.index("}")]
+
+
+def test_the_bottleneck_is_the_pool_that_clears_last():
+    assert "p?.clears_in_secs" in _SCREEN and "bottleneck" in _SCREEN
+    assert ".q-neck" in _CSS
+
+
+def test_keys_and_the_inspector():
+    keys = _SCREEN[_SCREEN.index("const onKeyDown"):]
+    keys = keys[:keys.index("useEffect(")]
+    for k in ("ArrowDown", "ArrowUp", '"Enter"', '"r"', '"Escape"'):
+        assert k in keys, k
+    assert "function Inspector(" in _SCREEN
+    assert "⟳ Retry from {STAGE_LABEL[failed[0]]}" in _SCREEN
+    assert "r.latest.traceback" in _SCREEN
+    assert "stageCells(track, songJobs, q.positions)" in _SCREEN

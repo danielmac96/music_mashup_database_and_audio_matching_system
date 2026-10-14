@@ -444,26 +444,38 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
 
 ### Queue
 
-The pipeline in detail. The rail counts active tracks; the Library's
-"Processing…" pill opens this screen.
+The pipeline in detail. The rail's pipeline readout opens it ("7 running · 271
+waiting · 51 failed · clears in ~2.9 h"), as does the Library's "Processing…"
+pill.
 
-- **Pools**: download, quick analysis, stems and analyse + structure — busy
-  slots out of workers, how many tracks wait, the **typical time per track**
-  for that stage on this library (median from `GET /api/jobs/timings`, so it
-  survives a restart) and roughly when the line clears.
+- **Header**: the counts, the tabs **Active · Waiting · Failed · Done · All**
+  (with counts), and **⟳ Retry all failed (n)**.
+- **Pool cards**: download, quick analysis, stems and analyse + structure —
+  busy slots out of workers, how many tracks wait, the **typical time per
+  track** for that stage on this library (median from `GET /api/jobs/timings`,
+  so it survives a restart) and when the line clears (`clears_in_secs`). The
+  pool that clears last carries a **bottleneck** badge.
 - **Other jobs**: library-wide work (Score library, bulk reprocess, dataset,
-  training, exports) with progress, kept for ten minutes after it ends.
-- **One row per track** that has a job this server session or an `error_*`
-  status, with a cell per stage: running (progress or a moving bar, message,
-  elapsed), `#n in line`, ✓ with its duration (`earlier` when it finished before
-  this session, `manual` when a row-menu button ran it), ✓ already current
-  (structure skipped), ✕ failed with the reason. **Why?** expands the error and
-  traceback; **Retry** (and **Retry all failed**) re-enters at the failed stage.
-- Filters in the rail: Active · Waiting · Failed · Done · All. Click a title for
-  the track detail. There is no cancel or manual reorder — a running Demucs
-  cannot be stopped mid-run. The line is priority order: a track you pressed a
-  button on goes first, then the track you have selected and its likeliest
-  partners (§3), then imports in ingest order, then bulk reprocessing.
+  training, exports, mix ingest) with a status pill, progress and message, kept
+  for ten minutes after it ends.
+- **One 44px row per track** that has a job this server session or an
+  `error_*` status, with a 2px edge in its phase colour, as a **Timeline**: the
+  track, a five-segment bar (download · quick · stems · analyse · structure,
+  each as wide as √ of its typical time here — done green, running violet with
+  its progress, waiting dashed, failed red), the API's one-sentence **summary**
+  of where it is ("Separating vocals — about 2 min left", "Waiting for stems
+  (#3 in line)", "Failed downloading: … — Retry"), its **ETA** (`eta_secs`) and
+  **Retry**. The list is virtualised.
+- Sorted running first, then waiting in line order, then failed, then done.
+  There is no cancel or manual reorder — a running Demucs cannot be stopped
+  mid-run. The line is priority order: a track you pressed a button on goes
+  first, then the track you have selected and its likeliest partners (§3), then
+  imports in ingest order, then bulk reprocessing.
+- **Selecting a row** opens the **inspector**: each stage's state, progress,
+  message and time (`earlier` when it finished before this session, a manual
+  run marked as such), the full **traceback** for a failure, **⟳ Retry from
+  {stage}** and **Open track**. Keys: `↑↓` move, `⏎` open the track, `r` retry,
+  `esc` close the inspector.
 
 ### Analysis
 
@@ -2155,7 +2167,9 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    loaded-pairs filters that never refetch, every library-wide control kept,
    resizable; `c` hands off to Analysis › Compare), 1c (Track detail inside the
    Library column beside the dock: hero, stat strip, a 156px structure canvas,
-   the section table, five remembered disclosures). Next: 2 Queue, 3 Analysis, 4 Discover, 5 Mixes, B3/B4 then 6
+   the section table, five remembered disclosures), 2 (Queue: header tabs, pool
+   cards with the bottleneck, Timeline rows on the API's summary and ETA, the
+   inspector). Next: 3 Analysis, 4 Discover, 5 Mixes, B3/B4 then 6
    Sets, B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
    screen's step lands it keeps its old rail-slot block.
 
