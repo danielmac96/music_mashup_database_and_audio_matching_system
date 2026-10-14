@@ -422,16 +422,23 @@ CREATE TABLE IF NOT EXISTS sets (
     UNIQUE(name)
 );
 
+-- A slot is a pair (the four pair ids), a single track (song_id), a break
+-- (a labelled pause of duration_secs) or a gap (a placeholder to fill).
 CREATE TABLE IF NOT EXISTS set_items (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     set_id          INTEGER NOT NULL,
     position        INTEGER NOT NULL,
-    vocal_song_id   INTEGER NOT NULL,
-    inst_song_id    INTEGER NOT NULL,
+    vocal_song_id   INTEGER,
+    inst_song_id    INTEGER,
     vocal_section   INTEGER,
     inst_section    INTEGER,
     payload_json    TEXT,
-    added_at        TEXT DEFAULT (datetime('now'))
+    added_at        TEXT DEFAULT (datetime('now')),
+    transition_json TEXT,
+    kind            TEXT NOT NULL DEFAULT 'pair',
+    song_id         INTEGER,
+    label           TEXT,
+    duration_secs   REAL
 );
 CREATE INDEX IF NOT EXISTS idx_set_items_set ON set_items(set_id, position);
 CREATE UNIQUE INDEX IF NOT EXISTS ux_set_items_pair
@@ -502,6 +509,7 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
             _migrate_mashuppairs_columns(conn)
             _migrate_crates_columns(conn)
             _migrate_sets_columns(conn)
+            _migrate_set_items_kinds(conn)
             _migrate_pair_feedback_key(conn)
             conn.commit()
         except BaseException:
@@ -1017,8 +1025,61 @@ _CRATES_OPTIONAL_COLUMNS = (
 # A set's tempo curve and each item's chosen way in (phase 4). Both JSON; NULL
 # means "not set": no curve (every mashup at its vocal's tempo, as before) and
 # the suggested transition.
-_SETS_OPTIONAL_COLUMNS = (("tempo_plan_json", "TEXT"),)
+_SETS_OPTIONAL_COLUMNS = (("tempo_plan_json", "TEXT"), ("energy_plan_json", "TEXT"))
 _SET_ITEMS_OPTIONAL_COLUMNS = (("transition_json", "TEXT"),)
+
+SET_ITEM_KINDS = ("pair", "track", "break", "gap")
+_SET_ITEMS_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_set_items_set ON set_items(set_id, position)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_set_items_pair ON set_items(set_id, vocal_song_id,"
+    " inst_song_id, COALESCE(vocal_section, -1), COALESCE(inst_section, -1))",
+)
+
+
+def _migrate_set_items_kinds(conn: sqlite3.Connection) -> None:
+    """Slots that are not pairs (revamp B3): a track, a break, a gap.
+
+    The pair ids were NOT NULL, and SQLite cannot relax a column in place, so
+    the table is rebuilt: copy into the new shape (every old row a `pair`),
+    count, and only then swap — the pattern _migrate_pair_feedback_key uses.
+    Idempotent: a table that already has `kind` with nullable pair ids is left
+    alone."""
+    info = {r[1]: r for r in conn.execute("PRAGMA table_info(set_items)").fetchall()}
+    if not info:
+        return
+    if "kind" in info and not info["vocal_song_id"][3]:
+        return
+    have = [c for c in ("id", "set_id", "position", "vocal_song_id", "inst_song_id",
+                        "vocal_section", "inst_section", "payload_json", "added_at",
+                        "transition_json") if c in info]
+    conn.execute("DROP TABLE IF EXISTS set_items_new")
+    conn.execute("""CREATE TABLE set_items_new (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        set_id          INTEGER NOT NULL,
+        position        INTEGER NOT NULL,
+        vocal_song_id   INTEGER,
+        inst_song_id    INTEGER,
+        vocal_section   INTEGER,
+        inst_section    INTEGER,
+        payload_json    TEXT,
+        added_at        TEXT DEFAULT (datetime('now')),
+        transition_json TEXT,
+        kind            TEXT NOT NULL DEFAULT 'pair',
+        song_id         INTEGER,
+        label           TEXT,
+        duration_secs   REAL
+    )""")
+    cols = ", ".join(have)
+    conn.execute(f"INSERT INTO set_items_new({cols}, kind) SELECT {cols}, 'pair' FROM set_items")
+    moved = conn.execute("SELECT COUNT(*) FROM set_items_new").fetchone()[0]
+    had = conn.execute("SELECT COUNT(*) FROM set_items").fetchone()[0]
+    if moved != had:
+        conn.execute("DROP TABLE IF EXISTS set_items_new")
+        raise RuntimeError(f"set_items migration copied {moved} of {had} rows; left untouched.")
+    conn.execute("DROP TABLE set_items")
+    conn.execute("ALTER TABLE set_items_new RENAME TO set_items")
+    for ddl in _SET_ITEMS_INDEXES:
+        conn.execute(ddl)
 
 
 def _migrate_sets_columns(conn: sqlite3.Connection) -> None:
@@ -4253,12 +4314,17 @@ _UNSET = object()
 
 
 def update_set(set_id: int, *, name: Optional[str] = None,
-               note: Optional[str] = None, tempo_plan=_UNSET,
+               note: Optional[str] = None, tempo_plan=_UNSET, energy_plan=_UNSET,
                db_path: Path = DB_PATH) -> Optional[Dict]:
-    """Rename, re-note, or set the tempo curve ({start_bpm, end_bpm}; None
-    clears it). Omitted arguments are left alone."""
+    """Rename, re-note, set the tempo curve ({start_bpm, end_bpm}) or the
+    energy curve ([{t, e}], both 0..1); None clears a curve. Omitted
+    arguments are left alone."""
     conn = get_conn(db_path)
     try:
+        if energy_plan is not _UNSET:
+            conn.execute(
+                "UPDATE sets SET energy_plan_json=?, updated_at=datetime('now') WHERE id=?",
+                (json.dumps(energy_plan) if energy_plan else None, set_id))
         if tempo_plan is not _UNSET:
             conn.execute(
                 "UPDATE sets SET tempo_plan_json=?, updated_at=datetime('now') WHERE id=?",
@@ -4301,45 +4367,127 @@ def delete_set(set_id: int, db_path: Path = DB_PATH) -> bool:
         conn.close()
 
 
-def add_set_item(set_id: int, vocal_song_id: int, inst_song_id: int,
+def add_set_item(set_id: int, vocal_song_id: Optional[int] = None,
+                 inst_song_id: Optional[int] = None,
                  vocal_section: Optional[int] = None,
                  inst_section: Optional[int] = None,
-                 db_path: Path = DB_PATH) -> Optional[Dict]:
-    """Append a pair to a set, freezing its scored row. Adding a pair already in
-    the set is a no-op that returns the existing item."""
-    row = candidate_for_pair(vocal_song_id, inst_song_id, vocal_section,
-                             inst_section, db_path=db_path)
-    payload = {k: row.get(k) for k in _SET_PAYLOAD_KEYS} if row else {}
-    if row and vocal_section is None and inst_section is None:
-        vocal_section = row.get("vocal_section_idx")
-        inst_section = row.get("inst_section_idx")
-    if not row:
-        # Not scored: still a pair the user chose. Titles from the songs table.
-        for side, sid in (("vocal", vocal_song_id), ("inst", inst_song_id)):
-            song = get_song(sid, db_path=db_path) or {}
-            payload[f"{side}_title"] = song.get("title")
-            payload[f"{side}_artist"] = song.get("artist")
+                 db_path: Path = DB_PATH, *, kind: str = "pair",
+                 song_id: Optional[int] = None, label: Optional[str] = None,
+                 duration_secs: Optional[float] = None,
+                 position: Optional[int] = None) -> Optional[Dict]:
+    """Add a slot to a set — appended, or inserted at `position` (0-based; the
+    slots from there move down one).
+
+    A `pair` freezes its scored row, and adding a pair already in the set is a
+    no-op that returns the existing item. A `track` is one song; a `break` a
+    labelled pause of `duration_secs`; a `gap` a placeholder to fill later."""
+    if kind not in SET_ITEM_KINDS:
+        raise ValueError(f"kind must be one of {SET_ITEM_KINDS}")
+    payload: Dict = {}
+    if kind == "pair":
+        row = candidate_for_pair(vocal_song_id, inst_song_id, vocal_section,
+                                 inst_section, db_path=db_path)
+        payload = {k: row.get(k) for k in _SET_PAYLOAD_KEYS} if row else {}
+        if row and vocal_section is None and inst_section is None:
+            vocal_section = row.get("vocal_section_idx")
+            inst_section = row.get("inst_section_idx")
+        if not row:
+            # Not scored: still a pair the user chose. Titles from the songs table.
+            for side, sid in (("vocal", vocal_song_id), ("inst", inst_song_id)):
+                song = get_song(sid, db_path=db_path) or {}
+                payload[f"{side}_title"] = song.get("title")
+                payload[f"{side}_artist"] = song.get("artist")
+    else:
+        vocal_song_id = inst_song_id = vocal_section = inst_section = None
+        if kind != "track":
+            song_id = None
     conn = get_conn(db_path)
     try:
         if not conn.execute("SELECT 1 FROM sets WHERE id=?", (set_id,)).fetchone():
             return None
-        where, args = _pair_where(vocal_song_id, inst_song_id, vocal_section, inst_section)
-        have = conn.execute(f"SELECT id FROM set_items WHERE set_id=? AND {where}",
-                            (set_id, *args)).fetchone()
-        if have:
-            return {"id": have["id"], "duplicate": True}
-        pos = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM set_items "
+        if kind == "pair":
+            where, args = _pair_where(vocal_song_id, inst_song_id, vocal_section, inst_section)
+            have = conn.execute(f"SELECT id FROM set_items WHERE set_id=? AND {where}",
+                                (set_id, *args)).fetchone()
+            if have:
+                return {"id": have["id"], "duplicate": True}
+        end = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM set_items "
                            "WHERE set_id=?", (set_id,)).fetchone()[0]
+        pos = end if position is None else max(0, min(int(position), end))
+        if pos < end:
+            conn.execute("UPDATE set_items SET position = position + 1 "
+                         "WHERE set_id=? AND position>=?", (set_id, pos))
         cur = conn.execute(
             "INSERT INTO set_items(set_id, position, vocal_song_id, inst_song_id,"
-            " vocal_section, inst_section, payload_json) VALUES (?,?,?,?,?,?,?)",
+            " vocal_section, inst_section, payload_json, kind, song_id, label, duration_secs)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (set_id, pos, vocal_song_id, inst_song_id, vocal_section, inst_section,
-             json.dumps(payload, default=str)))
+             json.dumps(payload, default=str), kind, song_id,
+             (label or "").strip() or None, duration_secs))
         conn.execute("UPDATE sets SET updated_at=datetime('now') WHERE id=?", (set_id,))
         conn.commit()
         return {"id": cur.lastrowid, "duplicate": False}
     finally:
         conn.close()
+
+
+def update_set_item(set_id: int, item_id: int, *, label=_UNSET, duration_secs=_UNSET,
+                    db_path: Path = DB_PATH) -> bool:
+    """A slot's label (a break's name) or length. False when the item is not in
+    this set."""
+    cols, args = [], []
+    if label is not _UNSET:
+        cols.append("label=?")
+        args.append((label or "").strip() or None)
+    if duration_secs is not _UNSET:
+        cols.append("duration_secs=?")
+        args.append(duration_secs)
+    conn = get_conn(db_path)
+    try:
+        if not cols:
+            return bool(conn.execute("SELECT 1 FROM set_items WHERE id=? AND set_id=?",
+                                     (item_id, set_id)).fetchone())
+        n = conn.execute(f"UPDATE set_items SET {', '.join(cols)} WHERE id=? AND set_id=?",
+                         (*args, item_id, set_id)).rowcount
+        conn.execute("UPDATE sets SET updated_at=datetime('now') WHERE id=?", (set_id,))
+        conn.commit()
+        return n > 0
+    finally:
+        conn.close()
+
+
+def energy_ranks(db_path: Path = DB_PATH) -> Dict[int, float]:
+    """Each analysed song's full-mix energy as a 0..1 rank within the library.
+    A set's energy curve is drawn against this: absolute energy is on the
+    analyser's own scale, the rank is comparable."""
+    conn = get_conn(db_path)
+    try:
+        rows = conn.execute("SELECT song_id, energy FROM features WHERE stem_type='full' "
+                            "AND energy IS NOT NULL ORDER BY energy, song_id").fetchall()
+    finally:
+        conn.close()
+    n = len(rows)
+    if not n:
+        return {}
+    return {r["song_id"]: (k / (n - 1) if n > 1 else 0.5) for k, r in enumerate(rows)}
+
+
+def _track_slots(song_ids: Sequence[int], db_path: Path = DB_PATH) -> Dict[int, Dict]:
+    """What a `track` slot shows and lands on: title, artist, length, tempo, key."""
+    ids = sorted({int(i) for i in song_ids if i is not None})
+    if not ids:
+        return {}
+    conn = get_conn(db_path)
+    try:
+        q = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"""SELECT s.id, s.title, s.artist, s.duration_secs, s.status,
+                       f.bpm, f.camelot, f.key, f.mode
+                FROM songs s LEFT JOIN features f ON f.song_id = s.id AND f.stem_type='full'
+                WHERE s.id IN ({q})""", ids).fetchall()
+    finally:
+        conn.close()
+    return {r["id"]: dict(r) for r in rows}
 
 
 def remove_set_item(set_id: int, item_id: int, db_path: Path = DB_PATH) -> bool:
@@ -4394,28 +4542,51 @@ def get_set(set_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
     finally:
         conn.close()
     out = []
+    pairs = [it for it in items if (it.get("kind") or "pair") == "pair"]
     lives = candidates_for_pairs(
         [(it["vocal_song_id"], it["inst_song_id"], it["vocal_section"], it["inst_section"])
-         for it in items], db_path=db_path)
+         for it in pairs], db_path=db_path)
+    tracks = _track_slots([it["song_id"] for it in items if it.get("kind") == "track"],
+                          db_path=db_path)
+    energy = energy_ranks(db_path=db_path)
     for it in items:
+        kind = it.get("kind") or "pair"
+        base = {
+            "item_id": it["id"], "position": it["position"], "kind": kind,
+            "label": it.get("label") or "", "duration_secs": it.get("duration_secs"),
+            "transition": json.loads(it["transition_json"]) if it.get("transition_json") else None,
+        }
+        if kind == "track":
+            t = tracks.get(it["song_id"]) or {}
+            out.append({**base, "song_id": it["song_id"], "title": t.get("title"),
+                        "artist": t.get("artist"), "bpm": t.get("bpm"),
+                        "camelot": t.get("camelot"), "song_duration": t.get("duration_secs"),
+                        "energy": energy.get(it["song_id"]), "stale": not t})
+            continue
+        if kind != "pair":
+            out.append(base)
+            continue
         frozen = json.loads(it.get("payload_json") or "{}")
         live = lives[(it["vocal_song_id"], it["inst_song_id"],
                       it["vocal_section"], it["inst_section"])]
         row = {**frozen, **({k: live.get(k) for k in _SET_PAYLOAD_KEYS} if live else {})}
         row.update({
-            "item_id": it["id"], "position": it["position"],
+            **base,
             "vocal_song_id": it["vocal_song_id"], "inst_song_id": it["inst_song_id"],
             "vocal_section_idx": it["vocal_section"], "inst_section_idx": it["inst_section"],
             "stale": live is None,
             "note": notes.get((it["vocal_song_id"], it["inst_song_id"],
                                it["vocal_section"], it["inst_section"]), ""),
-            "transition": json.loads(it["transition_json"]) if it.get("transition_json") else None,
+            # The bed carries a mashup's energy: it is what the floor hears.
+            "energy": energy.get(it["inst_song_id"]),
         })
         out.append(row)
     out_set = dict(s)
     out_set["tempo_plan"] = (json.loads(out_set.pop("tempo_plan_json"))
                              if out_set.get("tempo_plan_json") else None)
     out_set.pop("tempo_plan_json", None)
+    raw = out_set.pop("energy_plan_json", None)
+    out_set["energy_plan"] = json.loads(raw) if raw else None
     return {**out_set, "items": out}
 
 

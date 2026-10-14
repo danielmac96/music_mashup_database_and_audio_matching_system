@@ -1372,6 +1372,11 @@ caches responses, and opens a breaker after repeated failures.
   paired section, memory cues at every section. Files are referenced in place,
   not copied; `base` swaps the library root for the folder rekordbox sees
   (Docker: the host's `./data/audio`). Serato and Traktor are not written.
+  A set's **tracks** export as a row with only the bed side (rekordbox: the
+  full track); a **break** is a CSV row (`kind=break`) and a cue with no
+  track; a **gap** is written nowhere, and rekordbox leaves out breaks too.
+  `format=fl` on a set queues its pairs, in order, through the FL session
+  batch (a job; capped at `MAX_SESSIONS`, the rest reported as `skipped`).
 
 ### 5.12 Sets and transitions
 
@@ -1402,6 +1407,32 @@ there is one. **Auto-order** is greedy from a start item —
 take the cheapest next move, cost = steps + tempo% / 3 (one wheel step weighs
 about a 3% tempo move, both what "smooth" allows) — which is what a DJ does by
 hand; it is advisory until posted to `/reorder`.
+
+**Slots that are not pairs** (revamp B3). A slot is a `pair`, a `track` (one
+song, landing at its own tempo and key — `set_items.song_id`), a `break` (a
+labelled pause, `duration_secs`, 30 s by default) or a `gap` (a placeholder to
+fill, 90 s). `POST /items` takes `kind` and an optional `position` to insert
+at; `PATCH /items/{item}` sets a break's label and length. Breaks and gaps are
+never graded (a move touching one has grade and fit `none` and no overlap), take
+no point on the tempo curve, keep their places under Auto-order, and still
+advance the running time. Every graded move also carries the screen's **fit
+dot**: `key_fits` (the same code, ±1 hour on the same letter, or the relative
+major/minor — `theme.js compatibleKeys`) and ±4% tempo, half/double allowed;
+`fit` is `ok`, `warn` (one rule broken, named in `violations`) or `bad`.
+**Energy**: each pair's is its bed's full-mix energy as a rank within the
+library (`models.energy_ranks`; a track's is its own), and `sets.energy_plan`
+is a drag-point curve `[{t, e}]` over the set's running time
+(`setflow.energy_target`: linear, held at the ends). **Filling a gap**
+(`GET /api/sets/{id}/suggest?position=i`, `setflow.gap_candidates`): pairs
+that fit the nearest playable slot on BOTH sides, ranked by distance to the
+energy curve at that point, then score; when none fit every rule, the closest
+four come back with their `violations` and `relaxed: true`. **Hearing a move**
+(B4, `GET /api/sets/{id}/transition/{item}/audio?bars=8`,
+`render/transition.py`): the last N bars of the slot before into the first N
+of this one, each at its landing tempo with the bed transposed as the card
+says, overlapped by the move's own bars — rendered server-side through
+`render/mixdown.py` (not scheduled in the browser) and cached by a hash of the
+clips, so a second listen is instant.
 
 ### 5.13 Backend contracts for the redesign
 
@@ -1530,9 +1561,12 @@ candidates, role) · `mashup_pairs` · `datasets` · `models` · `crates` ·
 `crate_items` (frozen canonical payload, optional `song_id`) · `app_prefs`
 (JSON key/value) · `analysis_runs` (append-only pipeline timings, §3) ·
 `feature_cache` (per content hash and feature group: version, params hash,
-payload — disposable, §3) · `sets` / `set_items` (a set's pairs in order,
-keyed by the four pair ids, each with the scored row frozen as it was added;
-`sets.tempo_plan_json`, `set_items.transition_json`)
+payload — disposable, §3) · `sets` / `set_items` (a set's slots in order —
+`kind` pair | track | break | gap; a pair keyed by the four pair ids, each with
+the scored row frozen as it was added, a track by `song_id`, a break or gap by
+`label` / `duration_secs`; `sets.tempo_plan_json`, `sets.energy_plan_json`,
+`set_items.transition_json`. The pair ids are nullable since B3: the migration
+rebuilds an older table, counting the copy before the swap)
 · `pair_notes` (a note per pair, keyed like `pair_feedback`; never training
 data) · `section_lines` (a vocal section's lyric cue, anchored to a time in
 the song) · `embeddings` (`song_id`, `kind='effnet'`, `dim`, `vector` float32
@@ -2201,8 +2235,10 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    rows with keyboard nav, set/artist cards, saved profiles in the empty
    state, gap cards), 5 (Mixes: the 240px import column with two-tone mix
    cards, filter chips, Undo toasts in place of confirm dialogs, Match as
-   pick-then-click, ⤓ scrape its link back in the UI).
-   Next: B3/B4 then 6
+   pick-then-click, ⤓ scrape its link back in the UI), B3 (set slots:
+   tracks, breaks, gaps; the fit dot; the energy curve; gap suggestions; FL
+   export of a set), B4 (transition audio, server-rendered and cached).
+   Next: 6
    Sets, B5 then 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
    screen's step lands it keeps its old rail-slot block.
 
