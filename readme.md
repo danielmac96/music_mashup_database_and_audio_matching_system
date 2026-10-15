@@ -710,7 +710,8 @@ step). The player bar hides in Studio.
   the card's shift, nudged by the stored offset, high-passed at 120 Hz on a
   bass clash, looping the vocal section.
 - **Adjustments** (under the lanes; drag its top edge, double-click to fit,
-  remembered as `mashup.studio.panel.v1`, never leaving the timeline under
+  remembered as `mashup.studio.panel.v1`; the timeline is as tall as its
+  lanes and the panel takes the rest, never leaving the timeline under
   96px): one 370px card per lane with **Tempo**, **Pitch**, **Offset** (the
   bed's is the nudge against the vocal; any other lane's is from where the
   matcher placed it, shown in ms or beats and its start bar) and **Gain** (dB
@@ -2180,9 +2181,9 @@ driven by the 100-persona browser simulation (§9) against a synthesised
      like Essentia; HuggingFace was unreachable from the sandbox, so nothing
      was built that could not be tested.
    - **Serato / Traktor exports** — only rekordbox XML is written.
-   - **The Library scrolls sideways below ~1440 px** (the table needs ~820 px
-     beside the 404 px dock). Pre-existing; the mashup columns hide below 940 px
-     of table rather than widen it further.
+   - **The Library table scrolls inside itself below ~1700 px** — its default
+     columns (the design's list) total 1270 px beside the 400 px dock; the page
+     itself never scrolls sideways (item 9).
    - ~~**Set transitions in Studio share one tempo**~~ — each mashup now lands
      at its own point on the set's tempo curve (§9 item 8, phase 4); ramps
      between them are still not modelled.
@@ -2290,9 +2291,19 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    8 (clean-up: the legacy colour aliases are gone — every rule and component
    reads the tokens; unreferenced rules and the comments that described them
    are pruned; no hex outside `:root`; Help's steps, glossary and keys match
-   the screens). Not done in 8: a walk at 1280×720, 1440×900 and 1920×1080 —
-   the scratch server was stopped for memory before it could run; the screens
-   were each checked at 1440 as they landed.
+   the screens). Walked at 1280×720, 1440×900 and 1920×1080 (2026-10-15,
+   every screen and tab, scripted against the 5,000-track scratch library): no
+   page scrolls sideways at any of the three and nothing spills past the
+   viewport. At 1280 and 1440 some bars take two lines (Queue's header at
+   1280; Discover's search bar, Mixes' and Studio's toolbars, the Set header
+   at 1280). Fixed on the walk: Studio's lane head clipped its S button (M/S
+   moved up to the title row), a decode error took a third line in the 64px
+   head (now a red underline with the error as the tooltip), and a project
+   of a few lanes left a dead band between the timeline and the panel (the
+   timeline is as tall as its lanes and the panel takes the rest). Still
+   open: the Library's default columns need 1270px, so beside the 400px dock
+   the table scrolls inside itself below ~1700px wide (659px of it shows at
+   1280, 819px at 1440).
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in
 Discover (nothing external is analysed — rows show the tempo an upload prints,

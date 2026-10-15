@@ -3042,7 +3042,9 @@ input, select { font-family: inherit; }
 
 /* ── the timeline over the adjustments panel ─────────────────────────────── */
 .studio-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.studio-left { flex: 1; min-height: 96px; display: flex; flex-direction: column; overflow: auto; }
+/* The timeline is as tall as its lanes (never under 96px); the panel takes
+   whatever is left, so a two-lane project has no dead band between them. */
+.studio-left { flex: 0 1 auto; min-height: 96px; display: flex; flex-direction: column; overflow: auto; }
 .studio-timeline { position: relative; flex: none; }
 /* HEADER_W in MixStudio.jsx is this first column plus the gap: 150px. */
 .studio-grid {
@@ -3070,7 +3072,7 @@ input, select { font-family: inherit; }
 .lh-tag { flex: none; font-size: 9px; font-weight: 600; letter-spacing: 0.06em; }
 .lh-title { min-width: 0; font-size: 12px; font-weight: 500; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lh-meta { font-size: 10.5px; color: var(--fg-2); }
-.lh-note { font-size: 10px; color: var(--warn-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.studio-lanehead.failed { box-shadow: inset 0 -2px 0 var(--fail); }
 .lh-btn {
   height: 18px; padding: 0 5px; border: 1px solid var(--line-2); border-radius: var(--r-chip);
   background: none; color: var(--muted); font: 600 9.5px var(--font-ui); letter-spacing: 0.04em; cursor: pointer;
@@ -3117,7 +3119,7 @@ input, select { font-family: inherit; }
 
 /* ── the adjustments panel ───────────────────────────────────────────────── */
 .studio-panel {
-  position: relative; flex: none; min-height: 120px; display: flex; flex-direction: column;
+  position: relative; flex: 1 0 auto; min-height: 120px; display: flex; flex-direction: column;
   border-top: 1px solid var(--line); background: var(--well);
 }
 .sp-grip { position: absolute; left: 0; right: 0; top: -4px; height: 8px; cursor: ns-resize; z-index: 3; }

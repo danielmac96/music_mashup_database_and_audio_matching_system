@@ -2172,12 +2172,20 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                 {/* lane head — 150px, box-sizing:border-box: what the lane is,
                     the key it plays in, its tempo, SYNC and mute/solo. Every
                     other control is on the lane's card in the panel below. */}
-                <div className={`studio-lanehead${isSel ? " selected" : ""}${dim ? " dim" : ""}`}
+                <div className={`studio-lanehead${isSel ? " selected" : ""}${dim ? " dim" : ""}${l.loadError ? " failed" : ""}`}
                   style={{ borderLeft: `3px solid rgba(${rgb},0.9)` }}
+                  title={l.loadError || (l.loading ? "Decoding the audio…" : undefined)}
                   onClick={() => setSelectedId(l.id)}>
                   <div className="lh-row">
                     <span className="lh-tag mono" style={{ color: `rgb(${rgb})` }}>{roleOf(l)}</span>
                     <span className="lh-title" title={`${l.title}${l.artist ? ` — ${l.artist}` : ""}`}>{l.title}</span>
+                    <span className="grow" />
+                    <button className={`lh-btn${l.muted ? " on" : ""}`}
+                      onClick={(e) => { e.stopPropagation(); patchLane(l.id, { muted: !l.muted }); }}
+                      title="Mute (m)" aria-label="Mute">M</button>
+                    <button className={`lh-btn solo${soloId === l.id ? " on" : ""}`}
+                      onClick={(e) => { e.stopPropagation(); setSoloId(soloId === l.id ? null : l.id); }}
+                      title="Solo (s)" aria-label="Solo">S</button>
                   </div>
                   <div className="lh-row">
                     {played ? <KeyChip camelot={played} title={l.semitones ? `${l.camelot} ${l.semitones > 0 ? "+" : ""}${l.semitones} st` : undefined} />
@@ -2187,16 +2195,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                     <button className={`lh-btn sync${l.synced ? " on" : ""}`} disabled={!syncR}
                       onClick={(e) => { e.stopPropagation(); patchLane(l.id, l.synced ? { synced: false, rate: 1 } : { synced: true, rate: syncR }); }}
                       title={projectBpm ? `Tempo-sync to ${projectBpm} BPM` : "Set a project tempo first"}>SYNC</button>
-                    <button className={`lh-btn${l.muted ? " on" : ""}`}
-                      onClick={(e) => { e.stopPropagation(); patchLane(l.id, { muted: !l.muted }); }}
-                      title="Mute (m)" aria-label="Mute">M</button>
-                    <button className={`lh-btn solo${soloId === l.id ? " on" : ""}`}
-                      onClick={(e) => { e.stopPropagation(); setSoloId(soloId === l.id ? null : l.id); }}
-                      title="Solo (s)" aria-label="Solo">S</button>
                   </div>
-                  {(l.loading || l.loadError) && (
-                    <div className="lh-note">{l.loadError || "decoding…"}</div>
-                  )}
                 </div>
 
                 {/* lane canvas */}
