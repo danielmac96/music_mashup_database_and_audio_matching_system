@@ -147,8 +147,12 @@ async def t_pick_track(pg, P, rng, st):
     # The top card's percentile should be that number (both are percentiles).
     t = next((x for x in TRACKS if x["title"] == title), None)
     table_best = round(100 * t["mash"]["best_pct"], 1) if t and (t.get("mash") or {}).get("best_pct") is not None else None
-    m = re.search(r"(\d+(?:\.\d+)?)%", pct)
-    card_best = float(m.group(1)) if m else None
+    # The best card's percentile, not the first card's: tier grouping puts a
+    # Strong card above a Good one with a higher percentile (an unsure
+    # transpose drops a tier), so the first card need not be the best.
+    pcts = await pg.locator(".pair-card .pc-pct").all_inner_texts()
+    vals = [float(x.strip().rstrip("%")) for x in pcts if x.strip().rstrip("%").replace(".", "", 1).isdigit()]
+    card_best = max(vals) if vals else None
     side_match = None if table_best is None or card_best is None else abs(table_best - card_best) <= 1.0
     if side_match is False: notes.append(f"table Best pair {table_best:.0f} but the dock opened on a side whose top pair is {card_best:.0f}")
     if cards == 0: notes.append("selected track shows no pairs")
