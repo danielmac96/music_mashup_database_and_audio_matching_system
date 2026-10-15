@@ -122,7 +122,7 @@ def listing(tmp_path, monkeypatch):
                                       song.get("chroma", "triad")))
 
     from matcher.match import score_all_pairs
-    score_all_pairs()
+    score_all_pairs(db_path=m.DB_PATH)
 
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

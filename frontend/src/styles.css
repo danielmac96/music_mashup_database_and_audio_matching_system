@@ -1306,7 +1306,7 @@ input, select { font-family: inherit; }
 }
 .tier-badge .glyph { font-size: 7px; letter-spacing: -1px; }
 .compat-meter {
-  display: grid; grid-template-columns: 40px minmax(0, 1fr) 36px; gap: 8px; align-items: center;
+  display: grid; grid-template-columns: 52px minmax(0, 1fr) 36px; gap: 8px; align-items: center;
 }
 .compat-meter .name { font-size: 10px; color: var(--muted); }
 .compat-meter .track { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
@@ -3244,3 +3244,9 @@ input, select { font-family: inherit; }
 .help-more > summary h3 { display: inline; }
 .help-more > summary::before { content: "▸ "; color: var(--muted); }
 .help-more[open] > summary::before { content: "▾ "; }
+.tt-fit { color: var(--faint); font-size: 10px; justify-content: center; }
+.pcx-details > summary { cursor: pointer; color: var(--muted); list-style: none; }
+.pcx-details > summary::before { content: "▸ "; }
+.pcx-details[open] > summary::before { content: "▾ "; }
+.pcx-details[open] > .pcx-cols { margin-top: 6px; }
+.pc-forced { font-size: 9px; color: var(--warn-soft); border: 1px solid var(--warn-bg); border-radius: 3px; padding: 0 3px; }

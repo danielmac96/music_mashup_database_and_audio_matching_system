@@ -425,6 +425,39 @@ class PairKey(BaseModel):
     inst_section: Optional[int] = None
 
 
+class ScorePairBody(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+    both_ways: bool = True
+
+
+@router.post("/score-pair")
+def score_pair_anyway(body: ScorePairBody) -> dict:
+    """Score two named songs the library run left unpaired (outside the tempo
+    or key gate) — "Score this pair anyway" on an empty A + B search. Rows are
+    stored as scorer='forced' and come back as listing rows, recipe and
+    warnings included; the next Score library run clears them."""
+    from matcher.match import score_pair
+    if body.vocal_song_id == body.inst_song_id:
+        raise HTTPException(status_code=400, detail="pick two different songs")
+    from database import models as _models
+    db = _models.DB_PATH
+    made = len(score_pair(body.vocal_song_id, body.inst_song_id, db_path=db))
+    if body.both_ways:
+        made += len(score_pair(body.inst_song_id, body.vocal_song_id, db_path=db))
+    if not made:
+        raise HTTPException(status_code=409,
+                            detail="Nothing to score: one of the two has no analysed stems yet.")
+    rows = []
+    for v, i in ((body.vocal_song_id, body.inst_song_id), (body.inst_song_id, body.vocal_song_id)):
+        if v != body.vocal_song_id and not body.both_ways:
+            continue
+        rows += list_candidates(vocal_song_id=v, inst_song_id=i, max_per_song=0,
+                                limit=20)["candidates"]
+    rows.sort(key=lambda r: -(r.get("score_total") or 0))
+    return {"count": len(rows), "candidates": rows}
+
+
 @router.post("/feedback")
 def save_feedback(body: PairVerdict) -> dict:
     """Record the user's ✓/✗ on a pair from the ranked list.

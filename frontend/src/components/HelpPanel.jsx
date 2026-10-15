@@ -31,7 +31,7 @@ const GLOSSARY = [
   ["98.6% (the big number)", "That percentile: the pair beats 98.6% of the pairs scored in this library."],
   ["→ 8A · bed +2 st", "Where the mashup lands (the vocal's key) and the bed's transpose to get there; same key, relative and ±1 step need none."],
   ["Δ +1.5% · ½×", "How far the bed is stretched to the vocal's tempo, and whether it plays at half or double time."],
-  ["VOI · HARM · RHY · ENGY", "The expanded card's meters: real singing in the vocal section, the measured harmonic fit, rhythm agreement and energy match. Hatched means unmeasured — Score library fills it."],
+  ["Scores ▸ Vocal · Harmony · Rhythm · Energy", "The expanded card's folded meters: real singing in the vocal section, the measured harmonic fit, rhythm agreement and energy match. Hatched means unmeasured — Score library fills it."],
   ["♪ 92% at bed +2 st", "The measured harmony: the two sections' notes compared at every transposition. ? means another shift fits almost as well."],
   ["DO / WATCH", "The recipe: what building the pair takes (stretch, transpose, nudge, loop, level, high-pass), and what the numbers cannot promise."],
   ["Effort: Free / Light / Heavy", "How much stretching, transposing and grid uncertainty building the pair costs."],

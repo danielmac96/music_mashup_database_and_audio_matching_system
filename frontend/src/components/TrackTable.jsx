@@ -20,6 +20,10 @@ import { fmtDur, fmtPlays, fmtYear, keyLooksOff, playsColor } from "../theme";
 export const ROW_H = 32;
 const OVERSCAN = 6;
 const ACT_W = 30;   // the ⋯ row-menu column, always last, never hidden
+// Default columns that make way for a narrow frame, first to go first, and
+// how narrow the title may get before they do.
+export const FIT_DROP = ["status", "rating", "vox", "pairs", "genre", "energy"];
+const TITLE_FIT_W = 200;
 
 // Every column the table can show, in default order. One line each: the view
 // keys widths and order by `id`, never by position.
@@ -130,7 +134,7 @@ function Cell({ col, t, ctx }) {
         ? <KeyChip camelot={f.camelot} fallback="—"
             style={weak ? { opacity: 0.75 } : undefined}
             label={weak ? `${f.camelot}?` : undefined}
-            title={weak ? `${f.camelot} — low key confidence (${f.key_confidence?.toFixed(3)})`
+            title={weak ? `${f.camelot} — low key confidence: check it by ear`
               : `${f.key || ""} ${f.mode || ""}`.trim() || `Camelot ${f.camelot}`} />
         : <KeyChip camelot={null} />;
     }
@@ -241,11 +245,36 @@ export function TrackTable({ tracks, columns, sort, onSort, onWidth, onResetWidt
 
   // Widths are fixed px; the title takes whatever the frame has left over, so a
   // wide window gives it room instead of leaving a gap at the right.
-  const visible = useMemo(() => columns.filter((c) => c.visible), [columns]);
+  // When the frame is narrower than the columns, the title gives up width
+  // first (down to TITLE_FIT_W), then default columns drop out in FIT_DROP
+  // order — before the table scrolls sideways (71 of 100 personas met a
+  // table hiding columns behind its own scrollbar, 2026-10-15). A column the
+  // user added (an attribute, or one hidden by default) always stays.
+  const shown = useMemo(() => columns.filter((c) => c.visible), [columns]);
+  const fitted = useMemo(() => {
+    if (!box.w) return { cols: shown, hidden: [] };
+    const need = (cs) => cs.reduce((a, c) => a + (c.id === "title"
+      ? Math.min(c.width, TITLE_FIT_W) : c.width), 0) + ACT_W;
+    let cols = shown;
+    const hidden = [];
+    for (const id of FIT_DROP) {
+      if (need(cols) <= box.w) break;
+      const c = cols.find((x) => x.id === id && !x.attr && x.defaultVisible !== false);
+      if (!c) continue;
+      cols = cols.filter((x) => x !== c);
+      hidden.push(c);
+    }
+    return { cols, hidden };
+  }, [shown, box.w]);
+  const visible = fitted.cols;
   const sum = visible.reduce((a, c) => a + c.width, 0) + ACT_W;
+  const titleCol = visible.find((c) => c.id === "title");
+  // Over: the title shrinks (never below its min) before anything scrolls.
+  const over = Math.max(0, sum - box.w);
+  const titleCut = titleCol && box.w ? Math.min(over, titleCol.width - titleCol.min) : 0;
   const slack = Math.max(0, box.w - sum);
-  const widthOf = (c) => c.width + (c.id === "title" ? slack : 0);
-  const tableW = sum + slack;
+  const widthOf = (c) => c.width + (c.id === "title" ? slack - titleCut : 0);
+  const tableW = sum + slack - titleCut;
 
   const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const count = Math.ceil(box.h / ROW_H) + OVERSCAN * 2;
@@ -322,7 +351,7 @@ export function TrackTable({ tracks, columns, sort, onSort, onWidth, onResetWidt
   const ctx = useMemo(() => ({ ...stable, playingId, onFixTempo: onFixTempo ? stable.onFixTempo : null }),
     [stable, playingId, !onFixTempo]); // eslint-disable-line react-hooks/exhaustive-deps
   const cols = useMemo(() => visible.map((c) => [c, widthOf(c)]),
-    [visible, slack]); // eslint-disable-line react-hooks/exhaustive-deps
+    [visible, slack, titleCut]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="tt-scroll" ref={scrollRef} tabIndex={0} aria-label="Track table"
@@ -366,7 +395,10 @@ export function TrackTable({ tracks, columns, sort, onSort, onWidth, onResetWidt
               </div>
             );
           })}
-          <div className="tt-h" style={{ width: ACT_W }} />
+          <div className="tt-h tt-fit mono" style={{ width: ACT_W }}
+            title={fitted.hidden.length
+              ? `Hidden to fit this width: ${fitted.hidden.map((c) => c.label).join(", ")} — widen the window, narrow the pair dock, or pick columns in Columns ▾`
+              : ""}>{fitted.hidden.length ? `+${fitted.hidden.length}` : ""}</div>
         </div>
 
         <div className="tt-body" style={{ height: tracks.length * ROW_H }}>

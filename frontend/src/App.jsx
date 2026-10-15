@@ -519,7 +519,7 @@ export default function App() {
               scopeTrack={selectedTrack} onClearScope={route === "track" ? null : clearSelection}
               onCompare={compareInAnalysis} durationOf={durationOf}
               freshness={freshness}
-              role={dockRole} onRole={setDockRole} />
+              role={dockRole} onRole={setDockRole} tracks={library.tracks} />
           </div>
         )}
         {route === "queue" && (

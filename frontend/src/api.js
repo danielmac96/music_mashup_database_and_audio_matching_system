@@ -337,6 +337,14 @@ export const api = {
   // deliberately not training data.
   getHidden: () => jsonFetch("/api/mashups/hidden"),
 
+  // Score two named songs the library run left unpaired, both ways round
+  // (POST /api/mashups/score-pair); rows come back as listing rows.
+  scorePairAnyway: (vocalSongId, instSongId) =>
+    jsonFetch("/api/mashups/score-pair", {
+      method: "POST",
+      body: JSON.stringify({ vocal_song_id: vocalSongId, inst_song_id: instSongId, both_ways: true }),
+    }),
+
   hidePair: (vocalSongId, instSongId) =>
     jsonFetch("/api/mashups/hidden", {
       method: "POST",

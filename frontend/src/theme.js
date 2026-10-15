@@ -255,6 +255,14 @@ export const bpmLooksOff = (f) => f?.bpm != null && (f.bpm < 80 || f.bpm > 170);
 // ~quartile: flagging the median would put a ⚠ on three tracks in four and
 // train the eye to ignore it. null = analysed before this existed, say nothing.
 export const KEY_CONFIDENCE_MIN = 0.012;
+// The key estimate in words, for people: a raw correlation margin ("0.020")
+// meant nothing to a DJ (2026-10-15). Low is the table's `?` threshold; high
+// is three times it.
+export function keyConfidenceWord(f) {
+  const v = f?.key_confidence;
+  if (v == null) return null;
+  return v < KEY_CONFIDENCE_MIN ? "low" : v < 3 * KEY_CONFIDENCE_MIN ? "medium" : "high";
+}
 export const keyLooksOff = (f) =>
   f?.key_confidence != null && f.key_confidence < KEY_CONFIDENCE_MIN;
 

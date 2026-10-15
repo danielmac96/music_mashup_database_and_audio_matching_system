@@ -25,17 +25,18 @@ const FOLD = { half: "½×", double: "2×" };
 // the shift says it all; "transpose" itself is never printed.
 const REL = { same: "same key", relative: "relative", adjacent: "±1 step", clash: "clash" };
 
-// The meters the expanded card draws: VOI (real singing in the vocal section),
-// HARM (the measured harmonic fit), RHY (bar-profile agreement) and ENGY (the
-// two sections' energy match). Unmeasured is hatched, never zero.
-function metersOf(c) {
+// The meters the expanded card draws, in plain words (VOI / HARM / RHY / ENGY
+// read as jargon to every persona who opened a card, 2026-10-15): real
+// singing in the vocal section, the measured harmonic fit, bar-profile
+// agreement and the two sections' energy match. Unmeasured is hatched, never zero.
+export function metersOf(c) {
   const h = harmonyOf(c);
   return [
-    ["VOI", "Vocal — how much real singing the vocal section carries", c.score_voice],
-    ["HARM", "Harmony — the two sections' notes, measured at the played transpose",
+    ["Vocal", "How much real singing the vocal section carries", c.score_voice],
+    ["Harmony", "The two sections' notes, measured at the played transpose",
       h.known ? c.score_key : null],
-    ["RHY", "Rhythm — per-bar onset profiles of the two sections", c.score_rhythm],
-    ["ENGY", "Energy — how close the two sections' energies are", c.score_energy_match],
+    ["Rhythm", "Per-bar onset profiles of the two sections", c.score_rhythm],
+    ["Energy", "How close the two sections' energies are", c.score_energy_match],
   ];
 }
 
@@ -133,6 +134,9 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
               Δ{signed(d, 1)}%{FOLD[cb.fold] && <span className="fold"> {FOLD[cb.fold]}</span>}
             </span>
           )}
+          {c.scorer === "forced" && (
+            <span className="pc-forced mono" title="Scored on request, outside the tempo or key gate — read the DO and WATCH rows">forced</span>
+          )}
           <span className="grow" />
           <button className={`pc-play${playing ? " on" : ""}`}
             title={playing ? "Stop the loop (space)" : "Loop this pair (space)"}
@@ -208,44 +212,52 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
         ))}
       </div>
 
-      <div className="pcx-cols">
-        <div className="pcx-meters">
-          {metersOf(c).map(([name, tip, v]) => (
-            <CompatMeter key={name} name={name}
-              value={v == null || !Number.isFinite(Number(v)) ? null : Number(v)}
-              title={`${tip}: ${v == null ? "not measured" : `${Math.round(v * 100)}%`}`} />
-          ))}
-        </div>
-        <div className="pcx-side">
-          {h.known ? (
-            <span className="mono pcx-harm"
-              style={{ color: compatColor(h.fitPct) }}
-              title={"Measured harmony: the two sections' notes cross-correlated over 12 transpositions"
-                + (h.sure ? "" : " — another transposition fits almost as well")}>
-              ♪ Measured harmony {h.fitPct != null ? `${h.fitPct}%` : ""}
-              {h.shift ? ` at bed ${h.shift > 0 ? "+" : ""}${h.shift} st` : ""}{h.sure ? "" : " ?"}
-            </span>
-          ) : (
-            <span className="mono muted">♪ harmony not measured — Camelot estimate</span>
-          )}
-          {h.bassClash && <span className="pcx-clash" title={BASS_CLASH_ADVICE}>✕ bass clash</span>}
-          <span className="muted small">{engine}</span>
-          {c.effort_label && (
-            <span className={`small pcx-effort ${EFFORT_TONE[c.effort_label] || ""}`}
-              title={c.effort_reason || "How much stretching, transposing and grid uncertainty building it costs"}>
-              Effort: {c.effort_label}{c.effort_reason ? ` — ${c.effort_reason}` : ""}
-            </span>
-          )}
-          {/* The terms the score is a sum of, as a compact readout: the section
-              fit, then the track fit. Unmeasured is "—", never 0. */}
-          <span className="muted small pcx-terms">
-            {termsOf(c).map((t) => `${t.name} ${t.known ? Math.round(t.value * 100) : "—"}`).join(" · ")}
+      <div className="pcx-side">
+        {h.known ? (
+          <span className="mono pcx-harm"
+            style={{ color: compatColor(h.fitPct) }}
+            title={"Measured harmony: the two sections' notes cross-correlated over 12 transpositions"
+              + (h.sure ? "" : " — another transposition fits almost as well")}>
+            ♪ Measured harmony {h.fitPct != null ? `${h.fitPct}%` : ""}
+            {h.shift ? ` at bed ${h.shift > 0 ? "+" : ""}${h.shift} st` : ""}{h.sure ? "" : " ?"}
           </span>
-          <span className="muted small pcx-terms">
-            {songTermsOf(c).map((t) => `${t.name} ${t.known ? Math.round(t.value * 100) : "—"}`).join(" · ")}
+        ) : (
+          <span className="mono muted">♪ harmony not measured — key from the Camelot wheel</span>
+        )}
+        {h.bassClash && <span className="pcx-clash" title={BASS_CLASH_ADVICE}>✕ bass clash</span>}
+        {c.effort_label && (
+          <span className={`small pcx-effort ${EFFORT_TONE[c.effort_label] || ""}`}
+            title={c.effort_reason || "How much stretching, transposing and grid uncertainty building it costs"}>
+            Effort: {c.effort_label}{c.effort_reason ? ` — ${c.effort_reason}` : ""}
           </span>
-        </div>
+        )}
       </div>
+
+      {/* The numbers behind the score, folded: most of the time the DO row, the
+          harmony and the effort are the decision. */}
+      <details className="pcx-details">
+        <summary className="caps">Scores</summary>
+        <div className="pcx-cols">
+          <div className="pcx-meters">
+            {metersOf(c).map(([name, tip, v]) => (
+              <CompatMeter key={name} name={name}
+                value={v == null || !Number.isFinite(Number(v)) ? null : Number(v)}
+                title={`${tip}: ${v == null ? "not measured" : `${Math.round(v * 100)}%`}`} />
+            ))}
+          </div>
+          <div className="pcx-side">
+            <span className="muted small">{engine}</span>
+            {/* The terms the score is a sum of: the section fit, then the track
+                fit. Unmeasured is "—", never 0. */}
+            <span className="muted small pcx-terms">
+              {termsOf(c).map((t) => `${t.name} ${t.known ? Math.round(t.value * 100) : "—"}`).join(" · ")}
+            </span>
+            <span className="muted small pcx-terms">
+              {songTermsOf(c).map((t) => `${t.name} ${t.known ? Math.round(t.value * 100) : "—"}`).join(" · ")}
+            </span>
+          </div>
+        </div>
+      </details>
 
       {onNote && (
         <input className="pcx-note" value={draft}

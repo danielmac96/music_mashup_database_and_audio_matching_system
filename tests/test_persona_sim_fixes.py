@@ -433,7 +433,7 @@ def test_pair_card_shows_artists_song_terms_and_the_recipe():
     # Looping the bed is a recipe step ("loop bed ×2"), drawn in the DO row.
     assert "r.adjustments" in card
     # A measured harmony is drawn as measured; without one the card says so.
-    assert "harmony not measured — Camelot estimate" in card
+    assert "harmony not measured — key from the Camelot wheel" in card
 
 
 def test_library_summarises_each_track_as_mashup_material(one_vocal_many_beds):

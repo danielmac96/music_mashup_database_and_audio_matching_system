@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PairCard } from "./PairCard";
 import { JobBadge } from "./JobBadge";
 import {
@@ -116,7 +116,7 @@ function useDockWidth() {
 export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
                           onClearScope = null, freshness = null,
                           onAddToSet = null, setName = null, notes = null,
-                          onCompare = null, durationOf = () => null }) {
+                          onCompare = null, durationOf = () => null, tracks = null }) {
   const { order, setOrder, rows, loading, error, cursor, setCursor, armedKey,
           play, openStudio, hide, unhide, audio, filters, setFilters, resetFilters,
           perVocal, hasMore, loadMore, loadingMore, exportBatch, expanded, toggleExpand,
@@ -193,6 +193,31 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
     c.compat?.genre?.vocal ?? c.vocal_genre, c.compat?.genre?.bed ?? c.inst_genre,
   ]).filter(Boolean))].sort();
   const empty = !error && !loading && rows.length === 0;
+  // "A + B" with nothing scored: the two library tracks the terms name (title,
+  // or artist and title), for "Score this pair anyway".
+  const forceTargets = useMemo(() => {
+    const m = /^(.*?)(?:\s*\+\s*|\s+w\/\s+)(.*)$/i.exec(filters.search || "");
+    if (!m || !tracks?.length) return null;
+    const find = (term) => {
+      const q = term.trim().toLowerCase();
+      if (!q) return null;
+      return tracks.find((t) => (t.title || "").toLowerCase() === q)
+        || tracks.find((t) => `${t.artist || ""} ${t.title || ""}`.toLowerCase().includes(q));
+    };
+    const a = find(m[1]), b = find(m[2]);
+    return a && b && a.id !== b.id ? [a, b] : null;
+  }, [filters.search, tracks]);
+  const [forcing, setForcing] = useState(false);
+  const forceScore = async () => {
+    if (!forceTargets) return;
+    setForcing(true);
+    try {
+      const d = await api.scorePairAnyway(forceTargets[0].id, forceTargets[1].id);
+      toast(`Scored ${d.count} pairing${d.count === 1 ? "" : "s"} outside the gates — marked "forced"`);
+      dock.reload();
+    } catch (e) { toast(`Could not score them: ${e.message}`); }
+    finally { setForcing(false); }
+  };
   // Keepers on its own, with nothing kept: the cause is "no 4–5★ ratings",
   // not a filter to loosen.
   const keepersOnly = filters.rated === "loved" && nServer === 1 && !filters.search
@@ -608,6 +633,12 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
                 after the last re-score. A wrong BPM (×2/÷2 in the Library) is the
                 usual cause — fix it, then re-score.
               </span>
+              {forceTargets && (
+                <button className="ui-btn" onClick={forceScore} disabled={forcing}
+                  title="Score these two outside the tempo and key gates — the result says what it would take">
+                  {forcing ? "Scoring…" : `Score ${forceTargets[0].title} + ${forceTargets[1].title} anyway`}
+                </button>
+              )}
             </div>
           )}
           {empty && keepersOnly && (

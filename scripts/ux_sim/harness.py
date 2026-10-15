@@ -28,6 +28,17 @@ def api(path):
         return json.loads(r.read())
 
 TRACKS = api("/api/tracks")["tracks"]
+
+
+def compatible(code):
+    """The key and what mixes with it: ±1 hour and the relative (theme.js
+    compatibleKeys)."""
+    m = re.match(r"^(\d{1,2})([AB])$", code or "")
+    if not m:
+        return {code}
+    n, l = int(m.group(1)), m.group(2)
+    w = lambda x: ((x - 1) % 12) + 1
+    return {f"{n}{l}", f"{w(n + 1)}{l}", f"{w(n - 1)}{l}", f"{n}{'B' if l == 'A' else 'A'}"}
 for _t in TRACKS:
     _f = (_t.get("features") or {}).get("full") or {}
     _t["bpm"] = _f.get("bpm"); _t["camelot"] = _f.get("camelot")
@@ -266,7 +277,8 @@ async def t_keepers(pg, P, rng, st):
     n = await pg.locator(".pair-card").count()
     msg = await pg.locator(".pd-msg").all_inner_texts()
     await pg.locator(".pd-keepers").click()
-    return dict(ok=True, notes=[] if n else [f"Keepers empty: {msg[:1]}"], data=dict(cards=n))
+    await pg.wait_for_timeout(1200)     # let the list reload before the next task acts on it
+    return dict(ok=True, notes=[] if n else [f"Keepers empty: {msg[:1]}"], data=dict(cards=n, msg=msg[:1]))
 
 async def t_ab_search(pg, P, rng, st):
     await library(pg)
@@ -277,9 +289,19 @@ async def t_ab_search(pg, P, rng, st):
     await pg.wait_for_timeout(1500)
     n = await pg.locator(".pair-card").count()
     msg = " ".join(await pg.locator(".pd-msg").all_inner_texts())
+    forced = None
+    if not n:
+        btn = pg.locator(".pd-msg button", has_text="anyway")
+        if await btn.count():
+            await btn.first.click()
+            await pg.wait_for_timeout(3000)
+            n = await pg.locator(".pair-card").count()
+            forced = n
     await box.fill(""); await box.press("Enter")
-    notes = [] if n else [f"A + B found nothing: '{msg[:120]}'"]
-    return dict(ok=True, notes=notes, data=dict(found=n, a=a["bpm"] if "bpm" in a else None, why=msg[:160]))
+    notes = []
+    if not n:
+        notes.append(f"A + B found nothing{'' if forced is None else ' even after Score anyway'}: '{msg[:120]}'")
+    return dict(ok=n > 0, notes=notes, data=dict(found=n, forced=forced, why=msg[:160]))
 
 async def t_studio(pg, P, rng, st):
     await library(pg)
@@ -480,7 +502,10 @@ async def t_search_parse(pg, P, rng, st):
     await library(pg)
     t = rng.choice([x for x in TRACKS if x.get("camelot")] or TRACKS)
     lo = int(t["bpm"]) - 3; hi = int(t["bpm"]) + 3
-    q = f"{t['camelot']} {lo}-{hi}"
+    # Half the personas type the harmonic form, "8A~" (the key and its mixable
+    # neighbours); the rest the strict one.
+    loose = rng.random() < 0.5
+    q = f"{t['camelot']}{'~' if loose else ''} {lo}-{hi}"
     box = pg.get_by_label("Search the library").first
     await box.fill(q)
     await pg.wait_for_timeout(500)
@@ -489,13 +514,15 @@ async def t_search_parse(pg, P, rng, st):
     await pg.wait_for_timeout(700)
     rows = await pg.locator(".tt-row").count()
     head = await pg.locator("h1, .screen-title").first.inner_text() if await pg.locator("h1, .screen-title").count() else ""
-    truth = sum(1 for x in TRACKS if x.get("camelot") == t["camelot"] and x.get("bpm") and lo <= x["bpm"] <= hi)
+    want = compatible(t["camelot"]) if loose else {t["camelot"]}
+    truth = sum(1 for x in TRACKS if x.get("camelot") in want and x.get("bpm") and lo <= x["bpm"] <= hi)
     # clear
     cl = pg.locator("button", has_text="Clear all")
     if await cl.count(): await cl.first.click()
-    notes = [] if rows >= truth else [f"search '{q}' showed {rows} rows, {truth} match"]
-    if rows == 1 and truth == 1: notes.append("strict key filter: only the seed track — 'compatible keys' is a separate chip")
-    return dict(ok=rows >= truth, notes=notes, data=dict(q=q, rows=rows, truth=truth))
+    notes = [] if rows == truth else [f"search '{q}' showed {rows} rows, {truth} match"]
+    if not loose and rows == 1 and truth == 1:
+        notes.append("strict key filter: only the seed track (8A~ would add the neighbours)")
+    return dict(ok=rows == truth, notes=notes, data=dict(q=q, loose=loose, rows=rows, truth=truth))
 
 async def t_palette(pg, P, rng, st):
     t = rng.choice(TRACKS)

@@ -12,7 +12,7 @@ import { Disclosure, KeyChip, StatusPill } from "./ui/primitives";
 import { keyOf, pctOf, tierOf } from "./pairs/pairModel";
 import { STATUS, STATUS_PILL, statusKeyOf } from "../hooks/useLibraryFilters";
 import { notifyPairsInputChanged, requestRescore } from "../rescore";
-import { compatColor, fmtDur, fmtYear, keyLooksOff } from "../theme";
+import { compatColor, fmtDur, fmtYear, keyConfidenceWord, keyLooksOff } from "../theme";
 
 // Track detail (revamp 1c). It replaces the Library's table and leaves the
 // pair dock beside it: the breadcrumb, a hero (art with a hook ▶, title,
@@ -295,7 +295,9 @@ export function TrackDetail({ track, tracks, attributes = null, ratings, groups,
               <Num v={f.bpm != null ? f.bpm.toFixed(1) : null} unit="BPM" />
             </Stat>
             <Stat label="Key" tip="Camelot key"
-              sub={f.key_confidence != null ? (lowKey ? "⚠ low confidence" : `confidence ${f.key_confidence.toFixed(3)}`) : "not analysed"}
+              sub={f.key_confidence != null
+                ? (lowKey ? "⚠ low confidence — check by ear" : `${keyConfidenceWord(f)} confidence`)
+                : "not analysed"}
               subTone={lowKey ? "var(--star)" : null}>
               <KeyChip camelot={f.camelot} />
             </Stat>

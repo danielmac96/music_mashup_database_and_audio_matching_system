@@ -342,7 +342,11 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
   percentile of every scored pair), Pairs V/B (partners as vocal / as bed),
   Rating, Status; Year, Length, Plays, Shape, Sections, Added and any analysed
   attribute can be added (Year, Length and Plays start hidden so the defaults,
-  1088px, fit more of the window beside the dock). Best pair, Pairs and VOX% are computed per track over
+  1088px, fit more of the window beside the dock). When the frame is still
+  too narrow the title gives up width first (to 200px), then default columns
+  make way in `TrackTable.FIT_DROP` order — Status, Rating, VOX%, Pairs,
+  Genre, Energy — before the table scrolls sideways; a column you added
+  always stays, and a `+N` in the last header names what was hidden. Best pair, Pairs and VOX% are computed per track over
   the whole of `mashup_candidates` (`GET /api/tracks` `mash`, `shape`), never off
   the dock's truncated list.
 - **The view** — which columns show, their order (drag a header), their width
@@ -355,6 +359,8 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
 - **The search box reads filters as you type**: `8A 124-128 house 2015+ vox`
   previews as Key 8A · 124–128 BPM · House · 2015 or later · Vocal-forward
   (also `126bpm`, `2010-2019`, `stems`, and the genres this library contains);
+  `8A~` reads as the key and what mixes with it — ±1 hour and the relative
+  (`theme.compatibleKeys`, "Mixes with 8A");
   ⏎ pins them as filters, whatever is left searches title, artist and genre.
 - **Chips**: BPM (a 60–180 dual slider, ±6% including half/double time, genre
   presets), Key (the 24-key Camelot wheel, plus *compatible with the selected
@@ -413,7 +419,12 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
 - **The library-wide row**: the search box (either side's title or artist,
   across every scored pair; two songs as **`A + B`** or `A w/ B` find the pairs
   of exactly those two, either way round — `models._two_track_query`; no result
-  says they were never scored together and why that usually is), **★ Keepers** (empty, it says to rate a pair 4–5★ — not to loosen filters)
+  says they were never scored together and why that usually is, and offers
+  **Score A + B anyway**: `POST /api/mashups/score-pair` scores the two both
+  ways round outside the gates with the library run's own functions
+  (`match.score_pair`), stored as `scorer='forced'` — the card says **forced**
+  and the DO / WATCH rows and effort say what it takes; the next Score library
+  run clears them), **★ Keepers** (empty, it says to rate a pair 4–5★ — not to loosen filters)
   (the pairs you rated 4–5, every section pairing, uncapped), **Sort** (Score,
   Effort, Uncertain, or one section term — Section / Length / Vocal / Phrase;
   every order but Effort is the server's, so it ranks the library; an
@@ -444,14 +455,13 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
   120 Hz`; each explained and graded free / light / heavy on hover; "nothing —
   drop both in" when there is nothing to do) and a **WATCH** row of what the
   numbers cannot promise (a suspected half/double BPM, a coin-flip transpose,
-  clashing notes, no beat grid, rough separation); the **VOI / HARM / RHY /
-  ENGY** meters (hatched when unmeasured — **Score library** fills them); the
-  **measured harmony** (`♪ 92% at bed +2 st`, the two sections' notes
+  clashing notes, no beat grid, rough separation); the **measured harmony** (`♪ 92% at bed +2 st`, the two sections' notes
   cross-correlated, `?` when the transpose is a closer call than most pairs in
   your library) or "Camelot estimate" without one; a red **bass clash** chip
-  with the high-pass advice; the engine rank in this scope (`scope_rank` /
-  `scope_total`); the effort and its reason; the section-fit and track-fit
-  terms; a **note** ("opener", "use the 2nd chorus" — shown in Studio and in
+  with the high-pass advice; the effort and its reason; a folded **Scores**
+  disclosure with the **Vocal / Harmony / Rhythm / Energy** meters (hatched
+  when unmeasured — **Score library** fills them), the engine rank in this
+  scope (`scope_rank` / `scope_total`) and the section-fit and track-fit terms; a **note** ("opener", "use the 2nd chorus" — shown in Studio and in
   sets, never training data); and **Open in Studio**, **+ Set**, **⇄ Compare**
   and **⊘ Hide** (a display preference, never a verdict — Undo on the toast,
   or *Show hidden* in Filters, or ⚙ restores it). Clicking the star you
@@ -536,7 +546,8 @@ pair dock stays**; the Library stays mounted underneath, so `esc` (or **←
 Library**) lands back on the same filters, selection and scroll. A hero — art
 with a ▶ that loops the track's **hook** (`space`), title, artist, where the
 audio came from, the status pill, the best rating, its crates — and a **stat
-strip**: BPM (grid confidence), key (`⚠ low confidence` under 0.012), energy
+strip**: BPM (grid confidence), key (low / medium / high confidence —
+`theme.keyConfidenceWord`; `⚠ low confidence — check by ear` under 0.012), energy
 (0–10, ranked against this library), loudness (LUFS), vocal share, genre and
 Discogs styles, moods, year, best pair, partners (as vocal · as bed).
 

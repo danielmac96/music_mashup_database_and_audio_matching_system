@@ -156,7 +156,7 @@ def test_the_title_takes_the_slack():
     """Widths are fixed px; on a wide window the title takes what is left over
     rather than the table leaving a gap at the right."""
     assert "const slack = Math.max(0, box.w - sum);" in TABLE
-    assert 'c.width + (c.id === "title" ? slack : 0)' in TABLE
+    assert 'c.width + (c.id === "title" ? slack - titleCut : 0)' in TABLE
 
 
 def test_a_grip_drag_never_reaches_the_sort_header():
@@ -194,7 +194,7 @@ def test_the_search_box_parses_filters():
     library has, a year and vocal-forward; ⏎ pins them."""
     fn = HOOK[HOOK.index("export function parseQuery"):]
     fn = fn[:fn.index("\n}")]
-    for token in ("([ab])$/i", "(\\d{2,3})[-–](\\d{2,3})$", "bpm$/i", "\\+$/",
+    for token in ("([ab])(~?)$/i", "(\\d{2,3})[-–](\\d{2,3})$", "bpm$/i", "\\+$/",
                   '"vox"', 'lo === "stems"'):
         assert token in fn, token
     assert "onPin()" in BAR and 'e.key === "Enter"' in BAR
