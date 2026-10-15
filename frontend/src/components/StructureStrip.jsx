@@ -26,6 +26,8 @@ const SECTION_TOKEN = {
 const tokenOf = (label) => SECTION_TOKEN[String(label || "").toLowerCase().replace(/[^a-z]/g, "")]
   || "--disabled";
 export const sectionColor = (label) => `var(${tokenOf(label)})`;
+// The token itself, for canvas painters that read it through cssVar.
+export const sectionTokenOf = tokenOf;
 
 // The canvas rows (px from the top).
 const H = 156;

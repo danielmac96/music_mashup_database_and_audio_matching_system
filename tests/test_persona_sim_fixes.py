@@ -128,7 +128,7 @@ def test_waveform_route_falls_back_to_the_full_grid_on_a_wrong_stem_tempo(db_pat
 
 def test_snapshots_are_listed_and_loadable():
     studio = _read("components/MixStudio.jsx")
-    rail = _read("components/StudioRail.jsx")
+    rail = _read("components/StudioPanel.jsx")
     assert "readSnapshots" in studio and "loadSnapshot" in studio
     assert "deleteSnapshot" in studio
     assert "onLoadSnapshot(sn)" in rail and "snap-list" in rail
@@ -313,7 +313,7 @@ def test_sets_screen_is_wired():
     assert "+ Set</button>" in _read("components/PairCard.jsx")
     studio = _read("components/MixStudio.jsx")
     assert "const layPairs" in studio and "seed?.chain" in studio
-    assert "onAppendNext" in _read("components/StudioRail.jsx")
+    assert "onAppendNext" in _read("components/StudioPanel.jsx")
 
 
 # ── 7 / 10. dock: keepers, landing key, section type ────────────────────────
@@ -512,13 +512,13 @@ def test_studio_export_places_a_trimmed_clip_where_studio_plays_it():
 
 
 def test_studio_lanes_carry_fades_filters_and_undo():
-    studio, rail = _read("components/MixStudio.jsx"), _read("components/StudioRail.jsx")
+    studio, rail = _read("components/MixStudio.jsx"), _read("components/StudioPanel.jsx")
     engine = (SRC / "engine" / "MashupEngine.js").read_text(encoding="utf-8")
     for k in ('"fadeIn"', '"fadeOut"', '"hpHz"', '"lpHz"'):
         assert k in studio
     assert "createBiquadFilter" in engine and "_fadeAt" in engine
     assert "const undo = useCallback" in studio and 'e.key === "z"' in studio
-    assert "LOW_CUTS" in rail and "nudgeBase" in rail
+    assert "LOW_CUTS" in rail and "nudgeBase" in studio
     # The pills say WHICH chorus and drop.
     assert "fmtTime(o.vocal_section_start ?? 0)" in studio
 
@@ -556,7 +556,7 @@ def test_compare_goes_to_analysis_and_the_card_carries_notes():
     dock = _read("components/PairDock.jsx")
     assert "notes.noteOf(c)" in dock and "pcx-note" in _read("components/PairCard.jsx")
     assert "export function usePairNotes" in _read("hooks/usePairNotes.js")
-    assert "pairNote" in _read("components/StudioRail.jsx")
+    assert "pairNote" in _read("components/StudioPanel.jsx")
 
 
 # ── 17. Discover: roles, fit hints, gaps ────────────────────────────────────

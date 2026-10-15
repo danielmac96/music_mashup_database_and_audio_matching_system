@@ -314,10 +314,12 @@ def test_the_loop_and_studio_arm_the_recipes_levels():
 def test_lane_gain_reads_in_real_decibels():
     """MashupEngine's gain is linear, so 0.8 is −1.9 dB — not the +7.2 dB the
     rail printed with v×24−12."""
-    rail = _read("components/StudioRail.jsx")
+    rail = _read("components/StudioPanel.jsx")
     assert "20 * Math.log10(v)" in rail
     assert "v * 24 - 12" not in rail
-    assert "suggested.bedGain" in rail and "suggested.vocalGain" in rail
+    studio = _read("components/MixStudio.jsx")
+    assert "suggested.bedGain" in studio and "suggested.vocalGain" in studio
+    assert "format={gainDb}" in rail
 
 
 def test_effort_prices_the_transpose_the_pair_plays():

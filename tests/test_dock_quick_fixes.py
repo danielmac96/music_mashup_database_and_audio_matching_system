@@ -138,10 +138,11 @@ def test_studio_reads_one_nudge_for_the_chip_the_rail_and_edited():
     assert "bedLane.offsetSec - vocalLane.offsetSec - nudgeBase" in studio
     assert "nudge {nudgeText(nudgeMs, projectBpm)}" in studio
     assert "Math.abs(nudgeMs - suggested.nudgeSec * 1000)" in studio
-    assert "nudgeMs={nudgeMs}" in studio
+    # The panel's bed Offset knob is the same nudge, handed over once.
+    assert "laneId: bedLane.id, ms: nudgeMs, suggestMs: suggestNudgeMs" in studio
     assert "(bedLane.offsetSec - vocalLane.offsetSec) * 1000" not in studio
-    rail = _read("components/StudioRail.jsx")
-    assert "min={-nudgeRange} max={nudgeRange}" in rail
+    rail = _read("components/StudioPanel.jsx")
+    assert "min={-range} max={range}" in rail and "nudge ? nudge.ms" in rail
     assert "min={-2000} max={2000}" not in rail
 
 

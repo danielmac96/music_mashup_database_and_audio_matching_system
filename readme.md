@@ -679,42 +679,55 @@ Firecrawl credits (use the scrape again only when the tracklist itself changed).
 ### Studio
 
 A multi-track DAW over any number of stems: SoundTouch worklet playback (tempo
-and pitch decoupled, sample-locked), per-lane waveform, beat grid and structure
-ribbon, SYNC to project BPM (half/double-time aware), bar/beat snap, clip trim,
-gain/mute/solo, pitch ±12 st, ⚡key, ⇥grid, alt+click to set bar 1, A/B
-crossfader, loops, per-lane **fade in/out** and **low/high cut** (120 Hz is the
-bass swap the bass-clash advice asks for), and **undo/redo** (↶ ↷,
-ctrl/⌘+Z, shift+ctrl/⌘+Z, ctrl+Y — debounced, so a drag is one step). Lane
-controls live in the adjustments rail; every slider has a tick at the
-matcher's suggested value.
+and pitch decoupled, sample-locked), one canvas strip per lane, SYNC to the
+project BPM (half/double-time aware), undo/redo (debounced, so a drag is one
+step). The player bar hides in Studio.
 
-**+ Add** ranks the library by fit to the timeline — stretch to the project
-tempo and Camelot steps from the first lane's key as played — and, above it,
-lists what the matcher scored against the lanes already loaded: a **second
-vocal over this bed** and **another bed under this vocal**, each placed at its
-scored section and transposed to match.
-
-A pair sent from the dock arrives conformed and placed, with a
-**TIMING** pill row — one pill per suggested overlay, named by its start times
-(`chorus 1:39 ▸ drop 1:16`; `[` `]` cycle, `1–6` jump), each with ✓/~/✗. The
-rail's **offset nudge** is measured from the two sections lined up, so it reads
-the few ms you slid it; the ALIGN bar's nudge chip and "edited" read the same
-number, and an offset of a beat or more prints as beats at the project tempo
-(`−2 beats −8 ms`), the slider covering a bar either way and the suggestion. Each pill carries its own transpose — another chorus
-over another drop can want another shift — and arming it sets the bed's pitch.
-The ALIGN bar also carries the armed timing's **measured harmonic fit** (the
-plan's top pairing when the timing has none) and, when the bed's bass root
-fights the vocal's tonic, a **bass clash — high-pass the bed** chip (the same
-advice the FL README writes). **FL session** exports the armed timing and
-downloads the zip as soon as it is built (the **↓ session** link stays).
-"Next pair" walks the dock's list; **Append next ⇥** lays it *after* the
-arrangement instead, to hear the transition. **+ Set** adds the pair at the
-armed timing to the active set, and a note field writes the pair's note. The
-arrangement auto-saves locally; **Save snapshot** keeps a copy and
-**Snapshots** lists, loads (the current arrangement is snapshotted first) and
-deletes them. **Export WAV** renders server-side with the same fades and
-filters; **FL session** export writes a drop-in folder (§5.11). The player
-bar hides in Studio.
+- **Header**: the pair it was opened on (VOX and BED titles, its tier and
+  percentile), **＋ Add**, and **Render ▾** — **WAV mixdown** (every audible
+  lane, server-side with the same trims, fades and filters), **Stems per lane**
+  (one WAV per audible lane, links appear in the header) and **FL session**
+  (§5.11; it now sends the pair's two lanes as they stand — rate, transpose,
+  nudge off the matcher's, trim, level, fades, filters — and downloads the zip
+  when built).
+- **Toolbar**: play/pause, stop, the clock (`bar.beat · m:ss`), the project
+  BPM (− / field / +; every lane set to SYNC re-rates), zoom − / + / Fit, snap
+  (bar / beat / off), loop bars 1/2/4/8 (`L`; shift-drag the ruler for any
+  loop), and the pair's chips: `→ 124.0 BPM`, `bed +2 st`, `lands 8A`, the
+  nudge (`no grid` when nothing measured it), the measured harmony and a bass
+  clash. ↶ ↷ and **✕ clear** (Undo on the toast).
+- **Timing**: one pill per suggested overlay (`chorus 1:39 ▸ drop 1:16`; `[`
+  `]` cycle, `1–6` jump), each with ✓/~/✗ and its own transpose.
+- **Timeline**: a 26px ruler (click to scrub, shift-drag to loop), 64px lanes
+  with a 150px head (role, title, the key it plays in, BPM, SYNC, M/S) and a
+  canvas strip — the stem's waveform with its section names, the fades as
+  ramps, drawn as loud as the lane's gain and the crossfader leave it, dimmed
+  when muted or soloed away. **Drag a clip** to move it (snapping to the
+  grid; **alt** moves freely; an alt-*click* on a beat line sets bar 1).
+  **Drag an edge** to trim it or extend it into the rest of the song — the
+  audio stays anchored; the selected lane shows the whole song as a dashed
+  ghost. A pair arrives aligned: the bed stretched to the vocal, transposed by
+  the card's shift, nudged by the stored offset, high-passed at 120 Hz on a
+  bass clash, looping the vocal section.
+- **Adjustments** (under the lanes; drag its top edge, double-click to fit,
+  remembered as `mashup.studio.panel.v1`, never leaving the timeline under
+  96px): one 370px card per lane with **Tempo**, **Pitch**, **Offset** (the
+  bed's is the nudge against the vocal; any other lane's is from where the
+  matcher placed it, shown in ms or beats and its start bar) and **Gain** (dB
+  of the linear gain) — each with a grey tick at the suggestion
+  (`plan.lanes`, §5.11) and "edited" once moved; M, S, SYNC, ⚡ key, ⇥ grid,
+  ↺ and **more ▾** (the stem, fades 0–8 s, low and high cut, ▲▼, remove); a
+  **Uses** strip of the whole song with the played span outlined and ◂ +1 bar /
+  +1 bar ▸ / ⟷ section. **↺ all to suggestion** resets every lane. The right
+  column holds the crossfader, the pair's note, the build's rating (the
+  dock's), snapshots (save, list, load — the arrangement is snapshotted first
+  — delete), **+ Set**, **Append next ⇥** and **Next pair ⏎**.
+- **＋ Add** ranks the library by fit to the timeline — stretch to the project
+  tempo and Camelot steps from the first lane's key as played — and lists what
+  the matcher scored against the lanes loaded: a **second vocal over this
+  bed** and **another bed under this vocal**, placed and transposed.
+- **Keys**: space, `←/→` nudge the selected lane a beat (shift: a bar), `m`,
+  `s`, ⌘Z / ⌘⇧Z, `⏎` next pair, `del` remove, `L`, `[` `]`, `1–6`.
 
 ### Sets
 
@@ -1385,8 +1398,9 @@ caches responses, and opens a breaker after repeated failures.
   grid), `gain`, `clip_start` / `clip_end` (the chosen sections) — which is
   what Studio's grey slider ticks read (`matcher/plan._lane_suggestions`). The batch
   (`POST /api/mashups/session/batch`) takes `pairs` — explicit pairs, each
-  with its sections and its own `lanes` — instead of the filtered top N. The
-  Studio UI does not send its lanes yet (§9). Batches zip, and skip a pair
+  with its sections and its own `lanes` — instead of the filtered top N.
+  Studio sends its pair's two lanes with every session export. Batches zip,
+  and skip a pair
   that cannot render rather than failing the rest.
 - **Pair lists** (`render/exports.py`), from a set or the dock's top N, one
   module so the two cannot disagree: **CSV** (both sides, sections, landing
@@ -1624,8 +1638,8 @@ Existing databases migrate on start.
   `keyRel`'s suggestion (a label on an unmeasured card) or a fresh Camelot sum.
   A pair's section indexes travel with it to the export
   (`tests/test_pair_recipe_consistency.py`).
-- **Studio's lane gain is linear** (`MashupEngine`'s gain node), so the rail
-  prints `20·log10(gain)` dB (`StudioRail.gainDb`). It printed `gain×24−12`,
+- **Studio's lane gain is linear** (`MashupEngine`'s gain node), so the panel
+  prints `20·log10(gain)` dB (`StudioPanel.gainDb`). It printed `gain×24−12`,
   reading 0.8 as +7.2 dB.
 - **`confidence_tier` and `compat` have one definition: `matcher/compat.py`.**
   The tier is decided once per row from `score_percentile` and
@@ -1655,7 +1669,7 @@ Existing databases migrate on start.
   run finishes (a failed run must not make stale pairs look fresh). A new
   writer that skips it leaves the dock claiming the pairs are current.
 - **One nudge** (`MixStudio` `nudgeMs`, measured from `nudgeBase`) feeds the
-  ALIGN chip, the rail's slider and "edited". The chip once printed the raw
+  toolbar's nudge chip, the bed card's Offset knob and "edited". The chip once printed the raw
   gap between the lanes' timeline positions ("nudge 39572 ms") beside a rail
   reading −1437 ms. Beats + ms is `recipe.nudge_text` / `pairModel.nudgeText`,
   the same arithmetic (test-pinned).
@@ -2211,8 +2225,7 @@ driven by the 100-persona browser simulation (§9) against a synthesised
       `pair_recipe` with the bed's level from stem loudness and the bass-clash
       high-pass, armed by the loop, Studio and the FL session; effort priced
       on the measured transpose (done, §5.7, §7). The FL session takes
-      Studio's lane state on the API (done, §5.11); still open: Studio sending
-      its lanes with the export.
+      Studio's lane state, trim included, and Studio sends it (done, §5.11).
    2. **A legible pair** — the recipe's DO / WATCH rows on the card and Set
       rows (done, §4). Still open: the strip in Studio's ALIGN bar, the vocal
       out of register (needs `f0` after the shift, phase 3), plain-language
@@ -2268,9 +2281,14 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    preview, four exports; the rail slot is gone — one active set, picked in
    the header), B5 (the FL session honours a lane's trim and the `hp_hz` /
    `lp_hz` names; the plan carries per-lane suggestions; the mixdown already
-   took trims, fades and filters, and Studio already saved them per lane).
-   Next: 7 Studio, 8 clean-up (drop the legacy CSS aliases). Until a
-   screen's step lands it keeps its old rail-slot block.
+   took trims, fades and filters, and Studio already saved them per lane),
+   7 (Studio: the pair header and Render ▾ with stems per lane, the toolbar's
+   chips, 64px lanes drawing gain, fades and section names, alt-drag off the
+   grid, the bottom Adjustments panel with per-lane cards, suggestion ticks
+   from `plan.lanes` and the Uses strip; the FL session now sends the lanes;
+   the side rail is gone).
+   Next: 8 clean-up (drop the legacy CSS aliases and dead rules, check
+   1280, 1440 and 1920 wide).
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in
 Discover (nothing external is analysed — rows show the tempo an upload prints,

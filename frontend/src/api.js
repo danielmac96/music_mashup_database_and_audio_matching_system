@@ -373,13 +373,16 @@ export const api = {
   // this is something you can actually mix.
   // `sections` ({ vocal, inst } section indexes) names the pairing to export —
   // Studio's armed timing; without it the server falls back to its own pick.
-  startSessionExport: (vocalSongId, instSongId, sections = null) =>
+  // `lanes` (optional): Studio's lane state per role — rate, transpose, nudge,
+  // trim, level, fades, filters (render/session.lane_overrides).
+  startSessionExport: (vocalSongId, instSongId, sections = null, lanes = null) =>
     jsonFetch("/api/studio/session", {
       method: "POST",
       body: JSON.stringify({
         vocal_song_id: vocalSongId, inst_song_id: instSongId,
         vocal_section_idx: sections?.vocal ?? null,
         inst_section_idx: sections?.inst ?? null,
+        ...(lanes?.length ? { lanes } : {}),
       }),
     }),
 

@@ -220,6 +220,9 @@ export default function App() {
     vocalSectionStart: c.vocal_section_start ?? 0,
     instSectionStart: c.inst_section_start ?? 0,
     scoredOption: scoredOptionOf(c),
+    // Studio's header: the pair's tier and percentile as the dock printed them.
+    confidenceTier: c.confidence_tier ?? null,
+    percentile: c.score_percentile ?? null,
   });
 
   // `c` on a pair (or ⇄ Compare): Analysis › Compare, vocal against bed.
