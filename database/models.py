@@ -2293,6 +2293,46 @@ def replace_sections(song_id: int, sections: List[Dict],
             song_id, outcome["moved"], outcome["flagged"])
 
 
+def relabel_sections(db_path: Path = DB_PATH) -> int:
+    """Re-run the section labeller (analysis/structure.label_segments) over the
+    stored measurements of every track — energy, vocal presence, repetition —
+    and write the labels that changed. Returns how many tracks changed.
+
+    The one writer of `sections` besides replace_sections, and only of
+    `label`/`confidence`: boundaries and indexes never move, so judgements in
+    pair_feedback still name the same music and need no remap. It lets a
+    labeller fix reach an analysed library without re-analysing it; Score
+    library runs it first (api/workers/match_worker.py)."""
+    from analysis.structure import label_segments
+    conn = get_conn(db_path)
+    changed = 0
+    try:
+        rows = conn.execute(
+            "SELECT song_id, section_index, label, confidence, energy, vocal_presence, "
+            "repetition FROM sections ORDER BY song_id, section_index").fetchall()
+        by_song: Dict[int, list] = {}
+        for r in rows:
+            by_song.setdefault(r["song_id"], []).append(dict(r))
+        for song_id, secs in by_song.items():
+            has_vocals = any(s["vocal_presence"] is not None for s in secs)
+            fresh = label_segments([{"energy": s["energy"],
+                                     "vocal_presence": s["vocal_presence"],
+                                     "repetition": s["repetition"]} for s in secs],
+                                   has_vocals=has_vocals)
+            diff = [(f["label"], f["confidence"], song_id, s["section_index"])
+                    for s, f in zip(secs, fresh) if f["label"] != s["label"]]
+            if not diff:
+                continue
+            conn.executemany("UPDATE sections SET label=?, confidence=? "
+                             "WHERE song_id=? AND section_index=?", diff)
+            mark_pairs_input(conn, song_id)
+            changed += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return changed
+
+
 def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
     conn = get_conn(db_path)
     rows = conn.execute(

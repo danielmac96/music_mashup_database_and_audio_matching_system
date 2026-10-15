@@ -33,7 +33,7 @@ export const COLUMNS = [
   { id: "year", label: "Year", w: 56, min: 44, align: "r", sort: "year", defaultVisible: false },
   { id: "len", label: "Length", w: 62, min: 48, align: "r", sort: "len", defaultVisible: false },
   { id: "vox", label: "VOX%", w: 60, min: 44, align: "r", sort: "vox", tip: "Share of the track that is sung" },
-  { id: "best", label: "Best pair", w: 76, min: 56, align: "r", sort: "best", tip: "This track's best pairing, as a percentile of every scored pair" },
+  { id: "best", label: "Best pair", w: 76, min: 56, align: "r", sort: "best", tip: "This track's best pairing in either role, as a percentile of every scored pair — selecting the track opens the pair dock on that side" },
   { id: "pairs", label: "Pairs V/B", w: 80, min: 60, align: "r", sort: "pairs", tip: "Partners as vocal / as bed" },
   { id: "plays", label: "Plays", w: 64, min: 48, align: "r", sort: "plays", defaultVisible: false },
   { id: "rating", label: "Rating", w: 84, min: 70, sort: "rating", tip: "The best rating any of its pairs has earned" },

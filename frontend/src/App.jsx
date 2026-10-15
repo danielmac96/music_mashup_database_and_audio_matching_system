@@ -85,6 +85,13 @@ function Toast() {
   );
 }
 
+// The role a track's best pairing is in: "instrumental" when its best pair as
+// the bed beats its best as the vocal, else "vocal" (also when unscored).
+export function strongerRole(t) {
+  const v = t?.mash?.best_pct_vocal, b = t?.mash?.best_pct_bed;
+  return b != null && (v == null || b > v) ? "instrumental" : "vocal";
+}
+
 export default function App() {
   const [route, setRouteState] = useState(initialRoute);
   const rail = useRailCollapsed();
@@ -359,7 +366,14 @@ export default function App() {
   // clear it, sending the dock back to "Best in library" while the search still
   // showed that one row (68 of 100 simulated users hit it). Clearing is the ✕
   // on the dock's scope line, or Esc on the Library.
-  const selectTrack = (id) => setSelectedTrackId(id);
+  // Selecting a track opens the dock on its stronger side — the side whose
+  // best pair is the Library's Best pair number — so "100" in the table never
+  // opens onto a list of long shots (mash.best_pct_vocal / best_pct_bed).
+  const selectTrack = (id) => {
+    setSelectedTrackId(id);
+    const t = library.tracks.find((x) => x.id === id);
+    if (t) setDockRole(strongerRole(t));
+  };
   const clearSelection = () => setSelectedTrackId(null);
 
   useEffect(() => {

@@ -46,6 +46,13 @@ def label_segments(segs: List[dict], has_vocals: bool) -> List[dict]:
     repetition (int). Adds: label, confidence.
     """
     n = len(segs)
+    # A voiceless section is a drop or a breakdown, never a verse: whether it
+    # is the drop is relative to this track's own sections (energy is relative
+    # already, but a drop at 0.64 in a track whose chorus is 0.9 is still the
+    # bed a producer wants). The fall-through to "verse" put no drop or
+    # breakdown in a 235-section library (2026-10-15 simulation).
+    energies = sorted((s.get("energy") or 0.0) for s in segs)
+    mid = (energies[(n - 1) // 2] + energies[n // 2]) / 2.0 if n else 0.0
     for idx, s in enumerate(segs):
         e = s.get("energy") or 0.0
         v = s.get("vocal_presence")
@@ -57,11 +64,14 @@ def label_segments(segs: List[dict], has_vocals: bool) -> List[dict]:
         if has_vocals:
             if v >= 0.5 and e >= 0.6 and rep >= 2:
                 label, conf = "chorus", min(1.0, 0.6 + 0.4 * min(v, e))
-            elif e >= 0.7 and v < 0.35:
-                label, conf = "drop", min(1.0, 0.5 + 0.5 * e)
-            elif e < 0.45 and v < 0.4:
-                label, conf = "breakdown", 0.5
-            elif v >= 0.4:
+            elif v < 0.4:
+                if e >= 0.7:
+                    label, conf = "drop", min(1.0, 0.5 + 0.5 * e)
+                elif e >= 0.45 and e >= mid:
+                    label, conf = "drop", 0.45
+                else:
+                    label, conf = "breakdown", 0.5
+            else:
                 # vocal section that doesn't repeat and isn't peak energy
                 label = "verse" if rep >= 2 or e < 0.6 else "bridge"
                 conf = 0.5

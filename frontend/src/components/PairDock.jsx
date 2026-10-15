@@ -264,11 +264,17 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
               aria-pressed={role !== "instrumental"} onClick={() => onRole("vocal")}
               title="Pairs where this track is the vocal on top">
               <span className="sw" />As vocal <span className="mono n">{scopeTrack.mash?.as_vocal ?? ""}</span>
+              {scopeTrack.mash?.best_pct_vocal != null && (
+                <span className="mono n faint" title="Best pair on this side, as a library percentile">
+                  · {Math.round(scopeTrack.mash.best_pct_vocal * 100)}</span>)}
             </button>
             <button className={`bed${role === "instrumental" ? " on" : ""}`}
               aria-pressed={role === "instrumental"} onClick={() => onRole("instrumental")}
               title="Pairs where this track is the bed underneath">
               <span className="sw" />As bed <span className="mono n">{scopeTrack.mash?.as_bed ?? ""}</span>
+              {scopeTrack.mash?.best_pct_bed != null && (
+                <span className="mono n faint" title="Best pair on this side, as a library percentile">
+                  · {Math.round(scopeTrack.mash.best_pct_bed * 100)}</span>)}
             </button>
           </div>
         )}

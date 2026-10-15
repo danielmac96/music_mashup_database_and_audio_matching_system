@@ -324,11 +324,13 @@ def test_lane_gain_reads_in_real_decibels():
 
 def test_effort_prices_the_transpose_the_pair_plays():
     """Effort was priced on the Camelot shift before the section pair was
-    known; once the measured shift replaces it, so does its cost."""
+    known; once the measured shift replaces it, so does its cost. (C over F —
+    one wheel step — is left alone since the transpose is priced, phase 1, so
+    the bed here is E under a C vocal, which only a transpose fixes.)"""
     from matcher.effort import effort_total_from_columns, transpose_cost
     from matcher.match import _apply_measured_harmony
     secs = {1: [{"section_index": 0, "chroma_vocal": _chroma(0)}],
-            2: [{"section_index": 0, "chroma_bed": _chroma(5)}]}
+            2: [{"section_index": 0, "chroma_bed": _chroma(4)}]}
     scores = {"bpm_score": 1.0, "key_score": 1.0, "energy_score": 1.0,
               "timbre_score": 1.0, "collision_score": 1.0,
               "effort_stretch": 0.0, "effort_pitch": 0.0, "effort_tempo_fold": 0.0,
@@ -337,10 +339,10 @@ def test_effort_prices_the_transpose_the_pair_plays():
                             {"vocal_section_idx": 0, "inst_section_idx": 0},
                             lambda sid: secs[sid],
                             {"bpm_score": 1.0}, 0.25)
-    assert scores["harmonic_shift"] == -5
-    assert scores["effort_pitch"] == pytest.approx(transpose_cost(-5), abs=1e-4)
+    assert scores["harmonic_shift"] == -4
+    assert scores["effort_pitch"] == pytest.approx(transpose_cost(-4), abs=1e-4)
     assert scores["score_effort"] == pytest.approx(effort_total_from_columns(scores), abs=1e-4)
-    assert scores["score_effort"] > 0.2, "a −5 st transpose is not Free"
+    assert scores["effort_pitch"] > 0.5, "a −4 st transpose is not Free"
 
 
 def test_the_card_does_not_print_the_stretch_twice():

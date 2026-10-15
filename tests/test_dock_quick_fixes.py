@@ -176,7 +176,8 @@ def test_the_match_width_is_shared_between_settings_and_the_dock():
 
 def test_a_click_selects_and_the_scope_line_clears():
     app = _read("App.jsx")
-    assert "const selectTrack = (id) => setSelectedTrackId(id);" in app
+    sel = app[app.index("const selectTrack = (id) => {"):app.index("const clearSelection")]
+    assert "setSelectedTrackId(id);" in sel
     assert "cur === id ? null : id" not in app
     assert 'onClearScope={route === "track" ? null : clearSelection}' in app
     dock = _read("components/PairDock.jsx")

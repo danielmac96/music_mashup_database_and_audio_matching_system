@@ -415,8 +415,8 @@
   }
  ],
  "floors": {
-  "pair_auc": 0.95,
-  "rule_pass": 0.14,
-  "label_accuracy": 0.88
+  "pair_auc": 1.0,
+  "rule_pass": 1.0,
+  "label_accuracy": 1.0
  }
 }

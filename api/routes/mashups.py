@@ -144,10 +144,12 @@ def _with_playback_terms(rows: list) -> list:
     every keypress. Deriving these here keeps one implementation of the Camelot
     math — recomputing it in JS would silently drift from the T1.2 fix — and
     costs the browser no extra round-trip per row."""
+    from matcher.recipe import harmony_unsure_below
+    unsure_below = harmony_unsure_below() if rows else None
     for r in rows:
         # The shift the card prints is the shift that plays: measured harmony
-        # first, Camelot only without it (matcher/recipe.py).
-        r["semitone_shift"] = bed_shift(r)
+        # when it is sure, Camelot otherwise (matcher/recipe.bed_shift).
+        r["semitone_shift"] = bed_shift(r, unsure_below)
         r["stretch_factor"] = compute_stretch_factor(
             r.get("vocal_bpm") or 0.0, r.get("inst_bpm") or 0.0)
         # Phase C: the effort bucket and the cost that dominates it, derived
@@ -157,7 +159,10 @@ def _with_playback_terms(rows: list) -> list:
             r["effort_label"] = None
             r["effort_reason"] = None
             continue
-        r["effort_label"] = effort_label(float(effort))
+        sf = r["stretch_factor"]
+        r["effort_label"] = effort_label(
+            float(effort), r["semitone_shift"],
+            abs(sf - 1.0) * 100.0 if sf else None)
         parts = {
             "stretch_cost": r.get("effort_stretch") or 0.0,
             "pitch_cost": r.get("effort_pitch") or 0.0,

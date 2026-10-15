@@ -5,7 +5,7 @@ patience) who runs a goal-weighted list of tasks in Chromium. Every task
 drives the real UI and ends in DOM / network probes. Output: one JSON line
 per persona in results.jsonl.
 """
-import argparse, asyncio, json, os, random, time, urllib.request
+import argparse, asyncio, json, os, random, re, time, urllib.request
 from pathlib import Path
 from playwright.async_api import async_playwright
 
@@ -82,6 +82,7 @@ async def scope_to_track(pg, rng):
     await rows.first.wait_for(timeout=8000)
     n = await rows.count()
     idx = rng.randrange(min(n, 18))
+    title = (await rows.nth(idx).locator(".tt-title").inner_text()).strip()
     t0 = time.time()
     await rows.nth(idx).locator(".tt-c").nth(2).click()
     await pg.wait_for_timeout(200)
@@ -91,7 +92,7 @@ async def scope_to_track(pg, rng):
         pass
     await pg.wait_for_timeout(700)
     ms = int((time.time() - t0) * 1000)
-    return idx, ms
+    return idx, ms, title
 
 # ── tasks ─────────────────────────────────────────────────────────────────────
 async def t_layout(pg, P, rng, st):
@@ -135,17 +136,25 @@ async def t_help(pg, P, rng, st):
 
 async def t_pick_track(pg, P, rng, st):
     await library(pg)
-    idx, ms = await scope_to_track(pg, rng)
+    idx, ms, title = await scope_to_track(pg, rng)
     cards = await pg.locator(".pair-card").count()
     scope = await pg.locator(".pd-scopetext").inner_text() if await pg.locator(".pd-scopetext").count() else ""
     head = await pg.locator(".pd-head, .pd-top").first.inner_text()
     tiers = await pg.locator(".pd-tier").all_inner_texts()
     pct = await pg.locator(".pair-card").first.inner_text() if cards else ""
     notes = []
+    # Does the dock open on the side the table's Best pair number is from?
+    # The top card's percentile should be that number (both are percentiles).
+    t = next((x for x in TRACKS if x["title"] == title), None)
+    table_best = round(100 * t["mash"]["best_pct"], 1) if t and (t.get("mash") or {}).get("best_pct") is not None else None
+    m = re.search(r"(\d+(?:\.\d+)?)%", pct)
+    card_best = float(m.group(1)) if m else None
+    side_match = None if table_best is None or card_best is None else abs(table_best - card_best) <= 1.0
+    if side_match is False: notes.append(f"table Best pair {table_best:.0f} but the dock opened on a side whose top pair is {card_best:.0f}")
     if cards == 0: notes.append("selected track shows no pairs")
     if ms > P["patience_ms"]: notes.append(f"dock took {ms} ms to scope")
     tiers_c = [t.replace("\n", " ") for t in tiers]
-    return dict(ok=cards > 0, ms=ms, notes=notes, data=dict(row=idx, cards=cards, scope=scope[:80], tiers=tiers_c, first=pct[:160]))
+    return dict(ok=cards > 0, ms=ms, notes=notes, data=dict(row=idx, side_match=side_match, table_best=table_best, card_best=card_best, cards=cards, scope=scope[:80], tiers=tiers_c, first=pct[:160]))
 
 async def t_audition(pg, P, rng, st):
     await first_card(pg)

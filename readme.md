@@ -368,7 +368,10 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
 - Click a row to **scope the pair dock** to it (a click selects; it never
   toggles — the ✕ on the dock's scope line, or `esc`, goes back to the whole
   library); click anywhere in the **title/artist column** to open the track
-  detail screen.
+  detail screen. The dock opens on the track's **stronger side** — As vocal
+  or As bed, whichever holds the Best pair number in the table
+  (`App.strongerRole`, `mash.best_pct_vocal` / `best_pct_bed`) — and the
+  switch shows each side's best beside its partner count.
 - The permanent **pair dock** (400px, drag its left edge between 320 and 640;
   remembered as `mashup.dockw.v1`) lists the best pairs for the selected track
   — **for {track}**, with an **As vocal / As bed** switch carrying each side's
@@ -976,6 +979,13 @@ which is why the core must not mix analysers within one library.
    **repetition** (near-identical mean chroma elsewhere).
 4. **Labels** by explainable heuristics — the repeated, loud, vocal-heavy
    cluster is the chorus: `intro / verse / chorus / drop / breakdown / bridge / outro`.
+   A voiceless section (vocal presence < 0.4) is never a verse: it is the
+   **drop** when loud (≥ 0.7) or at least the track's median section energy
+   (and ≥ 0.45), else a **breakdown**. The fall-through to `verse` labelled a
+   235-section library without one drop (2026-10-15 simulation).
+   `models.relabel_sections` re-runs the labeller over the stored energy,
+   vocal presence and repetition, so a labeller change reaches an analysed
+   library without re-analysis; Score library runs it first.
 5. Per-section measurements: own **BPM** with `bpm_source` (`section_estimate`,
    or `track_fallback` when the grid is too short/unsteady; half/double folds
    snap back to the track tempo), grid confidence, absolute energy, energy
@@ -1090,7 +1100,10 @@ harmonic shift, when the two sections had chroma, still overrides it.
 
 `score_total` is the weighted fit discounted by `EFFORT_WEIGHT = 0.25` × effort,
 so a free-to-build pair can outrank a slightly better one needing a destructive
-stretch. Labels: Free / Light / Heavy. Scoring runs **vectorised** in blocks over
+stretch. Labels: Free / Light / Heavy — and **Heavy whatever the total** for
+a transpose of 4+ semitones or a stretch of 8%+ (`effort.HEAVY_SHIFT_ST`,
+`HEAVY_STRETCH_PCT`, shared with the recipe): pitch is 30% of effort, so a
+tritone alone summed to "Light". Scoring runs **vectorised** in blocks over
 pre-computed per-stem columns, and keeps the best `MAX_CANDIDATE_ROWS = 200 000`
 in a bounded heap.
 
@@ -1134,8 +1147,11 @@ shipped values; the right weights belong to a library, stored in settings.json.
 
 **Measured harmony** (`matcher/harmony.py`). Cross-correlate the vocal section's
 `chroma_vocal` with the bed section's `chroma_bed` over all 12 rotations: the
-argmax is the transposition (folded to [-6, +6]), the peak is the fit, and
-peak/runner-up is the confidence. This replaces `key_score` when both sides have
+best rotation is the transposition (folded to [-6, +6]) — the best fit **net
+of what the transpose costs** (`fit − TRANSPOSE_PRICE 0.4 × effort.transpose_cost`),
+so a vocal one wheel step from its bed (A minor over E minor, six shared
+notes) stays where it is instead of moving +5 to land on the vocal's root —
+the fit at that shift is the fit, and net peak / net runner-up is the confidence. This replaces `key_score` when both sides have
 chroma. **When the transpose is a close call** is ranked against the library:
 confidence is `1 − runner-up/peak` on correlations mapped to 0–1, so a clear
 gap (0.90 vs 0.80) is only ~0.05 and the old fixed 0.15 flagged every pair (200
@@ -1148,7 +1164,10 @@ the shift and returns advice ("high-pass the bed" / mute `bed_bass.wav`), not a
 veto.
 
 **The bed's transpose** has one definition, `matcher/recipe.bed_shift`: the
-measured shift when the section pair had chroma, else the Camelot estimate. The
+measured shift when the section pair had chroma **and the measurement is
+sure** (`harmonic_sure`, else `harmony_sure` against the library's threshold),
+else the Camelot estimate — a close call never imposes a ±5–6 st transpose the
+wheel did not ask for; the WATCH row names the measured alternative. The
 listing sends it as `semitone_shift`, so the card, the dock's loop, Studio, a
 set's landing and the FL export all play the shift the card prints (§7).
 The block pass prices `pitch_cost` on the Camelot shift (the section pair is
@@ -1685,7 +1704,9 @@ Existing databases migrate on start.
   original on a short copy. Every write of `sections` goes through
   `replace_sections`, which carries the judgements onto the new indexes or
   flags them `sections_stale` in the same transaction (§5.5) — a second path
-  that rewrites sections would silently re-point verdicts at other music.
+  that rewrites sections would silently re-point verdicts at other music. The
+  one exception is `relabel_sections`, which writes only `label` and
+  `confidence`: indexes and boundaries never move, so no judgement needs a remap.
 - **One path takes a judgement away**, and it deletes the whole row:
   `delete_pair_feedback` / `DELETE /api/mashups/feedback`, reached by clicking
   the star already set. `verdict` is `NOT NULL`, so there is no "rated nothing"

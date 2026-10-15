@@ -132,8 +132,9 @@ _GROUPS = (
                  "residual vocal ratio of a bed (vocals + mix)"),
     # v2 (phase 4): sections also carry vocal_activity, per-stem band
     # occupancy and, given a melody, the sung range. v3: track and section
-    # BPM fitted through the beats.
-    FeatureGroup("librosa.structure", 3, "librosa", 1, _structure_params,
+    # BPM fitted through the beats. v4: a voiceless section is a drop or a
+    # breakdown, never a verse (label_segments).
+    FeatureGroup("librosa.structure", 4, "librosa", 1, _structure_params,
                  "sections: boundaries, labels, per-section measurements "
                  "(mix + vocal/instrumental/bass stems)"),
     # ── Essentia (analysis/essentia_groups.py) ────────────────────────────────
@@ -164,7 +165,7 @@ _GROUPS = (
                  "voice, gender, danceable, tonal, bright, seven moods, "
                  "mood/theme and instrument top-5", step="effnet"),
     # v3: section BPM fitted through the beats.
-    FeatureGroup("essentia.structure", 3, "essentia", 1, _structure_params,
+    FeatureGroup("essentia.structure", 4, "essentia", 1, _structure_params,
                  "sections on the Essentia beat grid (the librosa segmenter fed "
                  "essentia.rhythm's beats and phase)"),
 )
