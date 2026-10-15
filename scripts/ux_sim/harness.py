@@ -194,6 +194,7 @@ async def t_audition(pg, P, rng, st):
     return dict(ok=started is not None, ms=started, notes=notes, data=dict(transport=(tr or {}).get("txt")))
 
 async def t_expand(pg, P, rng, st):
+    await library(pg)
     c = await first_card(pg)
     await c.locator(".pc-name").first.click()
     await pg.wait_for_timeout(600)
@@ -645,11 +646,13 @@ async def t_import_link(pg, P, rng, st):
     inp = pg.locator("input[placeholder*='soundcloud.com/artist']")
     if not await inp.count(): return dict(ok=False, notes=["paste bar did not open"])
     await inp.fill("https://soundcloud.com/some-artist/some-track")
+    # Snapshot BEFORE asking: an answer that comes back at once (the
+    # reachability check) must not land in the "before" text.
+    before = await pg.evaluate("document.body.innerText")
     t0 = time.time()
     pv = pg.locator("button", has_text="Preview")
     if await pv.count(): await pv.first.click()
     else: await inp.press("Enter")
-    before = await pg.evaluate("document.body.innerText")
     waited = 0
     while waited < 30000:
         await pg.wait_for_timeout(1000); waited += 1000

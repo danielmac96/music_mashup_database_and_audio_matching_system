@@ -53,7 +53,7 @@ function SectionWave({ songId, stem, start, end, duration, role }) {
     });
   }, [waveform, start, end, duration]);
   if (!peaks.length) return <div className="pcx-wave empty" />;
-  return <MiniWave peaks={peaks} role={role} />;
+  return <MiniWave peaks={peaks} role={role} height={16} />;
 }
 
 export function PairCard({ candidate: c, rating, onRate, focused = false, expanded = false,
@@ -212,7 +212,7 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
         ))}
       </div>
 
-      <div className="pcx-side">
+      <div className="pcx-side pcx-sideline">
         {h.known ? (
           <span className="mono pcx-harm"
             style={{ color: compatColor(h.fitPct) }}
@@ -259,19 +259,7 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
         </div>
       </details>
 
-      {onNote && (
-        <input className="pcx-note" value={draft}
-          placeholder="Note — opener · needs a riser · use the 2nd chorus"
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => { if (draft.trim() !== (note || "")) onNote(draft.trim()); }}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Enter" || e.key === "Escape") {
-              if (e.key === "Escape") setDraft(note || "");
-              e.currentTarget.blur();
-            }
-          }} />
-      )}
+
 
       {rating && onReason && <WhyRow rating={rating} reasons={reasons} onReason={onReason} />}
 
@@ -282,14 +270,28 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
             title={`Add to the set “${setName || "My set"}” (a)`}>+ Set</button>
         )}
         {onCompare && (
-          <button className="ui-btn" onClick={onCompare}
-            title="Compare the two tracks in Analysis (c)">⇄ Compare</button>
+          <button className="ui-btn" onClick={onCompare} aria-label="Compare"
+            title="Compare the two tracks in Analysis (c)">⇄</button>
         )}
-        <span className="grow" />
+        {onNote && (
+          <input className="pcx-note grow" value={draft}
+            placeholder="Note — opener · use the 2nd chorus"
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => { if (draft.trim() !== (note || "")) onNote(draft.trim()); }}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter" || e.key === "Escape") {
+                if (e.key === "Escape") setDraft(note || "");
+                e.currentTarget.blur();
+              }
+            }} />
+        )}
+        {!onNote && <span className="grow" />}
         {onHide && (
           <button className="ui-btn ghosted" onClick={onHide}
-            title="Hide this pair (h) — a display preference, never a verdict">
-            {hidden ? "↺ Unhide" : "⊘ Hide"}
+            aria-label={hidden ? "Unhide" : "Hide"}
+            title={hidden ? "Show this pair again" : "Hide this pair (h) — a display preference, never a verdict"}>
+            {hidden ? "↺" : "⊘"}
           </button>
         )}
       </div>

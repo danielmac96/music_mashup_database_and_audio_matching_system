@@ -59,7 +59,7 @@ def test_meters_are_spelled_out_and_folded():
     folded = card[card.index('<details className="pcx-details">'):card.index("</details>")]
     assert "metersOf(c)" in folded and "termsOf(c)" in folded and "{engine}" in folded
     # The decision stays visible: harmony, bass clash, effort.
-    visible = card[card.index('<div className="pcx-side">'):card.index('<details className="pcx-details">')]
+    visible = card[card.index('<div className="pcx-side pcx-sideline">'):card.index('<details className="pcx-details">')]
     assert "pcx-harm" in visible and "pcx-clash" in visible and "pcx-effort" in visible
 
 
