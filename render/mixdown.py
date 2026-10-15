@@ -30,6 +30,10 @@ from render.dsp import (
 
 log = logging.getLogger(__name__)
 
+# Clips rendered at once. Kept small: a pipeline import may be running beside
+# an export, and each Rubber Band clip is its own ffmpeg process.
+RENDER_THREADS = 3
+
 # Kept as module-level names because callers (api/routes/studio.py, tests) and
 # the readme refer to them here.
 MIXDOWN_SR = RENDER_SR
@@ -87,7 +91,11 @@ def build_mixdown(token: str, clips: list[dict],
     # dragged left of zero still renders instead of being clipped away.
     base = min(0.0, *(float(c.get("offset_sec") or 0.0) for c in clips))
 
-    rendered: list[tuple[int, "np.ndarray", float]] = []  # (start_sample, samples, gain)
+    # Check every clip first (cheap, and a bad one fails before any DSP), then
+    # render them side by side: each is independent, and the heavy parts —
+    # decoding, Rubber Band in its own ffmpeg process, scipy filters — release
+    # the GIL. One at a time, a Rubber Band export of a pair took ~16 s.
+    jobs = []
     n = len(clips)
     for idx, c in enumerate(clips):
         song_id = int(c["song_id"])
@@ -100,11 +108,6 @@ def build_mixdown(token: str, clips: list[dict],
             _tick(None, f"Clip {idx + 1}: no {stem} audio for song {song_id} — "
                         "separate/download it first")
             return None
-
-        rate = clamp_rate(c.get("rate"))
-        semitones = clamp_semitones(c.get("semitones"))
-        gain = clamp_gain(c.get("gain"))
-        offset = float(c.get("offset_sec") or 0.0)
         # None (not 0.0) means "no trim" — a clip genuinely starting at 0.0 is a
         # different instruction from one that was never given a start.
         start_sec = c.get("start_sec")
@@ -114,10 +117,14 @@ def build_mixdown(token: str, clips: list[dict],
         if start_sec is not None and end_sec is not None and end_sec <= start_sec:
             _tick(None, f"Clip {idx + 1}: end_sec must be after start_sec")
             return None
+        jobs.append((idx, c, path, start_sec, end_sec))
 
-        pct_lo = int(5 + 85 * idx / n)
+    def _render(job):
+        idx, c, path, start_sec, end_sec = job
+        rate = clamp_rate(c.get("rate"))
+        semitones = clamp_semitones(c.get("semitones"))
         label = f"Clip {idx + 1}/{n}: "
-        _tick(pct_lo, f"{label}loading {path.name}…")
+        _tick(int(5 + 85 * idx / n), f"{label}loading {path.name}…")
         y = load_segment(path, MIXDOWN_SR, start_sec=start_sec, end_sec=end_sec,
                          max_secs=MAX_MIXDOWN_SECS, rate=rate)
         y = conform(y, MIXDOWN_SR, rate, semitones,
@@ -126,9 +133,12 @@ def build_mixdown(token: str, clips: list[dict],
                           float(c.get("lp_hz") or 0.0))
         y = apply_fades(y, MIXDOWN_SR, float(c.get("fade_in") or 0.0),
                         float(c.get("fade_out") or 0.0))
+        start = int(round((float(c.get("offset_sec") or 0.0) - base) * MIXDOWN_SR))
+        return (start, y, clamp_gain(c.get("gain")))
 
-        start = int(round((offset - base) * MIXDOWN_SR))
-        rendered.append((start, y, gain))
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max(1, min(RENDER_THREADS, n))) as pool:
+        rendered = list(pool.map(_render, jobs))       # (start_sample, samples, gain)
 
     _tick(92, "Summing timeline…")
     total = max(start + len(y) for start, y, _ in rendered)

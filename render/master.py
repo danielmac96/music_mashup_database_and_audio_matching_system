@@ -17,9 +17,12 @@ from typing import Dict, Optional, Tuple
 import numpy as np
 
 CEILING_DBTP = -1.0
-OVERSAMPLE = 4
+OVERSAMPLE = 4          # BS.1770-4 Annex 2 (_TP_PHASES)
 LOOKAHEAD_MS = 5.0
 RELEASE_MS = 80.0
+# 4× oversampling can read a peak up to ~0.1 dB under a finer meter, so the
+# limiter aims that far under the ceiling: −1 dBTP holds by any meter.
+TP_MARGIN_DB = 0.1
 BLOCK = 64          # gain is decided per block of samples, then interpolated
 
 
@@ -72,34 +75,64 @@ def integrated_lufs(y, sr: int) -> Optional[float]:
     return round(-0.691 + 10.0 * math.log10(float(keep.mean())), 2)
 
 
-def _oversampled_abs(y) -> np.ndarray:
-    from scipy.signal import resample_poly
-    return np.abs(resample_poly(np.asarray(y, dtype="float32"), OVERSAMPLE, 1))
+# The true-peak interpolator BS.1770-4 Annex 2 specifies: 4× oversampling by
+# a 48-tap FIR in four 12-tap phases. Short enough to run as four np.convolve
+# passes (~0.2 s on a 200 s mix, where scipy's resample_poly with its default
+# long filter took ~2 s a call and made a mastered export 2–3× slower).
+_TP_PHASES = np.array([
+    [0.0017089843750, 0.0109863281250, -0.0196533203125, 0.0332031250000,
+     -0.0594482421875, 0.1373291015625, 0.9721679687500, -0.1022949218750,
+     0.0476074218750, -0.0266113281250, 0.0148925781250, -0.0083007812500],
+    [-0.0291748046875, 0.0292968750000, -0.0517578125000, 0.0891113281250,
+     -0.1665039062500, 0.4650878906250, 0.7797851562500, -0.2003173828125,
+     0.1015625000000, -0.0582275390625, 0.0330810546875, -0.0189208984375],
+    [-0.0189208984375, 0.0330810546875, -0.0582275390625, 0.1015625000000,
+     -0.2003173828125, 0.7797851562500, 0.4650878906250, -0.1665039062500,
+     0.0891113281250, -0.0517578125000, 0.0292968750000, -0.0291748046875],
+    [-0.0083007812500, 0.0148925781250, -0.0266113281250, 0.0476074218750,
+     -0.1022949218750, 0.9721679687500, 0.1373291015625, -0.0594482421875,
+     0.0332031250000, -0.0196533203125, 0.0109863281250, 0.0017089843750],
+], dtype="float64")
+# Each phase scaled to unity DC gain: as printed, phases 1–2 sum to 0.973 and
+# read a plateau between samples 0.24 dB low — enough to let a −1 dBTP export
+# measure −0.87 against a 16× reference.
+_TP_PHASES = (_TP_PHASES / _TP_PHASES.sum(axis=1, keepdims=True)).astype("float32")
+
+
+def _true_abs(y) -> np.ndarray:
+    """Per input sample, the largest |value| among it and the three
+    interpolated points after it (BS.1770-4 Annex 2)."""
+    y = np.asarray(y, dtype="float32")
+    out = np.abs(y)
+    if not len(y):
+        return out
+    for h in _TP_PHASES:
+        np.maximum(out, np.abs(np.convolve(y, h, mode="same")), out=out)
+    return out
 
 
 def true_peak_db(y) -> Optional[float]:
-    """True peak in dBTP, estimated at 4× oversampling. None for silence."""
+    """True peak in dBTP (BS.1770-4 4× oversampling). None for silence."""
     if not len(y):
         return None
-    peak = float(_oversampled_abs(y).max())
+    peak = float(_true_abs(y).max())
     return round(20.0 * math.log10(peak), 2) if peak > 0 else None
 
 
-def limit(y, sr: int, ceiling_dbtp: float = CEILING_DBTP) -> np.ndarray:
-    """A lookahead brickwall: the gain each block needs to keep the
-    oversampled peak under the ceiling, held back by the lookahead and
-    released slowly, interpolated per sample. A final trim catches what the
-    interpolation lets through, so the result never exceeds the ceiling."""
+def _limit(y, sr: int, ceiling_dbtp: float, true_abs=None) -> Tuple[np.ndarray, float]:
+    """`limit`, also returning the result's true peak (linear). `true_abs` is
+    y's own `_true_abs` when the caller has it — the true peak scales with a
+    constant gain, so master() measures its input once, not once a pass."""
     y = np.asarray(y, dtype="float32")
     if not len(y):
-        return y
-    ceil = 10.0 ** (ceiling_dbtp / 20.0)
-    osa = _oversampled_abs(y)
-    per_sample = osa[: len(y) * OVERSAMPLE].reshape(-1, OVERSAMPLE).max(axis=1)
-    if per_sample.max() <= ceil:
-        return y.astype("float32")
+        return y, 0.0
+    ceil = 10.0 ** ((ceiling_dbtp - TP_MARGIN_DB) / 20.0)
+    per_sample = _true_abs(y) if true_abs is None else true_abs
+    top = float(per_sample.max())
+    if top <= ceil:
+        return y, top
     nb = int(math.ceil(len(y) / BLOCK))
-    pad = np.zeros(nb * BLOCK)
+    pad = np.zeros(nb * BLOCK, dtype="float32")
     pad[: len(per_sample)] = per_sample
     need = np.minimum(1.0, ceil / np.maximum(pad.reshape(nb, BLOCK).max(axis=1), 1e-12))
     # Lookahead: a block already turns down for a peak in the next few.
@@ -113,12 +146,21 @@ def limit(y, sr: int, ceiling_dbtp: float = CEILING_DBTP) -> np.ndarray:
         cur = need[i] if need[i] < cur else min(need[i], 1.0 - (1.0 - cur) * rel)
         g[i] = cur
     centres = np.arange(nb) * BLOCK + BLOCK / 2.0
-    gain = np.interp(np.arange(len(y)), centres, g)
-    out = (y * gain).astype("float32")
-    peak = float(_oversampled_abs(out).max())
+    gain = np.interp(np.arange(len(y), dtype="float32"), centres, g).astype("float32")
+    out = y * gain
+    peak = float(_true_abs(out).max())
     if peak > ceil:
         out *= ceil / peak
-    return out.astype("float32")
+        peak = ceil
+    return out.astype("float32"), peak
+
+
+def limit(y, sr: int, ceiling_dbtp: float = CEILING_DBTP) -> np.ndarray:
+    """A lookahead brickwall: the gain each block needs to keep the
+    oversampled peak under the ceiling, held back by the lookahead and
+    released slowly, interpolated per sample. A final trim catches what the
+    interpolation lets through, so the result never exceeds the ceiling."""
+    return _limit(y, sr, ceiling_dbtp)[0]
 
 
 def master(y, sr: int, target_lufs: Optional[float] = None,
@@ -129,18 +171,22 @@ def master(y, sr: int, target_lufs: Optional[float] = None,
     Returns (samples, {"lufs", "true_peak", "gain_db"})."""
     y = np.asarray(y, dtype="float32")
     gain_db = 0.0
-    if target_lufs is not None:
-        now = integrated_lufs(y, sr)
-        if now is not None:
-            gain_db = float(target_lufs) - now
-            out = limit(y * 10 ** (gain_db / 20.0), sr, ceiling_dbtp)
-            after = integrated_lufs(out, sr)
-            if after is not None and abs(after - target_lufs) > 0.3:
-                gain_db += float(target_lufs) - after
-                out = limit(y * 10 ** (gain_db / 20.0), sr, ceiling_dbtp)
-        else:
-            out = limit(y, sr, ceiling_dbtp)
+    ta = _true_abs(y)
+
+    def at(db):
+        k = 10 ** (db / 20.0)
+        return _limit(y * k, sr, ceiling_dbtp, true_abs=ta * k)
+
+    now = integrated_lufs(y, sr) if target_lufs is not None else None
+    if now is None:
+        out, peak = at(0.0)
     else:
-        out = limit(y, sr, ceiling_dbtp)
-    return out, {"lufs": integrated_lufs(out, sr), "true_peak": true_peak_db(out),
+        gain_db = float(target_lufs) - now
+        out, peak = at(gain_db)
+        after = integrated_lufs(out, sr)
+        if after is not None and abs(after - target_lufs) > 0.3:
+            gain_db += float(target_lufs) - after
+            out, peak = at(gain_db)
+    return out, {"lufs": integrated_lufs(out, sr),
+                 "true_peak": round(20.0 * math.log10(peak), 2) if peak > 0 else None,
                  "gain_db": round(gain_db, 2)}

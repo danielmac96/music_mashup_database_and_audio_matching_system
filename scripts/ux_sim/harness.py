@@ -206,7 +206,7 @@ async def t_expand(pg, P, rng, st):
     do = await ex.locator(".pcx-do").all_inner_texts()
     vp = P["viewport"][1]
     notes = []
-    if box and box["height"] > vp * 0.6: notes.append(f"expanded card is {int(box['height'])}px tall — {int(100*box['height']/vp)}% of the window")
+    if box and box["height"] > vp * 0.4: notes.append(f"expanded card is {int(box['height'])}px tall — {int(100*box['height']/vp)}% of the window")
     jargon = [w for w in ["VOI", "HARM", "RHY", "ENGY", "scope_rank", "percentile", "Camelot estimate", "LBL", "DUR"] if w in txt]
     if len(jargon) >= 3: notes.append(f"dense abbreviations: {jargon}")
     has_watch = "WATCH" in txt
@@ -383,7 +383,14 @@ async def t_studio_render(pg, P, rng, st):
     ms = int((time.time()-t0)*1000)
     notes = [] if link else [f"no mixdown link after {ms} ms ({toasts[:120]})"]
     if link and ms > 15000: notes.append(f"mixdown took {ms} ms")
-    return dict(ok=bool(link), ms=ms, notes=notes, data=dict(link=link))
+    await pg.wait_for_timeout(300)
+    body = await pg.evaluate("() => document.body.innerText")
+    import re as _re
+    lufs = _re.search(r"(-?\d+\.\d) LUFS", body)
+    if link and not lufs: notes.append("no LUFS readout after the render")
+    hear = await pg.locator("button", has_text="hear export").count()
+    if link and not hear: notes.append("no hear-export button")
+    return dict(ok=bool(link), ms=ms, notes=notes, data=dict(link=link, lufs=float(lufs.group(1)) if lufs else None, hear=bool(hear)))
 
 async def t_fl_session(pg, P, rng, st):
     await ensure_studio(pg, P, rng, st)
@@ -494,7 +501,8 @@ async def t_export_cue(pg, P, rng, st):
         d = await dl.value
         p = OUT / f"cue_{P['id']}.txt"; await d.save_as(p)
         head = p.read_text(errors="ignore")[:300]
-        return dict(ok=True, ms=int((time.time()-t0)*1000), data=dict(menu=items, head=head))
+        notes = [f"no {w} export in the menu" for w in ("Serato", "Traktor") if not any(w in i for i in items)]
+        return dict(ok=True, ms=int((time.time()-t0)*1000), notes=notes, data=dict(menu=items, head=head))
     except Exception as e:
         await pg.keyboard.press("Escape")
         return dict(ok=False, notes=[f"cue export: {str(e)[:80]}"], data=dict(menu=items))

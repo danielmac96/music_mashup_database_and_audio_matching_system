@@ -1427,7 +1427,12 @@ caches responses, and opens a breaker after repeated failures.
 - **`render/master.py`** is the last stage of every mixdown and transition
   render: integrated loudness (ITU-R BS.1770-4 — K-weighting, 400 ms blocks,
   absolute and relative gates; a −20 dBFS 997 Hz sine reads −23.0 LUFS), true
-  peak at 4× oversampling, and a lookahead limiter that holds −1 dBTP. With a
+  peak by the standard's own 4× interpolator (Annex 2's 48-tap FIR, each
+  phase scaled to unity gain — as printed two phases read 0.24 dB low), and a
+  lookahead limiter aiming 0.1 dB under −1 dBTP so the ceiling holds against
+  a finer meter too. The input's true peak is measured once and scaled for
+  each pass; `scipy.signal.resample_poly` in its place made mastering a 200 s
+  mix take ~4 s. With a
   `loudness_target` the mix is brought to it in two passes (limiting costs a
   little loudness); without one only the ceiling applies and a quiet mix is
   never boosted. It replaced a peak-normalise-if-clipped that left every
@@ -1435,7 +1440,10 @@ caches responses, and opens a breaker after repeated failures.
   playback speed, so display duration = raw duration / rate — the same maths as
   the browser's SoundTouch engine.
 - **Mixdown** (`render/mixdown.py`): N clips (song, stem, offset, rate,
-  semitones, gain, optional trim, fades, high/low-pass) summed on one timeline,
+  semitones, gain, optional trim, fades, high/low-pass), checked first and
+  then rendered `RENDER_THREADS` (3) at a time — Rubber Band is its own ffmpeg
+  process and costs ~8.5 s per 200 s stem at 44.1 kHz, so one at a time an
+  exported pair took ~16 s — summed on one timeline,
   mastered (`render/master.py`; `POST /api/studio/mixdown` takes
   `loudness_target`, Studio sends −14 LUFS) → WAV; the job's result carries
   the measured `lufs` and `true_peak`. `offset_sec` is where the clip's **first rendered sample** lands — the
