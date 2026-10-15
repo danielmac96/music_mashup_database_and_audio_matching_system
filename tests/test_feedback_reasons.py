@@ -81,11 +81,14 @@ def test_the_ui_offers_exactly_the_stored_vocabulary(client):
     assert ui == models.FEEDBACK_REASONS
 
 
-def test_the_focused_rated_card_asks_why():
+def test_the_expanded_rated_card_asks_why():
     card = (FRONT / "components" / "PairCard.jsx").read_text(encoding="utf-8")
-    assert "focused && rating && onReason" in card
-    assert "reasonsFor(rating)" in card
+    exp = card[card.index("function Expanded("):]
+    assert "rating && onReason" in exp
+    assert "reasonsFor(rating)" in exp
     dock = (FRONT / "components" / "PairDock.jsx").read_text(encoding="utf-8")
     assert "ratings.toggleReason(c, r)" in dock
     hook = (FRONT / "hooks" / "useRatings.js").read_text(encoding="utf-8")
     assert "api.savePairReasons" in hook and "reasonsOf" in hook
+
+

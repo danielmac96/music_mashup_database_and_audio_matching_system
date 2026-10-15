@@ -53,9 +53,10 @@ def test_row_menu_offers_the_picker():
 
 
 def test_library_row_marks_substituted_audio():
-    row = TABLE[TABLE.index("function TrackRow("):]
-    assert "audioSubstitution(t)" in row
-    assert "tt-src" in row
+    cell = TABLE[TABLE.index('case "title": {'):]
+    cell = cell[:cell.index('case "bpm":')]
+    assert "audioSubstitution(t)" in cell
+    assert "tt-src" in cell
 
 
 def test_substitution_reads_the_recorded_provenance():

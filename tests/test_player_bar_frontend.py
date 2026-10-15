@@ -108,11 +108,10 @@ def test_starting_one_source_silences_the_others():
 # ── the bar is the app's, not a route's ──────────────────────────────────────
 
 def test_the_player_bar_is_not_inside_a_route():
-    """setRoute clears the header status and the rail slot. The player is the
-    one thing that must survive navigation, so it is mounted after the route
-    switch rather than inside it."""
-    lib = APP[APP.index('{route === "library" && ('):]
-    lib = lib[:lib.index('{route === "track" && (')]
+    """The player is the one thing that must survive navigation, so it is
+    mounted after the route switch rather than inside it."""
+    lib = APP[APP.index('{(route === "library" || route === "track") && ('):]
+    lib = lib[:lib.index('{route === "queue" && (')]
     assert "<PlayerBar" not in lib
 
     # It IS mounted, once, at the end of .app-main.

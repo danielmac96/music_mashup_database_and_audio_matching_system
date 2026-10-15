@@ -121,6 +121,19 @@ class LaneState(BaseModel):
     fade_out: Optional[float] = Field(default=None, ge=0, le=60)
     highpass_hz: Optional[float] = Field(default=None, ge=0, le=20000)
     lowpass_hz: Optional[float] = Field(default=None, ge=0, le=22050)
+    # The clip's trim in the stem's own seconds (Studio's clipStart/clipEnd),
+    # and the filter names the mixdown clips use (revamp B5).
+    clip_start: Optional[float] = Field(default=None, ge=0)
+    clip_end: Optional[float] = Field(default=None, gt=0)
+    hp_hz: Optional[float] = Field(default=None, ge=0, le=20000)
+    lp_hz: Optional[float] = Field(default=None, ge=0, le=22050)
+
+    @model_validator(mode="after")
+    def _trim_is_a_real_window(self) -> "LaneState":
+        if (self.clip_start is not None and self.clip_end is not None
+                and self.clip_end <= self.clip_start):
+            raise ValueError("clip_end must be after clip_start")
+        return self
 
 
 def lanes_payload(lanes: Optional[list]) -> Optional[list]:

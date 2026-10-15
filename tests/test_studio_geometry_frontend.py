@@ -20,7 +20,8 @@ sys.path.insert(0, str(ROOT))
 
 SRC = ROOT / "frontend" / "src"
 STUDIO = (SRC / "components" / "MixStudio.jsx").read_text(encoding="utf-8")
-RAIL = (SRC / "components" / "StudioRail.jsx").read_text(encoding="utf-8")
+# The adjustments panel under the lanes (revamp step 7; it was a side rail).
+RAIL = (SRC / "components" / "StudioPanel.jsx").read_text(encoding="utf-8")
 CSS = (SRC / "styles.css").read_text(encoding="utf-8")
 
 
@@ -95,15 +96,18 @@ def test_no_grid_is_not_a_measured_zero():
     assert "unmeasured, not zero" in RAIL
 
 
-def test_the_lane_card_keeps_only_what_fits():
-    """138px holds a name, a tempo, a key and solo/mute. Everything else moved
-    to the rail; leaving it on the card is how the column overflows."""
-    card = STUDIO[STUDIO.index("{/* lane card — 138px"):]
+def test_the_lane_head_keeps_only_what_fits():
+    """150px holds the role, a title, the played key, a tempo, SYNC and M/S.
+    Everything else is on the lane's card in the panel; leaving it on the head
+    is how the column overflows."""
+    card = STUDIO[STUDIO.index("{/* lane head — 150px"):]
     card = card[:card.index("{/* lane canvas */}")]
     for gone in ("lh-stem-seg", "lh-gain", "lh-rate", "⚡ key", "⇥ grid"):
-        assert gone not in card, f"{gone} is back on the 138px card"
-    for moved in ("stemOrder", "⚡ key", "⇥ grid", "SELECTED LANE"):
-        assert moved in RAIL, f"{moved} did not make it to the rail"
+        assert gone not in card, f"{gone} is back on the 150px head"
+    for kept in ("SYNC", "KeyChip", "Mute", "Solo"):
+        assert kept in card, kept
+    for moved in ("stemOrder", "⚡ key", "⇥ grid", "more ▾", "Uses"):
+        assert moved in RAIL, f"{moved} did not make it to the panel"
 
 
 def test_studio_still_exports_an_fl_session():

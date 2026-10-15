@@ -92,11 +92,14 @@ export function PlayerBar({ player, ratings, onStudio }) {
   const pct = (t) => (duration > 0
     ? Math.max(0, Math.min(100, (t / duration) * 100)) : 0);
 
+  // "→ 113 BPM · bed −2 st · lands 5A" — the pair's compat summary (the
+  // transpose is the row's semitone_shift, the one that plays), then the nudge.
+  const ck = candidate?.compat?.key;
+  const vocalBpm = candidate?.compat?.bpm?.vocal ?? candidate?.target_bpm;
   const align = candidate ? [
-    candidate.target_bpm != null ? `${candidate.target_bpm.toFixed(1)} BPM` : null,
-    candidate.pitch_adjustment
-      ? `bed ${candidate.pitch_adjustment > 0 ? "+" : ""}${candidate.pitch_adjustment} st`
-      : null,
+    vocalBpm != null ? `→ ${Number(vocalBpm).toFixed(1)} BPM` : null,
+    ck?.shift_st ? `bed ${ck.shift_st > 0 ? "+" : "−"}${Math.abs(ck.shift_st)} st` : null,
+    ck?.landing ? `lands ${ck.landing}` : null,
     nudgeLabel(candidate.alignment_offset, candidate.target_bpm),
   ].filter(Boolean).join(" · ") : "";
 

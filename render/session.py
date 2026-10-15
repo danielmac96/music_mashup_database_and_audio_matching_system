@@ -260,7 +260,9 @@ def conform_stem(song_id: int, stem: str, *, start_sec: Optional[float],
 
 LANE_ROLES = ("vocal", "bed")
 LANE_KEYS = ("semitones", "rate", "gain", "offset_ms", "fade_in", "fade_out",
-             "highpass_hz", "lowpass_hz")
+             "highpass_hz", "lowpass_hz", "clip_start", "clip_end")
+# Studio's clip vocabulary, accepted for the same settings (revamp B5).
+LANE_ALIASES = {"hp_hz": "highpass_hz", "lp_hz": "lowpass_hz"}
 MAX_LANE_OFFSET_MS = 60_000.0
 
 
@@ -275,6 +277,8 @@ def lane_overrides(lanes) -> dict:
         if lane["role"] in out:
             continue
         clean = {}
+        lane = {**{LANE_ALIASES[k]: v for k, v in lane.items()
+                   if k in LANE_ALIASES and lane.get(LANE_ALIASES[k]) is None}, **lane}
         for key in LANE_KEYS:
             value = lane.get(key)
             if value is None or isinstance(value, bool):
@@ -286,9 +290,15 @@ def lane_overrides(lanes) -> dict:
         if "offset_ms" in clean:
             clean["offset_ms"] = max(-MAX_LANE_OFFSET_MS,
                                      min(MAX_LANE_OFFSET_MS, clean["offset_ms"]))
-        for key in ("gain", "fade_in", "fade_out", "highpass_hz", "lowpass_hz"):
+        for key in ("gain", "fade_in", "fade_out", "highpass_hz", "lowpass_hz",
+                    "clip_start", "clip_end"):
             if key in clean:
                 clean[key] = max(0.0, clean[key])
+        # A trim is a window in the stem's own seconds: an empty one is dropped.
+        if ("clip_start" in clean and "clip_end" in clean
+                and clean["clip_end"] <= clean["clip_start"]):
+            clean.pop("clip_start")
+            clean.pop("clip_end")
         out[lane["role"]] = clean
     return out
 
@@ -337,6 +347,10 @@ def _lane_notes(lanes: dict) -> list:
             baked.append(f"{clamp_semitones(round(lane['semitones'])):+d} semitones")
         if lane.get("offset_ms"):
             baked.append(f"nudged {lane['offset_ms']:+.0f} ms")
+        if "clip_start" in lane or "clip_end" in lane:
+            a, b = lane.get("clip_start"), lane.get("clip_end")
+            baked.append("trimmed to " + (f"{a:.2f}" if a is not None else "the section start")
+                         + "–" + (f"{b:.2f} s" if b is not None else "the section end"))
         if "gain" in lane:
             db = _gain_db(lane["gain"])
             todo.append("mute it" if db is None else f"level {db:+.1f} dB")
@@ -446,6 +460,13 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     v_end = pairing.get("vocal_end") if pairing else None
     i_start = pairing.get("inst_start") if pairing else None
     i_end = pairing.get("inst_end") if pairing else None
+    # Studio's trim (clip_start / clip_end, the stem's own seconds) replaces
+    # the section's edges — a clip extended past its section, or cut short of
+    # it, renders as it plays.
+    v_start = v_lane.get("clip_start", v_start)
+    v_end = v_lane.get("clip_end", v_end)
+    i_start = b_lane.get("clip_start", i_start)
+    i_end = b_lane.get("clip_end", i_end)
 
     from database import models
     # get_features_for_song defaults its db_path only when the argument is
@@ -542,11 +563,15 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
         "lanes": lane or None,
         "clips": [
             {"song_id": vocal_song_id, "stem": "vocals",
+             **({"start_sec": v_start, "end_sec": v_end}
+                if "clip_start" in v_lane or "clip_end" in v_lane else {}),
              "offset_sec": v_lane.get("offset_ms", 0.0) / 1000.0,
              "rate": rate_vocal, "semitones": semis_vocal,
              "gain": v_lane.get("gain", plan.get("vocal_lane_gain", 0.8)),
              **_lane_clip(v_lane)},
             {"song_id": inst_song_id, "stem": "instrumental",
+             **({"start_sec": i_start, "end_sec": i_end}
+                if "clip_start" in b_lane or "clip_end" in b_lane else {}),
              "offset_sec": b_lane.get("offset_ms", 0.0) / 1000.0,
              "rate": rate_inst, "semitones": semis_inst,
              "gain": b_lane.get("gain", plan.get("bed_lane_gain", 0.8)),

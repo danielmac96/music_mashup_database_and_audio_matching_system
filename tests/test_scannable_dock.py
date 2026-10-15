@@ -89,14 +89,12 @@ def test_an_unscoped_list_carries_no_rank(tmp_path, monkeypatch):
     assert all("scope_rank" not in r for r in out["candidates"])
 
 
-def test_the_card_headline_is_rank_when_scoped_and_one_decimal_otherwise():
+def test_the_card_prints_one_decimal_and_the_rank_when_scoped():
     model = _read("components/pairs/pairModel.js")
     assert "Math.round((c.score_percentile ?? 0) * 1000) / 10" in model
-    fn = model[model.index("export function headlineOf"):]
-    fn = fn[:fn.index("\n}")]
-    assert "c?.scope_rank != null" in fn and "`#${c.scope_rank}`" in fn
     card = _read("components/PairCard.jsx")
-    assert "headlineOf(c, scopeNoun)" in card and "{head.big}" in card
+    assert "const pct = pctOf(c);" in card
+    assert "Engine #${c.scope_rank} of ${c.scope_total} in this scope" in card
 
 
 # ── harmony, ranked against the library ──────────────────────────────────────
@@ -147,29 +145,30 @@ def test_listings_and_plan_options_carry_harmonic_sure():
 
 # ── the rows ─────────────────────────────────────────────────────────────────
 
-def test_unfocused_pairs_are_rows_and_the_focused_one_the_card():
+def test_cards_are_compact_and_expand_on_enter():
+    """Collapsed, every pair is the same compact variant-C card; ⏎ or a click
+    expands the one under the cursor (double-click opens Studio)."""
     dock = _read("components/PairDock.jsx")
-    assert "row={i !== cursor}" in dock and "focused={i === cursor}" in dock
+    assert "focused={i === cursor}" in dock and "expanded={expanded === k}" in dock
+    hook = _read("hooks/usePairDock.js")
+    assert 'if (e.key === "Enter") { e.preventDefault(); toggleExpand(row); return; }' in hook
     card = _read("components/PairCard.jsx")
-    assert "function PairRow(" in card and "if (row) {" in card
-    row = card[card.index("function PairRow("):]
-    for bit in ("onPlay()", "StarRating", "onDoubleClick={onStudio}", "pc-effort"):
-        assert bit in row, bit
-    css = _read("styles.css")
-    assert ".pc-row {" in css and ".pcr-line {" in css
+    assert "onClick={onToggle} onDoubleClick={onStudio}" in card
+    assert "{expanded && (" in card
 
 
-def test_a_scoped_row_names_only_the_partner():
-    card = _read("components/PairCard.jsx")
-    assert 'scopedSide !== "vocal" && <b>{c.vocal_title}</b>' in card
-    assert "scopedSide={scopeTitle ? role : null}" in _read("components/PairDock.jsx")
+def test_a_scoped_dock_switches_role_with_counts():
+    dock = _read("components/PairDock.jsx")
+    assert 'onClick={() => onRole("vocal")}' in dock and 'onClick={() => onRole("instrumental")}' in dock
+    assert "scopeTrack.mash?.as_vocal" in dock and "scopeTrack.mash?.as_bed" in dock
+    assert "scopeTrack={selectedTrack}" in _read("App.jsx")
 
 
 def test_term_sorts_are_a_named_menu():
     hook = _read("hooks/usePairDock.js")
     assert "[t.order, t.name," in hook
     dock = _read("components/PairDock.jsx")
-    assert "pd-termsort" in dock and "By…" in dock
+    assert 'className={`pd-sort' in dock and "ORDERS.map(([id, label, why])" in dock
 
 
 def test_filters_overlay_the_list_and_show_as_pills():
@@ -193,7 +192,10 @@ def test_the_filter_overlay_is_easy_to_put_away():
     assert "onClickCapture={open ?" in dock
 
 
-def test_rating_a_row_opens_it_for_the_why_chips():
-    card = _read("components/PairCard.jsx")
-    row = card[card.index("function PairRow("):]
-    assert "onRate={(n) => { onRate(n); onSelect?.(); }}" in row
+def test_rating_a_card_keeps_it_focused_for_the_why_chips():
+    """A click on a star moves the cursor to that card (it does not advance);
+    the WHY chips then show on its expanded state."""
+    dock = _read("components/PairDock.jsx")
+    assert "onRate={(n) => { setCursor(i); ratings.rate(c, n); }}" in dock
+
+

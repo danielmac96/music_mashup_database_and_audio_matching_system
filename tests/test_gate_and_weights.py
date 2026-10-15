@@ -88,32 +88,46 @@ def test_the_old_gate_was_rejecting_the_cheapest_pairs():
     """Why the key gate had to go, in one assertion.
 
     Camelot distance measures FIFTHS, so it does not order pairs by how much
-    transposition they need — and transposition is the thing that actually costs
-    something. One step around the wheel is a perfect fifth: 8A -> 9A needs 5
-    semitones. Six steps is a tritone: 8A -> 2B needs 6. But 8A -> 3B, which the
-    0.55 gate scored 0.25 and deleted outright, needs ONE semitone, because Db
-    major is a semitone above A minor's relative major.
-
-    So the gate was admitting a 5-semitone transpose and rejecting a free one.
+    transposition they need — and transposition is the thing that actually
+    costs something. 8A -> 3B, which the 0.55 gate scored 0.25 and deleted
+    outright, needs ONE semitone to land beside the vocal's key.
     """
     from matcher.match import camelot_score, compute_semitone_shift
 
-    assert compute_semitone_shift("8A", "9A") == 5      # admitted by the gate
+    assert compute_semitone_shift("8A", "9A") == 0      # adjacent: mixes as-is
     assert compute_semitone_shift("8A", "3B") == -1     # rejected by the gate
     assert camelot_score("8A", "9A") >= 0.55
     assert camelot_score("8A", "3B") < 0.55
 
 
+def test_adjacent_keys_need_no_transpose_and_none_needs_more_than_two():
+    """Same, relative and adjacent keys mix as they are, so the Camelot
+    estimate leaves them alone; anything further moves the bed to whichever
+    position beside the vocal is closest — never more than two semitones."""
+    from matcher.match import compute_semitone_shift
+
+    for v in range(1, 13):
+        for vl in "AB":
+            for b in range(1, 13):
+                for bl in "AB":
+                    sh = compute_semitone_shift(f"{v}{vl}", f"{b}{bl}")
+                    hours = min((v - b) % 12, (b - v) % 12)
+                    assert abs(sh) <= 2
+                    if hours <= 1:
+                        assert sh == 0, (v, vl, b, bl)
+                    else:
+                        assert sh != 0, (v, vl, b, bl)
+    assert compute_semitone_shift("8A", "10A") == -2   # two hours: exactly onto 8A is the cheapest
+    assert compute_semitone_shift("8A", "11A") == -2   # three hours: onto 9A, adjacent to the vocal
+
+
 def test_a_distant_pair_is_charged_for_the_transpose_it_needs(library):
-    """The gate is gone, but the cost is not: pitch_cost still prices the move,
-    and it prices it by semitones rather than by hours on the wheel."""
+    """The gate is gone, but the cost is not: pitch_cost prices the move by
+    semitones, and the adjacent pair that used to be charged a fourth is free."""
     db_path, _ = library
     from database.models import get_conn
-    from matcher.match import compute_semitone_shift, score_all_pairs
-
-    # A tritone apart: the widest transpose there is.
-    assert abs(compute_semitone_shift("8A", "2B")) == 6
-    assert abs(compute_semitone_shift("8A", "3B")) == 1
+    from matcher.effort import transpose_cost
+    from matcher.match import score_all_pairs
 
     score_all_pairs(db_path=db_path, scorer="heuristic")
     conn = get_conn(db_path)
@@ -122,11 +136,9 @@ def test_a_distant_pair_is_charged_for_the_transpose_it_needs(library):
            WHERE combo_type='vocal_over_instrumental'""").fetchall()}
     conn.close()
 
-    cheap = rows[("8A", "3B")]
-    expensive = rows[("8A", "2B")]
-    assert cheap["effort_pitch"] == 0.0          # within PITCH_FREE
-    assert expensive["effort_pitch"] == 1.0      # at PITCH_MAX
-    assert expensive["score_effort"] > cheap["score_effort"]
+    assert rows[("8A", "9A")]["effort_pitch"] == 0.0     # adjacent: no transpose
+    assert rows[("8A", "3B")]["effort_pitch"] == 0.0     # one semitone, within PITCH_FREE
+    assert transpose_cost(2) > 0.0 and transpose_cost(6) == 1.0
 
 
 def test_the_key_gate_still_works_when_asked_for(library):

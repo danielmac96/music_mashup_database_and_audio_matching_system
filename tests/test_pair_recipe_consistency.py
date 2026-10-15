@@ -27,7 +27,7 @@ def test_bed_shift_prefers_the_measured_harmony():
     from matcher.recipe import bed_shift
     # 8B over 11B: (8 − 11) × 7 = −21 ≡ +3 semitones on the bed by the wheel.
     row = {"vocal_camelot": "8B", "inst_camelot": "11B"}
-    assert bed_shift(row) == 3
+    assert bed_shift(row) == -2
     assert bed_shift({**row, "harmonic_shift": 2}) == 2
     # A measured 0 is an answer, not a gap to fill from the wheel.
     assert bed_shift({**row, "harmonic_shift": 0}) == 0
@@ -44,7 +44,7 @@ def test_the_listing_plays_the_shift_the_card_prints():
     assert row["semitone_shift"] == 2
     unmeasured = _with_playback_terms([{"vocal_camelot": "8B",
                                         "inst_camelot": "11B"}])[0]
-    assert unmeasured["semitone_shift"] == 3
+    assert unmeasured["semitone_shift"] == -2
 
 
 def test_the_set_lands_with_the_same_shift():
@@ -289,11 +289,13 @@ def test_the_card_and_the_set_show_the_recipe():
     assert "recipe.adjustments" in strip and "recipe.warnings" in strip
     assert "title={a.why}" in strip, "every adjustment explains itself"
     card = _read("components/PairCard.jsx")
-    assert "<RecipeStrip recipe={c.recipe}" in card
-    assert "<RecipeStrip recipe={item.recipe} compact" in _read("components/SetScreen.jsx")
+    assert "const doChips = r.adjustments || [];" in card
+    assert "const watch = r.warnings || [];" in card
+    assert "title={[a.why," in card, "every DO chip explains itself"
+    assert "<RecipeStrip recipe={selItem.recipe} compact" in _read("components/SetScreen.jsx")
     css = (FRONT / "styles.css").read_text(encoding="utf-8")
     for cls in (".pc-recipe", ".pc-adj.free", ".pc-adj.light", ".pc-adj.heavy",
-                ".pc-warn", ".set-recipe"):
+                ".pc-warn", ".set-recipe", ".pcx-do", ".pcx-watch"):
         assert cls in css, cls
 
 
@@ -312,10 +314,12 @@ def test_the_loop_and_studio_arm_the_recipes_levels():
 def test_lane_gain_reads_in_real_decibels():
     """MashupEngine's gain is linear, so 0.8 is −1.9 dB — not the +7.2 dB the
     rail printed with v×24−12."""
-    rail = _read("components/StudioRail.jsx")
+    rail = _read("components/StudioPanel.jsx")
     assert "20 * Math.log10(v)" in rail
     assert "v * 24 - 12" not in rail
-    assert "suggested.bedGain" in rail and "suggested.vocalGain" in rail
+    studio = _read("components/MixStudio.jsx")
+    assert "suggested.bedGain" in studio and "suggested.vocalGain" in studio
+    assert "format={gainDb}" in rail
 
 
 def test_effort_prices_the_transpose_the_pair_plays():
@@ -340,5 +344,10 @@ def test_effort_prices_the_transpose_the_pair_plays():
 
 
 def test_the_card_does_not_print_the_stretch_twice():
+    """The stretch is printed once on the result line, from compat.bpm — the
+    recipe's own wording is in the DO row of the expanded card."""
     card = _read("components/PairCard.jsx")
-    assert "{!c.recipe && (\n          <span className=\"pc-tag mono neutral\">\n            {bpmTag(" in card
+    assert card.count("Δ{signed(d, 1)}%") == 1
+    assert "bpmTag(" not in card
+
+

@@ -138,10 +138,11 @@ def test_studio_reads_one_nudge_for_the_chip_the_rail_and_edited():
     assert "bedLane.offsetSec - vocalLane.offsetSec - nudgeBase" in studio
     assert "nudge {nudgeText(nudgeMs, projectBpm)}" in studio
     assert "Math.abs(nudgeMs - suggested.nudgeSec * 1000)" in studio
-    assert "nudgeMs={nudgeMs}" in studio
+    # The panel's bed Offset knob is the same nudge, handed over once.
+    assert "laneId: bedLane.id, ms: nudgeMs, suggestMs: suggestNudgeMs" in studio
     assert "(bedLane.offsetSec - vocalLane.offsetSec) * 1000" not in studio
-    rail = _read("components/StudioRail.jsx")
-    assert "min={-nudgeRange} max={nudgeRange}" in rail
+    rail = _read("components/StudioPanel.jsx")
+    assert "min={-range} max={range}" in rail and "nudge ? nudge.ms" in rail
     assert "min={-2000} max={2000}" not in rail
 
 
@@ -177,7 +178,7 @@ def test_a_click_selects_and_the_scope_line_clears():
     app = _read("App.jsx")
     assert "const selectTrack = (id) => setSelectedTrackId(id);" in app
     assert "cur === id ? null : id" not in app
-    assert "onClearScope={clearSelection}" in app
+    assert 'onClearScope={route === "track" ? null : clearSelection}' in app
     dock = _read("components/PairDock.jsx")
     assert "pd-scope-x" in dock and "onClick={onClearScope}" in dock
 
@@ -199,12 +200,18 @@ def test_the_fl_session_downloads_when_it_is_built():
     assert "a.download" in _read("download.js")
 
 
-def test_auto_advance_is_optional_and_remembered():
+def test_auto_advance_is_on_by_default_and_remembered():
+    """1–5 rates and moves to the next pair, keeping the loop playing — on
+    unless you switched it off (remembered per browser)."""
     hook = _read("hooks/usePairDock.js")
     assert "AUTO_ADVANCE_KEY" in hook and "localStorage" in hook
-    rate = hook[hook.index('if (e.key >= "1" && e.key <= "5" && row)'):]
-    rate = rate[:rate.index("window.addEventListener")]
-    assert "autoAdvance" in rate and "move(1)" in rate
+    assert 'localStorage.getItem(AUTO_ADVANCE_KEY) !== "0"' in hook   # default on
+    rate = hook[hook.index("const rateAndAdvance"):]
+    rate = rate[:rate.index("}, [")]
+    assert "if (!autoAdvance) return;" in rate
+    assert "setCursor(at + 1)" in rate and "if (wasLooping) play(list[at + 1])" in rate
+    keys = hook[hook.index('if (e.key >= "1" && e.key <= "5" && row)'):]
+    assert "rateAndAdvance(row, Number(e.key))" in keys[:200]
     assert "dock.setAutoAdvance" in _read("components/PairDock.jsx")
 
 

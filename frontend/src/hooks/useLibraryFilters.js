@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
-import { isReadyToMash, isRecentlyAdded, needsAttention, parseCamelot } from "../theme";
+import {
+  compatibleKeys, isReadyToMash, isRecentlyAdded, needsAttention, parseCamelot,
+} from "../theme";
 
 // Filtering and sorting the library, as pure functions over rows already in
 // memory.
@@ -12,27 +14,38 @@ import { isReadyToMash, isRecentlyAdded, needsAttention, parseCamelot } from "..
 // resolver.
 
 export const EMPTY_FILTERS = {
-  search: "",
-  view: "",            // "" | ready | recent | attention — the rail's shelves
-  group: "",           // a crate id — the library, narrowed to one shelf
-  key: "",             // a Camelot key, e.g. "8A"
-  keyTolerance: 1,     // +/- n steps around the wheel
-  bpmMin: "", bpmMax: "",
-  genres: [],          // multi-select; empty = any
-  playsMin: "",        // a floor, e.g. 100000
-  yearMin: "", yearMax: "",
-  minStars: 0,
+  q: "",               // free text; tokens that read as filters are previewed
+  bpm: null,           // [lo, hi]
+  fold: false,         // ±6%, half and double time included
+  keys: [],            // Camelot codes, e.g. "8A"
+  keyCompat: false,    // + the selected track's key, ±1 and its relative
+  genres: [],          // SoundCloud genre strings (top of the tree)
+  styles: [],          // Discogs styles (the tree's children; top 3 count)
+  year: null,          // [lo, hi]
+  plays: null,         // a floor, e.g. 100000
+  vocalForward: false, // sung share ≥ VOCAL_FORWARD_MIN
+  hasStems: false,     // both stems separated
+  status: [],          // STATUS keys
   // Analysed attributes (analysis/attributes.py), keyed by attribute id:
-  // { min, max } for a number, { value } for a category or a top-N list.
+  // { min } for a number ("≥"), { value } for a category or a top-N list.
   attrs: {},
+  view: "",            // a built-in shelf: ready | recent | attention
+  group: "",           // a crate id — the library, narrowed to one shelf
 };
+
+// Tracks whose sung share reaches this are "vocal-forward".
+export const VOCAL_FORWARD_MIN = 0.45;
+// The Library's BPM slider spans this range.
+export const BPM_LO = 60;
+export const BPM_HI = 180;
+const FOLD_TOL = 0.06;
+export const YEAR_OPEN = 2100;   // "2015+" is stored as [2015, YEAR_OPEN]
 
 // How deep into a top-N list (Discogs styles, moods/themes, instruments) a
 // value may sit and still count: "Tech House" as a track's 5th style at 3%
 // is not a tech-house track.
 export const ATTR_TOP_DEPTH = 3;
 
-// The labels a top-N attribute value carries, best first.
 const topLabels = (v) => (Array.isArray(v)
   ? v.slice(0, ATTR_TOP_DEPTH).map((x) => x?.label).filter(Boolean) : []);
 
@@ -56,78 +69,37 @@ export function attrMatches(value, cond) {
   return true;
 }
 
-export const EMPTY_SORT = { primary: "", primaryDir: "desc",
-                            secondary: "", secondaryDir: "desc" };
-
-// Named bands, so the chips offer round numbers rather than a number pad.
-export const PLAYS_BANDS = [
-  ["", "Any"], ["1000", "1k+"], ["10000", "10k+"],
-  ["100000", "100k+"], ["1000000", "1M+"],
-];
-export const BPM_BANDS = [
-  ["", "", "Any"], ["90", "110", "90–110"], ["110", "125", "110–125"],
-  ["125", "135", "125–135"], ["135", "150", "135–150"], ["150", "", "150+"],
-];
-export const KEY_TOLERANCES = [0, 1, 2];
-
+// The rail's built-in shelves (Saved views lists these above your presets).
 export const VIEWS = [
-  ["ready", "Ready to mash", "var(--green)", isReadyToMash],
-  ["recent", "Recently added", "var(--cyan)", (t) => isRecentlyAdded(t)],
-  ["attention", "Needs attention", "var(--amber)", needsAttention],
+  ["ready", "Ready to mash", "var(--ok)", isReadyToMash],
+  ["recent", "Recently added", "var(--link)", (t) => isRecentlyAdded(t)],
+  ["attention", "Needs attention", "var(--warn)", needsAttention],
 ];
 
-/* ── sort keys ───────────────────────────────────────────────────────────── */
-// "best" is each track's best pairing as a library percentile, computed by the
-// server over the WHOLE of mashup_candidates for every track (GET /api/tracks
-// `mash`) — not read off the dock's ranked list, which is truncated and would
-// order only the rows it happened to fetch. "pairs" is how many partners a
-// track has (as vocal + as bed), "vox" the share of it that is sung.
-export const SORT_KEYS = [
-  ["", "unsorted"],
-  ["added", "added"],
-  ["title", "title"],
-  ["artist", "artist"],
-  ["genre", "genre"],
-  ["bpm", "BPM"],
-  ["key", "key"],
-  ["year", "year"],
-  ["plays", "plays"],
-  ["duration", "length"],
-  ["rating", "rating"],
-  ["sections", "sections"],
-  ["pairs", "partners"],
-  ["best", "best pair"],
-  ["vox", "sung share"],
-  ["group", "group order"],
+export function countView(rows, id) {
+  const view = VIEWS.find((v) => v[0] === id);
+  return view ? rows.filter(view[3]).length : 0;
+}
+
+/* ── status ──────────────────────────────────────────────────────────────── */
+// The Status pill and filter, from songs.status plus whether a stage is running
+// now. `processing` is a stage in flight (or stems done, analysis pending).
+export const STATUS = [
+  ["ready", "Ready"], ["nostems", "No stems"], ["processing", "Analysing…"],
+  ["queued", "Queued"], ["failed", "Failed"],
 ];
-
-const feat = (t) => t?.features?.full || {};
-
-// Group membership arrives as a pair of lookups over ids already in memory
-// (hooks/useLibraryGroups.js). The default answers "no groups" so every function
-// here stays callable with rows alone — a filter must never depend on a fetch
-// having landed.
-export const NO_GROUPS = { has: () => false, positionOf: () => null };
-
-// Missing values sort LAST in both directions. A track with no play count is
-// unknown, not unpopular — the same rule Discover's result filters use.
-const NUMERIC = {
-  added: (t) => t.id,
-  bpm: (t) => feat(t).bpm,
-  year: (t) => t.release_year || null,
-  plays: (t) => t.plays || null,
-  duration: (t) => t.duration_secs,
-  sections: (t) => t.section_count || null,
-  pairs: (t) => (t.mash ? (t.mash.as_vocal || 0) + (t.mash.as_bed || 0) : null),
-  best: (t) => t.mash?.best_pct ?? null,
-  vox: (t) => t.mash?.vocal_coverage ?? null,
+export const STATUS_PILL = {   // theme.statusMeta's input for each key
+  ready: "analysed", nostems: "downloaded", processing: "stemmed",
+  queued: "queued", failed: "error",
 };
-const TEXT = {
-  title: (t) => t.title || "",
-  artist: (t) => t.artist || "",
-  genre: (t) => t.genre || "",
-  key: (t) => feat(t).camelot || "",
-};
+export function statusKeyOf(t, running = false) {
+  const s = String(t?.status || "").toLowerCase();
+  if (s.startsWith("error")) return "failed";
+  if (running || s === "stemmed") return "processing";
+  if (s === "analysed") return "ready";
+  if (s === "downloaded") return "nostems";
+  return "queued";
+}
 
 /* ── the Camelot wheel ───────────────────────────────────────────────────── */
 // Distance in wheel steps, treating the relative major/minor as the same place.
@@ -141,17 +113,94 @@ export function wheelDistance(a, b) {
   return d;
 }
 
+const feat = (t) => t?.features?.full || {};
+const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+const GENRE_ALIASES = { rnb: "r&b", ukg: "uk garage", dnb: "drum & bass", hiphop: "hip-hop" };
+
+/* ── the parsing search ──────────────────────────────────────────────────── */
+// "8A 124-128 house 2015+ vox" reads as filters: a Camelot key, a BPM range (or
+// "126bpm"), a genre this library contains, a year or year range, "vox" for
+// vocal-forward and "stems" for has-stems. What is left is free text. The
+// preview shows what was read; ⏎ pins it (pinQuery).
+export function parseQuery(q, genreNames = []) {
+  const byNorm = new Map(genreNames.map((g) => [norm(g), g]));
+  const p = {};
+  const rest = [];
+  const tokens = String(q || "").trim().split(/\s+/).filter(Boolean);
+  for (let i = 0; i < tokens.length; i += 1) {
+    const tk = tokens[i];
+    const lo = tk.toLowerCase();
+    let m;
+    if ((m = /^(\d{1,2})([ab])$/i.exec(tk)) && +m[1] >= 1 && +m[1] <= 12) {
+      (p.keys = p.keys || []).push(`${+m[1]}${m[2].toUpperCase()}`); continue;
+    }
+    if ((m = /^(\d{2,3})[-–](\d{2,3})$/.exec(tk)) && +m[1] >= 50 && +m[2] <= 200) {
+      p.bpm = [Math.min(+m[1], +m[2]), Math.max(+m[1], +m[2])]; continue;
+    }
+    if ((m = /^(\d{2,3})bpm$/i.exec(tk))) { p.bpm = [+m[1] - 2, +m[1] + 2]; continue; }
+    if ((m = /^((?:19|20)\d\d)\+$/.exec(tk))) { p.year = [+m[1], YEAR_OPEN]; continue; }
+    if ((m = /^((?:19|20)\d\d)[-–]((?:19|20)\d\d)$/.exec(tk))) {
+      p.year = [Math.min(+m[1], +m[2]), Math.max(+m[1], +m[2])]; continue;
+    }
+    if (["vox", "vocal", "vocals", "vocal-forward"].includes(lo)) { p.vocalForward = true; continue; }
+    if (lo === "stems") { p.hasStems = true; continue; }
+    // Two-word genres first ("tech house"), then one word, then an alias.
+    const two = i + 1 < tokens.length ? byNorm.get(norm(`${tk} ${tokens[i + 1]}`)) : null;
+    if (two) { (p.genres = p.genres || []).push(two); i += 1; continue; }
+    const one = byNorm.get(norm(tk)) || byNorm.get(norm(GENRE_ALIASES[norm(tk)]));
+    if (one) { (p.genres = p.genres || []).push(one); continue; }
+    rest.push(tk);
+  }
+  return { parsed: p, rest: rest.join(" ") };
+}
+
+// The filters with the search box's parsed tokens applied on top — what the
+// table shows while you type.
+export function effectiveFilters(f, genreNames = []) {
+  const { parsed, rest } = parseQuery(f.q, genreNames);
+  const uniq = (a) => [...new Set(a)];
+  return {
+    ...f,
+    text: rest,
+    keys: uniq([...(f.keys || []), ...(parsed.keys || [])]),
+    genres: uniq([...(f.genres || []), ...(parsed.genres || [])]),
+    bpm: parsed.bpm || f.bpm,
+    year: parsed.year || f.year,
+    vocalForward: f.vocalForward || !!parsed.vocalForward,
+    hasStems: f.hasStems || !!parsed.hasStems,
+  };
+}
+
+// ⏎ in the search box: the parsed tokens become real filters, the rest stays.
+export function pinQuery(f, genreNames = []) {
+  const e = effectiveFilters(f, genreNames);
+  const { text, ...rest } = e;
+  return { ...rest, q: text };
+}
+
+// What the search box read, for the preview popover.
+export function describeParsed(q, genreNames = []) {
+  const { parsed } = parseQuery(q, genreNames);
+  const out = [];
+  if (parsed.keys) out.push(`Key ${parsed.keys.join(", ")}`);
+  if (parsed.bpm) out.push(`${parsed.bpm[0]}–${parsed.bpm[1]} BPM`);
+  (parsed.genres || []).forEach((g) => out.push(g));
+  if (parsed.year) out.push(yearLabel(parsed.year));
+  if (parsed.vocalForward) out.push("Vocal-forward");
+  if (parsed.hasStems) out.push("Has stems");
+  return out;
+}
+
+export const yearLabel = (y) => (y[1] >= YEAR_OPEN ? `${y[0]} or later` : `${y[0]}–${y[1]}`);
+
 /* ── facets ──────────────────────────────────────────────────────────────── */
 // Only offer values this library actually contains. SoundCloud genre strings
 // are unbounded user input, so a hard-coded list is wrong the moment you import
-// anything — the old Library toolbar shipped Pop / Hip Hop / Rap / EDM and
-// silently hid everything else.
+// anything. Genres carry the Discogs styles their tracks lead with as children.
 export function facetsOf(rows) {
-  const genres = new Map();
-  const keys = new Set();
+  const genres = new Map();     // genre -> { n, styles: Map(style -> n) }
+  const styleTotals = new Map();
   let yearLo = null, yearHi = null;
-  // Per analysed attribute: the values a category/top-N attribute takes in
-  // this library (with counts), and the range a number spans.
   const attrValues = {};
   const attrRange = {};
   for (const t of rows) {
@@ -169,55 +218,73 @@ export function facetsOf(rows) {
       }
     }
     const g = (t.genre || "").trim();
-    if (g) genres.set(g, (genres.get(g) || 0) + 1);
-    const cam = feat(t).camelot;
-    if (cam) keys.add(cam);
+    const style = t.attrs?.style;
+    if (g) {
+      const e = genres.get(g) || { n: 0, styles: new Map() };
+      e.n += 1;
+      if (style) e.styles.set(style, (e.styles.get(style) || 0) + 1);
+      genres.set(g, e);
+    }
+    for (const s of topLabels(t.attrs?.styles)) styleTotals.set(s, (styleTotals.get(s) || 0) + 1);
     const y = t.release_year || 0;
     if (y) {
       if (yearLo == null || y < yearLo) yearLo = y;
       if (yearHi == null || y > yearHi) yearHi = y;
     }
   }
+  const byCount = (a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0]));
   return {
     genres: [...genres.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .map(([name, n]) => ({ name, n })),
-    keys: [...keys].sort((a, b) => {
-      const x = parseCamelot(a), y = parseCamelot(b);
-      return (x?.num ?? 99) - (y?.num ?? 99) || a.localeCompare(b);
-    }),
+      .sort((a, b) => b[1].n - a[1].n || a[0].localeCompare(b[0]))
+      .map(([name, e]) => ({
+        name, n: e.n,
+        styles: [...e.styles.entries()].sort(byCount)
+          .map(([s]) => ({ name: s, n: styleTotals.get(s) || e.styles.get(s) })),
+      })),
     yearLo, yearHi,
     attrValues: Object.fromEntries(Object.entries(attrValues).map(([id, m]) => [
-      id, [...m.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
-        .map(([name, n]) => ({ name, n }))])),
+      id, [...m.entries()].sort(byCount).map(([name, n]) => ({ name, n }))])),
     attrRange,
   };
 }
 
-export function isActive(f) {
-  return !!(f.search || f.view || f.group || f.key || f.bpmMin || f.bpmMax
-    || (f.genres && f.genres.length) || f.playsMin || f.yearMin
-    || f.yearMax || f.minStars || Object.keys(f.attrs || {}).length);
+// Energy is on the analyser's scale, which means nothing across differently
+// mastered records — so the column shows each track's rank in this library,
+// 0–1 (the "measure, then rank against this library" rule).
+export function energyRanks(rows) {
+  const vals = rows.map((t) => feat(t).energy).filter((v) => v != null && Number.isFinite(v))
+    .sort((a, b) => a - b);
+  const out = new Map();
+  if (!vals.length) return out;
+  for (const t of rows) {
+    const v = feat(t).energy;
+    if (v == null || !Number.isFinite(v)) continue;
+    let lo = 0, hi = vals.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (vals[mid] <= v) lo = mid + 1; else hi = mid; }
+    out.set(t.id, vals.length > 1 ? (lo - 1) / (vals.length - 1) : 1);
+  }
+  return out;
 }
 
-export function countView(rows, id) {
-  const view = VIEWS.find((v) => v[0] === id);
-  return view ? rows.filter(view[3]).length : 0;
+export function isActive(f) {
+  return !!(f.q || f.bpm || f.keys?.length || f.keyCompat || f.genres?.length
+    || f.styles?.length || f.year || f.plays || f.vocalForward || f.hasStems
+    || f.status?.length || Object.keys(f.attrs || {}).length || f.view || f.group);
 }
 
 /* ── apply ───────────────────────────────────────────────────────────────── */
-
-export function applyLibraryFilters(rows, f, starOf = () => null,
-                                    groups = NO_GROUPS) {
-  const filters = { ...EMPTY_FILTERS, ...(f || {}) };
-  const needle = filters.search.trim().toLowerCase();
+// ctx: { selectedKey, groups, running(id) }. `f` should already be the
+// effective filters (effectiveFilters) — the search box's tokens included.
+export function applyLibraryFilters(rows, f, ctx = {}) {
+  const filters = { ...EMPTY_FILTERS, text: "", ...(f || {}) };
+  const { selectedKey = null, groups = NO_GROUPS, running = () => false } = ctx;
+  const needle = (filters.text ?? filters.q ?? "").trim().toLowerCase();
   const genres = new Set(filters.genres.map((g) => g.toLowerCase()));
+  const styles = new Set(filters.styles);
+  const keys = new Set(filters.keys);
+  if (filters.keyCompat && selectedKey) compatibleKeys(selectedKey).forEach((k) => keys.add(k));
+  const status = new Set(filters.status);
   const view = VIEWS.find((v) => v[0] === filters.view);
-  const bpmMin = filters.bpmMin === "" ? null : Number(filters.bpmMin);
-  const bpmMax = filters.bpmMax === "" ? null : Number(filters.bpmMax);
-  const playsMin = filters.playsMin === "" ? null : Number(filters.playsMin);
-  const yearMin = filters.yearMin === "" ? null : Number(filters.yearMin);
-  const yearMax = filters.yearMax === "" ? null : Number(filters.yearMax);
   const attrConds = Object.entries(filters.attrs || {});
 
   return rows.filter((t) => {
@@ -229,31 +296,44 @@ export function applyLibraryFilters(rows, f, starOf = () => null,
       const hay = `${t.title || ""} ${t.artist || ""} ${t.genre || ""}`.toLowerCase();
       if (!hay.includes(needle)) return false;
     }
-    if (genres.size && !genres.has((t.genre || "").toLowerCase())) return false;
+    if (genres.size || styles.size) {
+      // Either side of the tree passes: the genre, or one of its top styles.
+      const inGenre = genres.size && genres.has((t.genre || "").toLowerCase());
+      const inStyle = styles.size && (styles.has(t.attrs?.style)
+        || topLabels(t.attrs?.styles).some((s) => styles.has(s)));
+      if (!inGenre && !inStyle) return false;
+    }
 
     const f0 = feat(t);
-    if (bpmMin != null || bpmMax != null) {
+    if (filters.bpm) {
       // An unanalysed track has no tempo to compare. It is excluded rather than
       // kept, because a BPM filter is a statement about tempo and this row has
       // none — leaving it in would put un-mixable rows in every band.
       if (f0.bpm == null) return false;
-      if (bpmMin != null && f0.bpm < bpmMin) return false;
-      if (bpmMax != null && f0.bpm > bpmMax) return false;
+      const [lo, hi] = filters.bpm;
+      const inRange = (b) => (filters.fold
+        ? b >= lo * (1 - FOLD_TOL) && b <= hi * (1 + FOLD_TOL)
+        : b >= lo && b <= hi);
+      if (!(inRange(f0.bpm) || (filters.fold && (inRange(f0.bpm * 2) || inRange(f0.bpm / 2))))) {
+        return false;
+      }
     }
-    if (filters.key) {
-      const d = wheelDistance(filters.key, f0.camelot);
-      if (d == null || d > filters.keyTolerance) return false;
+    if (keys.size) {
+      const k = parseCamelot(f0.camelot);
+      if (!k || !keys.has(`${k.num}${k.letter}`)) return false;
     }
-    if (playsMin != null && (t.plays || 0) < playsMin) return false;
-    if (yearMin != null || yearMax != null) {
+    if (filters.plays != null && (t.plays || 0) < filters.plays) return false;
+    if (filters.year) {
       const y = t.release_year || 0;
       if (!y) return false;     // absent, not "before the range"
-      if (yearMin != null && y < yearMin) return false;
-      if (yearMax != null && y > yearMax) return false;
+      if (y < filters.year[0] || y > filters.year[1]) return false;
     }
-    if (filters.minStars) {
-      if ((starOf(t.id) || 0) < filters.minStars) return false;
+    if (filters.vocalForward) {
+      const v = t.mash?.vocal_coverage;
+      if (v == null || v < VOCAL_FORWARD_MIN) return false;
     }
+    if (filters.hasStems && !(t.stems?.vocals && t.stems?.instrumental)) return false;
+    if (status.size && !status.has(statusKeyOf(t, running(t.id)))) return false;
     for (const [id, cond] of attrConds) {
       if (!attrMatches(t.attrs?.[id], cond)) return false;
     }
@@ -261,98 +341,108 @@ export function applyLibraryFilters(rows, f, starOf = () => null,
   });
 }
 
-function compare(rows, key, dir, ctx) {
-  const sign = dir === "asc" ? 1 : -1;
-  const { starOf, groups, groupId } = ctx;
-  // The order the tracks sit in inside the selected group — a saved playlist's
-  // running order, which is most of why you saved it as one. With no group
-  // selected every row is unplaced, so this sorts nothing rather than
-  // inventing an order across shelves.
-  if (key === "group") {
-    return (a, b) => {
-      const x = groupId ? groups.positionOf(groupId, a.id) : null;
-      const y = groupId ? groups.positionOf(groupId, b.id) : null;
-      if (x == null && y == null) return 0;
-      if (x == null) return 1;
-      if (y == null) return -1;
-      return (x - y) * sign;
-    };
-  }
-  if (key === "rating") {
-    return (a, b) => {
-      const x = starOf(a.id) || null, y = starOf(b.id) || null;
-      if (x == null && y == null) return 0;
-      if (x == null) return 1;          // unrated last, both directions
-      if (y == null) return -1;
-      return (x - y) * sign;
-    };
-  }
-  if (NUMERIC[key]) {
-    const get = NUMERIC[key];
-    return (a, b) => {
-      const x = get(a), y = get(b);
-      if (x == null && y == null) return 0;
-      if (x == null) return 1;
-      if (y == null) return -1;
-      return (x - y) * sign;
-    };
-  }
-  if (TEXT[key]) {
-    const get = TEXT[key];
-    return (a, b) => {
-      const x = get(a), y = get(b);
-      if (!x && !y) return 0;
-      if (!x) return 1;
-      if (!y) return -1;
-      return x.localeCompare(y) * sign;
-    };
-  }
-  // A Library column added from the Analysis panel (readme §9, C). A top-5
-  // list sorts by its first label; unmeasured sorts last, both directions.
-  if (key && key.startsWith("attr:")) {
-    const id = key.slice(5);
-    const val = (t) => { const v = t.attrs?.[id]; return Array.isArray(v) ? v[0]?.label : v; };
-    return (a, b) => {
-      const x = val(a), y = val(b);
-      if (x == null && y == null) return 0;
-      if (x == null) return 1;
-      if (y == null) return -1;
-      return (typeof x === "number" ? x - y : String(x).localeCompare(String(y))) * sign;
+// Group membership arrives as a pair of lookups over ids already in memory
+// (hooks/useLibraryGroups.js). The default answers "no groups" so every function
+// here stays callable with rows alone — a filter must never depend on a fetch
+// having landed.
+export const NO_GROUPS = { has: () => false, positionOf: () => null };
+
+/* ── sort ────────────────────────────────────────────────────────────────── */
+// One key per column id; `first` is the direction a first click picks. A header
+// cycles first → the other → off: import order (off) is a real order.
+const camelotOrder = (t) => { const k = parseCamelot(feat(t).camelot); return k ? k.num * 2 + (k.letter === "B" ? 1 : 0) : null; };
+const STATUS_ORDER = Object.fromEntries(STATUS.map(([k], i) => [k, i]));
+export const SORTS = {
+  title: { get: (t) => t.title || "", text: true, first: "asc" },
+  artist: { get: (t) => t.artist || "", text: true, first: "asc" },
+  bpm: { get: (t) => feat(t).bpm, first: "asc" },
+  key: { get: camelotOrder, first: "asc" },
+  energy: { get: (t) => t._energy, first: "desc" },
+  genre: { get: (t) => t.genre || "", text: true, first: "asc" },
+  year: { get: (t) => t.release_year || null, first: "desc" },
+  len: { get: (t) => t.duration_secs, first: "desc" },
+  vox: { get: (t) => t.mash?.vocal_coverage ?? null, first: "desc" },
+  best: { get: (t) => t.mash?.best_pct ?? null, first: "desc" },
+  pairs: { get: (t) => (t.mash ? (t.mash.as_vocal || 0) + (t.mash.as_bed || 0) : null), first: "desc" },
+  plays: { get: (t) => t.plays || null, first: "desc" },
+  rating: { get: (t) => t.rating || null, first: "desc" },
+  status: { get: (t) => STATUS_ORDER[t._status] ?? null, first: "asc" },
+  added: { get: (t) => t.id, first: "desc" },
+  sections: { get: (t) => t.section_count || null, first: "desc" },
+};
+
+// The next sort after a header click: first direction → the other → off.
+export function cycleSort(sort, id) {
+  const first = sortSpec(id)?.first || "asc";
+  const other = first === "asc" ? "desc" : "asc";
+  if (sort?.id !== id || !sort?.dir) return { id, dir: first };
+  if (sort.dir === first) return { id, dir: other };
+  return { id: null, dir: null };
+}
+
+function sortSpec(id) {
+  if (SORTS[id]) return SORTS[id];
+  // A Library column added from the Analysis panel. A top-N list sorts by its
+  // first label.
+  if (id && id.startsWith("attr:")) {
+    const aid = id.slice(5);
+    return {
+      get: (t) => { const v = t.attrs?.[aid]; return Array.isArray(v) ? v[0]?.label ?? null : v ?? null; },
+      first: "desc",
     };
   }
   return null;
 }
 
-// Unsorted is the default and a real choice: rows arrive in import order, which
-// is the order you added them, and that is often what you are looking for.
-export function sortLibrary(rows, sort, starOf = () => null,
-                            groups = NO_GROUPS, groupId = "") {
-  const s = { ...EMPTY_SORT, ...(sort || {}) };
-  const ctx = { starOf, groups, groupId };
-  const first = compare(rows, s.primary, s.primaryDir, ctx);
-  if (!first) return rows;
-  const second = compare(rows, s.secondary, s.secondaryDir, ctx);
-  const out = [...rows];
-  out.sort((a, b) => first(a, b) || (second ? second(a, b) : 0));
-  return out;
+function compare(key, dir) {
+  const spec = sortSpec(key);
+  if (!spec) return null;
+  const sign = dir === "asc" ? 1 : -1;
+  // Missing values sort LAST in both directions — a track with no play count
+  // is unknown, not unpopular. The sign applies only after the null checks.
+  return (a, b) => {
+    let x = spec.get(a), y = spec.get(b);
+    if (spec.text) { x = x || null; y = y || null; }
+    if (x == null && y == null) return 0;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    if (typeof x === "number" && typeof y === "number") return (x - y) * sign;
+    return String(x).localeCompare(String(y)) * sign;
+  };
 }
 
-export function useLibraryFilters(rows, starOf, groups = NO_GROUPS) {
+// Unsorted is the default and a real choice: rows arrive in import order, which
+// is the order you added them — or, inside a group, the group's running order.
+export function sortLibrary(rows, sort, groups = NO_GROUPS, groupId = "") {
+  const cmp = sort?.id && sort?.dir ? compare(sort.id, sort.dir) : null;
+  if (!cmp) {
+    if (!groupId) return rows;
+    const pos = (t) => groups.positionOf(groupId, t.id);
+    return [...rows].sort((a, b) => (pos(a) ?? 1e9) - (pos(b) ?? 1e9));
+  }
+  return [...rows].sort(cmp);
+}
+
+export function useLibraryFilters(rows, { sort, selectedKey = null, groups = NO_GROUPS,
+                                          running = () => false } = {}) {
   const [filters, setFilters] = useState(EMPTY_FILTERS);
-  const [sort, setSort] = useState(EMPTY_SORT);
 
   const facets = useMemo(() => facetsOf(rows), [rows]);
+  const genreNames = useMemo(() => facets.genres.map((g) => g.name), [facets]);
+  const effective = useMemo(() => effectiveFilters(filters, genreNames),
+    [filters, genreNames]);
   const visible = useMemo(
-    () => sortLibrary(applyLibraryFilters(rows, filters, starOf, groups),
-                      sort, starOf, groups, filters.group),
-    [rows, filters, sort, starOf, groups],
+    () => sortLibrary(applyLibraryFilters(rows, effective, { selectedKey, groups, running }),
+      sort, groups, filters.group),
+    [rows, effective, sort, selectedKey, groups, running, filters.group],
   );
 
   return {
-    filters, setFilters, sort, setSort, facets, visible,
+    filters, setFilters, effective, facets, genreNames, visible,
     total: rows.length,
     active: isActive(filters),
     reset: () => setFilters(EMPTY_FILTERS),
     patch: (p) => setFilters((f) => ({ ...f, ...p })),
+    pin: () => setFilters((f) => pinQuery(f, genreNames)),
   };
 }

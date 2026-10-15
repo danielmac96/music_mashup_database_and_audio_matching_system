@@ -78,20 +78,13 @@ def test_nothing_in_the_strip_is_weighted_by_bars():
                 assert geom not in line, line.strip()
 
 
-def test_blocks_dividers_loop_and_playhead_share_one_accessor():
-    """If any one of the four is positioned by something else, it is back to two
-    axes and nothing on screen looks broken — it just quietly disagrees."""
-    # The section blocks and the dividers both go through `span()`...
-    assert "const span = (s) => ({" in CODE
-    assert CODE.count("style={span(s)}") == 3, "labels, dividers and the key lane"
-    # ...which is built from the same pct() the loop and the playhead use.
-    span = CODE[CODE.index("const span = (s) => ({"):]
-    span = span[:span.index("});")]
-    assert "pct(s.start_sec)" in span
-    assert "pct(s.end_sec)" in span
-    for el in ("struct-loop", "struct-playhead"):
-        block = CODE[CODE.index(el):]
-        assert "pct(" in block[:260], el
+def test_blocks_ruler_loop_and_playhead_share_one_axis():
+    """Every x on the canvas — downbeats, section blocks, key band, loop window,
+    playhead — goes through the one time accessor X(t)."""
+    assert "const X = (t) => (t / total) * W;" in CODE
+    for use in ("const x = X(t);", "X(s.start_sec), x1 = X(s.end_sec)",
+                "X(loop.start), x1 = X(loop.end)", "X(position)"):
+        assert use in CODE, use
 
 
 def test_the_axis_length_is_the_decoded_timebase_not_container_metadata():
@@ -106,47 +99,36 @@ def test_the_axis_length_is_the_decoded_timebase_not_container_metadata():
     assert total.index("sections[sections.length - 1].end_sec") < total.index("duration")
 
 
-def test_the_flex_gap_that_stole_width_is_gone():
-    """`flex: n` is `flex: n 1 0%`, so the gaps and the divider borders came out
-    of the distributable space before the proportional split while the
-    percentage-positioned playhead paid nothing: ~3.3% of the width on a 700px
-    strip with 12 sections, worst at the end of the track."""
-    labels = _css_block(".struct-labels {")
-    assert "gap:" not in labels
-    assert "position: relative" in labels
-    dividers = _css_block(".struct-dividers {")
-    assert "gap:" not in dividers
-    assert "display: flex" not in dividers
-    # Absolutely positioned children, and the hairline no longer takes up space.
-    child = _css_block(".struct-dividers > div {")
-    assert "position: absolute" in child
-    assert "border-right" not in child
-    assert "position: absolute" in _css_block(".struct-label {")
+def test_the_strip_is_one_156px_canvas():
+    """The design's strip: one canvas, ruler / blocks / waveform / envelopes /
+    key band in fixed rows."""
+    assert "const H = 156;" in CODE
+    assert '<canvas ref={canvasRef} className="struct-canvas"' in CODE
+    block = CSS[CSS.index("\n.struct-canvas {"):]
+    assert "height: 156px" in block[:block.index("}")]
 
 
 def test_the_bar_counts_are_not_lost():
-    """They were the reason the old axis existed, so they have to stay readable
-    somewhere."""
-    assert "bars" in CODE[CODE.index("const tip = (s) =>"):][:400]
-    assert "bars unmeasured" in CODE          # the header total
+    """Bars are numbered on the ruler (every phrase start) and each block's
+    tooltip counts its own."""
+    assert "c.fillText(String(i + 1)" in CODE
+    assert "Math.round(hovered.bar_count)} bars" in CODE
 
 
 # ── the playhead is a control (1c) ───────────────────────────────────────────
 
 def test_the_wave_can_be_clicked_and_dragged():
-    """The red line was a readout with nothing listening to it: there was no
-    pointer handler anywhere on the strip."""
-    assert "onPointerDown" in CODE
-    assert "onPointerMove" in CODE
-    assert "onSeek" in CODE
-    wave = _css_block(".struct-wave {")
-    assert "cursor: pointer" in wave
-    # A drag must not scroll the page out from under the playhead.
-    assert "touch-action: none" in wave
-    # A 1.5px line is not a grab target.
-    assert ".struct-grab" in CSS
-    # The dividers sit over the wave and would swallow the pointer.
-    assert "pointer-events: none" in _css_block(".struct-dividers {")
+    """On the section blocks a click loops that section; anywhere else it seeks
+    and a drag keeps seeking."""
+    assert "onPointerDown" in CODE and "onPointerMove" in CODE and "onSeek" in CODE
+    down = CODE[CODE.index("const onPointerDown"):]
+    down = down[:down.index("};")]
+    assert "y >= BLOCKS[0] && y <= BLOCKS[1]" in down and "onPickSection(s)" in down
+    assert "seekAt(e.clientX)" in down
+    assert "if (e.buttons === 1) seekAt(e.clientX);" in CODE
+    block = CSS[CSS.index("\n.struct-canvas {"):]
+    block = block[:block.index("}")]
+    assert "cursor: pointer" in block and "touch-action: none" in block
 
 
 def test_clicking_an_idle_track_starts_it_there():
@@ -160,19 +142,16 @@ def test_clicking_an_idle_track_starts_it_there():
 # ── which stem you are hearing (1e) ──────────────────────────────────────────
 
 def test_the_selected_stem_is_the_prominent_envelope():
-    """And the other one stays VISIBLE. The whole value of the overlay is seeing
-    where the vocal sits against the bed; hiding one throws that away."""
-    fills = CODE[CODE.index("const WAVE_FILL = {"):]
-    fills = fills[:fills.index("};")]
+    """Which waveform reads as the one you hear follows the selected stem; the
+    other stays visible, dimmed, never at zero."""
+    block = CODE[CODE.index("const WAVE_ALPHA = {"):]
+    block = block[:block.index("};")]
     for stem in ("full", "vocals", "instrumental"):
-        assert stem in fills, stem
-    vals = [float(v) for v in re.findall(r"0\.\d+", fills)]
+        assert stem in block, stem
+    vals = [float(v) for v in re.findall(r"(?:bed|vox): ([0-9.]+)", block)]
     assert all(v > 0 for v in vals), "a stem at zero opacity is a hidden stem"
-    # vocals emphasises vox over bed; instrumental the other way round.
-    vocals = fills[fills.index("vocals:"):fills.index("instrumental:")]
-    bed, vox = (float(re.search(rf"{k}: (0\.\d+)", vocals).group(1))
-                for k in ("bed", "vox"))
-    assert vox > bed
+    vocals = re.search(r"vocals: \{ bed: ([0-9.]+), vox: ([0-9.]+) \}", block)
+    assert float(vocals.group(2)) > float(vocals.group(1))
     assert "stem={stem}" in DETAIL
 
 

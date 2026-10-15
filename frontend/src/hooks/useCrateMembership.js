@@ -21,7 +21,7 @@ export function useCrateMembership(items, refreshKey) {
   const token = useRef(0);
 
   // Only tracks carry crate membership — a set or an artist row is a place to
-  // go. `!i.kind` is the same predicate useRowSelection selects on.
+  // go. `!i.kind` is the same predicate the shortlist takes.
   const trackRows = useMemo(() => (items || []).filter((i) => !i.kind), [items]);
 
   // Depend on the identity strings rather than the array, so a re-render that

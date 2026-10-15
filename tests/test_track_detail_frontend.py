@@ -30,125 +30,128 @@ def _read(rel: str) -> str:
 APP = _read("App.jsx")
 TABLE = _read("components/TrackTable.jsx")
 DETAIL = _read("components/TrackDetail.jsx")
-RAIL = _read("components/PartnersRail.jsx")
 CSS = _read("styles.css")
 
 
 def _row(src: str) -> str:
     """The TrackRow component's body — not the TrackTable wrapper above it,
     which mentions the same prop names."""
-    return src[src.index("function TrackRow("):]
+    return src[src.index("const Row = memo("):]
 
 
 # ── the library row ────────────────────────────────────────────────────────
 
 def test_the_title_is_a_button_that_opens_the_track():
-    row = _row(TABLE)
-    block = row[row.index('className="tt-name"'):]
+    cell = TABLE[TABLE.index('case "title": {'):]
+    cell = cell[:cell.index('case "bpm":')]
+    block = cell[cell.index('<button className="tt-title"'):]
     block = block[:block.index("</button>")]
-    assert "<button" in row[:row.index('className="tt-name"')][-200:], \
-        "tt-name must be a button, not a div — a div is not a link"
-    assert "onOpen(t.id)" in block
+    assert "ctx.onOpen(t.id)" in block, "a span is not a link — keep it a button"
 
 
 def test_opening_a_track_does_not_also_toggle_the_row():
     """Without stopPropagation one click navigates AND re-scopes the dock, so
     you arrive on the detail screen having silently changed what the dock was
     showing behind it."""
-    row = _row(TABLE)
-    block = row[row.index('className="tt-name"'):]
-    block = block[:block.index("</button>")]
-    assert "e.stopPropagation()" in block
+    cell = TABLE[TABLE.index('<button className="tt-title"'):]
+    cell = cell[:cell.index("</button>")]
+    assert "e.stopPropagation()" in cell
 
 
 def test_the_row_itself_still_scopes_the_pair_dock():
     """The README's interaction contract: selecting a library row re-scopes the
     dock. The link is additive — it must not have taken that gesture over."""
     row = _row(TABLE)
-    head = row[:row.index('className="tt-play"')]
-    assert "onClick={() => onSelect(t.id)}" in head
-    # And the double-click fallback the revamp shipped with still works.
-    assert "onDoubleClick={() => onOpen(t.id)}" in head
+    assert "onClick={() => ctx.select(t.id)}" in row
+    assert "onDoubleClick={() => ctx.onOpen(t.id)}" in row
 
 
 def test_the_link_is_visible_before_it_is_clicked():
-    """The bug was an invisible affordance, so the hover state IS the fix."""
-    assert ".tt-go" in CSS
-    assert ".tt-row:hover .tt-go" in CSS
-    assert ".tt-name:hover .tt-text" in CSS
-    # A button in a grid cell reverts to centred text with default padding,
-    # which breaks the title column's ellipsis.
-    block = CSS[CSS.index("\n.tt-name {"):]
+    """The bug was an invisible affordance, so the hover state IS the fix — and
+    a button reverts to centred text with a border unless told otherwise."""
+    assert ".tt-title:hover { text-decoration: underline; }" in CSS
+    block = CSS[CSS.index("\n.tt-title {"):]
     block = block[:block.index("}")]
-    assert "text-align: left" in block
-    assert "border: 0" in block
+    assert "text-align: left" in block and "border: 0" in block
+    assert "text-overflow: ellipsis" in block
 
 
-def test_a_long_title_does_not_swallow_its_own_chevron():
-    """Most titles overflow this column. With the chevron inside the ellipsised
-    element, the affordance is clipped on exactly the rows that need it — and
-    that is what the browser check caught."""
-    for line, text, go in ((".tt-title", ".tt-text", ".tt-go"),
-                           (".partner-line", ".pc-text", ".partner-go")):
-        row = CSS[CSS.index(f"\n{line} {{"):]
-        row = row[:row.index("}")]
-        assert "display: flex" in row, line
-        cell = CSS[CSS.index(f"\n{text} {{"):]
-        cell = cell[:cell.index("}")]
-        assert "text-overflow: ellipsis" in cell, text
-        chev = CSS[CSS.index(f"\n{go} {{"):]
-        chev = chev[:chev.index("}")]
-        assert "flex: none" in chev, go
+def test_a_long_partner_name_truncates_instead_of_pushing_the_row():
+    block = CSS[CSS.index("\n.dt-partnername {"):]
+    block = block[:block.index("}")]
+    assert "text-overflow: ellipsis" in block and "white-space: nowrap" in block
+    grid = CSS[CSS.index("\n.dt-partner {"):]
+    assert "minmax(0, 1fr)" in grid[:grid.index("}")]
 
 
-# ── the partners rail ──────────────────────────────────────────────────────
+# ── partners, and the screen itself ────────────────────────────────────────
 
 def test_a_partner_walks_to_its_own_track():
-    assert "onOpenTrack" in RAIL
-    block = RAIL[RAIL.index('className="partner-open"'):]
+    """The Partners group: a partner's name opens THAT track (the other side of
+    the pair, not the one whose screen you are on); ▶ loops the pair and ◫
+    opens it in Studio."""
+    block = DETAIL[DETAIL.index('className="dt-partnername"'):]
     block = block[:block.index("</button>")]
-    # songId is the PARTNER's id — the other side of the pair, not the track
-    # whose screen you are already on.
-    assert "onOpenTrack(songId)" in block
-    assert "e.stopPropagation()" in block, \
-        "the partner row loops on click; opening must not also start audio"
+    assert "openPartner(pid, as)" in block
+    assert "onPlayPair(c)" in DETAIL and "onStudio(c)" in DETAIL
 
 
 def test_opening_a_partner_flips_the_role():
+    """You got here looking at this track as the vocal, so the partner you
+    clicked is a bed — it opens as one."""
     fn = DETAIL[DETAIL.index("const openPartner ="):]
     fn = fn[:fn.index("};")]
-    assert "onRole(" in fn and "instrumental" in fn and "vocal" in fn
-    assert "onOpenTrack(id)" in fn
-    assert "onOpenTrack={openPartner}" in DETAIL
-
-
-def test_the_rails_link_treatment_is_scoped_to_the_rail():
-    """.pc-title is shared with PairCard, where nothing is clickable. A hover
-    rule on the bare class would put a phantom link on every pair in the dock."""
-    assert ".partner-open" in CSS
-    assert not re.search(r"^\.pc-title:hover", CSS, re.M)
-    assert not re.search(r"^\.pc-title\b[^{]*:hover", CSS, re.M)
+    assert "onRole(asRole)" in fn and "onOpenTrack(id)" in fn
+    assert 'as: "instrumental"' in DETAIL and 'as: "vocal"' in DETAIL
 
 
 def test_the_way_out_is_not_buried_under_the_status_pill():
-    """.float-status used to float top-right of the main column, which on this
-    screen is `song #N` and the esc button (and on others the pair dock's
-    header and Studio's export buttons). It now sits in flow in the rail."""
+    """.float-status sits in flow in the rail, never over a screen's header."""
     block = CSS[CSS.index("\n.float-status {"):]
     block = block[:block.index("}")]
     assert "position: absolute" not in block
     assert "rail-status" in _read("shell/Sidebar.jsx")
-    assert "onStatus(null)" in DETAIL, \
-        "the detail screen must not publish a float status over its own header"
-    assert "scored pairings" not in DETAIL
+    assert "onStatus(null)" in DETAIL
+    assert '← Library</button>' in DETAIL
 
 
 def test_walking_to_a_partner_starts_at_the_top_of_the_page():
     """The screen re-renders rather than remounting, so scroll survives — and
     you land mid-page under somebody else's hero."""
-    assert "mainRef" in DETAIL
-    assert 'className="detail-main" ref={mainRef}' in DETAIL
+    assert 'className="detail" ref={mainRef}' in DETAIL
     assert "mainRef.current?.scrollTo" in DETAIL
+
+
+def test_the_detail_replaces_the_table_and_the_dock_stays():
+    """Track detail renders inside the Library column with the pair dock beside
+    it, and the Library stays mounted (hidden) underneath — so esc lands back
+    on the same filters, selection and scroll."""
+    lib = APP[APP.index('{(route === "library" || route === "track") && ('):]
+    lib = lib[:lib.index('{route === "queue" && (')]
+    assert "<LibraryScreen" in lib and "<TrackDetail" in lib and "<PairDock" in lib
+    assert 'className={`lib-pane${route === "track" ? " away" : ""}`}' in lib
+    css = CSS[CSS.index("\n.lib-pane.away {"):]
+    assert "visibility: hidden" in css[:css.index("}")]
+
+
+def test_five_disclosures_remembered():
+    assert '"mashup.detailGroups.v1"' in DETAIL
+    for gid in ('id="attrs"', 'id="stems"', 'id="src"', 'id="partners"', 'id="actions"'):
+        assert gid in DETAIL, gid
+    prim = _read("components/ui/primitives.jsx")
+    assert "localStorage.setItem(storageKey" in prim
+    # Actions: re-run each stage, BPM ×2 / ÷2, edit key.
+    for call in ("api.startSeparate", "api.startAnalyze", "api.startStructure",
+                 "fixBpm(f.bpm * 2)", "fixBpm(f.bpm / 2)", "<TrackEditor"):
+        assert call in DETAIL, call
+
+
+def test_space_plays_here_and_the_dock_keeps_its_other_keys():
+    assert 'e.code === "Space"' in DETAIL and "playHook()" in DETAIL
+    app = APP
+    assert '{ space: route === "library" }' in app
+    hook = _read("hooks/usePairDock.js")
+    assert "if (!space) return;" in hook
 
 
 # ── the wiring ─────────────────────────────────────────────────────────────
@@ -161,13 +164,12 @@ def test_app_hands_the_detail_screen_a_way_to_change_tracks():
         "partner you are already scoped to would clear the selection instead"
 
 
-def test_the_whole_name_cell_opens_the_track():
-    """The button spans the column's WIDTH already; at content height the strips
-    above and below the two lines fell through to the row, so a click half a row
-    from the title scoped the dock instead of opening the track."""
-    block = CSS[CSS.index(".tt-name {"):]
-    block = block[:block.index("}")]
-    assert "height: 100%" in block
-    assert "display: flex" in block and "flex-direction: column" in block
-    # ...and the row still owns everything else.
-    assert "onClick={() => onSelect(t.id)}" in _row(TABLE)
+def test_the_artist_and_the_rest_of_the_row_select():
+    """Only the title opens the track; the artist beside it and every other
+    cell belong to the row, which scopes the dock."""
+    cell = TABLE[TABLE.index('case "title": {'):]
+    cell = cell[:cell.index('case "bpm":')]
+    artist = cell[cell.index('className="tt-artist"') - 10:]
+    assert "onClick" not in artist[:artist.index("</span>")]
+
+

@@ -3,92 +3,74 @@ import { api } from "../api";
 import { toast } from "../toast";
 import { ScHeader, PlaylistRow, TrackRow, UserRow, rowKey, scSource,
          scRowState } from "./ScRows";
-import { ShortlistDock } from "./ShortlistDock";
-import { useRowSelection } from "../hooks/useRowSelection";
+import { TrackArt } from "./TrackArt";
 import { useCrateMembership } from "../hooks/useCrateMembership";
 import { useResultFilters } from "../hooks/useResultFilters";
 import { ResultFilters } from "./ResultFilters";
 import { ProfileShelf } from "./ProfileShelf";
+import { fmtPlays } from "../theme";
 
+// Find tracks (Discover, revamp step 4). Search SoundCloud — tracks, sets or
+// artists, with a role bias (acapella / instrumental) — or paste a link; drill
+// into an artist or a set; shortlist into the Discover-wide shortlist.
+//
 // Search is on Enter, and paging is a button. Both layers share one scraped
 // client_id with the mixes auto-resolver, so search-as-you-type or infinite
 // scroll would spend someone else's rate limit as well as ours.
+
 // What you are digging FOR. A mashup is built from acapellas and
 // instrumentals; the word is added to the search unless it is already there.
-const ROLES = [["", "Any"], ["acapella", "Acapella"], ["instrumental", "Instrumental"]];
+const ROLES = [["", "Any", null], ["acapella", "Acapella", "vox"], ["instrumental", "Instrumental", "bed"]];
 
-const KINDS = [
-  ["tracks", "Tracks"],
-  ["playlists", "Sets"],
-  ["users", "Artists"],
-];
+const KINDS = [["tracks", "Tracks"], ["playlists", "Sets"], ["users", "Artists"]];
 
-const USER_FEEDS = [
-  ["tracks", "Uploads"],
-  ["likes", "Likes"],
-  ["playlists", "Sets"],
-];
+const USER_FEEDS = [["tracks", "Uploads"], ["likes", "Likes"], ["playlists", "Sets"]];
 
-export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
-                                    onNavDone, onGroupsChanged }) {
+export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav, onNavDone,
+                                    shortlist, onPlaylistHere = null, crateRefresh = 0,
+                                    importNonce = 0 }) {
   const [query, setQuery] = useState("");
   const [kind, setKind] = useState("tracks");
   const [role, setRole] = useState("");
   // Where we are. A breadcrumb rather than a single view, because the useful
-  // path is search → artist → their likes → a set inside it, and losing your
-  // place on every step makes that unusable.
+  // path is search → artist → their likes → a set inside it.
   const [crumbs, setCrumbs] = useState([]);
   const [items, setItems] = useState([]);
   const [cursor, setCursor] = useState(null);
   const [loading, setLoading] = useState(false);
   const [paging, setPaging] = useState(false);
   const [error, setError] = useState("");
-  const [importing, setImporting] = useState(false);
-  const [crateRefresh, setCrateRefresh] = useState(0);
-  const [activeCrateId, setActiveCrateId] = useState(null);
-  // Import the set you are looking at AS a set. Only a playlist listing offers
-  // it: a search page or an artist's uploads is not a set, and naming a group
-  // after “House” would make a shelf nobody asked for. Defaulted on where it is
-  // offered, and switched off the moment you navigate away from the playlist
-  // (the crumb changes, the name goes with it).
-  const [groupOn, setGroupOn] = useState(true);
-
-  const inputRef = useRef(null);
+  const [rowCursor, setRowCursor] = useState(0);
+  const [saved, setSaved] = useState([]);
+  const listRef = useRef(null);
   // Monotonic token: a slow first page must not overwrite a faster later one.
   const loadToken = useRef(0);
 
   const here = crumbs[crumbs.length - 1] || null;
   const playlistHere = here?.kind === "playlist" ? here.label : null;
-  const groupName = groupOn && playlistHere ? playlistHere : null;
+  // Discover files an import under a group named after the set, but only
+  // while the listing IS a set — so it is told, and told again on leaving.
+  useEffect(() => {
+    onPlaylistHere?.(playlistHere);
+    return () => onPlaylistHere?.(null);
+  }, [playlistHere, onPlaylistHere]);
 
-  // Live, not baked onto the rows: `items` is not re-fetched after an add, so a
-  // badge computed server-side would be stale the moment you shortlisted.
-  // crateRefresh is already bumped on a successful add. Computed over every
-  // loaded row, not just the visible ones, so the in-crate facet can filter on it.
+  // Live, not baked onto the rows: a badge computed server-side would be
+  // stale the moment you shortlisted into a crate.
   const crateOf = useCrateMembership(items, crateRefresh);
+  const { filters, setFilters, reset: resetFilters, visible } = useResultFilters(items, crateOf);
+  const trackRows = visible.filter((r) => !r.kind);
+  const shortlistable = visible.filter((r) => !r.kind && !r.in_library);
+  const allShortlisted = shortlistable.length > 0 && shortlistable.every((r) => shortlist.has(r));
 
-  // Filter/sort over what is loaded. `visible` is what renders.
-  const { filters, setFilters, reset: resetFilters, visible } =
-    useResultFilters(items, crateOf);
-
-  // ▶ on a row plays through the app-wide player, which drives SoundCloud's own
-  // embed widget. Nothing is fetched from api-v2 to do it, so the scraped
-  // client_id the frozen mixes resolver shares is untouched. The source and the
-  // "is this row the one" test are shared with the other pane (ScRows) — they
-  // were duplicated byte for byte here, and the copy compared track_id, which
-  // matches undefined to undefined on rows SoundCloud returned without an id.
+  // ▶ plays through the app-wide player, which drives SoundCloud's own embed
+  // widget — nothing is fetched from api-v2 to do it.
   const playRow = (row) => player?.toggle(scSource(row));
 
-
-  // Only tracks are selectable; a set or an artist row is a place to go, not a
-  // thing to import. Shared with Suggestions, which shortlists the same rows.
-  //
-  // Selection derives from `visible`, not `items`: "select all" must mean "all
-  // shown". Filtering a row out while it stays selected would import a track the
-  // user can no longer see -- the same hazard run()'s clear() guards against.
-  const { isChecked, toggle, toggleAll, allSelected, clear,
-          selected, importable, selectedRows, selectedImportable } =
-    useRowSelection(visible);
+  const loadSaved = useCallback(() => {
+    api.discoverySavedProfiles().then((b) => setSaved(b.profiles || [])).catch(() => setSaved([]));
+  }, []);
+  useEffect(() => { loadSaved(); }, [loadSaved]);
 
   useEffect(() => {
     onStatus?.(loading
@@ -107,12 +89,9 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
       setItems((prev) => (append ? [...prev, ...rows] : rows));
       setCursor(body.next_cursor || null);
       if (!append) {
-        // Selection is meaningful within one listing; carrying it across a
-        // navigation would let you import tracks you can no longer see. A
-        // filter is scoped the same way: a genre that made sense for the last
-        // listing may hide everything in this one.
-        clear();
+        // A filter built for the last listing may hide everything in this one.
         resetFilters();
+        setRowCursor(0);
         if (crumb) setCrumbs((prev) => [...prev, crumb]);
       }
     } catch (e) {
@@ -122,15 +101,14 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
     } finally {
       if (token === loadToken.current) { setLoading(false); setPaging(false); }
     }
-  }, [clear, resetFilters]);
+  }, [resetFilters]);
 
   const search = (preset = null, want = role) => {
     let q = (preset ?? query).trim();
     if (!q) return;
     if (want && !/^https?:\/\//i.test(q) && !new RegExp(want === "acapella"
       ? "a\\s?cap+el+a" : "instrumental", "i").test(q)) q = `${q} ${want}`;
-    // A pasted link is a resolve, not a search — no one wants SoundCloud's
-    // full-text opinion of a URL they already have.
+    // A pasted link is a resolve, not a search.
     if (/^https?:\/\//i.test(q)) return resolve(q);
     setCrumbs([]);
     run(() => api.discoverySearch(q, kind), { kind: "search", label: `“${q}”`, q, searchKind: kind });
@@ -141,18 +119,19 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
     run(async () => {
       const body = await api.discoveryResolve(url);
       const label = body.item?.title || body.item?.username || "Link";
-      setCrumbs([{ kind: body.kind, label, id: body.item?.playlist_id || body.item?.user_id }]);
+      setCrumbs([{ kind: body.kind, label, id: body.item?.playlist_id || body.item?.user_id,
+                   url: body.item?.permalink_url || url, art: body.item?.avatar_url || body.item?.thumbnail }]);
       return body;
     });
   };
 
-  const openUser = (userId, username, feed = "tracks") =>
+  const openUser = (userId, username, feed = "tracks", extra = {}) =>
     run(() => api.discoveryUserFeed(userId, feed),
-        { kind: "user", label: username, id: userId, feed });
+        { kind: "user", label: username, id: userId, feed, ...extra });
 
-  const openPlaylist = (playlistId, title) =>
+  const openPlaylist = (playlistId, title, extra = {}) =>
     run(() => api.discoveryPlaylist(playlistId),
-        { kind: "playlist", label: title, id: playlistId });
+        { kind: "playlist", label: title, id: playlistId, ...extra });
 
   const openRelated = (trackId, title) =>
     run(() => api.discoveryRelated(trackId),
@@ -164,14 +143,11 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
     run(() => api.discoveryUserFeed(here.id, feed), null);
   };
 
-  // Clicking an artist or a set in Suggestions lands you here, on that page.
-  // The two panes are separate components, so the click arrives as a prop rather
-  // than a call; acknowledging it stops the same nav replaying on every render.
+  // An artist or set clicked in Suggestions, a saved profile, or a search
+  // handed over from elsewhere (Track detail's "Dig", a Library gap).
   useEffect(() => {
     if (!nav) return;
     setCrumbs([]);
-    // A search handed over from elsewhere — Track detail's "Find acapella",
-    // a Library gap — runs as if typed.
     if (nav.kind === "search") {
       setQuery(nav.q); setKind("tracks");
       if (nav.role != null) setRole(nav.role);
@@ -179,7 +155,7 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
       onNavDone?.();
       return;
     }
-    if (nav.kind === "user") openUser(nav.id, nav.label);
+    if (nav.kind === "user") openUser(nav.id, nav.label, "tracks", { url: nav.url });
     else openPlaylist(nav.id, nav.label);
     onNavDone?.();
   }, [nav]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -200,6 +176,18 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
     }
   };
 
+  // After an import, re-run the listing so the imported rows show ✓ in library.
+  useEffect(() => {
+    if (importNonce && crumbs.length) goToCrumb(crumbs.length - 1);
+  }, [importNonce]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ← Search: back to the search this drill-in started from (or to empty).
+  const backToSearch = () => {
+    const i = crumbs.findIndex((c) => c.kind === "search");
+    if (i >= 0 && i < crumbs.length - 1) goToCrumb(i);
+    else { setCrumbs([]); setItems([]); setCursor(null); }
+  };
+
   const loadMore = () => {
     if (!cursor || paging) return;
     const c = here;
@@ -208,183 +196,219 @@ export function SoundCloudBrowser({ player, onStatus, onOpenLibrary, nav,
     else run(() => api.discoverySearch(c?.q ?? query.trim(), c?.searchKind ?? kind, cursor), null, { append: true });
   };
 
-  const doImport = async () => {
-    if (!selectedImportable.length) return;
-    setImporting(true);
+  const isSaved = here?.kind === "user" && saved.some((p) => String(p.user_id) === String(here.id));
+  const saveProfile = async () => {
+    if (!here || here.kind !== "user") return;
     try {
-      const res = await api.discoveryImport(selectedImportable, groupName);
-      toast(`Saved ${res.count} track${res.count === 1 ? "" : "s"} — processing started`
-            + (res.skipped_count ? `, ${res.skipped_count} already in library` : "")
-            + (res.group ? ` · group “${res.group.name}”` : ""));
-      // The library rail is a floor up; it only learns about a new group if
-      // someone tells it.
-      if (res.group) onGroupsChanged?.();
-      // Re-run the current view so the imported rows pick up their badge.
-      clear();
-      if (here) goToCrumb(crumbs.length - 1);
-    } catch (e) {
-      toast(`Import failed: ${e.message}`);
-    } finally {
-      setImporting(false);
+      if (isSaved) {
+        await api.discoveryForgetProfile(here.id);
+        toast(`Forgot ${here.label}`);
+      } else {
+        await api.discoverySaveProfile(here.url || `https://soundcloud.com/${here.label}`);
+        toast(`Saved ${here.label}`);
+      }
+      loadSaved();
+    } catch (e) { toast(`Could not save the profile: ${e.message}`); }
+  };
+
+  // ↑↓ move · x shortlist · ⏎ preview. Keys handled here stop here.
+  const onListKey = (e) => {
+    if (!visible.length || e.metaKey || e.ctrlKey || e.altKey) return;
+    const at = Math.min(rowCursor, visible.length - 1);
+    const row = visible[at];
+    const move = (d) => {
+      const n = Math.max(0, Math.min(visible.length - 1, at + d));
+      setRowCursor(n);
+      listRef.current?.querySelector(`[data-i="${n}"]`)?.scrollIntoView({ block: "nearest" });
+    };
+    if (e.key === "ArrowDown") { e.preventDefault(); e.stopPropagation(); move(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); e.stopPropagation(); move(-1); }
+    else if ((e.key === "x" || e.key === "X") && row && !row.kind) { e.preventDefault(); shortlist.toggle(row); }
+    else if (e.key === "Enter" && row) {
+      e.preventDefault();
+      if (!row.kind) playRow(row);
+      else if (row.kind === "playlist") openPlaylist(row.playlist_id, row.title, { art: row.thumbnail });
+      else openUser(row.user_id, row.username, "tracks", { url: row.permalink_url, art: row.avatar_url });
     }
   };
 
-  const addToCrate = async (crateId) => {
-    if (!selectedRows.length || !crateId) return;
-    try {
-      const res = await api.addCrateItems(crateId, selectedRows);
-      toast(`Added ${res.added} to crate`
-            + (res.skipped ? `, ${res.skipped} already there` : ""));
-      clear();
-      setCrateRefresh((n) => n + 1);
-    } catch (e) {
-      toast(`Could not add to crate: ${e.message}`);
-    }
-  };
+  const entities = visible.length > 0 && visible.every((r) => r.kind);
+  const drilled = here && here.kind !== "search";
 
   return (
-    <>
-      <main className="disc-main">
-        {/* ── search block ──
-            One wide input taking a query OR a pasted profile / set / track URL,
-            because "find me X" and "open this link" are the same act from the
-            user's side. Search is on Enter and paging is a button: both layers
-            share one scraped client_id with the mixes auto-resolver, so
-            search-as-you-type would spend someone else's rate limit too. */}
-        <div className="disc-search">
-          <div className="disc-input">
-            <span className="glyph">⌕</span>
-            <input ref={inputRef} value={query}
-              placeholder="Search SoundCloud…"
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") search(); }} />
-            <span className="disc-or mono">or paste a profile / set / track URL</span>
-            <button className="head-btn" onClick={() => search()}
-              disabled={loading || !query.trim()}>
-              {loading ? "Searching…" : "Search"}
+    <main className="disc-main">
+      <div className="disc-bar">
+        <div className="disc-input">
+          <span className="glyph">⌕</span>
+          <input data-search="discover" value={query} aria-label="Search SoundCloud"
+            placeholder="Search SoundCloud — title, artist, or paste a link"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") search();
+              else if (e.key === "ArrowDown") { e.preventDefault(); listRef.current?.focus(); }
+            }} />
+        </div>
+        <div className="d-seg" role="group" aria-label="Result type">
+          {KINDS.map(([id, label]) => (
+            <button key={id} className={kind === id ? "on" : ""} aria-pressed={kind === id}
+              onClick={() => setKind(id)}>{label}</button>
+          ))}
+        </div>
+        <div className="d-seg" role="group" aria-label="Looking for"
+          title="What you are digging for — added to the search">
+          {ROLES.map(([id, label, dot]) => (
+            <button key={id || "any"} className={role === id ? "on" : ""} aria-pressed={role === id}
+              onClick={() => setRole(id)}>
+              <span className={`sw ${dot || "any"}`} />{label}
             </button>
-          </div>
+          ))}
+        </div>
+        <span className="grow" />
+        <button className={`ui-btn toggle${filters.inLibrary === "no" ? " on" : ""}`}
+          aria-pressed={filters.inLibrary === "no"}
+          onClick={() => setFilters({ ...filters, inLibrary: filters.inLibrary === "no" ? "any" : "no" })}>
+          Hide in library
+        </button>
+        <button className={`ui-btn toggle${filters.minPlays ? " on" : ""}`}
+          aria-pressed={!!filters.minPlays}
+          onClick={() => setFilters({ ...filters, minPlays: filters.minPlays ? "" : "10000" })}>
+          ≥ 10k plays
+        </button>
+      </div>
 
-          <div className="disc-chips">
-            <div className="pd-seg">
-              {KINDS.map(([id, label]) => (
-                <button key={id} className={kind === id ? "on" : ""}
-                  onClick={() => setKind(id)}>{label}</button>
-              ))}
-            </div>
-            <div className="pd-seg" title="What you are digging for — added to the search">
-              {ROLES.map(([id, label]) => (
-                <button key={id || "any"} className={role === id ? "on" : ""}
-                  onClick={() => setRole(id)}>{label}</button>
-              ))}
-            </div>
-
-            <ResultFilters items={items} filters={filters} onChange={setFilters}
-              visibleCount={visible.length} crateOf={crateOf} />
-
-            <span className="disc-page mono">
-              {items.length} loaded{cursor ? " · more available" : ""}
+      {drilled && (
+        <div className="disc-nav">
+          <button className="ui-btn" onClick={backToSearch}>← Search</button>
+          <TrackArt id={here.id} thumbnail={here.art} className={`disc-navart${here.kind === "user" ? " round" : ""}`} />
+          <div className="disc-navtext">
+            <b>{here.label}</b>
+            <span className="mono muted small">
+              {here.kind === "user" ? "artist" : here.kind === "playlist" ? "set" : "similar uploads"}
+              {" · "}{items.length} loaded{cursor ? " · more available" : ""}
+              {crumbs.length > 1 && (
+                <> · {crumbs.slice(0, -1).map((c, i) => (
+                  <button key={i} className="ui-link crumb" onClick={() => goToCrumb(i)}>{c.label}</button>
+                ))}</>
+              )}
             </span>
           </div>
+          {here.kind === "user" && (
+            <div className="d-seg">
+              {USER_FEEDS.map(([id, label]) => (
+                <button key={id} className={(here.feed || "tracks") === id ? "on" : ""}
+                  onClick={() => switchFeed(id)}>{label}</button>
+              ))}
+            </div>
+          )}
+          <span className="grow" />
+          {here.kind === "user" && (
+            <button className={`ui-btn${isSaved ? " on" : ""}`} onClick={saveProfile}
+              title="A bookmark — saved profiles show when the search is empty">
+              {isSaved ? "✓ Saved profile" : "+ Save profile"}
+            </button>
+          )}
+          <button className="ui-btn" disabled={!shortlistable.length}
+            onClick={() => shortlist.addMany(shortlistable)}>Shortlist all shown</button>
         </div>
+      )}
 
-        {crumbs.length > 0 && (
-          <div className="sc-breadcrumb">
-            {crumbs.map((c, i) => (
-              <span key={i}>
-                {i > 0 && <span className="faint"> / </span>}
-                <button className="link-btn" onClick={() => goToCrumb(i)}>{c.label}</button>
-              </span>
-            ))}
-            {here?.kind === "user" && (
-              <span className="pd-seg sc-feed">
-                {USER_FEEDS.map(([id, label]) => (
-                  <button key={id} className={(here.feed || "tracks") === id ? "on" : ""}
-                    onClick={() => switchFeed(id)}>{label}</button>
-                ))}
-              </span>
-            )}
-            {importable.length > 0 && (
-              <button className="link-btn" onClick={toggleAll}
-                style={{ marginLeft: "auto" }}
-                title="Selection is over the SHOWN rows, not everything loaded — filtering something away must not import it">
-                {allSelected ? "clear selection" : `select all ${importable.length} shown`}
-              </button>
-            )}
-          </div>
+      {items.length > 0 && (
+        <ResultFilters items={items} filters={filters} onChange={setFilters}
+          visibleCount={visible.length} crateOf={crateOf} />
+      )}
+
+      {error && <div className="error-text disc-pad">{error}</div>}
+
+      <div className="disc-list" ref={listRef} tabIndex={0} aria-label="Results" onKeyDown={onListKey}>
+        {!entities && trackRows.length > 0 && (
+          <ScHeader filters={filters} onChange={setFilters}
+            allChecked={allShortlisted}
+            onToggleAll={() => (allShortlisted ? shortlist.removeMany(shortlistable)
+              : shortlist.addMany(shortlistable))} />
         )}
 
-        {error && <div className="error-text" style={{ padding: "8px 16px" }}>{error}</div>}
-
-        <ScHeader filters={filters} onChange={setFilters} />
-
-        <div className="sc-rows">
-          {visible.map((row, i) => row.kind === "playlist" ? (
-            <PlaylistRow key={`p${row.playlist_id}`} row={row}
-              onOpen={() => openPlaylist(row.playlist_id, row.title)} />
-          ) : row.kind === "user" ? (
-            <UserRow key={`u${row.user_id}`} row={row}
-              onOpen={() => openUser(row.user_id, row.username)} />
-          ) : (
-            <TrackRow key={`${rowKey(row)}-${i}`} row={row}
-              checked={isChecked(row)}
-              onToggle={() => toggle(row)}
-              onArtist={() => openUser(row.user?.id, row.user?.username)}
+        {entities ? (
+          <div className="sc-cards">
+            {visible.map((row, i) => (row.kind === "playlist" ? (
+              <PlaylistRow key={`p${row.playlist_id}`} row={row}
+                onOpen={() => openPlaylist(row.playlist_id, row.title, { art: row.thumbnail })} />
+            ) : (
+              <UserRow key={`u${row.user_id}-${i}`} row={row}
+                onOpen={() => openUser(row.user_id, row.username, "tracks",
+                  { url: row.permalink_url, art: row.avatar_url })} />
+            )))}
+          </div>
+        ) : visible.map((row, i) => (row.kind === "playlist" ? (
+          <div key={`p${row.playlist_id}`} data-i={i} className="sc-cardrow">
+            <PlaylistRow row={row} onOpen={() => openPlaylist(row.playlist_id, row.title, { art: row.thumbnail })} />
+          </div>
+        ) : row.kind === "user" ? (
+          <div key={`u${row.user_id}`} data-i={i} className="sc-cardrow">
+            <UserRow row={row} onOpen={() => openUser(row.user_id, row.username, "tracks",
+              { url: row.permalink_url, art: row.avatar_url })} />
+          </div>
+        ) : (
+          <div key={`${rowKey(row)}-${i}`} data-i={i}>
+            <TrackRow row={row}
+              checked={shortlist.has(row)}
+              cursor={i === rowCursor}
+              onSelect={() => { setRowCursor(i); listRef.current?.focus({ preventScroll: true }); }}
+              onToggle={() => shortlist.toggle(row)}
+              onArtist={() => openUser(row.user?.id, row.user?.username, "tracks",
+                { url: row.user?.permalink_url })}
               onRelated={() => openRelated(row.track_id, row.title)}
               onOpenLibrary={onOpenLibrary}
               onPlay={playRow} {...scRowState(player, row)}
               crates={crateOf(row)} />
-          ))}
+          </div>
+        )))}
 
-          {/* The landing state. Your own shelves are the useful thing to show
-              here; searching for your own name to reach them was the gap. */}
-          {!loading && !items.length && !error && !crumbs.length && (
-            <div className="disc-landing">
-              <ProfileShelf onOpenFeed={openUser} />
-              <div className="empty">
-                Or search for an artist or a track, or paste a SoundCloud link.
-              </div>
-            </div>
-          )}
-          {!loading && !items.length && !error && crumbs.length > 0 && (
-            <div className="empty">Nothing here.</div>
-          )}
-          {/* Loaded rows, all filtered out. Distinct from "nothing here" — the
-              fix is to widen the filter, not to search again. */}
-          {!loading && items.length > 0 && !visible.length && (
-            <div className="empty">
-              No loaded result matches these filters.{" "}
-              <button className="link-btn" onClick={resetFilters}>Clear filters</button>
-            </div>
-          )}
+        {/* The landing state: your saved profiles and your own shelves. */}
+        {!loading && !items.length && !error && !crumbs.length && (
+          <div className="disc-empty">
+            <b>Search SoundCloud, or paste a link.</b>
+            <span className="muted">Pick Acapella or Instrumental to bias the search towards the
+              part you are missing. Previews stream from SoundCloud; nothing downloads until you
+              import.</span>
+            {saved.length > 0 && (
+              <>
+                <span className="caps">Saved profiles</span>
+                <div className="disc-profiles">
+                  {saved.map((p) => (
+                    <button key={p.user_id} className="disc-profile"
+                      title={`${p.track_count || 0} public tracks`}
+                      onClick={() => openUser(p.user_id, p.username, "tracks", { url: p.permalink_url })}>
+                      <span className="muted">◍</span>{p.username}
+                      <span className="mono muted">{fmtPlays(p.track_count)}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+            <ProfileShelf onOpenFeed={openUser} />
+          </div>
+        )}
+        {!loading && !items.length && !error && crumbs.length > 0 && (
+          <div className="disc-empty"><b>Nothing here.</b></div>
+        )}
+        {!loading && items.length > 0 && !visible.length && (
+          <div className="disc-empty">
+            <b>No loaded result matches these filters.</b>
+            <button className="ui-btn" onClick={resetFilters}>Clear filters</button>
+          </div>
+        )}
+        {loading && <div className="disc-empty muted">Searching SoundCloud…</div>}
 
-          {cursor && (
-            <button className="btn ghost sc-more" onClick={loadMore} disabled={paging}>
-              {paging ? "Loading…" : "Load more"}
-            </button>
-          )}
-        </div>
+        {cursor && (
+          <button className="ui-btn sc-more" onClick={loadMore} disabled={paging}>
+            {paging ? "Loading…" : "Load more"}
+          </button>
+        )}
+      </div>
 
-        <div className="disc-keys">
-          <span className="mono"><b>enter</b> search</span>
-          <span className="mono"><b>click</b> shortlist</span>
-          <span className="mono"><b>▶</b> preview</span>
-          <span className="mono"><b>heads</b> sort</span>
-          <span className="mono disc-keys-note">
-            previews stream from SoundCloud · nothing downloads until you import
-          </span>
-        </div>
-      </main>
-
-      <ShortlistDock
-        rows={selectedRows} importable={selectedImportable}
-        onDrop={(r) => toggle(r)} onClear={clear}
-        onImport={doImport} importing={importing}
-        playlistName={playlistHere} groupOn={groupOn} onGroupOn={setGroupOn}
-        crateRefresh={crateRefresh} onCrateAdd={addToCrate}
-        onActiveCrate={setActiveCrateId} activeCrateId={activeCrateId}
-        onCratesChanged={() => { setCrateRefresh((n) => n + 1); onGroupsChanged?.(); }}
-        onOpenLibrary={onOpenLibrary} />
-    </>
+      <div className="disc-keys mono">
+        ⏎ search · ↑↓ move · x shortlist · ⏎ preview · previews stream from SoundCloud — nothing downloads until you import
+      </div>
+    </main>
   );
 }

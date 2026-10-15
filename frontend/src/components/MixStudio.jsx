@@ -3,7 +3,9 @@ import { api } from "../api";
 import { JobBadge } from "./JobBadge";
 import { KeyChip } from "./KeyChip";
 import { TrackArt } from "./TrackArt";
-import { StudioRail } from "./StudioRail";
+import { StudioPanel } from "./StudioPanel";
+import { sectionTokenOf } from "./StructureStrip";
+import { TierBadge } from "./ui/primitives";
 import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
 import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
@@ -11,7 +13,7 @@ import { usePlan } from "../hooks/usePlan";
 import { BASS_CLASH_ADVICE, harmonyOf, nudgeText } from "./pairs/pairModel";
 import { startDownload } from "../download";
 import { notifyPairsInputChanged } from "../rescore";
-import { fmtTime, keyRel, parseCamelot } from "../theme";
+import { cssVar, fmtTime, keyRel, parseCamelot } from "../theme";
 import { toast } from "../toast";
 
 // ── Studio: multi-track DAW-style arrangement view ───────────────────────────
@@ -36,10 +38,11 @@ import { toast } from "../toast";
 // `seed` ({ vocalId, instId, ... }) opens the arranger on one pair straight
 // from the pair dock — that is what the Audition tab used to be.
 
-const SECTION_COLORS = {
-  intro: "#6b7280", verse: "#3b82f6", chorus: "#ec4899", drop: "#f59e0b",
-  breakdown: "#14b8a6", bridge: "#22c55e", outro: "#6b7280",
-};
+// Section colours come from the tokens (styles.css --sec-*), shared with the
+// track screen's structure strip.
+const sectionInk = (label) => cssVar(sectionTokenOf(label)) || cssVar("--line-2");
+const PANEL_KEY = "mashup.studio.panel.v1";
+const PANEL_MIN = 120, TIMELINE_MIN = 96;
 
 // Per-lane accent colours, cycled as lanes are added.
 const LANE_COLORS = [
@@ -153,7 +156,7 @@ function fmtBarsBeats(pos, bpm) {
 
 // ── canvas painters (window rendering: only [viewStart, viewStart+W/pps]) ────
 
-function paintLane(canvas, lane, viewStart, pps, selected) {
+function paintLane(canvas, lane, viewStart, pps, selected, level = 1) {
   const dpr = window.devicePixelRatio || 1;
   const W = canvas.clientWidth, H = canvas.clientHeight;
   if (!W || !H) return;
@@ -174,10 +177,13 @@ function paintLane(canvas, lane, viewStart, pps, selected) {
   if (x1 < 0 || x0 > W) return;
 
   const rgb = LANE_COLORS[lane.colorIdx % LANE_COLORS.length].line;
+  // Gain, the crossfader, mute and solo, as how strongly the lane is drawn: a
+  // muted lane is a faint outline, a lane at half level reads at half strength.
+  const vis = Math.max(0.25, Math.min(1, level));
 
-  // What was trimmed away, as a dashed ghost — otherwise a trim looks like a
-  // short track, and there is nothing to tell you which way to drag it back.
-  if (trimmed) {
+  // The whole song as a dashed ghost — what was trimmed away, or (on the
+  // selected lane) where an edge can be dragged out to.
+  if (trimmed || selected) {
     const gx = Math.max(-2, px(0)), gw = Math.min(W + 2, px(rawDur)) - gx;
     ctx.save();
     ctx.setLineDash([3, 3]);
@@ -206,14 +212,22 @@ function paintLane(canvas, lane, viewStart, pps, selected) {
   ctx.rect(bx, 0, bw, H);
   ctx.clip();
 
-  // Section ribbon (structure labels), scaled into display time.
+  // Section ribbon (structure labels), scaled into display time, named where
+  // there is room.
+  ctx.font = `9px ${cssVar("--font-mono") || "monospace"}`;
+  ctx.textBaseline = "top";
   for (const sec of lane.sections || []) {
     const sx = (lane.offsetSec + sec.start_sec / lane.rate - viewStart) * pps;
     const sw = ((sec.end_sec - sec.start_sec) / lane.rate) * pps;
     if (sx + sw < 0 || sx > W) continue;
-    ctx.fillStyle = SECTION_COLORS[sec.label] ?? "#3b82f6";
-    ctx.globalAlpha = 0.85;
-    ctx.fillRect(Math.max(0, sx), 2, Math.max(2, Math.min(W, sx + sw) - Math.max(0, sx)), 4);
+    ctx.fillStyle = sectionInk(sec.label);
+    ctx.globalAlpha = 0.95;
+    ctx.fillRect(Math.max(0, sx), 2, Math.max(2, Math.min(W, sx + sw) - Math.max(0, sx)), 5);
+    if (sw > 44 && sec.label) {
+      ctx.globalAlpha = 0.7 * vis;
+      ctx.fillStyle = cssVar("--fg-2");
+      ctx.fillText(sec.label, Math.max(2, sx + 3), 9);
+    }
     ctx.globalAlpha = 1;
   }
 
@@ -238,9 +252,9 @@ function paintLane(canvas, lane, viewStart, pps, selected) {
     }
     if (started) {
       ctx.closePath();
-      ctx.fillStyle = `rgba(${rgb},0.20)`;
+      ctx.fillStyle = `rgba(${rgb},${0.2 * vis})`;
       ctx.fill();
-      ctx.strokeStyle = `rgba(${rgb},0.85)`;
+      ctx.strokeStyle = `rgba(${rgb},${0.85 * vis})`;
       ctx.stroke();
     }
   }
@@ -265,6 +279,21 @@ function paintLane(canvas, lane, viewStart, pps, selected) {
       ctx.stroke();
     }
   }
+
+  // Fades: the ramp drawn over the clip's head and tail, as it plays.
+  const fade = (secs, atStart) => {
+    if (!secs) return;
+    const fw = Math.min(secs * pps, (x1 - x0) / 2);
+    const fx = atStart ? x0 : x1 - fw;
+    ctx.strokeStyle = `rgba(${rgb},0.9)`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (atStart) { ctx.moveTo(fx, H - 1); ctx.lineTo(fx + fw, 10); }
+    else { ctx.moveTo(fx, 10); ctx.lineTo(fx + fw, H - 1); }
+    ctx.stroke();
+  };
+  fade(lane.fadeIn || 0, true);
+  fade(lane.fadeOut || 0, false);
 
   ctx.restore(); // end trim clip
 
@@ -1179,7 +1208,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     setViewStart(Math.max(0, base - 2));
 
     setPairCtx({ vocalSongId: vTrack.id, instSongId: bTrack.id,
-                 scoredOption: seeded });
+                 scoredOption: seeded, tier: seed.confidenceTier ?? null,
+                 pct: seed.percentile ?? null });
     setActiveOptionKey(seeded ? optionKey(seeded) : null);
 
     addLane(vTrack, vStem, { offsetSec: place ? place.vocal.offsetSec : base - vAt,
@@ -1342,16 +1372,16 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
 
   // ── painting ────────────────────────────────────────────────────────────
   useEffect(() => {
-    for (const l of lanes) {
+    lanes.forEach((l, idx) => {
       const c = laneCanvasRefs.current.get(l.id);
-      if (c) paintLane(c, l, viewStart, pps, l.id === selectedId);
-    }
+      if (c) paintLane(c, l, viewStart, pps, l.id === selectedId, gainFor(l, idx) / 0.8);
+    });
     if (rulerRef.current) paintRuler(rulerRef.current, viewStart, pps, projectBpm, loop);
     // The bar grid is the same ruler a second time, at the foot of the stack:
     // a clip edge is read against a bar number without counting ticks upwards
     // past two lanes.
     if (barGridRef.current) paintRuler(barGridRef.current, viewStart, pps, projectBpm, loop);
-  }, [lanes, viewStart, pps, viewW, selectedId, projectBpm, loop]);
+  }, [lanes, viewStart, pps, viewW, selectedId, projectBpm, loop, gainFor]);
 
   // Follow the playhead while playing.
   useEffect(() => {
@@ -1469,24 +1499,31 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       .catch((err) => toast(err.message || "Could not save downbeat"));
   };
 
+  // Drag a clip to move it, snapping to the grid; with alt held it moves
+  // freely — and an alt-CLICK that never moves declares bar 1 instead.
   const handleLaneDown = (e, lane) => {
     e.preventDefault();
     setSelectedId(lane.id);
-    if (e.altKey) { claimDownbeat(e, lane); return; }
     const startX = e.clientX;
     const startOffset = lane.offsetSec;
+    const alt = e.altKey;
+    const target = e.currentTarget;
+    let moved = false;
     const onMove = (me) => {
+      if (!moved && Math.abs(me.clientX - startX) < 3) return;
+      moved = true;
       const raw = startOffset + (me.clientX - startX) / pps;
-      const { offset, snapped } = snapToGrid(
+      const { offset, snapped } = alt || me.altKey ? { offset: raw, snapped: false } : snapToGrid(
         raw, lanesRef.current.find((l) => l.id === lane.id) || lane,
         projectBpm, snapMode, viewStart, viewSecs, pps);
       setDragSnapped(snapped);
       patchLane(lane.id, { offsetSec: offset });
     };
-    const onUp = () => {
+    const onUp = (ue) => {
       setDragSnapped(false);
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
+      if (alt && !moved) claimDownbeat({ clientX: ue.clientX, currentTarget: target }, lane);
     };
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -1546,7 +1583,15 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
         if (!lane) return;
         const dir = e.key === "ArrowLeft" ? -1 : 1;
         const beat = projectBpm ? 60 / projectBpm : 0.1;
-        patchLane(selectedId, { offsetSec: lane.offsetSec + dir * (e.shiftKey ? 0.01 : beat) });
+        patchLane(selectedId, { offsetSec: lane.offsetSec + dir * (e.shiftKey ? beat * 4 : beat) });
+      } else if ((e.key === "m" || e.key === "M") && selectedId) {
+        const lane = lanesRef.current.find((l) => l.id === selectedId);
+        if (lane) patchLane(selectedId, { muted: !lane.muted });
+      } else if ((e.key === "s" || e.key === "S") && selectedId && !mod) {
+        setSoloId((cur) => (cur === selectedId ? null : selectedId));
+      } else if (e.key === "Enter" && onNextPair) {
+        e.preventDefault();
+        onNextPair();
       } else if (e.key === "l" || e.key === "L") {
         toggleLoopBars(loopBars);
       } else if (e.key === "[" || e.key === "]") {
@@ -1580,10 +1625,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   }, [lanes.length, locked, projectBpm, onStatus]);
 
   // ── export ──────────────────────────────────────────────────────────────
-  const handleExport = async () => {
-    const clips = lanes
-      .filter((l) => !l.muted && l.gain > 0)
-      .map((l) => {
+  const clipFor = (l) => {
         const { cs, ce, trimmed } = clipRangeOf(l);
         return {
           song_id: l.songId, stem: l.stem,
@@ -1601,7 +1643,9 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
           // instruction from one that was never given a start.
           ...(trimmed ? { clip_start: cs, clip_end: ce } : {}),
         };
-      });
+  };
+  const handleExport = async () => {
+    const clips = lanes.filter((l) => !l.muted && l.gain > 0).map(clipFor);
     if (clips.length === 0) { toast("Nothing audible to export"); return; }
     setError(null);
     try {
@@ -1638,7 +1682,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
         ? { vocal: activeOption.vocal_section_idx, inst: activeOption.inst_section_idx }
         : null;
       const { job_id } = await api.startSessionExport(
-        sessionPair.vocalId, sessionPair.instId, armed);
+        sessionPair.vocalId, sessionPair.instId, armed, sessionLanes());
       setSessionToken(null);
       setSessionJobId(job_id);
       toast("Rendering FL session (conformed stems + click)…");
@@ -1753,46 +1797,203 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       && Math.abs(nudgeMs - suggested.nudgeSec * 1000) > 5),
   );
 
-  const resetToSuggestion = () => {
-    if (activeOption) applyTimingOption(activeOption);
-    else if (bedLane && suggested.stretch != null) {
-      patchLane(bedLane.id, { rate: suggested.stretch, synced: false,
-                              semitones: suggested.semitones ?? bedLane.semitones });
+  // ── what the matcher suggests per lane (the panel's grey ticks) ─────────
+  // The pair's two lanes get the plan's numbers (matcher/plan.lanes, B5): the
+  // vocal at its own tempo, the bed stretched and transposed to it, both at
+  // the recipe's level, placed where the armed timing puts them. A lane you
+  // added yourself has no suggestion — its ticks are not drawn.
+  const sugBpm = suggested.targetBpm ?? projectBpm;
+  const vSugRate = vocalLane ? (syncRateFor(vocalLane.bpm, sugBpm) || 1) : 1;
+  const bSugRate = suggested.stretch != null ? suggested.stretch * vSugRate
+    : (bedLane && sugBpm ? syncRateFor(bedLane.bpm, sugBpm) : null);
+  const sugPlace = activeOption && usableOption(activeOption) && vocalLane && bedLane
+    ? placementFor(activeOption, vSugRate, bSugRate || 1) : null;
+  const suggestFor = (l) => {
+    if (vocalLane && l.id === vocalLane.id) {
+      return { rate: vSugRate, semitones: 0,
+               gain: pairPlan?.lanes?.vocal?.gain ?? suggested.vocalGain ?? 0.85,
+               offsetSec: sugPlace?.vocal.offsetSec ?? null };
     }
+    if (bedLane && l.id === bedLane.id) {
+      return { rate: bSugRate, semitones: suggested.semitones,
+               gain: pairPlan?.lanes?.bed?.gain ?? suggested.bedGain ?? 0.8,
+               offsetSec: null };
+    }
+    return null;
   };
+  const suggestNudgeMs = suggested.nudgeSec == null ? null : Math.round(suggested.nudgeSec * 1000);
+  const roleOf = (l) => (vocalLane && l.id === vocalLane.id ? "VOX"
+    : bedLane && l.id === bedLane.id ? "BED" : (STEM_LABEL[l.stem] || l.stem));
+
+  // One lane back to the suggestion, or (with none) to the defaults.
+  const resetLaneTo = (l) => {
+    const sg = suggestFor(l);
+    if (!sg) { resetLane(l); return; }
+    const patch = { gain: sg.gain, synced: false };
+    if (sg.rate != null) patch.rate = sg.rate;
+    if (sg.semitones != null) patch.semitones = sg.semitones;
+    if (sg.offsetSec != null) patch.offsetSec = sg.offsetSec;
+    if (bedLane && l.id === bedLane.id && vocalLane) {
+      patch.offsetSec = vocalLane.offsetSec + nudgeBase + (suggestNudgeMs ?? 0) / 1000;
+    }
+    patchLane(l.id, patch);
+  };
+  // Every lane: the armed timing re-placed, then each lane's own numbers.
+  const resetAll = () => {
+    if (activeOption) applyTimingOption(activeOption);
+    for (const l of lanesRef.current) {
+      const sg = suggestFor(l);
+      if (!sg) continue;
+      patchLane(l.id, { gain: sg.gain, synced: false,
+                        ...(sg.rate != null ? { rate: sg.rate } : {}),
+                        ...(sg.semitones != null ? { semitones: sg.semitones } : {}) });
+    }
+    toast("Every lane back to the suggestion");
+  };
+
+  // ◂ +1 bar / +1 bar ▸: reach a bar further into the song. The audio stays
+  // anchored — raw 0 does not move — so the clip grows outwards.
+  const extendLane = (l, edge) => {
+    const { cs, ce, rawDur } = clipRangeOf(l);
+    const bar = l.bpm ? 240 / l.bpm : 2;
+    if (edge === "start") patchLane(l.id, { clipStart: Math.max(0, cs - bar) });
+    else patchLane(l.id, { clipEnd: Math.min(rawDur, ce + bar) });
+  };
+  // ⟷ section: trim to the whole section the clip's middle sits in.
+  const useSection = (l) => {
+    const { cs, ce } = clipRangeOf(l);
+    const mid = (cs + ce) / 2;
+    const sec = (l.sections || []).find((x) => x.start_sec <= mid && mid < x.end_sec);
+    if (!sec) { toast("No section here — analyze the track for its structure"); return; }
+    patchLane(l.id, { clipStart: sec.start_sec, clipEnd: sec.end_sec });
+    toast(`Trimmed to the ${sec.label}`);
+  };
+
+  // Studio's lane state for the FL session (render/session.lane_overrides):
+  // only for the pair's own two lanes, and only when they are what is exported.
+  const sessionLanes = () => {
+    if (!vocalLane || !bedLane || !sessionPair) return null;
+    if (sessionPair.vocalId !== vocalLane.songId || sessionPair.instId !== bedLane.songId) return null;
+    const one = (l, role) => {
+      const { cs, ce } = clipRangeOf(l);
+      return { role, rate: l.rate, semitones: l.semitones, gain: l.gain,
+               fade_in: l.fadeIn || 0, fade_out: l.fadeOut || 0,
+               hp_hz: l.hpHz || 0, lp_hz: l.lpHz || 0,
+               ...(ce > cs ? { clip_start: cs, clip_end: ce } : {}),
+               // The session lines both sections up on their first downbeat,
+               // which is the matcher's measured offset: what it is told is
+               // how far you moved the bed off that.
+               ...(role === "bed" ? { offset_ms: nudgeMs - (suggestNudgeMs ?? 0) } : {}) };
+    };
+    return [one(vocalLane, "vocal"), one(bedLane, "bed")];
+  };
+
+  // Stems per lane: one WAV per audible lane, each rendered on its own.
+  const [stemJobs, setStemJobs] = useState([]);
+  const exportStems = async () => {
+    const audible = lanes.filter((l) => !l.muted && l.gain > 0);
+    if (!audible.length) { toast("Nothing audible to export"); return; }
+    try {
+      const jobs = [];
+      for (const l of audible) {
+        const { job_id } = await api.startMixdown([clipFor(l)]);
+        jobs.push({ laneId: l.id, label: `${roleOf(l)} · ${l.title}`, jobId: job_id, token: null });
+      }
+      setStemJobs(jobs);
+      toast(`Rendering ${jobs.length} stem${jobs.length === 1 ? "" : "s"} — links appear under Render ▾`);
+    } catch (e) { setError(e.message); }
+  };
+
+  // ✕ clear, with Undo: the arrangement is kept as it was and laid back.
+  const clearWithUndo = () => {
+    const kept = { projectBpm, snapMode, loop, loopBars, pairCtx, activeOptionKey,
+                   lanes: lanesRef.current.map(laneState) };
+    clearProject();
+    toast("Project cleared", {
+      label: "Undo",
+      onClick: () => { const n = applyProject(kept, tracks); if (n) toast(`Restored ${n} lane${n === 1 ? "" : "s"}`); },
+    });
+  };
+
+  // ── the adjustments panel's height: dragged, fitted, remembered ─────────
+  const bodyRef = useRef(null);
+  const [panelH, setPanelH] = useState(() => {
+    try { return Number(localStorage.getItem(PANEL_KEY)) || 300; } catch { return 300; }
+  });
+  const clampPanel = useCallback((h) => {
+    const total = bodyRef.current?.clientHeight || 700;
+    return Math.max(PANEL_MIN, Math.min(h, total - TIMELINE_MIN));
+  }, []);
+  useEffect(() => { try { localStorage.setItem(PANEL_KEY, String(Math.round(panelH))); } catch { /* ignore */ } }, [panelH]);
+  const startPanelResize = (e) => {
+    e.preventDefault();
+    const y0 = e.clientY, h0 = panelH;
+    const move = (me) => setPanelH(clampPanel(h0 - (me.clientY - y0)));
+    const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  };
+  // Fit: tall enough for the cards, never squeezing the timeline below 96px.
+  const fitPanel = () => setPanelH(clampPanel(lanes.some((l) => l.id === selectedId) ? 420 : 330));
+
+  const [renderOpen, setRenderOpen] = useState(false);
+  const vTitle = vocalLane?.title || pairPlan?.vocal?.title;
+  const bTitle = bedLane?.title || pairPlan?.inst?.title;
+  const landsKey = vocalLane ? shiftCamelot(vocalLane.camelot, vocalLane.semitones) : null;
+  const projectBpmShown = projectBpm ?? null;
 
   return (
     <div className="studio-screen">
-      {/* ── header ── */}
-      <header className="screen-bar">
-        <span className="diamond" style={{ color: "var(--accent)" }}>◈</span>
-        <h1>Studio</h1>
-        <span className="studio-seed">
-          {pairCtx
-            ? "seeded from a pair · both tracks loaded in full"
-            : `${lanes.length} lane${lanes.length === 1 ? "" : "s"}`}
-        </span>
-        {loop && isPlaying && (
-          <span className="studio-looping mono">
-            <span className="dot pulse" />
-            looping {loopBars} bars
-          </span>
+      {/* ── header: what is open, and the renders ── */}
+      <header className="st-head">
+        {pairCtx && vTitle && bTitle ? (
+          <div className="st-pair">
+            <span className="st-side vox"><span className="tag mono">VOX</span><span className="t">{vTitle}</span></span>
+            <span className="st-side bed"><span className="tag mono">BED</span><span className="t">{bTitle}</span></span>
+          </div>
+        ) : (
+          <h1>Studio <span className="mono muted small">{lanes.length} lane{lanes.length === 1 ? "" : "s"}</span></h1>
         )}
-        <span className="spacer" style={{ flex: 1 }} />
-        <button className="head-btn" onClick={handleSessionExport}
-          disabled={sessionJobId != null || !sessionPair}
-          title={sessionPair
-            ? "Export both stems conformed to the project tempo and key, trimmed to the chosen sections and aligned so bar 1 is at 0:00 — drop into FL at 0:00, no nudging. Includes a click track and the recipe."
-            : "Needs one audible vocal lane and one audible instrumental lane from different tracks."}>
-          FL session
-        </button>
+        {pairCtx?.tier && <TierBadge tier={pairCtx.tier} />}
+        {pairCtx?.pct != null && <span className="mono muted">{(pairCtx.pct * 100).toFixed(1)}%</span>}
+        {loop && isPlaying && (
+          <span className="studio-looping mono"><span className="dot pulse" />looping {loopBars} bars</span>
+        )}
+        <span className="grow" />
+        <button className="ui-btn" onClick={() => { setPicker(true); setPickerSearch(""); }}>＋ Add</button>
+        <span className="st-renderwrap">
+          <button className="btn-primary" aria-expanded={renderOpen} onClick={() => setRenderOpen((v) => !v)}
+            disabled={lanes.length === 0}>Render ▾</button>
+          {renderOpen && (
+            <>
+              <div className="ss-scrim" onClick={() => setRenderOpen(false)} />
+              <div className="ss-menu st-menu">
+                <button onClick={() => { setRenderOpen(false); handleExport(); }} disabled={exportJobId != null}>
+                  <b>WAV mixdown</b><span>Every audible lane, rendered as it plays — trims, fades and filters included</span></button>
+                <button onClick={() => { setRenderOpen(false); exportStems(); }}>
+                  <b>Stems per lane</b><span>One WAV per audible lane, each on the project timeline</span></button>
+                <button onClick={() => { setRenderOpen(false); handleSessionExport(); }}
+                  disabled={sessionJobId != null || !sessionPair}
+                  title={sessionPair ? "" : "Needs one audible vocal lane and one audible instrumental lane from different tracks."}>
+                  <b>FL session</b><span>Both stems conformed and bar-aligned, with your lane state, a click and the recipe</span></button>
+              </div>
+            </>
+          )}
+        </span>
+        {exportJobId && (
+          <JobBadge jobId={exportJobId} onComplete={(job) => {
+            setExportJobId(null);
+            if (job.status === "completed") { setExportToken(job.id); startDownload(api.mixdownAudioUrl(job.id)); }
+          }} />
+        )}
+        {exportToken && <a className="ui-link" href={api.mixdownAudioUrl(exportToken)} target="_blank" rel="noreferrer">↓ WAV</a>}
         {sessionJobId && (
           <JobBadge jobId={sessionJobId} onComplete={(job) => {
             setSessionJobId(null);
             if (job.status === "completed") {
               setSessionToken(job.id);
               // The folder downloads as soon as it is built; the link stays as
-              // a fallback. It used to wait behind a second click on "↓ session".
+              // a fallback.
               startDownload(api.sessionArchiveUrl(job.id));
               toast("FL session ready — downloading the zip");
             } else {
@@ -1800,188 +2001,113 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
             }
           }} />
         )}
-        {sessionToken && (
-          <a href={api.sessionArchiveUrl(sessionToken)} target="_blank" rel="noreferrer"
-            className="muted" style={{ fontSize: 11 }}>↓ session</a>
-        )}
-        <button className="studio-render" onClick={handleExport}
-          disabled={exportJobId != null || lanes.length === 0}>
-          Render mixdown
-        </button>
-        {exportJobId && (
-          <JobBadge jobId={exportJobId} onComplete={(job) => {
-            setExportJobId(null);
-            if (job.status === "completed") setExportToken(job.id);
-          }} />
-        )}
-        {exportToken && (
-          <a href={api.mixdownAudioUrl(exportToken)} target="_blank" rel="noreferrer"
-            className="muted" style={{ fontSize: 11 }}>↓ WAV</a>
-        )}
+        {sessionToken && <a className="ui-link" href={api.sessionArchiveUrl(sessionToken)} target="_blank" rel="noreferrer">↓ session</a>}
+        {stemJobs.map((j) => (j.token
+          ? <a key={j.jobId} className="ui-link" href={api.mixdownAudioUrl(j.token)} target="_blank" rel="noreferrer">↓ {j.label}</a>
+          : <JobBadge key={j.jobId} jobId={j.jobId} onComplete={(job) => setStemJobs((all) => all.map((x) => (
+              x.jobId === j.jobId ? { ...x, token: job.status === "completed" ? job.id : null } : x)))} />))}
       </header>
 
-      {error && <div className="error-text" style={{ padding: "6px 18px" }}>{error}</div>}
+      {error && <div className="error-text st-pad">{error}</div>}
 
-      {/* ── transport + alignment ──
-          One row, because the alignment values are what you are listening FOR
-          and the transport is how you listen. Every value here is the matcher's
-          suggestion until you move it, and "reset to suggestion" puts it back. */}
+      {/* ── transport and what the pair is set to ── */}
       <div className="studio-toolbar">
         <button className={`play-btn ${isPlaying ? "playing" : "stopped"}`}
           onClick={togglePlay} disabled={lanes.every((l) => !l.buffer)}
           title="Play / pause (space)">
           {isPlaying ? "❚❚" : "▶"}
         </button>
-        <button className="studio-btn" onClick={stopPlayback} title="Stop — return to start">■</button>
+        <button className="ui-btn" onClick={stopPlayback} title="Stop — back to the start" aria-label="Stop">■</button>
         <span className="studio-clock mono" title="bar.beat · time">
-          {fmtBarsBeats(position, projectBpm)} <span className="faint">|</span> {fmtTime(position)}
+          {fmtBarsBeats(position, projectBpm)} <span className="muted">·</span> {fmtTime(position)}
         </span>
 
-        <span className="studio-sep" />
+        <span className="st-group">
+          <button className="ui-btn" aria-label="Slower" onClick={() => projectBpm && setProjectBpm(projectBpm - 1)}>−</button>
+          <input className="studio-bpm mono" type="number" min={40} max={220} aria-label="Project BPM"
+            value={projectBpmShown ?? ""} placeholder="—"
+            onChange={(e) => {
+              const v = Number(e.target.value);
+              setProjectBpm(Number.isFinite(v) && v >= 40 && v <= 220 ? v : projectBpm);
+            }}
+            title="Project tempo — every lane set to SYNC re-rates to follow" />
+          <button className="ui-btn" aria-label="Faster" onClick={() => projectBpm && setProjectBpm(projectBpm + 1)}>+</button>
+          <span className="muted small">BPM</span>
+        </span>
 
-        <span className="micro-label">BPM</span>
-        <button className="studio-btn" onClick={() => projectBpm && setProjectBpm(projectBpm - 1)}>−</button>
-        <input
-          className="studio-bpm mono"
-          type="number" min={40} max={220}
-          value={projectBpm ?? ""}
-          placeholder="—"
-          onChange={(e) => {
-            const v = Number(e.target.value);
-            setProjectBpm(Number.isFinite(v) && v >= 40 && v <= 220 ? v : projectBpm);
-          }}
-          title="Project tempo — synced lanes stretch to follow"
-        />
-        <button className="studio-btn" onClick={() => projectBpm && setProjectBpm(projectBpm + 1)}>+</button>
+        <span className="st-group">
+          <button className="ui-btn" onClick={() => zoom(1 / 1.4)} title="Zoom out (or ctrl+wheel)" aria-label="Zoom out">−</button>
+          <button className="ui-btn" onClick={() => zoom(1.4)} title="Zoom in (or ctrl+wheel)" aria-label="Zoom in">+</button>
+          <button className="ui-btn" onClick={zoomFit} title="Fit the project">Fit</button>
+        </span>
 
-        <span className="studio-sep" />
-
-        <span className="micro-label">SNAP</span>
-        <div className="snap-seg">
+        <div className="d-seg" role="group" aria-label="Snap" title="What a dragged clip or edge snaps to (alt moves freely)">
           {["bar", "beat", "off"].map((o) => (
-            <button key={o} className={snapMode === o ? "active" : ""} onClick={() => setSnapMode(o)}>{o}</button>
+            <button key={o} className={snapMode === o ? "on" : ""} onClick={() => setSnapMode(o)}>{o}</button>
           ))}
         </div>
-
-        <span className="micro-label">LOOP</span>
-        <div className="snap-seg">
+        <div className="d-seg" role="group" aria-label="Loop bars">
           {[1, 2, 4, 8].map((n) => (
-            <button key={n} className={loop && loopBars === n ? "active" : ""}
+            <button key={n} className={loop && loopBars === n ? "on" : ""}
               onClick={() => toggleLoopBars(n)}
-              title={`${n}-bar loop at the playhead — click again to clear · shift-drag the ruler for a custom loop`}>
+              title={`${n}-bar loop at the playhead (L) — again to clear · shift-drag the ruler for a custom loop`}>
               {n}
             </button>
           ))}
         </div>
 
-        <span className="studio-sep" />
-
-        {lanes.length >= 2 && (
-          <>
-            <span className="micro-label" title={`${lanes[0].title} ⟷ ${lanes[1].title}`}>
-              A/B
-            </span>
-            <input className="studio-cross" type="range" min={0} max={1} step={0.01}
-              value={cross} onChange={(e) => setCross(Number(e.target.value))}
-              title="Crossfade between the first two lanes. Centred = both at full level." />
-            {cross !== 0.5 && (
-              <button className="studio-btn" onClick={() => setCross(0.5)}
-                title="Centre the crossfader">·|·</button>
-            )}
-            <span className="studio-sep" />
-          </>
-        )}
-
-        <span className="micro-label">ZOOM</span>
-        <button className="studio-btn" onClick={() => zoom(1 / 1.4)} title="Zoom out (or ctrl+wheel)">−</button>
-        <button className="studio-btn" onClick={() => zoom(1.4)} title="Zoom in (or ctrl+wheel)">+</button>
-        <button className="studio-btn" onClick={zoomFit} title="Fit project">fit</button>
-
-        <span className="studio-sep" />
-
-        {/* ── alignment readout ──
-            The recipe the matcher handed over. Editable everywhere it appears,
-            and every edit shows up as a divergence from the grey tick on the
-            matching slider in the rail. */}
-        <span className="micro-label">ALIGN</span>
+        {/* The recipe the matcher handed over, as it stands now. */}
         {suggested.targetBpm != null && (
-          <span className="align-chip mono" title="The tempo both sides are conformed to">
-            target {suggested.targetBpm.toFixed(1)}
-          </span>
+          <span className="align-chip mono" title="The tempo both sides are conformed to">→ {suggested.targetBpm.toFixed(1)} BPM</span>
         )}
         {bedLane && (
-          <span className="align-chip mono" title="Pitch shift applied to the bed">
-            bed {bedLane.semitones > 0 ? "+" : ""}{bedLane.semitones} st
-          </span>
+          <span className="align-chip mono" title="Pitch shift on the bed">bed {bedLane.semitones > 0 ? "+" : bedLane.semitones < 0 ? "−" : "±"}{Math.abs(bedLane.semitones)} st</span>
         )}
+        {landsKey && <span className="align-chip mono" title="The key the mashup lands in — the vocal's, as played">lands {landsKey}</span>}
         {bedLane && vocalLane && (
-          <span className="align-chip mono"
+          <span className={`align-chip mono${suggested.nudgeSec == null ? " unknown" : ""}`}
             title={suggested.nudgeSec == null
-              ? "Neither side has a stored downbeat grid, so there is no measured offset"
-              : "How far the bed sits from the vocal"}>
-            nudge {nudgeText(nudgeMs, projectBpm)}
+              ? "No stored downbeat grid for this pair — the offset is unmeasured, not zero"
+              : "How far the bed sits from the vocal, with the two sections lined up"}>
+            {suggested.nudgeSec == null ? "no grid · " : ""}nudge {nudgeText(nudgeMs, projectBpm)}
           </span>
         )}
-        <span className={`align-chip mono${suggested.nudgeSec == null ? " unknown" : " locked"}`}
-          title={suggested.nudgeSec == null
-            ? "No stored downbeat grid for this pair — the offset is unmeasured, not zero"
-            : "Both sides have a measured downbeat grid"}>
-          {suggested.nudgeSec == null ? "no grid" : "downbeat locked"}
-        </span>
-        {/* The MEASURED harmony (chroma cross-correlated, matcher/harmony.py)
-            of the ARMED timing — read through the card's harmonyOf, so Studio
-            and the dock cannot describe one pair two ways — else the plan's
-            top pairing, and its bass-clash advice in the FL README's words.
-            Absent when neither has stored chroma: then the Camelot shift is
-            all there is. */}
+        {/* The MEASURED harmony of the armed timing (matcher/harmony.py), read
+            through the card's harmonyOf so Studio and the dock describe one
+            pair one way; then its bass-clash advice in the FL README's words. */}
         {bedLane && vocalLane && armedHarmony.known && (
           <span className={`align-chip mono${armedHarmony.clash ? " clash" : ""}`}
             title={`Measured harmonic fit of ${armedHarmony.armed ? "the armed timing" : "the matcher's top section pairing"}, at ${armedHarmony.shift > 0 ? "+" : ""}${armedHarmony.shift} st on the bed`
               + (armedHarmony.sure ? "" : " — low confidence: another transposition fits almost as well")
               + (armedHarmony.clash ? " — below 55%, the notes clash" : "")}>
             ♪ fit {armedHarmony.fitPct != null ? `${armedHarmony.fitPct}%` : "?"}
-            {armedHarmony.shift ? ` · ${armedHarmony.shift > 0 ? "+" : ""}${armedHarmony.shift} st` : ""}
           </span>
         )}
         {bedLane && vocalLane && armedHarmony.bassClash && (
-          <span className="align-chip mono clash"
-            title={armedHarmony.advice || BASS_CLASH_ADVICE}>
-            bass clash — high-pass the bed
-          </span>
-        )}
-        {dirty && (
-          <button className="studio-btn" onClick={resetToSuggestion}
-            title="Put the tempo, pitch and nudge back to what the matcher suggested">
-            reset to suggestion
-          </button>
+          <span className="align-chip mono clash" title={armedHarmony.advice || BASS_CLASH_ADVICE}>bass clash — high-pass the bed</span>
         )}
 
-        <span className="spacer" style={{ flex: 1 }} />
-
-        <button className="studio-btn" onClick={undo} disabled={!hist.canUndo}
-          title="Undo (ctrl/⌘+Z)">↶</button>
-        <button className="studio-btn" onClick={redo} disabled={!hist.canRedo}
-          title="Redo (shift+ctrl/⌘+Z or ctrl+Y)">↷</button>
-        <button className="studio-btn" onClick={clearProject} disabled={lanes.length === 0}
-          title="Remove all lanes and clear the saved project">✕ clear</button>
+        <span className="grow" />
+        <button className="ui-btn" onClick={undo} disabled={!hist.canUndo} title="Undo (ctrl/⌘+Z)" aria-label="Undo">↶</button>
+        <button className="ui-btn" onClick={redo} disabled={!hist.canRedo} title="Redo (shift+ctrl/⌘+Z or ctrl+Y)" aria-label="Redo">↷</button>
+        <button className="ui-btn" onClick={clearWithUndo} disabled={lanes.length === 0}
+          title="Remove every lane (Undo on the toast)">✕ clear</button>
       </div>
 
       {/* ── timing options ──
-          The overlays Discover suggested for this pair, kept where you can try
-          them. Each one moves both lanes onto that moment, trims them to it and
-          loops it, so comparing four ideas is four clicks rather than four trips
-          back to the ranked list. The ✓/~/✗ write to pair_feedback keyed on the
-          SECTION indexes, so a verdict here is about this overlay and not about
-          the two records. */}
+          The overlays the matcher suggested for this pair. Each one moves both
+          lanes onto that moment, trims them to it and loops it, so comparing
+          four ideas is four clicks. ✓/~/✗ write to pair_feedback keyed on the
+          SECTION indexes — a verdict here is about this overlay only. */}
       {pairCtx && timingOptions.length > 0 && (
         <div className="timing-bar">
-          <span className="timing-label">TIMING</span>
-          <div className="snap-seg timing-pills">
+          <span className="caps">Timing</span>
+          <div className="timing-pills">
             {timingOptions.map((o, i) => {
               const k = optionKey(o);
               const v = optionVerdicts[verdictKey(o)];
               return (
-                <button key={k} className={k === activeOptionKey ? "active" : ""}
+                <button key={k} className={k === activeOptionKey ? "on" : ""}
                   disabled={!pairLanes}
                   onClick={() => applyTimingOption(o)}
                   title={o.reason
@@ -2011,30 +2137,23 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
               })}
             </div>
           ) : (
-            <span className="muted" style={{ fontSize: 11.5 }}>
-              Both lanes of the pair have to be in the project to snap a timing.
-            </span>
+            <span className="muted small">Both lanes of the pair have to be in the project to snap a timing.</span>
           )}
-          <span className="muted timing-hint">[ ] to cycle · 1–{Math.min(9, timingOptions.length)} to jump</span>
+          <span className="muted small timing-hint">[ ] cycle · 1–{Math.min(9, timingOptions.length)} jump</span>
         </div>
       )}
 
-      {/* ── body: timeline + adjustments rail ── */}
-      <div className="studio-body">
+      {/* ── body: the timeline over the adjustments panel ── */}
+      <div className="studio-body" ref={bodyRef}>
       <div className="studio-left">
       {/* ── timeline ──
-          Four rows on ONE axis: the session-bar ruler, the lanes, and the bar
-          grid, with a single playhead crossing all of them. Both songs stay
-          loaded in full — the suggestion is a REGION over each, not a cut, so
-          the rest of every track is still there to scroll to. */}
+          Four rows on ONE axis: the ruler, the lanes and the bar grid, with a
+          single playhead crossing all of them. Both songs stay loaded in full —
+          the suggestion is a REGION over each, not a cut. */}
       <div className="studio-timeline" ref={viewRef}>
         <div className="studio-grid">
-          {/* header row: corner + ruler */}
           <div className="studio-corner">
-            <span className="micro-label">SESSION BARS</span>
-            <button className="studio-add" onClick={() => { setPicker(true); setPickerSearch(""); }}>
-              ＋ Add
-            </button>
+            <span className="caps">Bars</span>
           </div>
           <div className="studio-ruler" onMouseDown={handleRulerDown}
             title="Click/drag to scrub · shift-drag to set a loop">
@@ -2045,41 +2164,38 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
             const effBpm = l.bpm ? l.bpm * l.rate : null;
             const rgb = LANE_COLORS[l.colorIdx % LANE_COLORS.length].line;
             const isSel = l.id === selectedId;
-            const syncRate = projectBpm ? syncRateFor(l.bpm, projectBpm) : null;
+            const played = shiftCamelot(l.camelot, l.semitones);
+            const syncR = projectBpm && l.bpm ? syncRateFor(l.bpm, projectBpm) : null;
+            const dim = soloId ? soloId !== l.id : l.muted;
             return (
               <Fragment key={l.id}>
-                {/* lane card — 138px, box-sizing:border-box.
-                    It carries only what the design draws: what the lane IS, what
-                    it is playing at, and solo/mute. Stem, sync, pitch, key-match,
-                    grid-snap and trim moved to the adjustments rail, which has
-                    room for them; at this width they were five dead controls in
-                    a column. */}
-                <div className={`studio-lanehead${isSel ? " selected" : ""}`}
+                {/* lane head — 150px, box-sizing:border-box: what the lane is,
+                    the key it plays in, its tempo, SYNC and mute/solo. Every
+                    other control is on the lane's card in the panel below. */}
+                <div className={`studio-lanehead${isSel ? " selected" : ""}${dim ? " dim" : ""}${l.loadError ? " failed" : ""}`}
                   style={{ borderLeft: `3px solid rgba(${rgb},0.9)` }}
+                  title={l.loadError || (l.loading ? "Decoding the audio…" : undefined)}
                   onClick={() => setSelectedId(l.id)}>
-                  <span className="lh-tag mono" style={{ color: `rgb(${rgb})` }}>
-                    {STEM_LABEL[l.stem] || l.stem} LANE
-                  </span>
-                  <div className="lh-title" title={`${l.title}${l.artist ? ` — ${l.artist}` : ""}`}>
-                    {l.title}
-                  </div>
-                  <div className="lh-meta mono">
-                    {effBpm ? effBpm.toFixed(1) : "no BPM"}
-                    {" · "}
-                    {shiftCamelot(l.camelot, l.semitones) || "?"}
-                    {l.semitones ? ` (${l.semitones > 0 ? "+" : ""}${l.semitones})` : ""}
-                  </div>
-                  <div className="lh-row lh-controls">
-                    <button className={`lh-btn solo${soloId === l.id ? " on" : ""}`}
-                      onClick={(e) => { e.stopPropagation(); setSoloId(soloId === l.id ? null : l.id); }}
-                      title="Solo">solo</button>
+                  <div className="lh-row">
+                    <span className="lh-tag mono" style={{ color: `rgb(${rgb})` }}>{roleOf(l)}</span>
+                    <span className="lh-title" title={`${l.title}${l.artist ? ` — ${l.artist}` : ""}`}>{l.title}</span>
+                    <span className="grow" />
                     <button className={`lh-btn${l.muted ? " on" : ""}`}
                       onClick={(e) => { e.stopPropagation(); patchLane(l.id, { muted: !l.muted }); }}
-                      title="Mute">mute</button>
+                      title="Mute (m)" aria-label="Mute">M</button>
+                    <button className={`lh-btn solo${soloId === l.id ? " on" : ""}`}
+                      onClick={(e) => { e.stopPropagation(); setSoloId(soloId === l.id ? null : l.id); }}
+                      title="Solo (s)" aria-label="Solo">S</button>
                   </div>
-                  {(l.loading || l.loadError) && (
-                    <div className="lh-note">{l.loadError || "decoding…"}</div>
-                  )}
+                  <div className="lh-row">
+                    {played ? <KeyChip camelot={played} title={l.semitones ? `${l.camelot} ${l.semitones > 0 ? "+" : ""}${l.semitones} st` : undefined} />
+                      : <span className="muted small">?</span>}
+                    <span className="lh-meta mono">{effBpm ? effBpm.toFixed(1) : "—"}</span>
+                    <span className="grow" />
+                    <button className={`lh-btn sync${l.synced ? " on" : ""}`} disabled={!syncR}
+                      onClick={(e) => { e.stopPropagation(); patchLane(l.id, l.synced ? { synced: false, rate: 1 } : { synced: true, rate: syncR }); }}
+                      title={projectBpm ? `Tempo-sync to ${projectBpm} BPM` : "Set a project tempo first"}>SYNC</button>
+                  </div>
                 </div>
 
                 {/* lane canvas */}
@@ -2089,17 +2205,14 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                     if (c) laneCanvasRefs.current.set(l.id, c);
                     else laneCanvasRefs.current.delete(l.id);
                   }} />
-                  {/* Trim hit zones — two per lane, over the clip edges the
-                      canvas draws grips on. DOM rather than canvas hit-testing
-                      so the resize cursor comes for free; two elements per lane
-                      is nothing like the per-beat DOM the painter avoids. */}
+                  {/* Trim hit zones over the clip edges: drag to trim, or past
+                      the edge to extend into the rest of the song. */}
                   {(() => {
                     const { cs, ce, rawDur } = clipRangeOf(l);
                     if (!rawDur) return null;
                     const edgeX = (raw) => (l.offsetSec + raw / l.rate - viewStart) * pps;
                     // Zoomed out far enough and the two zones would cover the
-                    // whole clip, leaving nowhere to grab it to MOVE it. Below
-                    // that width the clip is drag-only — zoom in to trim.
+                    // whole clip, leaving nowhere to grab it to MOVE it.
                     if (edgeX(ce) - edgeX(cs) < HANDLE_PX * 3) return null;
                     return ["start", "end"].map((edge) => {
                       const x = edgeX(edge === "start" ? cs : ce);
@@ -2107,20 +2220,11 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                       return (
                         <div key={edge} className="lane-trim"
                           style={{ left: x - HANDLE_PX / 2 }}
-                          title={`Drag to trim the clip's ${edge}`}
+                          title={`Drag to trim or extend the clip's ${edge}`}
                           onMouseDown={(e) => handleTrimDown(e, l, edge)} />
                       );
                     });
                   })()}
-                  {/* Where this lane currently sits. The rest of the song runs
-                      off both edges — these say how far, so a lane scrolled out
-                      of view is legible rather than looking empty. */}
-                  <span className="lane-edge left mono">
-                    ◄ {fmtTime(Math.max(0, (viewStart - l.offsetSec) * l.rate))}
-                  </span>
-                  <span className="lane-edge right mono">
-                    {fmtTime(Math.max(0, l.rawDur))} ►
-                  </span>
                 </div>
               </Fragment>
             );
@@ -2128,17 +2232,15 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
 
           {lanes.length === 0 && (
             <div className="studio-empty">
-              <div className="step"><span className="n">1</span> Hit <b>＋ Add track</b> and drop in a vocal from one song and an instrumental from another (any number of lanes works).</div>
-              <div className="step"><span className="n">2</span> Press <b>SYNC</b> on each lane to conform it to the project BPM, then drag clips — downbeats click onto the bar grid.</div>
-              <div className="step"><span className="n">3</span> <span className="kbd">space</span> to play · <span className="kbd">←</span><span className="kbd">→</span> nudge the selected lane · <span className="kbd">L</span> 8-bar loop · pitch ± per lane to match keys · Export WAV when it slaps.</div>
+              <div className="step"><span className="n">1</span> Open a pair from the dock (⏎ on a card), or <b>＋ Add</b> a vocal from one song and an instrumental from another.</div>
+              <div className="step"><span className="n">2</span> <b>SYNC</b> a lane to conform it to the project BPM, then drag clips — downbeats click onto the bar grid (alt moves freely).</div>
+              <div className="step"><span className="n">3</span> <span className="kbd">space</span> play · <span className="kbd">←</span><span className="kbd">→</span> nudge a beat (shift: a bar) · <span className="kbd">L</span> loop · Render when it slaps.</div>
             </div>
           )}
-          {/* bar grid — the same axis a fourth time, so a clip's edge can be
-              read against a bar number without counting ruler ticks. */}
           {lanes.length > 0 && (
             <>
               <div className="studio-corner bargrid">
-                <span className="micro-label">BAR GRID</span>
+                <span className="caps">Bar grid</span>
               </div>
               <div className="studio-bargrid" onMouseDown={handleRulerDown}
                 title="Click/drag to scrub · shift-drag to set a loop">
@@ -2148,8 +2250,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
           )}
         </div>
 
-        {/* One playhead over every row, at exactly the gutter width, so both
-            songs read against a single time cursor. */}
+        {/* One playhead over every row, at exactly the gutter width. */}
         {playheadX >= 0 && playheadX <= viewW && lanes.length > 0 && (
           <div className="studio-playhead" style={{ left: HEADER_W + playheadX }}>
             <span className="ph-cap" />
@@ -2157,70 +2258,55 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
         )}
       </div>
 
-      {/* horizontal scrollbar */}
-      <input
-        className="studio-scroll"
-        type="range" min={0} max={Math.max(0.001, scrollMax)} step={0.05}
+      <input className="studio-scroll" type="range" aria-label="Scroll the timeline"
+        min={0} max={Math.max(0.001, scrollMax)} step={0.05}
         value={Math.min(viewStart, scrollMax)}
-        onChange={(e) => setViewStart(Number(e.target.value))}
-      />
-      <div className="hint studio-hint">
-        wheel = pan · ctrl+wheel = zoom · drag a clip to move it, its edges to trim it (snap: {snapMode}) ·{" "}
-        <span className="kbd">space</span> play · <span className="kbd">←</span><span className="kbd">→</span> nudge ·{" "}
-        <span className="kbd">L</span> loop · <span className="kbd">[</span><span className="kbd">]</span> timings ·{" "}
-        <span className="kbd">⌫</span> remove lane
+        onChange={(e) => setViewStart(Number(e.target.value))} />
       </div>
 
-      {pairPlan?.steps?.length > 0 && (
-        <div className="why-pair">
-          <span className="micro-label">WHY THIS PAIR</span>
-          <span className="why-text">
-            {activeOption?.reason || pairPlan.steps[0]}
-          </span>
-        </div>
-      )}
-      </div>
-
-      <StudioRail
-        vocalLane={vocalLane} bedLane={bedLane} selected={selectedLane}
-        lanes={lanes} tracks={tracks}
-        stemOrder={STEM_ORDER} stemLabel={STEM_LABEL}
-        suggested={suggested} cross={cross} setCross={setCross}
-        patchLane={patchLane} setLaneStem={setLaneStem}
-        moveLane={moveLane} removeLane={removeLane}
-        soloId={soloId} setSoloId={setSoloId}
+      <StudioPanel
+        lanes={lanes} tracks={tracks} selectedId={selectedId} onSelect={setSelectedId}
+        stemOrder={STEM_ORDER} stemLabel={STEM_LABEL} roleOf={roleOf} suggestFor={suggestFor}
+        nudge={bedLane && vocalLane ? {
+          laneId: bedLane.id, ms: nudgeMs, suggestMs: suggestNudgeMs,
+          set: (v) => patchLane(bedLane.id, { offsetSec: vocalLane.offsetSec + nudgeBase + v / 1000 }),
+        } : null}
+        projectBpm={projectBpm} patchLane={patchLane} setLaneStem={setLaneStem}
+        moveLane={moveLane} removeLane={removeLane} soloId={soloId} setSoloId={setSoloId}
         referenceLane={referenceLane} matchKeyToReference={matchKeyToReference}
-        alignLaneToGrid={alignLaneToGrid} resetLane={resetLane}
-        clearTrim={clearTrim} trimOf={clipRangeOf} syncRateFor={syncRateFor}
-        projectBpm={projectBpm}
+        alignLaneToGrid={alignLaneToGrid} resetLane={resetLaneTo} resetAll={resetAll} dirty={dirty}
+        trimOf={clipRangeOf} syncRateFor={syncRateFor} onExtend={extendLane} onSection={useSection}
+        cross={cross} setCross={setCross}
         buildRating={buildRating}
         onRateBuild={activeOption ? (n) => rateBuild(activeOption, n) : null}
-        onSaveSnapshot={saveSnapshot}
-        snapshots={snapshots} onLoadSnapshot={loadSnapshot}
+        onSaveSnapshot={saveSnapshot} snapshots={snapshots} onLoadSnapshot={loadSnapshot}
         onDeleteSnapshot={deleteSnapshot}
-        onNextPair={onNextPair} hasNextPair={Boolean(onNextPair)}
-        onAppendNext={onAppendNext}
+        onNextPair={onNextPair} onAppendNext={onAppendNext}
         onAddToSet={onAddToSet && pairCtx && activeOption ? () => onAddToSet({
           vocal_song_id: pairCtx.vocalSongId, inst_song_id: pairCtx.instSongId,
           vocal_section_idx: activeOption.vocal_section_idx ?? null,
           inst_section_idx: activeOption.inst_section_idx ?? null,
         }) : null}
         setName={setName}
-        nudgeBase={nudgeBase} nudgeMs={nudgeMs}
         pairNote={notes && pairCtx && activeOption ? {
           value: notes.noteOf(notePair),
           save: (n) => notes.save(notePair, n),
         } : null}
-        dirty={dirty} />
+        height={panelH} onResizeStart={startPanelResize} onFit={fitPanel} />
+      </div>
+
+      <div className="studio-keys mono">
+        space play · ←/→ nudge a beat (shift: a bar) · m mute · s solo · ⌘Z undo · ⏎ next pair · del remove ·
+        [ ] timings · L loop · wheel pans, ctrl+wheel zooms · alt+click a beat line sets bar 1
       </div>
 
       {/* ── track picker ── */}
       {picker && <div className="picker-overlay" onClick={() => setPicker(false)} />}
       {picker && (
         <div className="picker-menu studio-picker">
-          <div className="search-box" style={{ width: "auto", margin: "2px 4px 6px" }}>
-            <span className="ico">⌕</span>
-            <input autoFocus placeholder="Search library…" value={pickerSearch}
+          <div className="disc-input small">
+            <span className="glyph">⌕</span>
+            <input autoFocus placeholder="Search the library…" value={pickerSearch} aria-label="Search the library"
               onChange={(e) => setPickerSearch(e.target.value)} />
           </div>
           {(layerSugs.vocals.length > 0 || layerSugs.beds.length > 0) && !pickerSearch && (
@@ -2229,7 +2315,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                 .filter(([k]) => layerSugs[k].length)
                 .map(([k, label, tag]) => (
                   <div key={k} className="layer-sug-group">
-                    <div className="micro-label">{label} <span className="faint">— scored by the matcher</span></div>
+                    <div className="caps">{label} <span className="muted">— scored by the matcher</span></div>
                     {layerSugs[k].map((c) => {
                       const sid = k === "vocals" ? c.vocal_song_id : c.inst_song_id;
                       return (
@@ -2238,7 +2324,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                           <span className={`pc-role mono ${tag.toLowerCase()}`}>{tag}</span>
                           <span className="t">{k === "vocals" ? c.vocal_title : c.inst_title}</span>
                           <span className="a">{k === "vocals" ? c.vocal_artist : c.inst_artist}</span>
-                          <span className="mono faint">{k === "vocals" ? c.vocal_section_label : c.inst_section_label}</span>
+                          <span className="mono muted">{k === "vocals" ? c.vocal_section_label : c.inst_section_label}</span>
                           <span className="mono layer-pct">{Math.round((c.score_percentile ?? c.score_total ?? 0) * 100)}</span>
                         </button>
                       );
@@ -2250,16 +2336,14 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
           {pickerList.map(({ t, fit }) => (
             <div key={t.id} className={`picker-row studio-picker-row${onTimeline.has(t.id) ? " on-timeline" : ""}`}>
               <TrackArt id={t.id} thumbnail={t.thumbnail} className="art" />
-              <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="studio-picker-text">
                 <div className="t">{t.title}</div>
                 <div className="a">{t.artist || "—"}</div>
               </div>
-              <div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>
+              <span className="mono muted small">
                 {t.features?.full?.bpm ? t.features.full.bpm.toFixed(1) : "—"}
-              </div>
-              {t.features?.full?.camelot && (
-                <KeyChip camelot={t.features.full.camelot} style={{ fontSize: 11, padding: "2px 6px" }} />
-              )}
+              </span>
+              {t.features?.full?.camelot && <KeyChip camelot={t.features.full.camelot} />}
               {fit && (
                 <span className={`picker-fit mono${fit.cost <= 2 ? " good" : fit.cost <= 4 ? " ok" : ""}`}
                   title="Fit to the timeline: stretch to the project tempo · Camelot steps from the first lane's key as played">
@@ -2278,7 +2362,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
               </div>
             </div>
           ))}
-          {pickerList.length === 0 && <div className="empty" style={{ padding: 12 }}>No processed tracks yet — import some from the Library's + Import.</div>}
+          {pickerList.length === 0 && <div className="muted small st-pad">No processed tracks yet — import some from the Library's + Import.</div>}
         </div>
       )}
     </div>

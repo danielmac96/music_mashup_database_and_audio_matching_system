@@ -1,15 +1,50 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { TrackArt } from "./TrackArt";
 import { StarRating } from "./StarRating";
-import { SortHead } from "./SortHead";
-import { useColumnWidths } from "../hooks/useColumnWidths";
+import { KeyChip, StatusPill } from "./ui/primitives";
 import { audioSubstitution } from "../sources";
-import { attrColumns, fmtAttr } from "../attributes";
+import { fmtAttr } from "../attributes";
 import { sectionColor } from "./StructureStrip";
+import { STATUS, STATUS_PILL } from "../hooks/useLibraryFilters";
+import { fmtDur, fmtPlays, fmtYear, keyLooksOff, playsColor } from "../theme";
+
+// The library table: a flat, virtualised list of fixed 32px rows. Only the rows
+// in (and just around) the scroll window are in the DOM, so 5,000 tracks scroll
+// like 50. Columns come from the Library view (hooks/useColumnWidths.js
+// useLibraryView): reordered by dragging a header, resized by its right edge,
+// sorted by a click that cycles first direction → the other → off.
+//
+// It renders what it is handed and fetches nothing: filtering and sorting are
+// hooks/useLibraryFilters.js, over rows already in memory.
+
+export const ROW_H = 32;
+const OVERSCAN = 6;
+const ACT_W = 30;   // the ⋯ row-menu column, always last, never hidden
+
+// Every column the table can show, in default order. One line each: the view
+// keys widths and order by `id`, never by position.
+export const COLUMNS = [
+  { id: "art", label: "", w: 36, min: 36, align: "c", nosort: true, fixed: true },
+  { id: "title", label: "Title / Artist", w: 280, min: 140, sort: "title" },
+  { id: "bpm", label: "BPM", w: 86, min: 60, align: "r", sort: "bpm", tip: "Detected tempo (beats per minute)" },
+  { id: "key", label: "Key", w: 54, min: 44, align: "c", sort: "key", tip: "Camelot key — ? when the key estimate is weak" },
+  { id: "energy", label: "Energy", w: 80, min: 56, sort: "energy", tip: "Energy, 0–10, ranked against this library" },
+  { id: "genre", label: "Genre", w: 110, min: 56, sort: "genre" },
+  { id: "year", label: "Year", w: 56, min: 44, align: "r", sort: "year", defaultVisible: false },
+  { id: "len", label: "Length", w: 62, min: 48, align: "r", sort: "len", defaultVisible: false },
+  { id: "vox", label: "VOX%", w: 60, min: 44, align: "r", sort: "vox", tip: "Share of the track that is sung" },
+  { id: "best", label: "Best pair", w: 76, min: 56, align: "r", sort: "best", tip: "This track's best pairing, as a percentile of every scored pair" },
+  { id: "pairs", label: "Pairs V/B", w: 80, min: 60, align: "r", sort: "pairs", tip: "Partners as vocal / as bed" },
+  { id: "plays", label: "Plays", w: 64, min: 48, align: "r", sort: "plays", defaultVisible: false },
+  { id: "rating", label: "Rating", w: 84, min: 70, sort: "rating", tip: "The best rating any of its pairs has earned" },
+  { id: "status", label: "Status", w: 112, min: 80, sort: "status" },
+  { id: "shape", label: "Shape", w: 96, min: 60, nosort: true, defaultVisible: false, tip: "Sections, coloured by label, as tall as their energy; sung ones underlined" },
+  { id: "sections", label: "Sections", w: 70, min: 50, align: "r", sort: "sections", defaultVisible: false },
+  { id: "added", label: "Added", w: 84, min: 60, align: "r", sort: "added", defaultVisible: false },
+];
 
 // The track's shape at a glance: one bar per section, coloured by label and as
-// tall as its energy, with the sung sections underlined. Opening every track to
-// see whether it has a long intro or two drops was the alternative.
+// tall as its energy, with the sung sections underlined.
 function ShapeThumb({ shape, duration }) {
   if (!shape?.length) return <span className="faint mono">—</span>;
   const end = Math.max(shape[shape.length - 1][1], duration || 0) || 1;
@@ -20,13 +55,13 @@ function ShapeThumb({ shape, duration }) {
       <title>{shape.map((s) => `${s[2] || "?"} ${Math.round(s[0])}–${Math.round(s[1])}s`).join(" · ")}</title>
       {shape.map(([a, b, label, e, v], i) => {
         const h = 4 + 12 * ((e ?? 0) / maxE);
+        const w = Math.max(0.6, ((b - a) / end) * 100 - 0.6);
         return (
           <g key={i}>
-            <rect x={(a / end) * 100} y={16 - h} width={Math.max(0.6, ((b - a) / end) * 100 - 0.6)}
-              height={h} fill={sectionColor(label)} opacity="0.85" />
+            <rect x={(a / end) * 100} y={16 - h} width={w} height={h}
+              fill={sectionColor(label)} opacity="0.9" />
             {v != null && v > 0.3 && (
-              <rect x={(a / end) * 100} y="18" width={Math.max(0.6, ((b - a) / end) * 100 - 0.6)}
-                height="2" fill="var(--violet)" />
+              <rect x={(a / end) * 100} y="18" width={w} height="2" fill="var(--vocal)" />
             )}
           </g>
         );
@@ -34,105 +69,237 @@ function ShapeThumb({ shape, duration }) {
     </svg>
   );
 }
-import {
-  camelotColor, fmtDur, fmtPlays, fmtYear, pipelineDots, playsColor, yearColor,
-} from "../theme";
 
-// The library table.
-//
-// Energy and section count are deliberately NOT columns. They cost the title
-// column width it cannot spare at this frame size, and both are one click away
-// on the track's own screen — where there is room to show them properly.
+const STATUS_LABEL = Object.fromEntries(STATUS);
+const dash = <span className="faint">—</span>;
 
-// One entry per column, in order: the id widths are stored under, the default
-// grid track, the floor a drag may not go below, and the sort key.
-//
-// TITLE and GENRE are both flexible. Title used to be the only `1fr`, so it
-// absorbed every pixel of slack on a wide desktop while GENRE stayed at its
-// 56px floor and truncated the one thing it exists to show.
-//
-// The sort keys are useLibraryFilters' own — the state already existed and was
-// reachable only through the dropdown in the filter bar, which still shares it.
-// PIPE has no key: it is four assembled booleans, not a value to order by.
-const HEADS = [
-  { id: "play", label: "", w: "26px" },
-  { id: "art", label: "", w: "30px" },
-  { id: "name", label: "TITLE", key: "title", also: { label: "ARTIST", key: "artist" }, w: "minmax(140px,1.6fr)", min: 120, grip: true },
-  { id: "genre", label: "GENRE", key: "genre", w: "minmax(64px,0.7fr)", min: 56, grip: true },
-  { id: "year", label: "YEAR", key: "year", numeric: true, w: "44px", min: 36, grip: true },
-  { id: "plays", label: "PLAYS", key: "plays", numeric: true, w: "56px", min: 44, grip: true },
-  { id: "bpm", label: "BPM", key: "bpm", numeric: true, w: "52px", min: 40, grip: true },
-  { id: "key", label: "KEY", key: "key", w: "46px", min: 38, grip: true },
-  { id: "mash", label: "MASH", key: "best", numeric: true, w: "84px", min: 60, grip: true },
-  { id: "vox", label: "VOX%", key: "vox", numeric: true, w: "46px", min: 40, grip: true, opt: 1 },
-  { id: "pairs", label: "PAIRS", key: "pairs", numeric: true, w: "56px", min: 46, grip: true, opt: 1 },
-  { id: "pipe", label: "PIPE", w: "56px", min: 44, grip: true },
-  { id: "rating", label: "RATING", key: "rating", numeric: true, w: "70px", min: 56, grip: true },
-  { id: "time", label: "TIME", key: "duration", numeric: true, right: true, w: "48px", min: 40 },
-];
+function Cell({ col, t, ctx }) {
+  const f = t.features?.full || {};
+  switch (col.id) {
+    case "art":
+      return (
+        <div className="tt-artbox">
+          <TrackArt id={t.id} thumbnail={t.thumbnail} className="tt-art" />
+          <button className={`tt-artplay${ctx.playingId === t.id ? " on" : ""}`}
+            title="Preview the hook (space)" aria-label="Preview the hook"
+            onClick={(e) => { e.stopPropagation(); ctx.onPreview(t); }}>
+            {ctx.playingId === t.id ? "❚❚" : "▶"}
+          </button>
+        </div>
+      );
+    case "title": {
+      // Audio that is not the link it was imported from (a YouTube substitute,
+      // or your own pick) is marked — the stems are cut from that file.
+      const sub = audioSubstitution(t);
+      return (
+        <div className="tt-namecell">
+          {/* A real button, so the way into a track is reachable from the
+              keyboard; stopPropagation keeps one click from also re-scoping
+              the dock through the row. */}
+          <button className="tt-title" title="Open track detail (⏎)"
+            onClick={(e) => { e.stopPropagation(); ctx.onOpen(t.id); }}>{t.title || "—"}</button>
+          {sub && (
+            <span className={`tt-src mono ${sub.kind}`} title={`${sub.label}. ${sub.title}`}>
+              {sub.chip}
+            </span>
+          )}
+          <span className="tt-artist">{t.artist || ""}</span>
+        </div>
+      );
+    }
+    case "bpm":
+      return (
+        <div className="tt-bpm">
+          {t.tempo_hint && ctx.onFixTempo && (
+            <button className="tt-fix mono"
+              title={`Suspected ${t.tempo_hint.label === "×2" ? "half" : "double"}-time read: ${t.tempo_hint.why}. Click to set ${t.tempo_hint.suggest} BPM.`}
+              onClick={(e) => { e.stopPropagation(); ctx.onFixTempo(t, t.tempo_hint.suggest); }}>
+              {t.tempo_hint.label}?
+            </button>
+          )}
+          <span className={`mono${t.tempo_hint ? " warn" : ""}`}
+            title={f.bpm != null ? `${f.bpm.toFixed(1)} BPM${f.bpm_confidence != null
+              ? `, grid confidence ${Math.round(f.bpm_confidence * 100)}%` : ""}` : "Not analysed"}>
+            {f.bpm != null ? f.bpm.toFixed(1) : "—"}
+          </span>
+        </div>
+      );
+    case "key": {
+      const weak = keyLooksOff(f);
+      return f.camelot
+        ? <KeyChip camelot={f.camelot} fallback="—"
+            style={weak ? { opacity: 0.75 } : undefined}
+            label={weak ? `${f.camelot}?` : undefined}
+            title={weak ? `${f.camelot} — low key confidence (${f.key_confidence?.toFixed(3)})`
+              : `${f.key || ""} ${f.mode || ""}`.trim() || `Camelot ${f.camelot}`} />
+        : <KeyChip camelot={null} />;
+    }
+    case "energy":
+      return t._energy == null ? dash : (
+        <div className="tt-bar" title={`Energy ${(t._energy * 10).toFixed(1)} of 10, ranked against this library`}>
+          <span className="track"><span style={{ width: `${Math.round(t._energy * 100)}%` }} /></span>
+          <span className="mono">{(t._energy * 10).toFixed(1)}</span>
+        </div>
+      );
+    case "genre":
+      return t.genre ? <span className="tt-text" title={t.genre}>{t.genre}</span> : dash;
+    case "year":
+      return <span className={`mono${t.release_year ? "" : " faint"}`}>{fmtYear(t.release_year)}</span>;
+    case "len":
+      return <span className="mono">{fmtDur(t.duration_secs)}</span>;
+    case "vox":
+      return t.mash?.vocal_coverage != null
+        ? <span className="mono">{Math.round(t.mash.vocal_coverage * 100)}%</span> : dash;
+    case "best":
+      return t.mash?.best_pct != null
+        ? <span className="mono">{Math.round(t.mash.best_pct * 100)}</span> : dash;
+    case "pairs":
+      return t.mash && (t.mash.as_vocal || t.mash.as_bed) ? (
+        <span className="mono tt-pairs"
+          title={`${t.mash.as_vocal} partner beds as the vocal · ${t.mash.as_bed} partner vocals as the bed`}>
+          <span className="v">{t.mash.as_vocal}</span><span className="faint"> / </span>
+          <span className="b">{t.mash.as_bed}</span>
+        </span>
+      ) : dash;
+    case "plays":
+      return (
+        <span className="mono" style={{ color: playsColor(t.plays) }}
+          title={t.plays ? `${t.plays.toLocaleString()} plays` : "no play count"}>
+          {fmtPlays(t.plays)}
+        </span>
+      );
+    case "rating":
+      return <StarRating value={t.rating} size={12} />;
+    case "status":
+      return <StatusPill status={STATUS_PILL[t._status]} label={STATUS_LABEL[t._status]}
+        title={t.last_error || STATUS_LABEL[t._status]} />;
+    case "shape":
+      return <ShapeThumb shape={t.shape} duration={t.duration_secs} />;
+    case "sections":
+      return t.section_count ? <span className="mono">{t.section_count}</span> : dash;
+    case "added":
+      return <span className="mono">{String(t.created_at || "").slice(0, 10) || "—"}</span>;
+    default:
+      if (col.attr) {
+        const v = t.attrs?.[col.attr.id];
+        return v == null ? dash
+          : <span className="mono tt-text" title={col.attr.label}>{fmtAttr(col.attr, v, false)}</span>;
+      }
+      return dash;
+  }
+}
 
-// Four stages, in the order they run: downloaded, analysed, sections, stems.
-// There are no per-stage columns on `songs` — the truth is assembled from the
-// stems, features and section-count the list already returns.
-// Table width below which the mashup columns (opt) are dropped.
-const WIDE_MIN = 940;
+// One row. Memoised: scrolling a few rows re-renders only the rows that came
+// into the window, not the ~40 already there.
+const Row = memo(function Row({ t, zebra, sel, cols, ctx, menuOpen }) {
+  return (
+    <div role="row" aria-selected={sel}
+      className={`tt-row${sel ? " selected" : ""}${zebra ? " zebra" : ""}`}
+      onClick={() => ctx.select(t.id)}
+      onDoubleClick={() => ctx.onOpen(t.id)}>
+      {cols.map(([c, w]) => (
+        <div key={c.id} className={`tt-c a-${c.align || "l"}`} style={{ width: w }}>
+          <Cell col={c} t={t} ctx={ctx} />
+        </div>
+      ))}
+      <div className="tt-c tt-act" style={{ width: ACT_W }}>
+        <button className={`tt-more${menuOpen ? " open" : ""}`}
+          title="Run a stage, correct, add to a crate or delete"
+          onClick={(e) => { e.stopPropagation(); ctx.onMenu(menuOpen ? null : t.id); }}>⋯</button>
+        {menuOpen && ctx.renderMenu(t)}
+      </div>
+    </div>
+  );
+});
 
-const DOT_ORDER = ["dl", "analyse", "structure", "stems"];
-const DOT_TITLE = {
-  dl: "downloaded", analyse: "analysed", structure: "sections detected",
-  stems: "stems separated",
-};
+export function TrackTable({ tracks, columns, sort, onSort, onWidth, onResetWidth, onMove,
+                             selectedId, onSelect, onOpen, onPreview, playingId = null,
+                             onFixTempo = null, menuId = null, onMenu = () => {},
+                             renderMenu = () => null, onEmptyClear = null, tableRef }) {
+  const ownRef = useRef(null);
+  const scrollRef = tableRef || ownRef;
+  const [scrollTop, setScrollTop] = useState(0);
+  const [box, setBox] = useState({ w: 0, h: 600 });
+  const dragCol = useRef(null);
+  const resizing = useRef(false);
+  const [dropOn, setDropOn] = useState(null);
 
-export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
-                             runningKind = () => null, playingId = null,
-                             sort = null, onSort = null,
-                             menuId = null, onMenu = () => {},
-                             renderMenu = () => null, attributes = null,
-                             onFixTempo = null }) {
-  // A header click sets the PRIMARY key. The filter bar's two-level sort keeps
-  // its secondary, which is what makes "artist, then year" reachable there and
-  // still one click away here.
-  const sortable = Boolean(onSort);
-  const key = sort?.primary ?? "";
-  const dir = sort?.primaryDir ?? "desc";
-  const setKey = (p) => onSort?.({ ...(sort || {}), primary: p.sort,
-                                   primaryDir: p.dir });
-  // The attributes toggled on in the Analysis panel, as extra columns before
-  // RATING. HEADS itself stays as it is (a test parses it line by line), and
-  // the extra columns' ids are "attr:<id>", so a dragged width follows its
-  // column rather than a position.
-  const extra = useMemo(() => (attributes
-    ? attrColumns(attributes.byId, attributes.visibility.library) : []), [attributes]);
-  // The mashup columns (opt) need room: below WIDE_MIN of table they are
-  // dropped rather than squeezing the title or scrolling the table sideways —
-  // at 1280px the library column is ~670px next to the dock.
-  const tableRef = useRef(null);
-  const [wide, setWide] = useState(true);
-  useEffect(() => {
-    const el = tableRef.current;
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
     if (!el) return undefined;
-    const ro = new ResizeObserver(() => setWide(el.clientWidth >= WIDE_MIN));
+    const ro = new ResizeObserver(() => setBox({ w: el.clientWidth, h: el.clientHeight }));
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
-  const columns = useMemo(() => {
-    const base = wide ? HEADS : HEADS.filter((h) => !h.opt);
-    const at = base.findIndex((h) => h.id === "rating");
-    return [...base.slice(0, at), ...extra, ...base.slice(at)];
-  }, [extra, wide]);
-  const { template, setWidth, resetColumn } = useColumnWidths(columns);
+  }, [scrollRef]);
 
-  // Dragging measures the header cell rather than reading the stored width,
-  // because a column still on its default has no stored width to read — and a
-  // `fr` track's rendered size is the only honest starting point.
-  const onGrab = (h) => (e) => {
+  // Straight into state: React batches it, and a render is ~40 rows. Waiting
+  // for requestAnimationFrame here lagged a whole second wherever rAF is
+  // throttled.
+  const onScroll = () => {
+    if (scrollRef.current) setScrollTop(scrollRef.current.scrollTop);
+  };
+
+  // Widths are fixed px; the title takes whatever the frame has left over, so a
+  // wide window gives it room instead of leaving a gap at the right.
+  const visible = useMemo(() => columns.filter((c) => c.visible), [columns]);
+  const sum = visible.reduce((a, c) => a + c.width, 0) + ACT_W;
+  const slack = Math.max(0, box.w - sum);
+  const widthOf = (c) => c.width + (c.id === "title" ? slack : 0);
+  const tableW = sum + slack;
+
+  const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
+  const count = Math.ceil(box.h / ROW_H) + OVERSCAN * 2;
+  const slice = tracks.slice(first, first + count);
+
+  // Keep the selected row in view when the keyboard moves it.
+  const ensureVisible = useCallback((i) => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const top = i * ROW_H;
+    const headH = 30;
+    if (top < el.scrollTop) el.scrollTop = top;
+    else if (top + ROW_H > el.scrollTop + el.clientHeight - headH) {
+      el.scrollTop = top + ROW_H - el.clientHeight + headH;
+    } else return;
+    // Render the new window now rather than on the scroll event, which only
+    // fires with the next frame.
+    setScrollTop(el.scrollTop);
+  }, [scrollRef]);
+
+  const index = useMemo(() => tracks.findIndex((t) => t.id === selectedId), [tracks, selectedId]);
+  useEffect(() => { if (index >= 0) ensureVisible(index); }, [index, ensureVisible]);
+
+  // ↑↓ PgUp/PgDn Home/End move the selection; space previews; ⏎ opens. Keys
+  // handled here stop at the table, so the pair dock's window keys do not see
+  // them while the table has focus (tab across to the dock for its keys).
+  const onKeyDown = (e) => {
+    if (!tracks.length || e.metaKey || e.ctrlKey || e.altKey) return;
+    const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 15, PageUp: -15 }[e.key];
+    let next = null;
+    if (step != null) next = Math.max(0, Math.min(tracks.length - 1, (index < 0 ? -1 : index) + step));
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = tracks.length - 1;
+    if (next != null) {
+      e.preventDefault(); e.stopPropagation();
+      onSelect(tracks[next].id);
+      return;
+    }
+    const cur = index >= 0 ? tracks[index] : null;
+    if (e.code === "Space" && cur) { e.preventDefault(); e.stopPropagation(); onPreview(cur); }
+    else if (e.key === "Enter" && cur) { e.preventDefault(); e.stopPropagation(); onOpen(cur.id); }
+  };
+
+  // Resizing measures from the pointer, and never reaches the sort click or
+  // the header's drag-to-reorder beneath it.
+  const onGrab = (c) => (e) => {
     e.preventDefault();
-    e.stopPropagation();      // never let a grip reach the SortHead beneath it
-    const cell = e.currentTarget.parentElement;
+    e.stopPropagation();
+    resizing.current = true;
     const startX = e.clientX;
-    const startW = cell.getBoundingClientRect().width;
-    const move = (ev) => setWidth(h.id, startW + (ev.clientX - startX));
+    const startW = c.width;
+    const move = (ev) => onWidth(c.id, startW + (ev.clientX - startX));
     const up = () => {
+      resizing.current = false;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };
@@ -140,178 +307,86 @@ export function TrackTable({ tracks, selectedId, onSelect, onOpen, onPlay,
     window.addEventListener("pointerup", up);
   };
 
+  // The handlers rows call, kept stable across renders (through a ref) so the
+  // memoised rows are not invalidated by every parent render.
+  const handlers = useRef({});
+  handlers.current = { onSelect, onOpen, onPreview, onFixTempo, onMenu, renderMenu };
+  const stable = useMemo(() => ({
+    select: (id) => { handlers.current.onSelect(id); scrollRef.current?.focus({ preventScroll: true }); },
+    onOpen: (id) => handlers.current.onOpen(id),
+    onPreview: (t) => handlers.current.onPreview(t),
+    onFixTempo: (t, bpm) => handlers.current.onFixTempo?.(t, bpm),
+    onMenu: (id) => handlers.current.onMenu(id),
+    renderMenu: (t) => handlers.current.renderMenu(t),
+  }), [scrollRef]);
+  const ctx = useMemo(() => ({ ...stable, playingId, onFixTempo: onFixTempo ? stable.onFixTempo : null }),
+    [stable, playingId, !onFixTempo]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cols = useMemo(() => visible.map((c) => [c, widthOf(c)]),
+    [visible, slack]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
-    <div className="track-table" ref={tableRef}>
-      <div className="tt-head" style={{ gridTemplateColumns: template }}>
-        {columns.map((h, i) => (
-          <div key={h.id} className={`tt-h${h.right ? " right" : ""}`}>
-            <SortHead label={h.label} sortKey={sortable ? h.key : null}
-              sort={key} dir={dir} onSort={setKey} numeric={h.numeric} />
-            {h.also && (
-              <>
-                <span className="sh-sep">/</span>
-                <SortHead label={h.also.label} sortKey={sortable ? h.also.key : null}
-                  sort={key} dir={dir} onSort={setKey} />
-              </>
-            )}
-            {h.grip && (
-              <span className="tt-grip" onPointerDown={onGrab(h)}
-                onDoubleClick={(e) => { e.stopPropagation(); resetColumn(h.id); }}
-                title="Drag to resize · double-click to reset" />
-            )}
+    <div className="tt-scroll" ref={scrollRef} tabIndex={0} aria-label="Track table"
+      onKeyDown={onKeyDown} onScroll={onScroll}>
+      <div className="tt-inner" style={{ width: tableW }}>
+        <div className="tt-head" role="row">
+          {visible.map((c) => {
+            const on = sort?.id === (c.sort || c.id) && sort?.dir;
+            return (
+              <div key={c.id}
+                className={`tt-h a-${c.align || "l"}${on ? " on" : ""}${dropOn === c.id ? " drop" : ""}`}
+                style={{ width: widthOf(c) }}
+                role="columnheader"
+                aria-sort={on ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}
+                title={c.nosort ? c.tip || "" : `${c.tip || c.label} — click to sort, drag to reorder`}
+                draggable={!c.fixed}
+                onDragStart={(e) => {
+                  if (resizing.current) { e.preventDefault(); return; }
+                  dragCol.current = c.id;
+                  try { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", c.id); } catch { /* ignore */ }
+                }}
+                onDragOver={(e) => { if (dragCol.current) { e.preventDefault(); setDropOn(c.id); } }}
+                onDragLeave={() => setDropOn((d) => (d === c.id ? null : d))}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const from = dragCol.current;
+                  dragCol.current = null;
+                  setDropOn(null);
+                  if (from && from !== c.id && !c.fixed) onMove(from, c.id);
+                }}
+                onDragEnd={() => { dragCol.current = null; setDropOn(null); }}
+                onClick={() => { if (!c.nosort) onSort(c.sort || c.id); }}>
+                <span className="lbl">{c.label}</span>
+                {on && <span className="glyph">{sort.dir === "asc" ? "▲" : "▼"}</span>}
+                {!c.fixed && (
+                  <span className="tt-grip" onPointerDown={onGrab(c)}
+                    onClick={(e) => e.stopPropagation()}
+                    onDoubleClick={(e) => { e.stopPropagation(); onResetWidth(c.id); }}
+                    title="Drag to resize · double-click to reset" />
+                )}
+              </div>
+            );
+          })}
+          <div className="tt-h" style={{ width: ACT_W }} />
+        </div>
+
+        <div className="tt-body" style={{ height: tracks.length * ROW_H }}>
+          <div className="tt-window" style={{ top: first * ROW_H }}>
+            {slice.map((t, j) => (
+              <Row key={t.id} t={t} zebra={(first + j) % 2 === 1} sel={t.id === selectedId}
+                cols={cols} ctx={ctx} menuOpen={menuId === t.id} />
+            ))}
           </div>
-        ))}
-      </div>
-      <div className="tt-body">
-        {tracks.map((t) => (
-          <TrackRow key={t.id} t={t} cols={template} extra={extra} wide={wide}
-            onFixTempo={onFixTempo}
-            selected={selectedId === t.id}
-            playing={playingId === t.id}
-            running={runningKind(t)}
-            menuOpen={menuId === t.id}
-            onMenu={onMenu} renderMenu={renderMenu}
-            onSelect={onSelect} onOpen={onOpen} onPlay={onPlay} />
-        ))}
+        </div>
+
         {tracks.length === 0 && (
           <div className="tt-empty">
-            Nothing matches these filters. <span className="faint">
-              The bar above says how many of the library are shown.</span>
+            <b>No tracks match these filters.</b>
+            <span className="muted">Remove a pill above, or widen the BPM range with ±6% half/double time.</span>
+            {onEmptyClear && (
+              <button className="ui-btn" onClick={onEmptyClear}>Clear all filters</button>
+            )}
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-function TrackRow({ t, cols, extra = [], wide = true, onFixTempo = null, selected, playing, running, menuOpen, onMenu,
-                    renderMenu, onSelect, onOpen, onPlay }) {
-  const f = t.features?.full || {};
-  const dots = pipelineDots(t, running);
-  const cam = f.camelot;
-  // Audio that is not the link it was imported from (a YouTube substitute, or
-  // your own pick) is marked on the row — the stems are cut from that file.
-  const sub = audioSubstitution(t);
-
-  return (
-    <div
-      className={`tt-row${selected ? " selected" : ""}${playing ? " playing" : ""}`}
-      style={{ gridTemplateColumns: cols }}
-      onClick={() => onSelect(t.id)}
-      onDoubleClick={() => onOpen(t.id)}
-      title="Click to scope the pair list">
-      <button className="tt-play" title={playing ? "Stop" : "Play"}
-        onClick={(e) => { e.stopPropagation(); onPlay(t); }}>
-        {playing ? "❚❚" : "▶"}
-      </button>
-
-      <TrackArt id={t.id} thumbnail={t.thumbnail} className="tt-art" />
-
-      {/* The whole title/artist cell is the link into the track's own screen —
-          the button fills the cell, height included, so there is no dead strip
-          that falls through to the row. The rest of the row still belongs to
-          the dock, which is what clicking it scopes. stopPropagation is what
-          stops one click doing both. */}
-      <button className="tt-name" title={`Open ${t.title}`}
-        onClick={(e) => { e.stopPropagation(); onOpen(t.id); }}>
-        <span className="tt-title">
-          {/* The chevron sits OUTSIDE the ellipsised span. Inside it, a title
-              long enough to truncate — which is most of them at this column
-              width — eats the only affordance the row has. */}
-          <span className="tt-text">{t.title}</span>
-          {sub && (
-            <span className={`tt-src mono ${sub.kind}`} title={`${sub.label}. ${sub.title}`}>
-              {sub.chip}
-            </span>
-          )}
-          <span className="tt-go">›</span>
-        </span>
-        <span className="tt-artist">{t.artist || "—"}</span>
-      </button>
-
-      <div className="tt-cell">
-        {t.genre
-          ? <span className="tt-genre mono" title={t.genre}>{t.genre}</span>
-          : <span className="mono" style={{ color: "var(--faint-2)" }}>—</span>}
-      </div>
-
-      <div className="tt-num mono" style={{ color: yearColor(t.release_year) }}>
-        {fmtYear(t.release_year)}
-      </div>
-
-      <div className="tt-num mono" style={{ color: playsColor(t.plays) }}
-        title={t.plays ? `${t.plays.toLocaleString()} plays` : "no play count"}>
-        {fmtPlays(t.plays)}
-      </div>
-
-      <div className="tt-num mono tt-bpm">
-        {f.bpm != null ? Math.round(f.bpm) : <span className="faint">—</span>}
-        {t.tempo_hint && onFixTempo && (
-          <button className="tt-tempo-hint"
-            title={`Suspected ${t.tempo_hint.label === "×2" ? "half" : "double"}-time read: ${t.tempo_hint.why}. Click to set ${t.tempo_hint.suggest} BPM.`}
-            onClick={(e) => { e.stopPropagation(); onFixTempo(t, t.tempo_hint.suggest); }}>
-            {t.tempo_hint.label}?
-          </button>
-        )}
-      </div>
-
-      <div className="tt-cell">
-        {cam
-          ? <span className="tt-key mono"
-              style={{ background: camelotColor(cam) }}
-              title={`${f.key || ""} ${f.mode || ""}`.trim()}>{cam}</span>
-          : <span className="mono" style={{ color: "var(--faint-2)" }}>—</span>}
-      </div>
-
-      <div className="tt-cell tt-mash"
-        title={t.mash?.best_pct != null
-          ? `Best pairing: ${Math.round(t.mash.best_pct * 100)}th percentile of every scored pair in the library`
-          : "Not scored yet"}>
-        <ShapeThumb shape={t.shape} duration={t.duration_secs} />
-        <span className="tt-best mono">
-          {t.mash?.best_pct != null ? Math.round(t.mash.best_pct * 100) : "—"}
-        </span>
-      </div>
-
-      {wide && <>
-      <div className="tt-num mono" title="Share of the track that is sung (vocal or mixed sections)">
-        {t.mash?.vocal_coverage != null ? Math.round(t.mash.vocal_coverage * 100)
-          : <span className="faint">—</span>}
-      </div>
-
-      <div className="tt-num mono"
-        title={t.mash ? `${t.mash.as_vocal} partner beds as the vocal · ${t.mash.as_bed} partner vocals as the bed` : "not scored yet"}>
-        {t.mash && (t.mash.as_vocal || t.mash.as_bed)
-          ? <span><span className="tt-pv">{t.mash.as_vocal}</span><span className="faint">/</span><span className="tt-pb">{t.mash.as_bed}</span></span>
-          : <span className="faint">—</span>}
-      </div>
-
-      </>}
-
-      <div className="tt-dots-cell">
-        <button className={`tt-dots${menuOpen ? " open" : ""}`}
-          title="Pipeline — click to run a stage, correct or delete"
-          onClick={(e) => { e.stopPropagation(); onMenu(menuOpen ? null : t.id); }}>
-          {DOT_ORDER.map((k) => (
-            <span key={k} style={{ background: dots[k] }} title={DOT_TITLE[k]} />
-          ))}
-        </button>
-        {menuOpen && renderMenu(t)}
-      </div>
-
-      {extra.map((c) => (
-        <div key={c.id} className={c.numeric ? "tt-num mono" : "tt-cell"}
-          title={c.attr.label}>
-          <span className="tt-attr mono">{fmtAttr(c.attr, t.attrs?.[c.attr.id], false)}</span>
-        </div>
-      ))}
-
-      <div className="tt-cell">
-        <StarRating value={t.rating} />
-      </div>
-
-      <div className="tt-num mono right">
-        {fmtDur(t.duration_secs)}
       </div>
     </div>
   );

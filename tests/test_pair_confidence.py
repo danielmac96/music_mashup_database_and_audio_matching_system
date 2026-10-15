@@ -1,6 +1,6 @@
 """confidence_tier and compat on every pair row (matcher/compat.py), the tier=
 filter and order=tier — and the pins that keep them one definition:
-the Python tier ≡ its SQL twin ≡ theme.js tierFor's cut-offs, and compat's
+the Python tier ≡ its SQL twin, theme.js drawing those tiers and computing none, and compat's
 transpose ≡ the row's semitone_shift (recipe.bed_shift)."""
 import importlib
 import json
@@ -83,7 +83,8 @@ def _check_row(c):
     compat = c["compat"]
     assert set(compat) == {"key", "bpm", "genre"}
     key, bpm, genre = compat["key"], compat["bpm"], compat["genre"]
-    assert set(key) == {"vocal", "bed", "landing", "relation", "steps", "shift_st"}
+    assert set(key) == {"vocal", "bed", "landing", "relation", "steps", "shift_st",
+                        "known"}
     assert set(bpm) == {"vocal", "bed", "delta_pct", "fold"}
     assert set(genre) == {"vocal", "bed", "vocal_style", "bed_style", "same"}
     for k in ("vocal", "bed", "landing"):
@@ -100,6 +101,7 @@ def _check_row(c):
     # One transpose per pair: compat never recomputes it.
     assert key["shift_st"] == c["semitone_shift"]
     assert key["landing"] == key["vocal"]
+    assert key["known"] is (key["vocal"] is not None and key["bed"] is not None)
 
 
 def test_every_listing_row_carries_tier_and_compat(app):
@@ -136,6 +138,7 @@ def test_unmeasured_is_null_not_zero(app):
     for c in no_key:
         key = c["compat"]["key"]
         assert key["bed"] is None and key["relation"] is None and key["steps"] is None
+        assert key["known"] is False
     no_bpm = [c for c in rows if not c.get("inst_bpm")]
     assert no_bpm
     for c in no_bpm:
@@ -160,17 +163,19 @@ def test_fold_delta_genre_and_style(app):
 
 # ── one definition ───────────────────────────────────────────────────────────
 
-def test_tier_cutoffs_are_theme_js_tierfor(app):
+def test_theme_js_draws_the_api_tiers_and_computes_none(app):
+    """The UI never derives a tier: theme.js TIERS names exactly compat.TIERS,
+    in order, and the old percentage cut-offs (tierFor) are gone."""
     from matcher.compat import TIER_MIN_PCT, TIERS as ORDER
     src = (ROOT / "frontend/src/theme.js").read_text(encoding="utf-8")
-    body = src[src.index("export function tierFor"):]
-    body = body[:body.index("\n}")]
-    js = {name: int(n) for n, name in
-          re.findall(r'totalPct >= (\d+)\) return \{ tier: "(\w+)"', body)}
-    assert js == {"EXCELLENT": 85, "STRONG": 75, "GOOD": 65, "FAIR": 50}
-    assert TIER_MIN_PCT == {"strong": js["STRONG"], "good": js["GOOD"],
-                            "maybe": js["FAIR"]}
+    assert "tierFor" not in src
+    body = src[src.index("export const TIERS = ["):]
+    body = body[:body.index("];")]
+    assert tuple(re.findall(r'id: "(\w+)"', body)) == ORDER
     assert ORDER == ("strong", "good", "maybe", "long_shot")
+    assert TIER_MIN_PCT == {"strong": 75, "good": 65, "maybe": 50}
+    model = (ROOT / "frontend/src/components/pairs/pairModel.js").read_text(encoding="utf-8")
+    assert "tierMeta(c?.confidence_tier)" in model
 
 
 @pytest.mark.parametrize("pct,sure,want", [
@@ -261,3 +266,26 @@ def test_camelot_steps_is_the_sets_distance():
         for b in codes:
             assert camelot_steps(a, b) == _camelot_distance(a, b)
     assert camelot_steps("8A", None) is None       # unknown is not "far"
+
+
+def test_by_vocal_rows_read_the_same_fields_as_the_listing(app):
+    """The pair card renders from either list, so /by-vocal carries the
+    listing's joined columns (genre, year, plays, key confidence, live section
+    labels) and keeps its own bed_rank."""
+    client, _, _ = app
+    listing = _all(client)
+    by_vocal = client.get("/api/mashups/by-vocal",
+                          params={"limit": 500}).json()["candidates"]
+    assert by_vocal
+    need = {"vocal_genre", "inst_genre", "vocal_year", "inst_year",
+            "vocal_plays", "inst_plays", "vocal_key_confidence",
+            "inst_key_confidence", "vocal_section_line",
+            "vocal_section_label", "inst_section_label", "score_percentile"}
+    lst = {(c["vocal_song_id"], c["inst_song_id"]): c for c in listing}
+    for c in by_vocal:
+        assert need <= set(c), need - set(c)
+        assert c["bed_rank"] >= 1
+        twin = lst[(c["vocal_song_id"], c["inst_song_id"])]
+        assert c["vocal_genre"] == twin["vocal_genre"]
+        assert c["compat"] == twin["compat"]
+        assert c["confidence_tier"] == twin["confidence_tier"]

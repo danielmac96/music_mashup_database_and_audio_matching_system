@@ -114,8 +114,8 @@ export function SetupWizard({ onConfigured }) {
           type="number" min={1} max={8} value={workers}
           onChange={(e) => setWorkers(Math.max(1, Math.min(8, Number(e.target.value) || 1)))}
           style={{
-            width: 70, background: "var(--panel)", color: "var(--text)",
-            border: "1px solid var(--border-ctrl)", borderRadius: 6, padding: "6px 8px",
+            width: 70, background: "var(--panel)", color: "var(--fg)",
+            border: "1px solid var(--line-2)", borderRadius: 6, padding: "6px 8px",
           }}
         />
       </div>

@@ -1,4 +1,4 @@
-import { tierFor } from "../../theme";
+import { tierMeta } from "../../theme";
 
 // What a pair IS, shared by the Library dock, the track-detail rail and
 // Discover's Find-mashups pane. Three screens rendering the same row from three
@@ -28,7 +28,12 @@ export const feedbackKey = (f) =>
 export const pctOf = (c) => Math.round((c.score_percentile ?? 0) * 1000) / 10;
 export const rawPctOf = (c) => Math.round((c.score_total ?? 0) * 100);
 
-export const tierOf = (c) => tierFor(rawPctOf(c));
+// The tier is the API's confidence_tier (matcher/compat.py) — never derived
+// here. `tier` keeps the label old cards print.
+export const tierOf = (c) => {
+  const t = tierMeta(c?.confidence_tier);
+  return { ...t, tier: t.label.toUpperCase() };
+};
 
 // The card's headline. Scoped to a track, the pair's rank among that track's
 // partners ("#3 of 20 beds", GET /api/mashups scope_rank) — which bed is best
@@ -62,11 +67,11 @@ export const EFFORT_TONE = { Free: "free", Light: "light", Heavy: "heavy" };
 export const SCORE_TERMS = [
   { key: "score_label", label: "LBL", name: "Section", order: "label", color: "var(--accent)",
     what: "label — chorus over drop ranks above verse over breakdown" },
-  { key: "score_duration", label: "DUR", name: "Length", order: "duration", color: "var(--cyan)",
+  { key: "score_duration", label: "DUR", name: "Length", order: "duration", color: "var(--link)",
     what: "duration — the bed section covers the vocal section in bars, looping allowed" },
-  { key: "score_voice", label: "VOI", name: "Vocal", order: "voice", color: "var(--violet)",
+  { key: "score_voice", label: "VOI", name: "Vocal", order: "voice", color: "var(--run)",
     what: "voice — how much real singing the vocal section carries" },
-  { key: "score_phrase", label: "PHR", name: "Phrase", order: "phrase", color: "var(--amber)",
+  { key: "score_phrase", label: "PHR", name: "Phrase", order: "phrase", color: "var(--warn)",
     what: "phrase — equal phrase lengths best, clean multiples high" },
 ];
 
@@ -89,13 +94,13 @@ export function termsOf(candidate) {
 // weight for vocal-over-bed (config._for_combo moves it onto spectral room), so
 // it is only drawn for bed-over-bed pairs.
 export const SONG_TERMS = [
-  { key: "score_bpm", label: "BPM", name: "Tempo", color: "var(--green)",
+  { key: "score_bpm", label: "BPM", name: "Tempo", color: "var(--ok)",
     what: "tempo — how close the two tempos are, half/double time allowed" },
-  { key: "score_key", label: "KEY", name: "Harmony", color: "var(--violet)",
+  { key: "score_key", label: "KEY", name: "Harmony", color: "var(--run)",
     what: "key — the measured harmonic fit of the two sections (Camelot lookup when unmeasured)" },
-  { key: "score_energy", label: "NRG", name: "Energy", color: "var(--amber)",
+  { key: "score_energy", label: "NRG", name: "Energy", color: "var(--warn)",
     what: "energy — closeness of the two sides' loudness, ranked within each stem kind" },
-  { key: "score_collision", label: "ROOM", name: "Room", color: "var(--cyan)",
+  { key: "score_collision", label: "ROOM", name: "Room", color: "var(--link)",
     what: "spectral room — whether the bed leaves space in the bands the vocal lives in" },
   { key: "score_timbre", label: "TIM", name: "Timbre", color: "var(--accent)", bedOnly: true,
     what: "timbre — how alike the two beds sound (weighted for bed-over-bed only)" },

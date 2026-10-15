@@ -128,7 +128,7 @@ def test_waveform_route_falls_back_to_the_full_grid_on_a_wrong_stem_tempo(db_pat
 
 def test_snapshots_are_listed_and_loadable():
     studio = _read("components/MixStudio.jsx")
-    rail = _read("components/StudioRail.jsx")
+    rail = _read("components/StudioPanel.jsx")
     assert "readSnapshots" in studio and "loadSnapshot" in studio
     assert "deleteSnapshot" in studio
     assert "onLoadSnapshot(sn)" in rail and "snap-list" in rail
@@ -310,10 +310,10 @@ def test_sets_screen_is_wired():
     assert "onAddToSet: sets.addPair" in app
     dock = _read("hooks/usePairDock.js")
     assert 'e.key === "a"' in dock and "onAddToSet(row)" in dock
-    assert "pc-addset" in _read("components/PairCard.jsx")
+    assert "+ Set</button>" in _read("components/PairCard.jsx")
     studio = _read("components/MixStudio.jsx")
     assert "const layPairs" in studio and "seed?.chain" in studio
-    assert "onAppendNext" in _read("components/StudioRail.jsx")
+    assert "onAppendNext" in _read("components/StudioPanel.jsx")
 
 
 # ── 7 / 10. dock: keepers, landing key, section type ────────────────────────
@@ -423,15 +423,16 @@ def test_studio_picker_ranks_by_fit_and_offers_scored_layers():
 
 # ── 12 / 13. pair card and library: what the scores are made of ────────────
 
-def test_pair_card_shows_artists_song_terms_and_loop_note():
+def test_pair_card_shows_artists_song_terms_and_the_recipe():
     card, model = _read("components/PairCard.jsx"), _read("components/pairs/pairModel.js")
-    assert "artist={c.vocal_artist}" in card and "pc-artist" in card
-    assert "export const SONG_TERMS" in model and "songTermsOf(candidate)" in card
+    assert '<span className="a">{c.vocal_artist || ""}</span>' in card
+    assert "export const SONG_TERMS" in model and "songTermsOf(c)" in card
     for key in ("score_bpm", "score_key", "score_energy", "score_collision"):
         assert key in model
-    assert "loop bed ×{c.section_loop_repeats}" in card
-    # A measured harmony makes the Camelot lookup context, not a verdict.
-    assert 'h.known ? " muted"' in card
+    # Looping the bed is a recipe step ("loop bed ×2"), drawn in the DO row.
+    assert "r.adjustments" in card
+    # A measured harmony is drawn as measured; without one the card says so.
+    assert "harmony not measured — Camelot estimate" in card
 
 
 def test_library_summarises_each_track_as_mashup_material(one_vocal_many_beds):
@@ -458,16 +459,18 @@ def test_library_summarises_each_track_as_mashup_material(one_vocal_many_beds):
     assert rows[beds[2]]["mash"]["as_bed"] == 1 and rows[beds[2]]["mash"]["best_pct"] < 1.0
     assert rows[beds[2]]["mash"]["vocal_coverage"] is None, "unmeasured, not zero"
     table = _read("components/TrackTable.jsx")
-    assert 'id: "mash"' in table and "function ShapeThumb" in table
-    assert "best: (t) => t.mash?.best_pct" in _read("hooks/useLibraryFilters.js")
+    assert '{ id: "best"' in table and '{ id: "shape"' in table
+    assert "function ShapeThumb" in table
+    assert "best: { get: (t) => t.mash?.best_pct" in _read("hooks/useLibraryFilters.js")
 
 
 # ── 14 / 15. track detail strip, Studio fades/filters/undo/export ───────────
 
 def test_structure_strip_has_a_bar_ruler_energy_curve_and_key_lane():
     strip = _read("components/StructureStrip.jsx")
-    assert "struct-ruler" in strip and "downbeats" in strip
-    assert "struct-energy" in strip and "struct-keys" in strip
+    assert "// bar ruler" in strip and "downbeats" in strip
+    assert "energy_absolute ?? s.energy" in strip and "[3, 3]" in strip     # dashed energy
+    assert "// key band" in strip and "s.camelot" in strip
 
 
 def test_render_fades_and_filters():
@@ -509,13 +512,13 @@ def test_studio_export_places_a_trimmed_clip_where_studio_plays_it():
 
 
 def test_studio_lanes_carry_fades_filters_and_undo():
-    studio, rail = _read("components/MixStudio.jsx"), _read("components/StudioRail.jsx")
+    studio, rail = _read("components/MixStudio.jsx"), _read("components/StudioPanel.jsx")
     engine = (SRC / "engine" / "MashupEngine.js").read_text(encoding="utf-8")
     for k in ('"fadeIn"', '"fadeOut"', '"hpHz"', '"lpHz"'):
         assert k in studio
     assert "createBiquadFilter" in engine and "_fadeAt" in engine
     assert "const undo = useCallback" in studio and 'e.key === "z"' in studio
-    assert "LOW_CUTS" in rail and "nudgeBase" in rail
+    assert "LOW_CUTS" in rail and "nudgeBase" in studio
     # The pills say WHICH chorus and drop.
     assert "fmtTime(o.vocal_section_start ?? 0)" in studio
 
@@ -536,19 +539,24 @@ def test_tempo_hint_flags_octave_errors():
 
 
 def test_library_and_editor_offer_the_octave_fix():
-    assert "tt-tempo-hint" in _read("components/TrackTable.jsx")
+    assert "tt-fix" in _read("components/TrackTable.jsx")
     assert "onFixTempo" in _read("components/LibraryScreen.jsx")
     editor = _read("components/TrackEditor.jsx")
     assert ">×2</button>" in editor and ">÷2</button>" in editor
 
 
-def test_dock_compares_two_pairs_and_carries_notes():
-    dock, hook = _read("components/PairDock.jsx"), _read("hooks/usePairDock.js")
-    assert "function ComparePanel" in dock and "toggleCompare" in hook
-    assert 'e.key === "c"' in hook and ".slice(-2)" in hook
-    assert "notes.noteOf(c)" in dock and "pc-note" in _read("components/PairCard.jsx")
+def test_compare_goes_to_analysis_and_the_card_carries_notes():
+    """c (or ⇄ Compare) opens Analysis › Compare with the pair's vocal and bed
+    picked; the expanded card writes the pair's note."""
+    hook, app = _read("hooks/usePairDock.js"), _read("App.jsx")
+    assert 'e.key === "c"' in hook and "onCompare(row)" in hook
+    assert "setCompareSeed({ a: c.vocal_song_id, b: c.inst_song_id" in app
+    assert "compareSeed={compareSeed}" in app
+    assert "setA(String(seed.a));" in _read("components/AnalysisScreen.jsx")
+    dock = _read("components/PairDock.jsx")
+    assert "notes.noteOf(c)" in dock and "pcx-note" in _read("components/PairCard.jsx")
     assert "export function usePairNotes" in _read("hooks/usePairNotes.js")
-    assert "pairNote" in _read("components/StudioRail.jsx")
+    assert "pairNote" in _read("components/StudioPanel.jsx")
 
 
 # ── 17. Discover: roles, fit hints, gaps ────────────────────────────────────
@@ -621,7 +629,7 @@ def test_help_opens_from_the_rail_and_the_question_mark():
 
 def test_analysis_compares_two_tracks():
     a = _read("components/AnalysisScreen.jsx")
-    assert "function TrackCompare" in a and "an-compare-table" in a
+    assert "function TrackCompare" in a and "an-diffrow" in a and "Only where they differ" in a
     assert "tracks={library.tracks}" in _read("App.jsx")
 
 
@@ -649,7 +657,7 @@ def test_pair_rows_carry_the_vocal_sections_line(one_vocal_many_beds):
     models.set_section_line(vocal, 30.0, 60.0, "Shout it out", db_path=db)
     rows = models.get_candidates_enriched(vocal_song_id=vocal, limit=5, db_path=db)
     assert rows[0]["vocal_section_line"] == "Shout it out"
-    assert "pc-line" in _read("components/PairCard.jsx")
+    assert "c.vocal_section_line" in _read("components/PairCard.jsx")
     assert "function SectionLine" in _read("components/SectionTable.jsx")
 
 

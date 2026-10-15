@@ -18,9 +18,9 @@ function cellColor(col, value) {
   const c = col.toLowerCase();
   if (c === "id" || c.endsWith("_id") || c === "idx") return "var(--faint)";
   if (c === "status") return statusMeta(String(value)).color;
-  if (c.includes("key") || c === "camelot") return "var(--violet)";
-  if (c.includes("score")) return "var(--green)";
-  if (c === "label" || c === "title" || c === "stem" || c === "stem_type") return "var(--text-2)";
+  if (c.includes("key") || c === "camelot") return "var(--run)";
+  if (c.includes("score")) return "var(--ok)";
+  if (c === "label" || c === "title" || c === "stem" || c === "stem_type") return "var(--fg-2)";
   return "var(--muted)";
 }
 

@@ -373,13 +373,16 @@ export const api = {
   // this is something you can actually mix.
   // `sections` ({ vocal, inst } section indexes) names the pairing to export —
   // Studio's armed timing; without it the server falls back to its own pick.
-  startSessionExport: (vocalSongId, instSongId, sections = null) =>
+  // `lanes` (optional): Studio's lane state per role — rate, transpose, nudge,
+  // trim, level, fades, filters (render/session.lane_overrides).
+  startSessionExport: (vocalSongId, instSongId, sections = null, lanes = null) =>
     jsonFetch("/api/studio/session", {
       method: "POST",
       body: JSON.stringify({
         vocal_song_id: vocalSongId, inst_song_id: instSongId,
         vocal_section_idx: sections?.vocal ?? null,
         inst_section_idx: sections?.inst ?? null,
+        ...(lanes?.length ? { lanes } : {}),
       }),
     }),
 
@@ -539,6 +542,22 @@ export const api = {
   setAttributeVisibility: (vis) => jsonFetch("/api/analysis/attributes/visibility", {
     method: "PUT", body: JSON.stringify(vis),
   }),
+
+  // The Library's columns / order / sort, and named filter presets (§5.13).
+  getLibraryView: () => jsonFetch("/api/prefs/library-view"),
+  putLibraryView: (view) => jsonFetch("/api/prefs/library-view", {
+    method: "PUT", body: JSON.stringify(view),
+  }),
+  getFilterPresets: () => jsonFetch("/api/prefs/filter-presets"),
+  saveFilterPreset: (name, filters) => jsonFetch("/api/prefs/filter-presets", {
+    method: "POST", body: JSON.stringify({ name, filters }),
+  }),
+  deleteFilterPreset: (id) => jsonFetch(`/api/prefs/filter-presets/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  }),
+
+  // The 16 bars of a track worth previewing (role: vocal | bed).
+  getHook: (id, role = "vocal") => jsonFetch(`/api/tracks/${id}/hook?role=${role}`),
 
   // ── Discovery (SoundCloud search/browse) + crates ──────────────────────────
   // Every track row comes back with `in_library` already resolved server-side,
@@ -731,6 +750,20 @@ export const api = {
         vocal_section: c.vocal_section_idx ?? null, inst_section: c.inst_section_idx ?? null,
       }),
     }),
+  // Any slot — {kind: pair|track|break|gap, …, position} (revamp B3). A pair
+  // is still named by its four ids; `position` inserts there, omitted appends.
+  addSetSlot: (id, body) =>
+    jsonFetch(`/api/sets/${id}/items`, { method: "POST", body: JSON.stringify(body) }),
+  updateSetItem: (id, itemId, patch) =>
+    jsonFetch(`/api/sets/${id}/items/${itemId}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  // Pairs that fit both neighbours of slot `position`, nearest the energy curve.
+  getSetSuggest: (id, position, limit = 6) =>
+    jsonFetch(`/api/sets/${id}/suggest?position=${position}&limit=${limit}`),
+  // The last N bars of the slot before into the first N of this one (B4).
+  setTransitionAudioUrl: (id, itemId, bars = 8) =>
+    `/api/sets/${id}/transition/${itemId}/audio?bars=${bars}`,
+  // FL sessions for every pair in the set: a job → {job_id, archive_url}.
+  exportSetFl: (id) => jsonFetch(`/api/sets/${id}/export?format=fl`),
   removeFromSet: (id, itemId) =>
     jsonFetch(`/api/sets/${id}/items/${itemId}`, { method: "DELETE" }),
   reorderSet: (id, itemIds) =>

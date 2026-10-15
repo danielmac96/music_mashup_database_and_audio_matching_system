@@ -12,7 +12,7 @@ export function StarRating({ value, onRate = null, size = 12, title }) {
   if (!interactive) {
     return (
       <span className="stars mono"
-        style={{ fontSize: size, color: stars ? "var(--amber)" : "var(--faint-2)" }}
+        style={{ fontSize: size, color: stars ? "var(--warn)" : "var(--disabled)" }}
         title={title || (stars ? `${stars} of 5` : "not rated")}>
         {glyphs}
       </span>

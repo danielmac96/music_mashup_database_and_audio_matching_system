@@ -11,6 +11,13 @@ this module grades that move, suggests HOW to make it (a bed swap, a blend, a
 cut…), adds up the running time with the overlaps, and suggests an order. Pure
 functions over the dicts `database.models.get_set` returns, so the Set screen,
 the exports and the tests read one definition.
+
+A slot can also be a single `track` (it lands at its own tempo and key), a
+`break` or a `gap` (revamp B3). Breaks and gaps are never graded — a move
+touching one has grade "none" — but their `duration_secs` still advances the
+running time. Each graded move also carries the set screen's FIT rule: within
+±1 Camelot step (relative major/minor counts as 0) and ±4% tempo (half/double
+allowed) — `fit` is "ok", "warn" (one rule broken) or "bad" (both).
 """
 from __future__ import annotations
 
@@ -23,6 +30,30 @@ from matcher.recipe import bed_shift
 # Transition grades: (max Camelot wheel distance, max tempo change %).
 SMOOTH = (1.0, 3.0)
 WORKABLE = (2.0, 6.0)
+# The fit rule the set screen draws its transition dots with, and that gap
+# suggestions must meet on both sides.
+FIT_BPM_PCT = 4.0
+
+PLAYABLE = ("pair", "track")
+
+
+def kind_of(item: Dict) -> str:
+    return item.get("kind") or "pair"
+
+
+def playable(item: Dict) -> bool:
+    return kind_of(item) in PLAYABLE
+
+
+def key_fits(a: Optional[str], b: Optional[str]) -> Optional[bool]:
+    """Within one Camelot step, relative major/minor counting as none: the
+    same code, ±1 hour on the same letter, or the other letter on the same
+    hour (theme.js compatibleKeys). None when either key is unknown."""
+    pa, pb = _parse_camelot(a or ""), _parse_camelot(b or "")
+    if pa is None or pb is None:
+        return None
+    ring = min((pa[0] - pb[0]) % 12, (pb[0] - pa[0]) % 12)
+    return ring == 0 or (ring == 1 and pa[1] == pb[1])
 
 
 # How each move is made, and how many bars the two mashups overlap for it.
@@ -56,8 +87,10 @@ def tempo_targets(n: int, plan: Optional[Dict]) -> List[Optional[float]]:
 
 
 def apply_tempo_plan(items: Sequence[Dict], plan: Optional[Dict]) -> None:
-    """Write each item's `set_bpm` (its tempo on the curve), or clear it."""
-    for item, bpm in zip(items, tempo_targets(len(items), plan)):
+    """Write each playable item's `set_bpm` (its tempo on the curve), or clear
+    it. Breaks and gaps take no point on the curve."""
+    play = [i for i in items if playable(i)]
+    for item, bpm in zip(play, tempo_targets(len(play), plan)):
         if bpm is None:
             item.pop("set_bpm", None)
         else:
@@ -65,7 +98,21 @@ def apply_tempo_plan(items: Sequence[Dict], plan: Optional[Dict]) -> None:
 
 
 def landing(item: Dict) -> Dict:
-    """Where one mashup sits: tempo, key, and how long it plays."""
+    """Where one slot sits: tempo, key, and how long it plays."""
+    kind = kind_of(item)
+    if kind in ("break", "gap"):
+        secs = item.get("duration_secs")
+        return {"bpm": None, "camelot": None, "secs": float(secs) if secs else 0.0,
+                "bed_shift": None}
+    if kind == "track":
+        own = item.get("bpm")
+        bpm = item.get("set_bpm") or own
+        dur = item.get("duration_secs") or item.get("song_duration")
+        if dur and item.get("set_bpm") and own:
+            from matcher.match import effective_bpm
+            dur = dur * effective_bpm(float(bpm), float(own)) / float(bpm)
+        return {"bpm": float(bpm) if bpm else None, "camelot": item.get("camelot") or None,
+                "secs": float(dur) if dur else None, "bed_shift": None}
     bpm = item.get("set_bpm") or item.get("target_bpm") or item.get("vocal_bpm")
     start, end = item.get("vocal_section_start"), item.get("vocal_section_end")
     dur = (end - start) if start is not None and end is not None and end > start else None
@@ -106,9 +153,15 @@ def transition(a: Dict, b: Dict) -> Dict:
         grade = "workable"
     else:
         grade = "jump"
+    key_ok = key_fits(la["camelot"], lb["camelot"])
+    bpm_ok = None if tempo is None else abs(tempo) <= FIT_BPM_PCT
+    broken = [r for r, ok in (("key", key_ok), ("bpm", bpm_ok)) if ok is False]
+    fit = ("bad" if len(broken) == 2 else "warn" if broken
+           else "unknown" if key_ok is None or bpm_ok is None else "ok")
     return {"tempo_pct": tempo, "key_steps": key, "grade": grade,
             "from_key": la["camelot"], "to_key": lb["camelot"],
-            "from_bpm": la["bpm"], "to_bpm": lb["bpm"]}
+            "from_bpm": la["bpm"], "to_bpm": lb["bpm"],
+            "key_ok": key_ok, "bpm_ok": bpm_ok, "fit": fit, "violations": broken}
 
 
 def suggest_move(a: Dict, b: Dict, t: Dict) -> Dict:
@@ -118,9 +171,9 @@ def suggest_move(a: Dict, b: Dict, t: Dict) -> Dict:
     swap, a new vocal over the same bed a vocal swap. Otherwise the grade
     decides — a smooth move blends for 8 bars, a workable one for 4, a key or
     tempo jump is hidden behind an echo-out or simply cut on the one."""
-    if a.get("vocal_song_id") == b.get("vocal_song_id"):
+    if a.get("vocal_song_id") is not None and a.get("vocal_song_id") == b.get("vocal_song_id"):
         kind, bars = "bed_swap", 8
-    elif a.get("inst_song_id") == b.get("inst_song_id"):
+    elif a.get("inst_song_id") is not None and a.get("inst_song_id") == b.get("inst_song_id"):
         kind, bars = "vocal_swap", 8
     elif t["grade"] == "smooth":
         kind, bars = "blend", 8
@@ -158,6 +211,15 @@ def flow(items: Sequence[Dict], tempo_plan: Optional[Dict] = None) -> Dict:
     trans = []
     for k in range(len(items) - 1):
         a, b = items[k], items[k + 1]
+        if not (playable(a) and playable(b)):
+            # Into or out of a break or a gap: nothing to grade or overlap.
+            trans.append({"tempo_pct": None, "key_steps": None, "grade": "none",
+                          "kind": kind_of(b) if not playable(b) else kind_of(a),
+                          "fit": "none", "violations": [], "key_ok": None, "bpm_ok": None,
+                          "from_key": lands[k]["camelot"], "to_key": lands[k + 1]["camelot"],
+                          "from_bpm": lands[k]["bpm"], "to_bpm": lands[k + 1]["bpm"],
+                          "move": None, "overlap_secs": 0.0})
+            continue
         t = transition(a, b)
         t["move"] = _move(b.get("transition"), suggest_move(a, b, t))
         bpm = lands[k + 1]["bpm"]
@@ -180,7 +242,9 @@ def flow(items: Sequence[Dict], tempo_plan: Optional[Dict] = None) -> Dict:
             "total_secs": round(t, 2),
             "tempo_plan": tempo_plan or None,
             "grades": {g: sum(1 for x in trans if x["grade"] == g)
-                       for g in ("smooth", "workable", "jump", "unknown")}}
+                       for g in ("smooth", "workable", "jump", "unknown")},
+            "fits": {f: sum(1 for x in trans if x["fit"] == f)
+                     for f in ("ok", "warn", "bad", "unknown")}}
 
 
 def _cost(a: Dict, b: Dict) -> float:
@@ -198,6 +262,12 @@ def suggest_order(items: Sequence[Dict], start_item_id: Optional[int] = None) ->
     which is what a DJ does by hand, and returns item ids."""
     if not items:
         return []
+    if not all(playable(i) for i in items):
+        # Breaks and gaps keep their places; the playable slots are ordered
+        # among themselves and poured back into the playable positions.
+        play = [i for i in items if playable(i)]
+        ordered = iter(suggest_order(play, start_item_id) if play else [])
+        return [next(ordered) if playable(i) else i["item_id"] for i in items]
     rest = list(items)
     if start_item_id is not None and any(i["item_id"] == start_item_id for i in rest):
         cur = next(i for i in rest if i["item_id"] == start_item_id)
@@ -227,9 +297,10 @@ def next_candidates(items: Sequence[Dict], pool: Sequence[Dict],
     candidate is landed at the curve's next point — its end tempo, held — so
     the tempo cost is the stretch it would need there. Pairs already in the set
     are skipped. Each row carries `next_why`, `next_move` and `next_rank`."""
+    items = [i for i in items if playable(i)]
     if not items:
         return []
-    have = {(i["vocal_song_id"], i["inst_song_id"], i.get("vocal_section_idx"),
+    have = {(i.get("vocal_song_id"), i.get("inst_song_id"), i.get("vocal_section_idx"),
              i.get("inst_section_idx")) for i in items}
     last = items[-1]
     nxt_bpm = None
@@ -264,3 +335,98 @@ def next_candidates(items: Sequence[Dict], pool: Sequence[Dict],
         out.append(cand)
     out.sort(key=lambda r: -r["next_rank"])
     return out[:max(1, limit)]
+
+
+# ── energy curve and gap suggestions ─────────────────────────────────────────
+
+def energy_target(plan: Optional[Sequence[Dict]], t: float) -> Optional[float]:
+    """The energy curve at `t` (0..1 through the set): linear between its
+    points, held flat before the first and after the last. None without one."""
+    pts = sorted(((float(p["t"]), float(p["e"])) for p in (plan or [])
+                  if p.get("t") is not None and p.get("e") is not None))
+    if not pts:
+        return None
+    if t <= pts[0][0]:
+        return pts[0][1]
+    for (t0, e0), (t1, e1) in zip(pts, pts[1:]):
+        if t <= t1:
+            return e0 if t1 == t0 else e0 + (e1 - e0) * (t - t0) / (t1 - t0)
+    return pts[-1][1]
+
+
+def gap_candidates(items: Sequence[Dict], index: int, pool: Sequence[Dict],
+                   energy_of: Dict[int, float], tempo_plan: Optional[Dict] = None,
+                   energy_plan: Optional[Sequence[Dict]] = None,
+                   limit: int = 6) -> Dict:
+    """Pairs that could fill slot `index`: each must FIT (key_fits and ±4%
+    tempo, half/double allowed) the nearest playable slot before it AND the
+    nearest after it — the generalisation of next_candidates to two sides.
+
+    Ranked by distance to the energy curve at that point in the set, then by
+    score. When nothing fits every rule, the closest few come back instead
+    with `violations` naming what they break ("key", "bpm"), and `relaxed` is
+    true. Pairs already in the set are skipped."""
+    f = flow(items, tempo_plan)
+    total = f["total_secs"] or 0.0
+    at = f["starts"][index] if 0 <= index < len(f["starts"]) else total
+    t = (at / total) if total else 0.0
+    target = energy_target(energy_plan, t)
+    prev = next((items[k] for k in range(index - 1, -1, -1) if playable(items[k])), None)
+    nxt = next((items[k] for k in range(index + 1, len(items)) if playable(items[k])), None)
+    have = {(i.get("vocal_song_id"), i.get("inst_song_id"), i.get("vocal_section_idx"),
+             i.get("inst_section_idx")) for i in items if kind_of(i) == "pair"}
+    bpm_here = None
+    curve = [x.get("set_bpm") for x in (prev, nxt) if x and x.get("set_bpm")]
+    if curve:
+        bpm_here = round(sum(curve) / len(curve), 2)
+    out = []
+    for c in pool:
+        key = (c.get("vocal_song_id"), c.get("inst_song_id"), c.get("vocal_section_idx"),
+               c.get("inst_section_idx"))
+        if key in have:
+            continue
+        cand = dict(c)
+        cand["kind"] = "pair"
+        if bpm_here:
+            cand["set_bpm"] = bpm_here
+        sides = {}
+        broken = set()
+        for name, other, a, b in (("from_prev", prev, prev, cand), ("into_next", nxt, cand, nxt)):
+            if other is None:
+                continue
+            tr = transition(a, b)
+            sides[name] = {"key_ok": tr["key_ok"], "bpm_ok": tr["bpm_ok"],
+                           "key_steps": tr["key_steps"], "tempo_pct": tr["tempo_pct"],
+                           "from_key": tr["from_key"], "to_key": tr["to_key"]}
+            broken.update(tr["violations"])
+            if tr["key_ok"] is None:
+                broken.add("key")
+            if tr["bpm_ok"] is None:
+                broken.add("bpm")
+        e = energy_of.get(c.get("inst_song_id"))
+        dist = abs(e - target) if (e is not None and target is not None) else (
+            0.5 if target is not None else 0.0)
+        why = []
+        for name, sd in sides.items():
+            arrow = "from the previous" if name == "from_prev" else "into the next"
+            why.append(f"{sd['from_key'] or '?'} → {sd['to_key'] or '?'} {arrow}"
+                       + ("" if sd["tempo_pct"] is None else f", {sd['tempo_pct']:+.1f}%"))
+        if target is not None and e is not None:
+            why.append(f"energy {round(e * 100)} vs {round(target * 100)} wanted")
+        cand.update({"fit": sides, "violations": sorted(broken), "energy": e,
+                     "energy_target": target, "energy_distance": round(dist, 4),
+                     "fill_why": " · ".join(why)})
+        out.append(cand)
+    passing = [c for c in out if not c["violations"]]
+    score = lambda c: float(c.get("score_percentile") or 0.0)   # noqa: E731
+    if passing:
+        passing.sort(key=lambda c: (c["energy_distance"], -score(c)))
+        return {"candidates": passing[:max(1, limit)], "relaxed": False,
+                "position": index, "energy_target": target, "t": round(t, 4),
+                "neighbours": {"prev": prev.get("item_id") if prev else None,
+                               "next": nxt.get("item_id") if nxt else None}}
+    out.sort(key=lambda c: (len(c["violations"]), c["energy_distance"], -score(c)))
+    return {"candidates": out[:min(4, max(1, limit))], "relaxed": True,
+            "position": index, "energy_target": target, "t": round(t, 4),
+            "neighbours": {"prev": prev.get("item_id") if prev else None,
+                           "next": nxt.get("item_id") if nxt else None}}

@@ -1,43 +1,71 @@
-import { useState } from "react";
-import { CrateAddButton } from "./ScRows";
+import { useEffect, useState } from "react";
+import { api } from "../api";
+import { toast } from "../toast";
 import { CratePanel } from "./CratePanel";
 import { TrackArt } from "./TrackArt";
-import { fmtPlays, fmtYear } from "../theme";
+import { lengthWarning } from "./ScRows";
+import { fmtDur } from "../theme";
 
-// Discover's 340px right column.
+// Discover's 280px right column, in every mode.
 //
-// The shortlist is the SELECTION: the rows you have ticked and not yet done
-// anything with. Making it visible is the point — before, "12 selected" was a
-// number in a toolbar and you could not see what the twelve were, which is how
-// you import something you meant to skip.
+// The shortlist is what you have ticked and not yet done anything with — made
+// visible, because "12 selected" in a toolbar is how you import something you
+// meant to skip. Add it to a crate (nothing downloads), or Import: download,
+// separate and analyse, followed in the Queue. Likely preview clips and DJ
+// sets are called out before you import them.
 //
-// Crate management lives behind the second tab rather than in a fourth column.
-// It is the same CratePanel; what changed is that it no longer competes with
-// the shortlist for the same space.
+// Crate management (rename, reorder, export, import from links) is the second
+// tab — the same CratePanel as before.
 
-export function ShortlistDock({ rows, importable, onDrop, onClear, onImport,
-                                importing, crateRefresh, onCrateAdd,
-                                onActiveCrate, activeCrateId, onCratesChanged,
-                                onOpenLibrary, queueLine,
-                                playlistName, groupOn, onGroupOn }) {
+export function ShortlistDock({ shortlist, onImport, importing, crateRefresh, onCrateAdd,
+                                onCratesChanged, onOpenLibrary, activeCrateId, onActiveCrate,
+                                playlistName = null, groupOn = true, onGroupOn = null }) {
   const [tab, setTab] = useState("shortlist");
+  const [crates, setCrates] = useState([]);
+  const [crateId, setCrateId] = useState("");
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState("");
+  const { rows, importable } = shortlist;
+
+  useEffect(() => {
+    api.getCrates().then((b) => {
+      const list = b.crates || [];
+      setCrates(list);
+      setCrateId((cur) => cur || String(activeCrateId || list[0]?.id || ""));
+    }).catch(() => setCrates([]));
+  }, [crateRefresh, activeCrateId]);
+
+  const previews = rows.filter((r) => lengthWarning(r) === "preview").length;
+  const sets = rows.filter((r) => lengthWarning(r) === "set").length;
+
+  const addToCrate = async () => {
+    if (!rows.length) return;
+    if (crateId === "new" || !crates.length) { setNaming(true); return; }
+    onActiveCrate?.(Number(crateId));
+    onCrateAdd(Number(crateId));
+  };
+  const createAndAdd = async () => {
+    const clean = name.trim();
+    if (!clean) return;
+    try {
+      const crate = await api.createCrate(clean);
+      setNaming(false); setName("");
+      setCrateId(String(crate.id));
+      onActiveCrate?.(crate.id);
+      onCrateAdd(crate.id);
+    } catch (e) { toast(e.message); }
+  };
 
   return (
     <aside className="shortlist">
-      <div className="pd-head">
-        <button className={`sl-tab${tab === "shortlist" ? " on" : ""}`}
-          onClick={() => setTab("shortlist")}>
-          Shortlist
-          <span className="pd-count mono">{rows.length}</span>
+      <div className="sl-head">
+        <button className={`sl-tab${tab === "shortlist" ? " on" : ""}`} onClick={() => setTab("shortlist")}>
+          Shortlist <span className="mono muted">{rows.length}</span>
         </button>
-        <button className={`sl-tab${tab === "crates" ? " on" : ""}`}
-          onClick={() => setTab("crates")}>Crates</button>
-        {tab === "shortlist" && (
-          <span style={{ marginLeft: "auto" }}>
-            <CrateAddButton disabled={!rows.length} count={rows.length}
-              onAdd={onCrateAdd} refreshKey={crateRefresh}
-              onActive={onActiveCrate} label="Crate ▾" />
-          </span>
+        <button className={`sl-tab${tab === "crates" ? " on" : ""}`} onClick={() => setTab("crates")}>Crates</button>
+        <span className="grow" />
+        {tab === "shortlist" && rows.length > 0 && (
+          <button className="ui-link" onClick={shortlist.clear}>Clear</button>
         )}
       </div>
 
@@ -49,63 +77,71 @@ export function ShortlistDock({ rows, importable, onDrop, onClear, onImport,
         <>
           <div className="sl-list">
             {rows.length === 0 && (
-              <div className="pd-msg">
-                Nothing shortlisted.
-                <span className="hint">
-                  Click a result to queue it. Rows already in your library cannot
-                  be shortlisted — there is nothing left to import.
-                </span>
+              <div className="sl-empty">
+                Tick results, or press <b>x</b> on a row, to shortlist them. Nothing
+                downloads until you import.
               </div>
             )}
-            {rows.map((r) => (
-              <div key={r.track_id || r.source_url} className="sl-item">
-                <TrackArt id={r.track_id} thumbnail={r.thumbnail} className="sl-art" />
-                <div className="sl-text">
-                  <div className="sl-title">{r.title}</div>
-                  <div className="sl-meta mono">
-                    {[fmtPlays(r.plays), fmtYear(r.release_year), r.genre]
-                      .filter((x) => x && x !== "—").join(" · ") || r.artist}
+            {rows.map((r) => {
+              const role = r.fit_hint?.role === "acapella" ? "VOX"
+                : r.fit_hint?.role === "instrumental" ? "BED" : null;
+              const warn = lengthWarning(r);
+              return (
+                <div key={r.track_id || r.source_url} className="sl-item">
+                  <TrackArt id={r.track_id} thumbnail={r.thumbnail} className="sl-art" />
+                  <div className="sl-text">
+                    <span className="sl-title">
+                      {role && <span className={`sc-role mono ${role === "VOX" ? "vox" : "bed"}`}>{role}</span>} {r.title}
+                    </span>
+                    <span className="sl-meta">
+                      {r.artist} · <span className={warn ? "warn" : ""}>{fmtDur(r.duration_secs)}</span>
+                    </span>
                   </div>
+                  <button className="icon-btn danger" aria-label="Remove from shortlist"
+                    title="Drop from the shortlist" onClick={() => shortlist.remove(r)}>✕</button>
                 </div>
-                <button className="sl-x" title="Drop from the shortlist"
-                  onClick={() => onDrop(r)}>×</button>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="sl-foot">
-            {/* Importing a set from Discover should land it in the library AS a
-                set — otherwise the grouping you were looking at is thrown away
-                at exactly the moment it becomes useful. Offered only while the
-                listing IS a playlist. */}
-            {playlistName && (
-              <label className="sl-group" title="Files this import under a library group you can filter to, named after the set.">
-                <input type="checkbox" checked={groupOn}
-                  onChange={(e) => onGroupOn(e.target.checked)} />
+            {/* Importing a set should land it in the library AS a set. Offered
+                only while the listing IS a playlist. */}
+            {playlistName && onGroupOn && (
+              <label className="sl-group" title="Files this import under a library group named after the set">
+                <input type="checkbox" checked={groupOn} onChange={(e) => onGroupOn(e.target.checked)} />
                 <span>Save as the group “{playlistName}”</span>
               </label>
             )}
-            <div className="sl-pipeline mono">
-              <span>On import</span>
-              <span className="sl-stages">download → analyse → split stems</span>
-            </div>
-            <div className="sl-buttons">
-              <button className="head-btn" onClick={onClear} disabled={!rows.length}>
-                Clear
-              </button>
-              <button className="sl-import" onClick={onImport}
-                disabled={!importable.length || importing}
-                title={importable.length
-                  ? "Adds them to the library and starts the pipeline"
-                  : "Everything shortlisted is already in the library"}>
-                {importing ? "Saving…" : `Import ${importable.length} track${importable.length === 1 ? "" : "s"}`}
-              </button>
-            </div>
-            {queueLine && (
-              <div className="sl-queue mono">
-                <span className="dot pulse" />{queueLine}
+            {naming ? (
+              <div className="sl-craterow">
+                <input className="pop-input grow" autoFocus value={name} placeholder="New crate name"
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") createAndAdd(); if (e.key === "Escape") setNaming(false); }} />
+                <button className="ui-btn" onClick={createAndAdd} disabled={!name.trim()}>Create</button>
+              </div>
+            ) : (
+              <div className="sl-craterow">
+                <select className="sl-crate" aria-label="Crate" value={crateId}
+                  onChange={(e) => setCrateId(e.target.value)}>
+                  {crates.map((c) => <option key={c.id} value={c.id}>{c.name} ({c.item_count})</option>)}
+                  <option value="new">＋ New crate…</option>
+                </select>
+                <button className="ui-btn" disabled={!rows.length} onClick={addToCrate}
+                  title="Add the shortlist to this crate without downloading">+ Crate</button>
               </div>
             )}
+            <button className="btn-primary sl-import" onClick={onImport}
+              disabled={!importable.length || importing}
+              title="Download, separate and analyse — follow it in the Queue">
+              {importing ? "Saving…" : `Import ${importable.length} track${importable.length === 1 ? "" : "s"}`}
+            </button>
+            <span className="sl-note">
+              {previews || sets
+                ? `⚠ ${[previews ? `${previews} look${previews === 1 ? "s" : ""} like a preview clip` : null,
+                  sets ? `${sets} look${sets === 1 ? "s" : ""} like a DJ set` : null].filter(Boolean).join(" · ")} — check before importing.`
+                : "On import: download → quick analysis → stems → analyse."}
+            </span>
           </div>
         </>
       )}

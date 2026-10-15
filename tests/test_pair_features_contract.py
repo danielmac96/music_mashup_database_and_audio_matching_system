@@ -141,7 +141,7 @@ def test_semitone_shift_uses_the_corrected_camelot_math(tmp_path, monkeypatch):
                                  _feat(stem_type="instrumental", camelot="11B"),
                                  _sections(), _sections())
     assert rel["abs_semitone_shift"] == 0
-    assert far["abs_semitone_shift"] == 3
+    assert far["abs_semitone_shift"] == 2     # 11B moves to 9B, beside the vocal
 
 
 def test_unknown_key_does_not_masquerade_as_a_perfect_shift(tmp_path, monkeypatch):

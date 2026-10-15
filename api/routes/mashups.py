@@ -329,7 +329,35 @@ def list_best_bed_per_vocal(limit: int = 50, per_vocal: int = 1,
                               per_vocal=max(1, min(per_vocal, 10)),
                               limit=max(1, min(limit, 500)),
                               min_score=min_score)
+    rows = _enrich_like_listing(rows)
     return {"count": len(rows), "candidates": _with_playback_terms(rows)}
+
+
+def _enrich_like_listing(rows: list) -> list:
+    """The listing's joined columns (genre, year, plays, key confidence, the
+    live section labels, the section's line) on by-vocal rows, through the one
+    enriched query (models.candidates_for_pairs) — so a card reads the same
+    fields whichever list it came from. Only vocal-over-bed rows are keyed that
+    way; anything else, or a failure, keeps its plain row."""
+    keys = [(r["vocal_song_id"], r["inst_song_id"],
+             r.get("vocal_section_idx"), r.get("inst_section_idx"))
+            for r in rows if r.get("combo_type") == "vocal_over_instrumental"]
+    if not keys:
+        return rows
+    try:
+        from database.models import candidates_for_pairs
+        full = candidates_for_pairs(keys)
+    except Exception:  # noqa: BLE001 — degrade, don't 500
+        logging.getLogger(__name__).warning("could not enrich by-vocal rows",
+                                            exc_info=True)
+        return rows
+    out = []
+    for r in rows:
+        e = full.get((r["vocal_song_id"], r["inst_song_id"],
+                      r.get("vocal_section_idx"), r.get("inst_section_idx")))
+        out.append({**r, **e, "bed_rank": r.get("bed_rank"),
+                    "vocal_best_score": r.get("vocal_best_score")} if e else r)
+    return out
 
 
 class HiddenPair(BaseModel):

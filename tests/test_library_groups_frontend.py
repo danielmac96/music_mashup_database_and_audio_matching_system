@@ -71,23 +71,20 @@ def test_the_rail_count_is_what_the_filter_will_show():
 
 
 def test_a_group_and_the_rail_agree_on_which_one_is_active():
-    """Ids arrive as numbers from the API and as strings from the chip, and ===
+    """Ids arrive as numbers from the API and as strings from the rail, and ===
     between them is silently false — the filter would match nothing."""
     assert 'String(active) === String(g.id)' in SCREEN
-    assert 'String(filters.group) === String(g.id)' in BAR
+    assert 'String(filters.group) === String(id)' in SCREEN
     assert "String(id) === String(groupId)" in GROUPS
 
 
-def test_group_order_needs_a_group():
-    """It is a position INSIDE one group. With none chosen every row is
-    unplaced, so it sorts nothing rather than inventing an order across
-    shelves."""
-    assert '["group", "group order"]' in HOOK
-    fn = HOOK[HOOK.index("function compare("):]
-    fn = fn[:fn.index("\n// Unsorted")]
-    block = fn[fn.index('if (key === "group")'):]
-    assert "groupId ? groups.positionOf(groupId, a.id) : null" in block
-    assert "(pick a group)" in BAR
+def test_inside_a_group_unsorted_is_the_groups_own_order():
+    """A crate's running order is most of why you saved it as one. With no
+    group chosen, unsorted is import order."""
+    fn = HOOK[HOOK.index("export function sortLibrary"):]
+    fn = fn[:fn.index("\n}")]
+    assert "if (!groupId) return rows;" in fn
+    assert "groups.positionOf(groupId, t.id)" in fn
 
 
 def test_the_importer_can_name_a_group_and_reports_it():
@@ -110,16 +107,19 @@ def test_discover_offers_the_group_only_on_a_playlist():
     "House" would make a shelf nobody asked for."""
     browser = _read("components/SoundCloudBrowser.jsx")
     assert 'here?.kind === "playlist" ? here.label : null' in browser
-    assert "groupOn && playlistHere ? playlistHere : null" in browser
+    assert "onPlaylistHere?.(null)" in browser       # told again on leaving
+    disc = _read("components/Discovery.jsx")
+    assert "groupOn && playlistHere ? playlistHere : null" in disc
+    assert 'playlistName={mode === "tracks" ? playlistHere : null}' in disc
     dock = _read("components/ShortlistDock.jsx")
-    assert "{playlistName && (" in dock
+    assert "{playlistName && onGroupOn && (" in dock
 
 
 def test_an_import_elsewhere_tells_the_library_rail():
     """The rail is a screen away and only learns about a new group if someone
     says so."""
-    browser = _read("components/SoundCloudBrowser.jsx")
-    assert "onGroupsChanged?.()" in browser
+    disc = _read("components/Discovery.jsx")
+    assert "if (res.group) onGroupsChanged?.();" in disc
     assert "onGroupsChanged={groups.refresh}" in APP
     assert "groups.refresh()" in SCREEN
 
@@ -128,10 +128,10 @@ def test_the_track_screen_chips_are_read_only():
     """Same decision as Discover's crate chip: the place that edits a group is
     the row menu in the library, next to the track you are deciding about."""
     src = _read("components/TrackDetail.jsx")
-    block = src[src.index('className="hero-groups"'):]
-    block = block[:block.index("</div>")]
+    block = src[src.index("{myGroups.map((g) => ("):]
+    block = block[:block.index("))}")]
     assert "<button" not in block
-    assert "crate-chip" in block
+    assert 'className="dt-crate"' in block
 
 
 def test_removing_is_only_offered_for_the_group_you_can_see():

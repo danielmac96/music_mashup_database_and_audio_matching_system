@@ -46,8 +46,13 @@ def test_selection_derives_from_visible():
     run()'s clear() comment already calls out."""
     for pane in PANES:
         src = _read(pane)
-        call = src.split("useRowSelection(")[1].split(")")[0]
-        assert "visible" in call, (pane, call)
+        bulk = src.split("const shortlistable =")[1].split(";")[0]
+        assert "visible" in bulk, (pane, bulk)
+        assert "shortlist.addMany(shortlistable)" in src, pane
+    # Discover imports exactly what the shortlist lists — nothing hidden.
+    disc = _read("components/Discovery.jsx")
+    assert "api.discoveryImport(rows, groupName)" in disc
+    assert "const rows = shortlist.importable;" in disc
 
 
 def test_filters_reset_when_the_listing_changes():
