@@ -197,10 +197,17 @@ async def t_expand(pg, P, rng, st):
     return dict(ok=True, notes=notes, data=dict(height=int(box["height"]) if box else None, do=do, watch=has_watch, words=len(txt.split()), jargon=jargon))
 
 async def t_rate(pg, P, rng, st):
-    c = await first_card(pg)
-    stars = c.locator("button", has_text="☆")
-    if await stars.count() < 4:
-        stars = c.locator("button", has_text="★")
+    await first_card(pg)
+    # An unrated card: personas share one database, and clicking the star a
+    # card already has clears it (by design) — that is not a failed rating.
+    cards = pg.locator(".pair-card")
+    c = None
+    for i in range(min(await cards.count(), 30)):
+        if not await cards.nth(i).locator(".stars.interactive button.on").count():
+            c = cards.nth(i); break
+    if c is None:
+        return dict(ok=True, notes=[], data=dict(skipped="every visible pair already rated"))
+    stars = c.locator(".stars.interactive button")
     posts = []
     pg.on("response", lambda r: posts.append(r.status) if "/feedback" in r.url and r.request.method in ("POST","PUT") else None)
     n = rng.choice([1, 2, 4, 5])
