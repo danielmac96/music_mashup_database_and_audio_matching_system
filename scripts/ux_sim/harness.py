@@ -117,9 +117,13 @@ async def t_first_look(pg, P, rng, st):
     txt = await pg.evaluate("document.body.innerText")
     cues = [w for w in ["New here", "How it works", "Import", "Score library"] if w in txt]
     notes = []
-    if "Score library" not in txt: notes.append("no visible 'how do I get pairs' cue on first screen (only the ? New here pill)")
+    steps = await pg.locator(".first-steps").count()
+    nxt = await pg.locator(".first-steps li.next").all_inner_texts()
+    if not steps and "Score library" not in txt:
+        notes.append("no visible 'how do I get pairs' cue on first screen (only the ? New here pill)")
     has_empty_hint = await pg.locator(".pd-msg").count()
-    return dict(ok=True, notes=notes, data=dict(cues=cues, dock_msgs=has_empty_hint))
+    return dict(ok=True, notes=notes, data=dict(cues=cues, dock_msgs=has_empty_hint,
+                first_steps=bool(steps), next_step=(nxt or [""])[0][:120]))
 
 async def t_help(pg, P, rng, st):
     t0 = time.time()
@@ -602,7 +606,9 @@ async def t_discover(pg, P, rng, st):
     rows = await pg.evaluate("() => document.querySelectorAll('.disc-body [class*=row]').length")
     ms = int((time.time()-t0)*1000)
     notes = []
-    if err: notes.append(f"Discover error shown: {err[0][:140]}")
+    if err and re.search(r"urlopen|Traceback|Errno|<.*error", err[0]):
+        notes.append(f"Discover shows raw exception text: {err[0][:140]}")
+    elif err: notes.append(f"Discover error shown: {err[0][:140]}")
     elif not rows: notes.append("Discover search returned nothing and said nothing")
     return dict(ok=bool(rows), ms=ms, notes=notes, data=dict(rows=rows))
 

@@ -5,6 +5,16 @@ import { useEffect } from "react";
 // learn what a "bed" is or how to read a pair card short of reading the readme.
 // Opened from the rail's ? button or the ? key; Esc closes.
 
+// What shows when Help opens: one screen, the loop in five lines. Everything
+// else folds below — 975 words up front read as a manual (2026-10-15).
+const QUICK = [
+  ["Import", "＋ Import in the Library: paste a SoundCloud or YouTube track or set."],
+  ["Wait", "Each track downloads, splits into vocal and instrumental, and is analysed. The rail shows progress."],
+  ["Score", "↻ Re-score in the pair dock pairs every vocal section with every instrumental section."],
+  ["Listen", "Click a track, then space on a pair in the dock. Rate 1–5; q w e r tag why."],
+  ["Build", "Double-click a pair to open it in Studio, conformed and lined up. Render ▾ a WAV or an FL session; + Set adds it to your mix."],
+];
+
 const STEPS = [
   ["Get tracks in", "Library → ＋ Import: paste a SoundCloud or YouTube link (a track or a whole set), or dig in Discover and import your shortlist. Each track downloads, splits into a vocal and an instrumental stem, and is analysed — tempo, key, sections. The Queue (or the rail's pipeline readout) shows where each one is."],
   ["Score the library", "The dock's ↻ Re-score (or ⚙ → Score library). Every vocal section is tried over every instrumental section; the best pairings land in the pair dock on the right of the Library."],
@@ -61,17 +71,27 @@ export function HelpPanel({ onClose }) {
           <button className="head-btn" onClick={onClose}>esc</button>
         </div>
         <h3>Your first mashup</h3>
-        <ol className="help-steps">
-          {STEPS.map(([t, d]) => <li key={t}><b>{t}.</b> {d}</li>)}
+        <ol className="help-steps help-quick">
+          {QUICK.map(([t, d]) => <li key={t}><b>{t}.</b> {d}</li>)}
         </ol>
-        <h3>Reading a pair</h3>
-        <dl className="help-glossary">
-          {GLOSSARY.map(([t, d]) => [<dt key={`${t}t`}>{t}</dt>, <dd key={`${t}d`}>{d}</dd>])}
-        </dl>
-        <h3>Keys</h3>
-        <dl className="help-glossary">
-          {KEYS.map(([t, d]) => [<dt key={`${t}t`}>{t}</dt>, <dd key={`${t}d`} className="mono">{d}</dd>])}
-        </dl>
+        <details className="help-more">
+          <summary><h3>The whole walkthrough</h3></summary>
+          <ol className="help-steps">
+            {STEPS.map(([t, d]) => <li key={t}><b>{t}.</b> {d}</li>)}
+          </ol>
+        </details>
+        <details className="help-more">
+          <summary><h3>Reading a pair</h3></summary>
+          <dl className="help-glossary">
+            {GLOSSARY.map(([t, d]) => [<dt key={`${t}t`}>{t}</dt>, <dd key={`${t}d`}>{d}</dd>])}
+          </dl>
+        </details>
+        <details className="help-more">
+          <summary><h3>Keys</h3></summary>
+          <dl className="help-glossary">
+            {KEYS.map(([t, d]) => [<dt key={`${t}t`}>{t}</dt>, <dd key={`${t}d`} className="mono">{d}</dd>])}
+          </dl>
+        </details>
       </div>
     </div>
   );

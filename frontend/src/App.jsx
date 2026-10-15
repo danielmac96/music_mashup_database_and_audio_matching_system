@@ -485,6 +485,7 @@ export default function App() {
                   onOpenQueue={openQueue}
                   presets={presets}
                   applyPreset={libraryPreset}
+                  onHelp={openHelp}
                 />
               </div>
               {route === "track" && (

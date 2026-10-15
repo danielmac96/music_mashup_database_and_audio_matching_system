@@ -301,9 +301,10 @@ say which terms agree with your ears — and a **pipeline readout**
 the library's `error_*` tracks) opens the Queue. **⌘K** (ctrl+K) opens a command
 palette — Go to · Actions · Saved views · Tracks (from two characters) · Pairs (the
 dock's) — `/` focuses the search on screen, space plays/pauses the player bar, esc
-steps back one layer. **?** (or the `?` key) opens *How it works*: the first mashup in
-six steps, what every number on a pair card means, and each screen's keys; a *New
-here* pill shows until it has been opened once. In a dev build (`npm run dev`),
+steps back one layer. **?** (or the `?` key) opens *How it works*: a five-line quick start
+(≤ 250 words on screen), with the whole walkthrough, what every number on a
+pair card means, and each screen's keys folded below it; a *New here* pill
+shows until it has been opened once. In a dev build (`npm run dev`),
 `?styleguide` (or ◇ in the rail) shows every token and shared primitive
 (`components/ui/primitives.jsx`).
 
@@ -315,8 +316,17 @@ use the Mixed In Key wheel (`theme.camelotColor`).
 
 ### Library
 
+A **First mashup** strip above the table (`components/FirstSteps.jsx`) lists
+Import → Let it process → Score the library → Hear a pair, ticking each from
+what is true (tracks, an analysed track, scored pairs, a pair played) and
+naming how to do the next; it goes for good once all four are done, or on ✕.
+
 **＋ Import** opens the paste bar: a playlist or track link → **Preview** →
-**Save to library**. Tick **Save as a library group** to keep a set together;
+**Save to library**. A preview asks the site first (≤ 4 s,
+`ingest/errors.reachable`), so offline it says "Can't reach SoundCloud — check
+your internet connection, then Retry" at once instead of after yt-dlp's
+retries; a link that returns nothing says it may be private, removed or
+mistyped, and yt-dlp is named only when it is actually missing. Tick **Save as a library group** to keep a set together;
 groups appear under **Crates** in the rail and narrow the table to that set.
 Every track walks the pipeline with per-track progress. Failures show a reason
 and **Retry**; suspected 30s Go+ previews get **Fix preview** (re-verify). A
@@ -903,7 +913,10 @@ export read the same functions).
    length check reads.
 
 Failures are classified (`drm / premium / geo / private / removed / network /
-outdated / unknown`) into a user-facing `last_error`. **Re-verify** re-checks a
+outdated / unknown`) into a user-facing `last_error` — the classes live in
+`ingest/errors.py`, the one vocabulary for a failed fetch: the download stage,
+the paste-bar preview and Discover (`describe` maps HTTP 429 / 401–403 / 5xx
+and network failures to a cause and its fix, never the raw exception text). **Re-verify** re-checks a
 downloaded file with ffprobe and replaces a stale preview, then reprocesses.
 
 ### 5.3 Stem separation
@@ -1612,7 +1625,7 @@ read the endpoint (extra keys on pair rows, jobs and mixes are ignored).
 | `api/routes/` | `tracks` (+ neighbours), `playlists`, `jobs`, `analysis` (analyser status, library stats, embeddings backfill), `mashups` (+ pair notes and pair exports), `mixes`, `discovery` (+ library gaps, finds for a track), `crates`, `sets`, `studio`, `settings`, `prefs` (Library view, filter presets), `datasets`, `models`, `database` |
 | `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py`, `api/queue_eta.py` | per-stage worker pools + resume, job registry, playlist preview hydration, per-job ETA and summary (§5.13) |
 | `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage download/stems/analysis/structure; `bulk`, `match`, `hook`, `candidate_preview`, `mixdown`, `session`, `mix_resolve`, `mix_ingest` (Mixes import + ingest), `reverify`, `discovery` (`suggest`), `ml`; `bulk` also backfills descriptive metadata |
-| `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py`, `fit_hints.py` (tempo/key/role an upload prints) |
+| `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py`, `fit_hints.py` (tempo/key/role an upload prints), `errors.py` (the failed-fetch vocabulary + reachability check) |
 | `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
 | `stems/separate.py` | Demucs / MDX-Net, two or four stems |
 | `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`; `essentia_groups.py` (the Essentia analyser), `ml_models.py` (the EffNet models: catalogue, download, predictors), `project.py` (payloads → `features` columns); `decode.py` (one decode per file + per-signal memo; ffprobe/FFmpeg decode for Essentia), `frames.py` (the shared transforms), `registry.py` (feature groups + versions), `cache.py` (content hash → cached group results); `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
@@ -2000,7 +2013,8 @@ Essentia tests in `tests/test_essentia_analyzer.py` skip where it does not
 import, which is the Windows leg (and native Windows). `tests/conftest.py` pins
 `analyzer=librosa` for every test (Essentia-mode tests opt in) and switches
 model downloads off (`MASHUP_ESSENTIA_MODEL_FETCH=0`): an analysis test must
-never fetch 30 MB over the network. Running the Essentia tests inside the
+never fetch 30 MB over the network. It also sets `MASHUP_REACH_CHECK=0`, so the
+preview's reachability probe never leaves the machine. Running the Essentia tests inside the
 container, unset its `MASHUP_*` path variables first, or they read the live
 `/data`.
 

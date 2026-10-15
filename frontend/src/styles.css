@@ -3228,3 +3228,19 @@ input, select { font-family: inherit; }
 .layer-sug .t { font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .layer-sug .a { color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .layer-pct { color: var(--fg-2); }
+
+/* First steps (components/FirstSteps.jsx): one strip above the table. */
+.first-steps {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin: 0 16px 8px;
+  padding: 8px 12px; border: 1px solid var(--line-2); border-radius: var(--r-ctl);
+  background: var(--card); font-size: 12px;
+}
+.first-steps ol { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; list-style: none; }
+.first-steps li { color: var(--muted); }
+.first-steps li.done { color: var(--ok); }
+.first-steps li.next { color: var(--fg); }
+.first-steps .fs-tick { display: inline-block; width: 14px; }
+.help-more > summary { cursor: pointer; list-style: none; }
+.help-more > summary h3 { display: inline; }
+.help-more > summary::before { content: "▸ "; color: var(--muted); }
+.help-more[open] > summary::before { content: "▾ "; }

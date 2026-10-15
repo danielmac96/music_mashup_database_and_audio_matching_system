@@ -74,7 +74,10 @@ def _guard(fn, *args, **kwargs):
     except SoundCloudUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except SoundCloudAPIError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        # Never the raw exception text ("<urlopen error Tunnel connection
+        # failed…>"): the shared vocabulary names the cause and the fix.
+        from ingest.errors import describe
+        raise HTTPException(status_code=502, detail=describe(exc)["message"]) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
