@@ -266,8 +266,8 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
             disabled={separator === null}
             onChange={(e) => changeSeparator(e.target.value)}
             style={{
-              background: "var(--panel)", color: "var(--text)",
-              border: "1px solid var(--border-ctrl)", borderRadius: 6,
+              background: "var(--panel)", color: "var(--fg)",
+              border: "1px solid var(--line-2)", borderRadius: 6,
               padding: "3px 6px", fontSize: 11,
             }}
           >
@@ -310,7 +310,7 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
                 </span>
               )}
               <span style={{ flex: 1 }} />
-              <span className="text-2" style={{ color: "var(--text-2)" }}>Title · Artist</span>
+              <span className="text-2" style={{ color: "var(--fg-2)" }}>Title · Artist</span>
             </div>
             {tracks.map((t, i) => {
               const on = selected[i] !== false;

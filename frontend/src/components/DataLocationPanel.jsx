@@ -6,7 +6,7 @@ import { toast } from "../toast";
 function PathRow({ label, value, source }) {
   return (
     <div style={{ display: "flex", alignItems: "baseline", gap: 10, padding: "3px 0" }}>
-      <span style={{ width: 96, flexShrink: 0, color: "var(--text-2)", fontSize: 12 }}>{label}</span>
+      <span style={{ width: 96, flexShrink: 0, color: "var(--fg-2)", fontSize: 12 }}>{label}</span>
       <code style={{ flex: 1, fontSize: 12, wordBreak: "break-all" }}>{value || "—"}</code>
       {source && (
         <span
@@ -17,7 +17,7 @@ function PathRow({ label, value, source }) {
           }
           style={{
             flexShrink: 0, fontSize: 10, letterSpacing: 0.4, textTransform: "uppercase",
-            color: "var(--text-2)", border: "1px solid var(--border-ctrl)",
+            color: "var(--fg-2)", border: "1px solid var(--line-2)",
             borderRadius: 6, padding: "1px 5px",
           }}
         >
@@ -81,12 +81,12 @@ export function DataLocationPanel() {
 
   return (
     <div className="data-loc" style={{
-      border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px",
+      border: "1px solid var(--line)", borderRadius: 10, padding: "10px 14px",
       marginBottom: 16, background: "var(--panel)",
     }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontSize: 13, fontWeight: 600 }}>📁 Data location</span>
-        <code style={{ fontSize: 12, color: "var(--text-2)", flex: 1, wordBreak: "break-all" }}>
+        <code style={{ fontSize: 12, color: "var(--fg-2)", flex: 1, wordBreak: "break-all" }}>
           {settings.db_path?.value}
         </code>
         <button className="btn ghost" style={{ fontSize: 11 }} onClick={() => setOpen((o) => !o)}>
@@ -98,7 +98,7 @@ export function DataLocationPanel() {
       </div>
 
       {open && (
-        <div style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 }}>
+        <div style={{ marginTop: 8, borderTop: "1px solid var(--line)", paddingTop: 8 }}>
           <PathRow label="Database" value={settings.db_path?.value} source={settings.db_path?.source} />
           <PathRow label="Downloads" value={paths.downloads} />
           <PathRow label="Vocals" value={paths.vocals} />
@@ -108,7 +108,7 @@ export function DataLocationPanel() {
       )}
 
       {creating && (
-        <div style={{ marginTop: 10, borderTop: "1px solid var(--border)", paddingTop: 10 }}>
+        <div style={{ marginTop: 10, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
           {done ? (
             <div>
               <div style={{ fontSize: 13, marginBottom: 6 }}>

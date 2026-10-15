@@ -326,7 +326,7 @@ export function TuningPanel() {
               <button key={v} className="mini-btn"
                 disabled={busy || settings.stem_separator?.source === "env"}
                 style={(draft.stem_separator ?? settings.stem_separator?.value) === v
-                  ? { borderColor: "var(--cyan)" } : undefined}
+                  ? { borderColor: "var(--link)" } : undefined}
                 title={v === "demucs"
                   ? "Best quality, slower. Required for four-stem."
                   : "UVR MDX-Net — 2-4x faster on CPU, two stems only."}
@@ -341,7 +341,7 @@ export function TuningPanel() {
               <button key={v} className="mini-btn"
                 disabled={busy || settings.stem_mode?.source === "env"}
                 style={(draft.stem_mode ?? settings.stem_mode?.value) === v
-                  ? { borderColor: "var(--cyan)" } : undefined}
+                  ? { borderColor: "var(--link)" } : undefined}
                 title={v === "four"
                   ? "Splits drums/bass/other as well, so you can drop the bed's bass or swap its drums — and so collision scoring has real data. Demucs only. Roughly doubles separation time and disk."
                   : "Vocals + instrumental. What the app shipped with."}
@@ -352,7 +352,7 @@ export function TuningPanel() {
           </div>
           {(draft.stem_mode ?? settings.stem_mode?.value) === "four"
             && settings.stem_mode?.value !== "four" && (
-            <div className="faint" style={{ fontSize: 11, color: "var(--amber-light)" }}>
+            <div className="faint" style={{ fontSize: 11, color: "var(--star)" }}>
               Four-stem applies to tracks separated from now on. Existing tracks
               keep two stems until you re-separate them in Library.
             </div>

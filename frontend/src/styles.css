@@ -81,30 +81,6 @@
   --scrim: rgba(4, 6, 10, 0.6);
   --ease: 120ms ease;
 
-  /* ── legacy names → the tokens above. Screens not yet rebuilt still read
-     these; step 8 of the revamp deletes them with the dead CSS. ── */
-  --topbar: var(--bar);
-  --inset: var(--well);
-  --inset-2: var(--bg-sunk);
-  --border: var(--line);
-  --border-ctrl: var(--line-2);
-  --border-top: var(--line-soft);
-  --border-accent: #2a3550;
-  --hair: #171d29;
-  --text: var(--fg);
-  --text-2: var(--fg-2);
-  --faint-2: var(--disabled);
-  --accent-light: var(--link);
-  --accent-tint: var(--accent-bg);
-  --cyan: #38bdf8;
-  --cyan-light: #7dd3fc;
-  --amber: var(--warn);
-  --amber-light: var(--star);
-  --green: var(--ok);
-  --green-ink: #04231a;
-  --violet: var(--run);
-  --red: var(--fail);
-
   color-scheme: dark;
   background: var(--bg);
   color: var(--fg);
@@ -136,14 +112,6 @@ a:hover { color: var(--fg); }
   letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
 }
 
-.micro-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  color: var(--muted);
-  text-transform: uppercase;
-}
-
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
 
@@ -161,7 +129,6 @@ input, select { font-family: inherit; }
 
 .pulse { animation: eqpulse 1.6s infinite; }
 
-/* ── App shell ─────────────────────────────────────────────────────────── */
 /* ── Shell: 206px rail + main column ───────────────────────────────────── */
 /* The tab bar became a rail so the Library screen can carry a permanent pair
    dock on its right. The rail spans the full viewport height and only the main
@@ -289,14 +256,12 @@ input, select { font-family: inherit; }
 .screen-bar {
   height: 46px; flex: none;
   display: flex; align-items: center; gap: 10px; padding: 0 16px;
-  border-bottom: 1px solid var(--border-top);
-  background: var(--topbar);
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--bar);
 }
 .screen-bar h1 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.015em; }
 .screen-sub { font-size: 11px; color: var(--faint); font-weight: 500; }
 
-/* Header status used to sit in the top bar. With no top bar it floats over the
-   screen it belongs to rather than being dropped. */
 /* The screen's status readout, in the rail above the footer. It used to float
    absolutely over the top-right of the main column, where it covered the pair
    dock's header and Studio's FL session / Render mixdown buttons. In flow, in
@@ -306,18 +271,18 @@ input, select { font-family: inherit; }
   position: static;
   display: flex; align-items: flex-start; gap: 8px; line-height: 1.4;
   font-family: var(--font-mono); font-size: 11px; color: var(--muted);
-  background: var(--inset-2); border: 1px solid var(--border-ctrl);
+  background: var(--bg-sunk); border: 1px solid var(--line-2);
   border-radius: 10px; padding: 5px 10px; pointer-events: none;
 }
 .float-status .dot { flex: none; margin-top: 4px; }
 .float-status.locked {
-  color: var(--green);
+  color: var(--ok);
   background: rgba(46, 204, 113, 0.1);
   border-color: rgba(46, 204, 113, 0.45);
 }
 .float-status .dot {
-  width: 7px; height: 7px; border-radius: 50%; background: var(--green);
-  box-shadow: 0 0 8px var(--green);
+  width: 7px; height: 7px; border-radius: 50%; background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
 }
 /* While the Library is processing, the pill is the way into the Queue. */
 .float-status.clickable { pointer-events: auto; cursor: pointer; }
@@ -329,8 +294,8 @@ input, select { font-family: inherit; }
   align-items: center;
   gap: 20px;
   padding: 0 22px;
-  background: var(--topbar);
-  border-bottom: 1px solid var(--border-top);
+  background: var(--bar);
+  border-bottom: 1px solid var(--line-soft);
   position: sticky;
   top: 0;
   z-index: 40;
@@ -359,7 +324,7 @@ input, select { font-family: inherit; }
 .settings-drawer {
   position: fixed; top: 0; right: 0; bottom: 0; z-index: 41;
   width: min(1080px, 92vw); overflow-y: auto;
-  background: var(--bg); border-left: 1px solid var(--border);
+  background: var(--bg); border-left: 1px solid var(--line);
   box-shadow: -18px 0 48px rgba(0,0,0,0.45);
   padding: 18px 22px 40px;
 }
@@ -367,9 +332,9 @@ input, select { font-family: inherit; }
 .drawer-head h2 { font-size: 18px; margin: 0; }
 .drawer-x {
   cursor: pointer; font-size: 14px; background: transparent; color: var(--muted);
-  border: 1px solid var(--border-ctrl); border-radius: 7px; padding: 4px 9px;
+  border: 1px solid var(--line-2); border-radius: 7px; padding: 4px 9px;
 }
-.drawer-x:hover { color: var(--text); }
+.drawer-x:hover { color: var(--fg); }
 .drawer-section h3 { font-size: 13px; margin: 0 0 3px; }
 .drawer-body { margin-top: 6px; }
 /* The browser already wraps itself in .page; inside the drawer that padding
@@ -387,7 +352,6 @@ input, select { font-family: inherit; }
 /* Mixes runs full width: the tracklist and match board both put one track per
    line, and the extra width is what keeps those lines from wrapping. */
 .page.mixes { max-width: 1560px; }
-.page.audition { padding: 18px 22px 40px; }
 
 .screen-head {
   display: flex;
@@ -396,17 +360,16 @@ input, select { font-family: inherit; }
   margin-bottom: 16px;
 }
 .screen-head h1 { font-size: 22px; font-weight: 600; margin: 0; }
-.screen-head .sub { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); }
 .screen-head .tag {
   font-size: 11px;
   color: var(--muted);
   background: var(--panel);
-  border: 1px solid var(--border-ctrl);
+  border: 1px solid var(--line-2);
   padding: 3px 9px;
   border-radius: 5px;
 }
 
-.error-text { color: #ff9b9b; font-size: 0.85rem; }
+.error-text { color: var(--fail-soft); font-size: 0.85rem; }
 .hint { color: var(--muted); font-size: 13px; }
 
 /* ── Generic controls ──────────────────────────────────────────────────── */
@@ -418,16 +381,15 @@ input, select { font-family: inherit; }
   font-size: 13px;
   font-weight: 500;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   transition: filter 0.12s;
 }
 .btn:hover:not(:disabled) { filter: brightness(1.08); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
-.btn.green { background: var(--green); color: var(--green-ink); font-weight: 600; }
 .btn.ghost {
-  background: var(--inset-2);
-  border: 1px solid var(--border-ctrl);
-  color: var(--text-2);
+  background: var(--bg-sunk);
+  border: 1px solid var(--line-2);
+  color: var(--fg-2);
   font-weight: 400;
 }
 
@@ -437,46 +399,25 @@ input, select { font-family: inherit; }
   align-items: center;
   gap: 7px;
   background: var(--panel);
-  border: 1px solid var(--border-ctrl);
+  border: 1px solid var(--line-2);
   border-radius: 9px;
   padding: 9px 13px;
   font-size: 13px;
-  color: var(--text);
+  color: var(--fg);
   user-select: none;
 }
 .chip .k { color: var(--muted); }
-.chip .caret { color: var(--faint); }
 .chip.active, .chip.on {
   background: rgba(46, 204, 113, 0.14);
   border-color: rgba(46, 204, 113, 0.5);
-  color: var(--green);
+  color: var(--ok);
 }
-.search-box {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  background: var(--inset);
-  border: 1px solid var(--border-ctrl);
-  border-radius: 9px;
-  padding: 9px 13px;
-  width: 300px;
-}
-.search-box input {
-  flex: 1;
-  min-width: 0;
-  background: transparent;
-  border: none;
-  outline: none;
-  color: var(--text);
-  font-size: 13px;
-}
-.search-box .ico { color: var(--faint); }
 
 .seg {
   display: flex;
   gap: 3px;
-  background: #0a0d14;
-  border: 1px solid var(--border-ctrl);
+  background: var(--zebra);
+  border: 1px solid var(--line-2);
   border-radius: 9px;
   padding: 3px;
 }
@@ -491,16 +432,8 @@ input, select { font-family: inherit; }
 }
 .seg button.active {
   background: var(--raised);
-  border: 1px solid var(--border-ctrl);
-  color: var(--text);
-}
-
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
+  border: 1px solid var(--line-2);
+  color: var(--fg);
 }
 
 /* ── Status tag + pipeline dots (shared) ───────────────────────────────── */
@@ -527,42 +460,20 @@ input, select { font-family: inherit; }
   font-size: 11px; font-weight: 600; line-height: 1.45;
   color: var(--key-ink); white-space: nowrap;
 }
-.act {
-  cursor: pointer;
-  flex: 1;
-  text-align: center;
-  border-radius: 7px;
-  padding: 8px;
-  font-size: 12px;
-  border: 1px solid var(--border-ctrl);
-  background: var(--inset-2);
-  color: var(--text-2);
-  transition: filter 0.12s;
-}
-.act:hover:not(:disabled) { filter: brightness(1.25); }
-.act:disabled { opacity: 0.4; cursor: not-allowed; }
-.act.vocal { background: rgba(56, 189, 248, 0.1); border-color: rgba(56, 189, 248, 0.4); color: var(--cyan-light); }
-.act.bed { background: rgba(245, 166, 35, 0.1); border-color: rgba(245, 166, 35, 0.4); color: var(--amber-light); }
-.act.icon { flex: 0 0 auto; padding: 8px 9px; }
-.act.on { background: rgba(74, 222, 128, 0.12); border-color: rgba(74, 222, 128, 0.45); color: var(--green); }
 
 /* run-pipeline action buttons on the card */
 .mini-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .mini-btn {
   cursor: pointer;
-  border: 1px solid var(--border-ctrl);
-  background: var(--inset-2);
-  color: var(--text-2);
+  border: 1px solid var(--line-2);
+  background: var(--bg-sunk);
+  color: var(--fg-2);
   border-radius: 6px;
   padding: 5px 9px;
   font-size: 11px;
 }
 .mini-btn:hover:not(:disabled) { filter: brightness(1.25); }
 .mini-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* Table view */
-
-/* Feature editor popover (library) */
 
 /* ── Job badge / progress ──────────────────────────────────────────────── */
 .badge {
@@ -573,10 +484,10 @@ input, select { font-family: inherit; }
   font-weight: 600;
   letter-spacing: 0.03em;
 }
-.badge.queued    { background: rgba(138,147,166,.14); color: #cfd3df; }
-.badge.running   { background: rgba(245,166,35,.15); color: var(--amber-light); animation: procpulse 1.6s infinite; }
-.badge.completed { background: rgba(46,204,113,.15); color: var(--green); }
-.badge.failed    { background: rgba(248,113,113,.15); color: var(--red); }
+.badge.queued    { background: rgba(138,147,166,.14); color: var(--fg-2); }
+.badge.running   { background: rgba(245,166,35,.15); color: var(--star); animation: procpulse 1.6s infinite; }
+.badge.completed { background: rgba(46,204,113,.15); color: var(--ok); }
+.badge.failed    { background: rgba(248,113,113,.15); color: var(--fail); }
 /* Near-duplicate uploads of the same work (A.2) — informational, not a warning:
    the pairs are already suppressed, this just explains why. */
 
@@ -585,13 +496,13 @@ input, select { font-family: inherit; }
   height: 5px;
   width: 160px;
   max-width: 100%;
-  background: var(--inset-2);
+  background: var(--bg-sunk);
   border-radius: 3px;
   overflow: hidden;
 }
-.progress-bar > .fill { height: 100%; background: linear-gradient(90deg, var(--accent), #4d8bff); transition: width 0.3s ease; }
+.progress-bar > .fill { height: 100%; background: var(--accent); transition: width 0.3s ease; }
 .dep-warn {
-  color: var(--amber-light); font-size: 12.5px; line-height: 1.4;
+  color: var(--star); font-size: 12.5px; line-height: 1.4;
   background: rgba(245,166,35,0.1); border: 1px solid rgba(245,166,35,0.35);
   border-radius: 8px; padding: 8px 12px; margin-bottom: 14px;
 }
@@ -601,8 +512,8 @@ input, select { font-family: inherit; }
   font-size: 0.68rem; text-decoration: underline; border: none; cursor: pointer;
 }
 .traceback {
-  margin-top: 4px; padding: 8px; background: var(--inset-2);
-  border: 1px solid var(--border-ctrl); border-radius: 6px; color: #ffb0b0;
+  margin-top: 4px; padding: 8px; background: var(--bg-sunk);
+  border: 1px solid var(--line-2); border-radius: 6px; color: var(--fail-soft);
   font-size: 0.68rem; white-space: pre-wrap; max-height: 240px; overflow: auto;
 }
 
@@ -612,46 +523,19 @@ input, select { font-family: inherit; }
  * ========================================================================== */
 
 .kbd {
-  font-family: var(--font-mono); font-size: 9px; color: var(--text-2);
-  background: var(--inset-2); border: 1px solid var(--border-ctrl);
+  font-family: var(--font-mono); font-size: 9px; color: var(--fg-2);
+  background: var(--bg-sunk); border: 1px solid var(--line-2);
   border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; margin: 0 1px;
-}
-
-.ruler {
-  cursor: pointer;
-  position: relative;
-  background: #15171c;
-  height: 15px;
-  border-radius: 4px;
-  margin-left: 96px;
-  user-select: none;
-}
-.ruler .playhead {
-  position: absolute; top: -3px; bottom: -3px; width: 2px;
-  background: var(--playhead); box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
-  transform: translateX(-1px); pointer-events: none;
-}
-.ruler .loop {
-  position: absolute; top: 0; bottom: 0;
-  background: rgba(99, 102, 241, 0.28);
-  border-left: 1px solid rgba(165, 180, 252, 0.8);
-  border-right: 1px solid rgba(165, 180, 252, 0.8);
-  pointer-events: none;
 }
 
 .module {
   background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 11px;
   padding: 14px;
 }
-.module.mix { border-color: var(--border-accent); }
+.module.mix { border-color: var(--line-2); }
 .module.transport { display: flex; flex-direction: column; gap: 9px; }
-
-.key-map {
-  display: flex; align-items: center; justify-content: center; gap: 9px; margin-bottom: 12px;
-}
-.key-map .arrow { font-size: 12px; }
 
 /* ========================================================================== *
  * IMPORT
@@ -659,32 +543,32 @@ input, select { font-family: inherit; }
 .import-input-row { display: flex; gap: 10px; margin-bottom: 8px; }
 .import-input {
   flex: 1; display: flex; align-items: center; gap: 10px;
-  background: var(--inset); border: 1px solid var(--border-ctrl); border-radius: 10px; padding: 13px 15px;
+  background: var(--well); border: 1px solid var(--line-2); border-radius: 10px; padding: 13px 15px;
 }
 .import-input input {
   flex: 1; min-width: 0; background: transparent; border: none; outline: none;
-  color: var(--text); font-family: var(--font-mono); font-size: 13px;
+  color: var(--fg); font-family: var(--font-mono); font-size: 13px;
 }
 .import-input .type-tag {
-  font-size: 10px; background: var(--accent-tint); color: var(--accent-light);
+  font-size: 10px; background: var(--accent-bg); color: var(--link);
   padding: 2px 8px; border-radius: 4px;
 }
 .preview-panel {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 11px; overflow: hidden;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 11px; overflow: hidden;
 }
 .preview-head {
   display: flex; align-items: center; gap: 10px; padding: 12px 15px;
-  border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted);
+  border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted);
 }
 .preview-check {
   width: 15px; height: 15px; border-radius: 4px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center; font-size: 10px;
 }
-.preview-check.on { background: var(--accent); color: #fff; }
-.preview-check.off { border: 1px solid var(--border-ctrl); color: transparent; }
+.preview-check.on { background: var(--accent); color: var(--accent-ink); }
+.preview-check.off { border: 1px solid var(--line-2); color: transparent; }
 .preview-row {
   cursor: pointer; display: flex; align-items: center; gap: 11px;
-  padding: 11px 15px; border-bottom: 1px solid var(--hair);
+  padding: 11px 15px; border-bottom: 1px solid var(--line-soft);
 }
 .preview-row:last-child { border-bottom: none; }
 .preview-row .art { width: 36px; height: 36px; border-radius: 5px; background-size: cover; flex-shrink: 0; }
@@ -692,14 +576,14 @@ input, select { font-family: inherit; }
 .preview-row .info .t { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .preview-row .info .a { font-size: 11px; color: var(--muted); }
 .preview-row .dur, .preview-row .plays { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
-.preview-row .genre { font-size: 10px; color: var(--muted); background: var(--inset-2); border: 1px solid var(--border-ctrl); padding: 2px 7px; border-radius: 4px; }
+.preview-row .genre { font-size: 10px; color: var(--muted); background: var(--bg-sunk); border: 1px solid var(--line-2); padding: 2px 7px; border-radius: 4px; }
 .import-footer { display: flex; gap: 10px; margin-top: 15px; }
 .import-footer .cancel {
-  cursor: pointer; flex: 1; text-align: center; background: var(--inset-2);
-  border: 1px solid var(--border-ctrl); color: var(--text-2); border-radius: 9px; padding: 12px; font-size: 13px;
+  cursor: pointer; flex: 1; text-align: center; background: var(--bg-sunk);
+  border: 1px solid var(--line-2); color: var(--fg-2); border-radius: 9px; padding: 12px; font-size: 13px;
 }
 .import-footer .save {
-  cursor: pointer; flex: 2; text-align: center; background: var(--green); color: var(--green-ink);
+  cursor: pointer; flex: 2; text-align: center; background: var(--ok); color: var(--accent-ink);
   border: none; border-radius: 9px; padding: 12px; font-size: 13px; font-weight: 600;
 }
 .import-footer .save:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -708,22 +592,22 @@ input, select { font-family: inherit; }
  * DATABASE
  * ========================================================================== */
 .db-tabs {
-  display: flex; gap: 3px; background: #0a0d14; border: 1px solid var(--border);
+  display: flex; gap: 3px; background: var(--zebra); border: 1px solid var(--line);
   border-radius: 9px; padding: 3px; margin-bottom: 14px; width: fit-content; flex-wrap: wrap;
 }
 .db-tabs button {
   cursor: pointer; font-family: var(--font-mono); padding: 6px 13px; border-radius: 6px;
   font-size: 12px; border: none; background: transparent; color: var(--muted);
 }
-.db-tabs button.active { background: var(--raised); border: 1px solid var(--border-ctrl); color: var(--text); }
-.db-grid-wrap { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: auto; }
+.db-tabs button.active { background: var(--raised); border: 1px solid var(--line-2); color: var(--fg); }
+.db-grid-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: auto; }
 .db-grid { display: grid; font-family: var(--font-mono); font-size: 11px; min-width: max-content; }
-.db-grid .col { padding: 9px 11px; background: var(--inset-2); color: var(--muted); border-bottom: 1px solid var(--border); position: sticky; top: 0; }
-.db-grid .cell { padding: 9px 11px; border-bottom: 1px solid var(--hair); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.db-grid .col { padding: 9px 11px; background: var(--bg-sunk); color: var(--muted); border-bottom: 1px solid var(--line); position: sticky; top: 0; }
+.db-grid .cell { padding: 9px 11px; border-bottom: 1px solid var(--line-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .db-foot { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 12px; color: var(--muted); }
 .db-foot .mono { font-family: var(--font-mono); }
 .db-page-btn {
-  cursor: pointer; background: var(--inset-2); border: 1px solid var(--border-ctrl); color: var(--text-2);
+  cursor: pointer; background: var(--bg-sunk); border: 1px solid var(--line-2); color: var(--fg-2);
   border-radius: 6px; padding: 6px 12px; font-size: 12px;
 }
 .db-page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
@@ -755,23 +639,23 @@ input, select { font-family: inherit; }
   width: 26px; height: 26px; border-radius: 50%;
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 12px; font-weight: 600;
-  background: var(--panel); border: 1px solid var(--border-ctrl); color: var(--text-2);
+  background: var(--panel); border: 1px solid var(--line-2); color: var(--fg-2);
 }
-.wizard-dot.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-.wizard-dot.done { border-color: var(--green); color: var(--green); }
+.wizard-dot.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.wizard-dot.done { border-color: var(--ok); color: var(--ok); }
 .wizard-panel {
-  background: var(--panel); border: 1px solid var(--border);
+  background: var(--panel); border: 1px solid var(--line);
   border-radius: 12px; padding: 20px 22px;
 }
 .wizard-h2 { margin: 0 0 6px; font-size: 15px; }
 .dep-list { list-style: none; padding: 0; margin: 12px 0; }
 .dep-list li { padding: 5px 0; font-size: 13px; }
 .dep-list .dep-icon { display: inline-block; width: 18px; }
-.dep-list li.ok .dep-icon { color: var(--green); }
-.dep-list li.bad .dep-icon { color: var(--red, #ff6b6b); }
-.dep-list li.warn .dep-icon { color: var(--amber-light); }
+.dep-list li.ok .dep-icon { color: var(--ok); }
+.dep-list li.bad .dep-icon { color: var(--fail); }
+.dep-list li.warn .dep-icon { color: var(--star); }
 .dep-ok {
-  color: var(--green); font-size: 12.5px;
+  color: var(--ok); font-size: 12.5px;
   background: rgba(60,200,120,0.08); border: 1px solid rgba(60,200,120,0.3);
   border-radius: 8px; padding: 8px 12px;
 }
@@ -786,37 +670,23 @@ input, select { font-family: inherit; }
   padding: 1px 5px; border-radius: 4px; vertical-align: middle;
   border: 1px solid transparent;
 }
-.source-badge.src-sc { color: #ff7a2f; background: rgba(255,122,47,0.12); border-color: rgba(255,122,47,0.4); }
-.source-badge.src-yt { color: #ff5c5c; background: rgba(255,92,92,0.12); border-color: rgba(255,92,92,0.4); }
+.source-badge.src-sc { color: var(--warn); background: rgba(255,122,47,0.12); border-color: rgba(255,122,47,0.4); }
+.source-badge.src-yt { color: var(--fail); background: rgba(255,92,92,0.12); border-color: rgba(255,92,92,0.4); }
 
 /* ── Mix importer (1001tracklists) ───────────────────────────────────────── */
-.mix-list-bar { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
-.mix-list-head { font-size: 12px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+.mix-list-bar { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.mix-list-head { font-size: 12px; font-weight: 600; color: var(--fg-2); margin-bottom: 8px; }
 .mix-list-item {
-  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px;
   background: var(--panel); cursor: pointer; min-width: 150px;
 }
-.mix-list-item:hover { background: var(--accent-tint); }
-.mix-list-item.active { background: var(--accent-tint); border-color: var(--accent); }
-.mix-detail { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-height: 200px; }
+.mix-list-item:hover { background: var(--accent-bg); }
+.mix-list-item.active { background: var(--accent-bg); border-color: var(--accent); }
+.mix-detail { border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-height: 200px; }
 .mix-detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
 .mix-detail-head > div:last-child { flex-wrap: wrap; }
-/* One shared column grid for the whole tracklist, with each row a subgrid item,
-   so status/source/actions line up across every row and take only the width they
-   need — the name/link column keeps the rest. Rows stay real boxes, which
-   dnd-kit's drag transform, the hover state and the candidates dropdown's
-   positioning all depend on. */
-/* Engines without subgrid keep the old per-row grid; fixed tracks are the only
-   way to align columns there, so long links ellipsise as they used to. */
-@supports not (grid-template-columns: subgrid) {
-  .mix-rows { display: flex; flex-direction: column; gap: 1px; }
-  .mix-row {
-    grid-template-columns: 16px 16px 30px minmax(0, 1fr) 108px 96px 400px;
-    gap: 8px; padding: 5px 8px;
-  }
-}
-.drag-handle { color: var(--text-2); cursor: grab; font-size: 12px; user-select: none; line-height: 1; }
-.mix-num { font-weight: 600; color: var(--text-2); text-align: center; font-size: 12px; }
+.drag-handle { color: var(--fg-2); cursor: grab; font-size: 12px; user-select: none; line-height: 1; }
+.mix-num { font-weight: 600; color: var(--fg-2); text-align: center; font-size: 12px; }
 /* Track name on its own line with its link directly underneath, same font and
    size, so the pair reads as one unit. The link is never truncated: it gets the
    full width left over by the columns to its right and wraps onto a second line
@@ -833,68 +703,41 @@ input, select { font-family: inherit; }
 /* Breaks land on the <wbr>s BreakableUrl puts after each "/"; break-word is the
    safety net for a single path segment too long to fit on its own. */
 .mix-url { max-width: 100%; overflow-wrap: break-word; }
-.mix-url { color: var(--text-2); text-decoration: none; }
-.mix-url:hover { color: var(--accent-light); text-decoration: underline; }
-.mix-url.none { color: var(--text-2); opacity: 0.5; font-style: italic; }
-/* Which platform the audio comes from — SoundCloud is the primary source, so a
-   YouTube link is worth spotting in a scan. Brand-ish colours, not status ones. */
-/* Rows carry different button sets; let none of them shrink, or the widest row
-   compresses its labels into two lines while its neighbours stay single-line. */
+.mix-url { color: var(--fg-2); text-decoration: none; }
+.mix-url:hover { color: var(--link); text-decoration: underline; }
+.mix-url.none { color: var(--fg-2); opacity: 0.5; font-style: italic; }
 /* Search hits behind a low-confidence auto link. The tracklist rows are a tight
    grid, so this hangs off the row's actions as a dropdown rather than pushing
    the layout around. */
-.btn.ghost.danger { color: var(--red); border-color: rgba(220,80,80,.35); }
+.btn.ghost.danger { color: var(--fail); border-color: rgba(220,80,80,.35); }
 .btn.ghost.danger:hover:not(:disabled) { background: rgba(220,80,80,.12); }
 .mix-flag { font-size: 10px; padding: 1px 5px; border-radius: 4px; }
-.mix-flag.failed { color: var(--amber-light); background: rgba(245,166,35,0.12); }
-.mix-flag.ok { color: var(--green); background: rgba(60,200,120,0.1); }
-.mix-flag.auto { color: var(--amber); background: rgba(245,166,35,0.14); cursor: help; }
+.mix-flag.failed { color: var(--star); background: rgba(245,166,35,0.12); }
+.mix-flag.ok { color: var(--ok); background: rgba(60,200,120,0.1); }
+.mix-flag.auto { color: var(--warn); background: rgba(245,166,35,0.14); cursor: help; }
 .mini-select {
-  background: var(--panel); border: 1px solid var(--border-ctrl); border-radius: 6px;
-  color: var(--text); padding: 4px 6px; font-size: 12px;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 6px;
+  color: var(--fg); padding: 4px 6px; font-size: 12px;
 }
-.spin-dot {
-  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-  background: var(--accent); animation: procpulse 1.2s infinite; vertical-align: middle;
-}
-.mini-btn.danger { color: var(--red); border-color: rgba(220,80,80,.35); }
+.mini-btn.danger { color: var(--fail); border-color: rgba(220,80,80,.35); }
 .mini-btn.danger:hover:not(:disabled) { background: rgba(220,80,80,.12); }
-
-/* Manual "+ Add track" row at the foot of the tracklist. */
-
-/* Per-mix ingest / processing tracker (item 4). */
 
 /* ── ML panel (datasets + models) ────────────────────────────────────────── */
 .ml-panel {
-  border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px;
+  border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px;
   background: var(--panel);
 }
 .ml-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 .ml-head h3 { margin: 0; font-size: 14px; }
 .ml-actions { margin-bottom: 10px; }
 .ml-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-.ml-table th { text-align: left; color: var(--text-2); font-weight: 600; padding: 4px 8px; border-bottom: 1px solid var(--border); }
-.ml-table td { padding: 5px 8px; border-bottom: 1px solid var(--border-top); }
+.ml-table th { text-align: left; color: var(--fg-2); font-weight: 600; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.ml-table td { padding: 5px 8px; border-bottom: 1px solid var(--line-soft); }
 .ml-table tr.active-model { background: rgba(60,200,120,0.08); }
 .scorer-badge {
   font-size: 11px; padding: 3px 9px; border-radius: 12px;
-  background: var(--accent-tint); color: var(--accent-light); border: 1px solid var(--border-accent);
+  background: var(--accent-bg); color: var(--link); border: 1px solid var(--line-2);
 }
-
-/* ── Studio (multi-track DAW tab) ────────────────────────────────────────── */
-
-/* ── Studio timing pills ──────────────────────────────────────────────
-   The overlays Discover suggested for the pair the project was opened on.
-   Built on .snap-seg, which the transport already uses twice, so the row reads
-   as another Studio control rather than a visitor from another screen. */
-/* .verdict-chip is display:block in the ranked list, where it owns its cell. */
-
-/* In-place stem switch on a lane (ported from Audition's deck picker). */
-
-/* Crossfader in the Studio toolbar — rides the first two lanes. */
-
-/* Trim grab zones on the clip edges (A1). Invisible — the canvas draws the
-   grip — but they own the cursor and the drag. */
 
 /* ── Library bottom player bar ──────────────────────────────────────────── */
 
@@ -916,13 +759,8 @@ input, select { font-family: inherit; }
 
 /* Results left, crate shortlist right. Collapses on narrow windows so the crate
    sits under the results rather than squeezing both. */
-.link-btn {
-  background: none; border: none; padding: 0; cursor: pointer;
-  color: var(--accent-light); font: inherit; font-size: inherit;
-}
-.link-btn:hover { text-decoration: underline; }
 
-.mix-flag.warn { color: var(--amber-light); background: rgba(245, 166, 35, 0.14); }
+.mix-flag.warn { color: var(--star); background: rgba(245, 166, 35, 0.14); }
 
 /* Crate membership. Deliberately unlike .mix-flag.ok ("in library", green):
    these mean different things — one is "you own the audio", the other is "you
@@ -931,7 +769,7 @@ input, select { font-family: inherit; }
    read-only, adding happens through the tick-box and the bulk button. */
 .crate-chip {
   font-size: 10px; line-height: 1.5; padding: 1px 6px; border-radius: 999px;
-  color: var(--accent); background: var(--accent-tint);
+  color: var(--accent); background: var(--accent-bg);
   border: 1px solid rgba(91, 140, 255, 0.35);
   max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   cursor: help;
@@ -943,7 +781,7 @@ input, select { font-family: inherit; }
 .sc-filterbar {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 7px 8px; margin-bottom: 6px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
 }
 .sc-filterbar .mini-select { padding: 3px 5px; font-size: 11.5px; }
 .sc-filter-check {
@@ -952,18 +790,15 @@ input, select { font-family: inherit; }
 }
 .sc-filter-range { display: inline-flex; align-items: center; gap: 4px; }
 .mini-num {
-  width: 52px; background: var(--panel); border: 1px solid var(--border-ctrl);
-  border-radius: 6px; color: var(--text); padding: 3px 6px; font-size: 11.5px;
+  width: 52px; background: var(--panel); border: 1px solid var(--line-2);
+  border-radius: 6px; color: var(--fg); padding: 3px 6px; font-size: 11.5px;
 }
 .sc-filter-count { font-size: 11.5px; white-space: nowrap; }
-
-/* Why a row is here: the seeds that led to it, or the genre a set matched on.
-   Small and quiet — it explains the list without competing with it. */
 
 /* Your own shelves, shown where the blank "nothing yet" state used to be. */
 .sc-shelf {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  background: var(--inset); border: 1px solid var(--border-ctrl);
+  background: var(--well); border: 1px solid var(--line-2);
   border-radius: 9px; padding: 12px 14px; margin-bottom: 12px;
 }
 .sc-shelf.connect { flex-direction: column; align-items: stretch; gap: 8px; }
@@ -971,29 +806,23 @@ input, select { font-family: inherit; }
 .sc-shelf .import-input-row { margin: 0; }
 .sc-shelf .seg.sc-feed { margin-left: auto; }
 
-/* The seed picker. Choosing what to aim a run at is the first half of the pane,
-   so it gets a panel rather than a toolbar. */
-
-/* Capped and scrolling: a big library would otherwise push the Run button off
-   the screen it belongs on. */
-
 /* "Add N to crate ▾" */
 .crate-add { position: relative; }
 .crate-menu {
   position: absolute; right: 0; top: calc(100% + 4px); z-index: 10;
   min-width: 200px; padding: 4px;
-  background: var(--raised); border: 1px solid var(--border-ctrl);
+  background: var(--raised); border: 1px solid var(--line-2);
   border-radius: 9px; box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
   display: flex; flex-direction: column; gap: 1px;
 }
 .crate-menu button {
   display: flex; justify-content: space-between; gap: 12px;
   background: none; border: none; cursor: pointer; text-align: left;
-  color: var(--text-2); font: inherit; font-size: 12px;
+  color: var(--fg-2); font: inherit; font-size: 12px;
   padding: 7px 9px; border-radius: 6px;
 }
-.crate-menu button:hover { background: var(--accent-tint); color: var(--text); }
-.crate-menu button.new { color: var(--accent-light); border-top: 1px solid var(--hair); }
+.crate-menu button:hover { background: var(--accent-bg); color: var(--fg); }
+.crate-menu button.new { color: var(--link); border-top: 1px solid var(--line-soft); }
 
 .crate-panel { display: flex; flex-direction: column; gap: 12px; }
 .crate-panel .mix-list-bar { display: flex; flex-direction: column; gap: 6px; }
@@ -1013,7 +842,7 @@ input, select { font-family: inherit; }
 
 .crate-actions {
   display: flex; flex-wrap: wrap; gap: 8px;
-  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--hair);
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-soft);
 }
 .crate-actions .btn { font-size: 12px; }
 /* The SoundCloud push is dormant for anyone without app credentials. Disabled
@@ -1021,26 +850,22 @@ input, select { font-family: inherit; }
    nobody can turn on. */
 .crate-actions .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* Spec §10's human-readable candidate line: "chorus 1:12–1:44 over drop
-   0:48–1:20 · 16 bars · 120→128 BPM · nudge the bed +300 ms". Deliberately
-   quiet — it is the answer to "and then what?", not the headline. */
-
 /* ══════════════════════════════════════════════════════════════════════════
  * Library (screen 1a)
  * ══════════════════════════════════════════════════════════════════════════ */
 
 .head-btn {
   cursor: pointer; white-space: nowrap;
-  font: 500 11.5px var(--font-ui); color: var(--text-2);
-  background: var(--raised); border: 1px solid var(--border-ctrl);
+  font: 500 11.5px var(--font-ui); color: var(--fg-2);
+  background: var(--raised); border: 1px solid var(--line-2);
   border-radius: 7px; padding: 5px 10px;
 }
-.head-btn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.head-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--accent); }
 .head-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .import-drop {
-  flex: none; padding: 12px 16px; background: var(--inset);
-  border-bottom: 1px solid var(--hair); max-height: 46vh; overflow: auto;
+  flex: none; padding: 12px 16px; background: var(--well);
+  border-bottom: 1px solid var(--line-soft); max-height: 46vh; overflow: auto;
 }
 .import-drop .page { max-width: none; margin: 0; padding: 0; }
 
@@ -1049,50 +874,21 @@ input, select { font-family: inherit; }
    the row is only ~830px, so a chip allowed to shrink turns 122-136 into 12…,
    and the number is the entire content of the chip. */
 
-.fclear {
-  flex: none; white-space: nowrap; cursor: pointer; border: none;
-  background: transparent; font: 500 11px var(--font-ui); color: var(--faint);
-  padding: 4px 2px;
-}
-.fclear:hover { color: var(--text-2); }
-
-.filter-count {
-  margin-left: auto; flex: none; white-space: nowrap;
-  display: flex; align-items: center; gap: 6px;
-  font-size: 11px; font-weight: 500; color: var(--faint);
-}
-.filter-count .txt { color: var(--text-2); }
-
 .mini-btn.on {
-  background: var(--accent-tint); border-color: var(--border-accent);
-  color: var(--accent-light);
+  background: var(--accent-bg); border-color: var(--line-2);
+  color: var(--link);
 }
-
-/* ── saved views + the two-key sort ────────────────────────────────────── */
 
 /* ── the table ─────────────────────────────────────────────────────────── */
 
-/* A button, but it has to keep behaving like the grid cell it replaced —
-   default button padding and centring would break the ellipsis.
-   It fills the cell's full HEIGHT as well as its width: at content height the
-   strips above and below the two lines fell through to the row, so a click
-   half a row from the title scoped the dock instead of opening the track. */
-/* The only thing that says this screen exists. Hidden until the row is under
-   the cursor so the table stays quiet, then lit on the title itself. */
 /* The resize grip sits in the 8px gap to the right of its header cell, so it
    overlays nothing. pointer-events stay off the hairline itself until hover so
    the column keeps reading as a sort button first. */
-.tt-genre {
-  display: inline-block; max-width: 100%;
-  font-size: 10px; letter-spacing: 0.04em; color: var(--text-2);
-  background: var(--raised); border-radius: 4px; padding: 3px 6px;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
 
 .tt-menu {
   position: absolute; top: calc(100% + 4px); right: 0; z-index: 70;
   width: 232px; padding: 6px;
-  background: var(--panel); border: 1px solid var(--border-ctrl);
+  background: var(--panel); border: 1px solid var(--line-2);
   border-radius: 9px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
   display: flex; flex-direction: column; gap: 2px; cursor: default;
 }
@@ -1100,18 +896,18 @@ input, select { font-family: inherit; }
   font-size: 9.5px; font-weight: 600; letter-spacing: 0.08em;
   color: var(--faint); padding: 3px 8px 5px; text-transform: uppercase;
 }
-.tt-menu-note { font-size: 10.5px; color: var(--amber-light); padding: 2px 8px 5px; }
-.tt-menu-err { font-size: 11px; color: var(--red); padding: 4px 8px; line-height: 1.4; }
+.tt-menu-note { font-size: 10.5px; color: var(--star); padding: 2px 8px 5px; }
+.tt-menu-err { font-size: 11px; color: var(--fail); padding: 4px 8px; line-height: 1.4; }
 .tt-menu-item {
   cursor: pointer; border: none; background: transparent; border-radius: 5px;
   padding: 6px 8px; text-align: left; width: 100%;
-  font: 500 11.5px var(--font-ui); color: var(--text-2);
+  font: 500 11.5px var(--font-ui); color: var(--fg-2);
 }
-.tt-menu-item:hover:not(:disabled) { background: var(--raised); color: var(--text); }
-.tt-menu-item:disabled { color: var(--faint-2); cursor: default; }
-.tt-menu-item.danger { color: var(--red); }
+.tt-menu-item:hover:not(:disabled) { background: var(--raised); color: var(--fg); }
+.tt-menu-item:disabled { color: var(--disabled); cursor: default; }
+.tt-menu-item.danger { color: var(--fail); }
 .tt-menu-item.danger:hover { background: rgba(248, 113, 113, 0.12); }
-.tt-menu-sep { height: 1px; background: var(--hair); margin: 4px 0; }
+.tt-menu-sep { height: 1px; background: var(--line-soft); margin: 4px 0; }
 .tt-menu-confirm { padding: 4px 8px 6px; display: flex; flex-direction: column; gap: 6px; }
 .tt-menu-confirm > div { display: flex; gap: 6px; }
 
@@ -1120,11 +916,11 @@ input, select { font-family: inherit; }
 .stars.interactive { display: inline-flex; }
 .stars.interactive button {
   cursor: pointer; border: none; background: transparent; padding: 0 0.5px;
-  font: inherit; color: var(--faint-2); line-height: 1;
+  font: inherit; color: var(--disabled); line-height: 1;
 }
-.stars.interactive button.on { color: var(--amber); }
-.stars.interactive:hover button { color: var(--amber-light); }
-.stars.interactive button:hover ~ button { color: var(--faint-2); }
+.stars.interactive button.on { color: var(--warn); }
+.stars.interactive:hover button { color: var(--star); }
+.stars.interactive button:hover ~ button { color: var(--disabled); }
 
 /* ══════════════════════════════════════════════════════════════════════════
  * The pair dock and the transport bar (screen 1a, right side)
@@ -1155,13 +951,12 @@ input, select { font-family: inherit; }
   flex: none;
   display: flex; align-items: center; flex-wrap: wrap; gap: 7px 8px;
   padding: 11px 14px 9px;
-  border-bottom: 1px solid var(--border-top);
+  border-bottom: 1px solid var(--line-soft);
 }
 .pd-title { font: 600 13px var(--font-ui); }
-.pd-count { font-size: 10.5px; font-weight: 500; color: var(--faint); }
 .pd-seg {
   margin-left: auto; display: flex; padding: 2px;
-  background: var(--inset-2); border: 1px solid var(--border-ctrl); border-radius: 7px;
+  background: var(--bg-sunk); border: 1px solid var(--line-2); border-radius: 7px;
 }
 .pd-seg button {
   cursor: pointer; border: 1px solid transparent; background: transparent;
@@ -1172,8 +967,8 @@ input, select { font-family: inherit; }
    Only the DOCK's strip takes a line of its own and divides it evenly. */
 .pd-head .pd-seg { flex-basis: 100%; margin-left: 0; }
 .pd-head .pd-seg button { flex: 1; padding: 3px 6px; }
-.pd-seg button:hover { color: var(--text-2); }
-.pd-seg button.on { background: var(--raised); color: var(--text); font-weight: 600; }
+.pd-seg button:hover { color: var(--fg-2); }
+.pd-seg button.on { background: var(--raised); color: var(--fg); font-weight: 600; }
 
 .pd-msg { padding: 14px 6px; font-size: 12px; color: var(--muted); }
 .pd-msg .hint { display: block; margin-top: 6px; line-height: 1.5; }
@@ -1182,45 +977,12 @@ input, select { font-family: inherit; }
 /* flex:none so the list SCROLLS. Left to flex, six cards share the dock's
    height and every one of them loses its score row. */
 
-.pc-score { font-size: 21px; font-weight: 600; line-height: 1; }
 .pc-tier { font-size: 9.5px; font-weight: 600; letter-spacing: 0.08em; }
-.pc-effort {
-  margin-left: auto; flex: none;
-  font-size: 9.5px; font-weight: 600; letter-spacing: 0.06em;
-  padding: 3px 7px; border-radius: 5px;
-  background: rgba(138, 147, 166, 0.12); color: var(--muted);
-}
-.pc-effort.free { background: rgba(46, 204, 113, 0.13); color: var(--green); }
-.pc-effort.light { background: rgba(245, 166, 35, 0.13); color: var(--amber-light); }
-.pc-effort.heavy { background: rgba(248, 113, 113, 0.13); color: var(--red); }
 
 .pc-role { width: 20px; flex: none; font-size: 9px; font-weight: 600; text-align: center; }
-.pc-role.vox { color: var(--violet); }
-.pc-role.bed { color: var(--cyan); }
-.pc-art { width: 24px; height: 24px; flex: none; border-radius: 4px; }
-.pc-sidetext { min-width: 0; flex: 1; }
-.pc-title {
-  display: block;
-  font: 500 11.5px var(--font-ui); color: var(--text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.pc-span {
-  font-size: 10.5px; color: var(--muted);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.pc-key {
-  flex: none; font-size: 10.5px; font-weight: 600; color: #07090d;
-  padding: 2px 5px; border-radius: 4px;
-}
-.pc-key.none { background: var(--raised); color: var(--faint-2); }
-/* The song's own tempo, beside its key. Fixed width so the column lines up
-   down the dock. */
+.pc-role.vox { color: var(--run); }
+.pc-role.bed { color: var(--link); }
 
-.pc-tag { font-size: 10px; font-weight: 600; padding: 3px 6px; border-radius: 4px; }
-.pc-tag.neutral { background: rgba(138, 147, 166, 0.12); color: var(--text-2); }
-.pc-tag.muted { background: rgba(138, 147, 166, 0.12); color: var(--muted); }
-.pc-tag.harmony { background: rgba(167, 139, 250, 0.14); color: var(--violet); }
-.pc-tag.clash { background: rgba(248, 113, 113, 0.14); color: var(--red); }
 /* The recipe strip: what to do (graded like the effort chip) and what to
    listen out for. */
 .pc-recipe { padding: 0 11px 9px; display: flex; flex-direction: column; gap: 4px; }
@@ -1229,31 +991,12 @@ input, select { font-family: inherit; }
   color: var(--faint); width: 38px; flex: none; }
 .pc-adj { font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px;
   border: 1px solid transparent; cursor: help; }
-.pc-adj.free { background: rgba(46, 204, 113, 0.10); color: var(--green); }
-.pc-adj.light { background: rgba(245, 166, 35, 0.12); color: var(--amber-light); }
-.pc-adj.heavy { background: rgba(248, 113, 113, 0.14); color: var(--red); }
-.pc-warn { font-size: 10.5px; color: var(--amber-light); }
+.pc-adj.free { background: rgba(46, 204, 113, 0.10); color: var(--ok); }
+.pc-adj.light { background: rgba(245, 166, 35, 0.12); color: var(--star); }
+.pc-adj.heavy { background: rgba(248, 113, 113, 0.14); color: var(--fail); }
+.pc-warn { font-size: 10.5px; color: var(--star); }
 .pc-warn + .pc-warn::before { content: "·"; margin-right: 4px; color: var(--faint); }
 .pc-recipe.compact .pc-watch { display: none; }
-
-/* Unmeasured, not zero: a candidate scored before these terms were stored has
-   no value for them, and an empty bar would say it failed the test. */
-
-.pc-loop {
-  margin-left: auto; cursor: pointer; border: none; background: transparent;
-  font: 500 10.5px var(--font-ui); color: var(--muted); padding: 0;
-}
-.pc-loop:hover { color: var(--text-2); }
-.pc-studio {
-  cursor: pointer; border: none; background: transparent;
-  font: 600 10.5px var(--font-ui); color: var(--accent-light); padding: 0;
-}
-.pc-studio:hover { color: var(--accent); }
-.pc-hide {
-  cursor: pointer; border: none; background: transparent; padding: 0 2px;
-  font-size: 12px; color: var(--faint-2); transition: color 0.12s;
-}
-.pc-hide:hover { color: var(--red); }
 
 /* ── the transport bar (56px) ──────────────────────────────────────────── */
 /* The bar is the last child of .app-main, not a cell of .lib-layout — it has
@@ -1334,22 +1077,22 @@ input, select { font-family: inherit; }
    source — the widget itself is parked off-screen. */
 .tr-src {
   font: 500 10px var(--font-mono); color: var(--muted); text-decoration: none;
-  padding: 3px 7px; border-radius: 5px; border: 1px solid var(--border-ctrl);
+  padding: 3px 7px; border-radius: 5px; border: 1px solid var(--line-2);
   white-space: nowrap;
 }
-.tr-src:hover { color: var(--accent-light); border-color: var(--accent); }
+.tr-src:hover { color: var(--link); border-color: var(--accent); }
 .tr-dismiss {
   width: 22px; height: 22px; flex: none; cursor: pointer; border-radius: 5px;
-  background: transparent; border: 1px solid var(--border-ctrl);
+  background: transparent; border: 1px solid var(--line-2);
   color: var(--faint); font-size: 9px;
 }
-.tr-dismiss:hover { color: var(--text-2); border-color: var(--border-top); }
+.tr-dismiss:hover { color: var(--fg-2); border-color: var(--line-soft); }
 
 /* Each source kind tints its own play button, so a glance at the bar says what
    you are listening to without reading it. A looping section is not its own
    kind — it is a window on a track — so the amber follows the loop. */
 .transport.is-looping .tr-play { background: var(--link); }
-.transport.k-sc .tr-play { background: var(--cyan); }
+.transport.k-sc .tr-play { background: var(--link); }
 /* A stem with no separated file is offered but not clickable — the alternative
    is a button whose only outcome is a 404 that wipes the source. */
 .tr-stems button:disabled { opacity: 0.35; cursor: not-allowed; }
@@ -1360,11 +1103,11 @@ input, select { font-family: inherit; }
   padding: 0; background: none; border: 0; cursor: pointer;
   font: inherit; letter-spacing: inherit; color: inherit; text-align: left;
 }
-.sort-head:hover { color: var(--text-2); }
-.sort-head.on { color: var(--accent-light); }
+.sort-head:hover { color: var(--fg-2); }
+.sort-head.on { color: var(--link); }
 .sort-head .sh-label { overflow: hidden; text-overflow: ellipsis; }
 .sort-head .sh-arrow { font-size: 7px; line-height: 1; }
-.sh-sep { color: var(--faint-2); margin: 0 1px; }
+.sh-sep { color: var(--disabled); margin: 0 1px; }
 .tt-h, .sc-h { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .tt-h.right, .sc-h.right { justify-content: flex-end; }
 
@@ -1376,86 +1119,17 @@ input, select { font-family: inherit; }
   cursor: pointer; border: none; background: transparent; padding: 0;
   font: 500 12px var(--font-ui); color: var(--muted);
 }
-.crumb:hover { color: var(--text-2); }
-
-/* ── hero ──────────────────────────────────────────────────────────────── */
-
-/* Play the whole record, on the stem the segmented control is showing. The
-   library row could do this and the track's own screen could not — it only
-   offered twelve-second sections of the thing you came here to hear. */
-
-/* ── structure strip ───────────────────────────────────────────────────── */
-
-/* Blocks are absolutely positioned in SECONDS, on the same axis as the loop and
-   the playhead below. They used to be flex children sized by bar count, which
-   is a different axis — and `flex: n` expands to `flex: n 1 0%`, so the 1px gaps
-   and the 1px dividers were taken out of the distributable space BEFORE the
-   proportional split while the percentage-positioned playhead paid nothing. On a
-   700px strip with 12 sections that is ~3.3% of the width, drifting worst at the
-   end of the track. Hence: no gap, no border-right, one axis. */
-
-/* A seek surface, not a picture. touch-action keeps a drag from scrolling the
-   page out from under the playhead. */
-/* 1.5px is not a grab target, so widen the hit area without widening the line. */
-/* Which stem the selected layer actually is. */
-
-/* ── section table ─────────────────────────────────────────────────────── */
+.crumb:hover { color: var(--fg-2); }
 
 /* ── partners rail ─────────────────────────────────────────────────────── */
 .partners {
-  min-width: 0; border-left: 1px solid var(--border-top); background: var(--topbar);
+  min-width: 0; border-left: 1px solid var(--line-soft); background: var(--bar);
   display: flex; flex-direction: column; overflow: hidden;
 }
-
-.partner {
-  flex: none; cursor: pointer;
-  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
-  padding: 9px 10px; display: flex; flex-direction: column; gap: 7px;
-}
-.partner:hover { border-color: var(--border-ctrl); }
-.partner.playing { box-shadow: inset 3px 0 0 var(--green); }
-
-/* The partner's title walks to ITS track. Scoped under .partner on purpose:
-   .pc-title is shared with PairCard, where nothing is clickable, and giving
-   that class a link treatment would put a phantom affordance on every pair. */
-/* Same trick as .tt-title: the ellipsis lives on the text, not on the line, or
-   a long partner title swallows its own chevron. */
-.pc-text {
-  min-width: 0;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.partner:hover .partner-go { opacity: 1; }
-
-/* ══════════════════════════════════════════════════════════════════════════
- * Studio (screen 1c) — re-layout
- *
- * The geometry is load-bearing. `.studio-grid`'s first column plus its
- * column-gap MUST equal MixStudio's HEADER_W (150), because that constant is
- * what converts pixels to seconds and what positions the playhead. The lane
- * cards are box-sizing:border-box for the same reason: a card that measured its
- * padding on top of its width would push every canvas out of line with the
- * ruler above it.
- * ══════════════════════════════════════════════════════════════════════════ */
-
-/* ── the four-row grid ─────────────────────────────────────────────────── */
-
-/* ── the 138px lane card ───────────────────────────────────────────────── */
-
-/* One playhead over every row. `left` is set inline to exactly HEADER_W plus
-   the pixel offset, which is why the gutter arithmetic has to agree. */
-
-/* ── adjustments rail ──────────────────────────────────────────────────── */
-
-/* The matcher's suggestion. Grey and thin on purpose — it is a reference mark,
-   not a control, and a manual edit reads as distance from it. */
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Discover (1d) and Mixes (1e)
  * ══════════════════════════════════════════════════════════════════════════ */
-
-/* ── Discover: main + 340px shortlist dock ─────────────────────────────── */
-/* A hidden pane still occupies its grid cells, so each pane is its own
-   sub-grid: the keep-mounted trick would otherwise leave two docks stacked. */
 
 /* ── results table ─────────────────────────────────────────────────────── */
 
@@ -1471,15 +1145,10 @@ input, select { font-family: inherit; }
 
 .crate-new { display: flex; gap: 5px; padding: 4px; }
 .crate-new input {
-  flex: 1; min-width: 0; font: 400 11.5px var(--font-ui); color: var(--text);
-  background: var(--inset-2); border: 1px solid var(--border-ctrl);
+  flex: 1; min-width: 0; font: 400 11.5px var(--font-ui); color: var(--fg);
+  background: var(--bg-sunk); border: 1px solid var(--line-2);
   border-radius: 5px; padding: 4px 7px;
 }
-
-/* ── Mixes: rail + 268px list + board ──────────────────────────────────── */
-/* The bookmarklet is a LINK, not a button, because installing it means dragging
-   it to the bookmarks bar — only an <a href> can be dragged there. */
-/* A button that reads as a link — the paste toggle sits inside a sentence. */
 
 /* ── Library groups ─────────────────────────────────────────────────────────
    A crate, seen from the library side. The rail rows and the Group chip reuse
@@ -1488,30 +1157,25 @@ input, select { font-family: inherit; }
    other chips do not. What is new here is only the three places a group is
    NAMED: the detail hero, the importer's save box and Discover's dock. */
 
-/* On the track screen: which shelves this record is on. .crate-chip already
-   says "a crate holds this", and it is the same claim. */
-
 /* The importer's "save this import as a group" box. It sits between the preview
    and the Save button because that is the order the decision happens in: you
    look at what you are importing, then name it. */
 .group-save {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin-top: 12px; padding: 9px 11px;
-  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
-  font: 500 12px var(--font-ui); color: var(--text-2); cursor: pointer;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
+  font: 500 12px var(--font-ui); color: var(--fg-2); cursor: pointer;
 }
 .group-save .group-name {
   flex: 1; min-width: 160px;
-  background: var(--bg); color: var(--text);
-  border: 1px solid var(--border-ctrl); border-radius: 6px;
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line-2); border-radius: 6px;
   padding: 4px 8px; font: 500 12px var(--font-ui);
 }
 .group-save .group-name:disabled { opacity: 0.45; cursor: not-allowed; }
 /* The hint takes the whole second line: at this width it would otherwise squeeze
    the name field down to a few characters. */
 .group-save .hint { flex-basis: 100%; font-size: 10.5px; line-height: 1.45; }
-
-/* Discover's dock: import the set you are looking at AS a set. */
 
 /* A group this track is already on. Not disabled-looking by accident: the
    button IS disabled, because adding it twice is a no-op the server would
@@ -1525,22 +1189,22 @@ input, select { font-family: inherit; }
 .tt-src {
   flex: none; margin-left: 6px; padding: 0 5px; border-radius: 4px;
   font-size: 9.5px; font-weight: 600; line-height: 1.6;
-  color: var(--muted); border: 1px solid var(--border-ctrl); cursor: help;
+  color: var(--muted); border: 1px solid var(--line-2); cursor: help;
 }
-.tt-src.unverified { color: var(--amber); border-color: rgba(245, 166, 35, 0.45); }
+.tt-src.unverified { color: var(--warn); border-color: rgba(245, 166, 35, 0.45); }
 
 .audio-src {
   display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin: -6px 0 12px; font: 400 12px var(--font-ui); color: var(--muted);
 }
-.audio-src a { color: var(--text-2); text-decoration: none; }
-.audio-src a:hover { color: var(--accent-light); text-decoration: underline; }
-.audio-src-sub.unverified, .audio-src-sub.unverified a { color: var(--amber); }
+.audio-src a { color: var(--fg-2); text-decoration: none; }
+.audio-src a:hover { color: var(--link); text-decoration: underline; }
+.audio-src-sub.unverified, .audio-src-sub.unverified a { color: var(--warn); }
 
 .asp {
   display: flex; flex-direction: column; gap: 6px;
   margin: 0 0 14px; padding: 10px 12px;
-  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; background: var(--panel);
 }
 .tt-menu .asp { width: 440px; max-width: 80vw; margin: 4px 0; }
 .asp-head {
@@ -1550,77 +1214,32 @@ input, select { font-family: inherit; }
 .asp-note { font-size: 11px; line-height: 1.45; }
 .asp-row {
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 10px; align-items: center; padding: 5px 0; border-top: 1px solid var(--hair);
+  gap: 10px; align-items: center; padding: 5px 0; border-top: 1px solid var(--line-soft);
 }
 .asp-text { min-width: 0; display: flex; flex-direction: column; }
 .asp-title {
-  font: 500 12px var(--font-ui); color: var(--text); text-decoration: none;
+  font: 500 12px var(--font-ui); color: var(--fg); text-decoration: none;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.asp-title:hover { color: var(--accent-light); text-decoration: underline; }
+.asp-title:hover { color: var(--link); text-decoration: underline; }
 .asp-meta { font-size: 10.5px; color: var(--faint); }
 .asp-verdict { font-size: 10.5px; color: var(--faint); max-width: 200px; text-align: right; }
-.asp-verdict.ok { color: var(--green, #4ade80); }
+.asp-verdict.ok { color: var(--ok); }
 
 /* ── Analysis panel (readme §9, C) ─────────────────────────────────────── */
-
-/* Attribute columns in the Library and the Track detail card (readme §9, C) */
-
-/* Pair dock: search, filters, paging, batch export. */
-
-/* Section table: measured per-section columns. */
-
-/* Library: attribute filter menu. */
-
-/* Queue: per-pool typical time and ETA. */
-
-/* Analysis: analyser status strip. */
 
 /* Crates: new crate from pasted links. */
 .crate-import { display: flex; flex-direction: column; gap: 6px; padding: 6px 0 10px; }
 .crate-import input, .crate-import textarea {
-  background: var(--inset-2); color: var(--text); border: 1px solid var(--border-ctrl);
+  background: var(--bg-sunk); color: var(--fg); border: 1px solid var(--line-2);
   border-radius: 6px; padding: 5px 7px; font: 400 12px var(--font-ui); resize: vertical;
 }
 
 /* ── Sets: mashups in running order ──────────────────────────────────────── */
-.pc-addset {
-  cursor: pointer; border: 1px solid var(--border-ctrl); background: transparent;
-  border-radius: 999px; font: 600 10px var(--font-ui); color: var(--green);
-  padding: 1px 7px;
-}
-.pc-addset:hover { border-color: var(--green); }
-.head-btn.danger:hover { color: var(--red); border-color: var(--red); }
-/* The pair's recipe, on its own line under the sides. */
-/* How each mashup comes in: the suggested move, overridable. */
-/* Tempo curve control. */
-/* The set as a mix: blocks on A/B decks over time. */
-/* What comes next. */
-
-/* ── Dock: keepers, landing key, section type, plain exports ─────────────── */
-
-/* ── Studio picker: fit to the timeline, and matcher-scored layers ───────── */
-
-/* ── Mixes: documented pairs as the engine sees them ─────────────────────── */
-
-/* ── Pair card: artists and the song-level ("track fit") bars ────────────── */
+.head-btn.danger:hover { color: var(--fail); border-color: var(--fail); }
 
 /* ── Library: mashup columns ─────────────────────────────────────────────── */
 .tt-shape { width: 100%; height: 18px; display: block; }
-
-/* ── Structure strip: bar ruler, energy curve, key lane ──────────────────── */
-
-/* ── Studio rail: per-lane filters ───────────────────────────────────────── */
-
-/* ── Library: suspected half/double-time tempo ───────────────────────────── */
-
-/* ── Pair notes and the dock's side-by-side compare ──────────────────────── */
-.pc-note input, .rail-note {
-  width: 100%; box-sizing: border-box; background: var(--inset); border: 1px solid var(--border-ctrl);
-  border-radius: 6px; color: var(--text-2); font: 11.5px var(--font-ui); padding: 4px 7px;
-}
-
-/* ── Discover: fit hints, roles, library gaps ────────────────────────────── */
 
 /* ── Help ────────────────────────────────────────────────────────────────── */
 .rail-help.new { color: var(--ok); border-color: var(--ok); font-size: 11px; }
@@ -1630,39 +1249,30 @@ input, select { font-family: inherit; }
 }
 .help-panel {
   width: 760px; max-width: 100%; max-height: 86vh; overflow-y: auto; background: var(--panel);
-  border: 1px solid var(--border-ctrl); border-radius: 12px; padding: 18px 22px 22px;
-  color: var(--text-2); font-size: 13px; line-height: 1.55;
+  border: 1px solid var(--line-2); border-radius: 12px; padding: 18px 22px 22px;
+  color: var(--fg-2); font-size: 13px; line-height: 1.55;
 }
 .help-head { display: flex; align-items: center; justify-content: space-between; }
-.help-head h2 { margin: 0; color: var(--text); font-size: 18px; }
+.help-head h2 { margin: 0; color: var(--fg); font-size: 18px; }
 .help-panel h3 { margin: 18px 0 6px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--muted); }
 .help-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
-.help-steps b { color: var(--text); }
+.help-steps b { color: var(--fg); }
 .help-glossary { display: grid; grid-template-columns: 220px 1fr; gap: 6px 14px; margin: 0; }
-.help-glossary dt { color: var(--text); font-weight: 600; }
+.help-glossary dt { color: var(--fg); font-weight: 600; }
 .help-glossary dd { margin: 0; }
-
-/* ── Analysis: two tracks side by side ───────────────────────────────────── */
 
 /* ── Section lines (lyric cues) ──────────────────────────────────────────── */
 
 /* Settings → Tuning: what your ratings say about each scored term. */
 .term-table { width: 100%; border-collapse: collapse; font-size: 10.5px; }
 .term-table th { text-align: left; color: var(--faint); font-weight: 600; padding: 2px 4px; }
-.term-table td { padding: 2px 4px; border-top: 1px solid var(--border); white-space: nowrap; }
-.term-table td.good { color: var(--green); }
-.term-table td.bad { color: var(--red); }
-.term-table tr.measured td:first-child { color: var(--cyan); }
+.term-table td { padding: 2px 4px; border-top: 1px solid var(--line); white-space: nowrap; }
+.term-table td.good { color: var(--ok); }
+.term-table td.bad { color: var(--fail); }
+.term-table tr.measured td:first-child { color: var(--link); }
 .term-table .term-verdict { color: var(--muted); white-space: normal; }
 .term-reasons { margin-top: 6px; font-size: 11px; color: var(--muted); display: grid; gap: 2px; }
-
-/* The dock's freshness strip: stale pairs and the one-click re-score. */
-
-/* A pair as a two-line row (every pair but the focused one, which is the full
-   card). Same .pair-card box, so the list, focus scrolling and spacing hold. */
-
-/* Analysis → Compare: the two tracks as a pair, both ways round. */
 
 /* ========================================================================== *
  * Revamp primitives (components/ui/primitives.jsx)
@@ -2346,9 +1956,6 @@ input, select { font-family: inherit; }
 .sg-cards { display: flex; flex-direction: column; gap: 12px; width: 400px; max-width: 100%; }
 .pd-filterdone { margin-left: auto; }
 
-/* ========================================================================== *
- * Track detail (revamp 1c) — inside the Library column, beside the dock
- * ========================================================================== */
 /* The Library stays mounted under its Track detail so esc returns to the same
    filters, selection and scroll; hidden, not unmounted. */
 .lib-main { position: relative; }
@@ -2808,7 +2415,7 @@ input, select { font-family: inherit; }
 .sc-row.picked { background: var(--accent-bg); }
 .sc-row.cursor { box-shadow: inset 2px 0 0 var(--accent); background: var(--select); }
 .sc-row.owned .sc-title { color: var(--muted); }
-.sc-row.current .sc-title, .sc-row.playing .sc-title { color: var(--accent-light); }
+.sc-row.current .sc-title, .sc-row.playing .sc-title { color: var(--link); }
 .sc-row .cbox { cursor: pointer; padding: 0; background: none; }
 .sc-row .cbox.on { background: var(--accent); }
 .sc-row .cbox.off { opacity: 0.35; cursor: default; }
@@ -2980,7 +2587,7 @@ input, select { font-family: inherit; }
 .mx-paste:focus { border-color: var(--accent); }
 .mx-bookmarklet {
   height: 26px; display: inline-flex; align-items: center; padding: 0 10px; cursor: grab;
-  border: 1px dashed var(--accent); border-radius: var(--r-ctl); color: var(--accent-light);
+  border: 1px dashed var(--accent); border-radius: var(--r-ctl); color: var(--link);
   font-size: 12px; text-decoration: none; white-space: nowrap;
 }
 .mx-key { display: flex; flex-direction: column; gap: 6px; }
@@ -2997,7 +2604,7 @@ input, select { font-family: inherit; }
 .mx-card .t { font-size: 12.5px; font-weight: 500; line-height: 1.3; }
 .mx-card .m { display: flex; gap: 8px; font-size: 10.5px; color: var(--muted); }
 .mx-card .m .lnk { color: var(--ok); }
-.mx-card .m .lib { color: var(--accent-light); }
+.mx-card .m .lib { color: var(--link); }
 .mx-bar { height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; display: flex; }
 .mx-bar i { height: 100%; }
 .mx-bar i.lib { background: var(--accent); }
@@ -3031,7 +2638,7 @@ input, select { font-family: inherit; }
 }
 .mx-chip .mono { font-size: 10px; opacity: 0.75; }
 .mx-chip.on { border-color: var(--line-2); background: var(--panel); color: var(--fg); }
-.mx-chip.lib { color: var(--accent-light); }
+.mx-chip.lib { color: var(--link); }
 .mx-chip.linked { color: var(--ok); }
 .mx-chip.flagged { color: var(--warn-soft); }
 .mx-chip.needs { color: var(--fail); }
@@ -3099,7 +2706,7 @@ input, select { font-family: inherit; }
   justify-self: start; height: 18px; display: inline-flex; align-items: center; padding: 0 6px;
   border-radius: var(--r-chip); font-size: 10.5px; white-space: nowrap;
 }
-.mx-flag.lib { background: var(--accent-bg); color: var(--accent-light); }
+.mx-flag.lib { background: var(--accent-bg); color: var(--link); }
 .mx-flag.ok { background: var(--accent-bg); color: var(--ok); }
 .mx-flag.check { background: var(--warn-bg); color: var(--warn-soft); }
 .mx-flag.needs { background: var(--idle-bg); color: var(--fail); }
@@ -3231,7 +2838,7 @@ input, select { font-family: inherit; }
 .ss-legend { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .ss-legend i { display: inline-block; }
 .ss-legend i.bpm { width: 14px; height: 2px; background: var(--fg); }
-.ss-legend i.key { width: 9px; height: 9px; border-radius: 50%; background: var(--violet); }
+.ss-legend i.key { width: 9px; height: 9px; border-radius: 50%; background: var(--run); }
 .ss-legend i.energy { width: 14px; border-top: 2px dashed var(--warn); }
 .set-tempo { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
 .set-tempo input {
@@ -3267,7 +2874,7 @@ input, select { font-family: inherit; }
 .ss-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding: 6px 7px; }
 .ss-top { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .ss-top .mono { flex: none; font-size: 10px; }
-.ss-kind { font-size: 9px; font-weight: 600; letter-spacing: 0.06em; color: var(--accent-light); }
+.ss-kind { font-size: 9px; font-weight: 600; letter-spacing: 0.06em; color: var(--link); }
 .set-tl-block.gap .ss-kind { color: var(--warn-soft); }
 .set-tl-block.break .ss-kind { color: var(--muted); }
 .ss-t1, .ss-t2 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -3471,7 +3078,7 @@ input, select { font-family: inherit; }
 .lh-btn:disabled { opacity: 0.4; cursor: default; }
 .lh-btn.on { border-color: var(--warn); color: var(--warn-soft); background: var(--warn-bg); }
 .lh-btn.solo.on { border-color: var(--ok); color: var(--ok); background: var(--accent-bg); }
-.lh-btn.sync.on { border-color: var(--accent); color: var(--accent-light); background: var(--accent-bg); }
+.lh-btn.sync.on { border-color: var(--accent); color: var(--link); background: var(--accent-bg); }
 .lh-btn.danger { color: var(--fail); }
 .studio-lane {
   position: relative; height: 64px; overflow: hidden; cursor: grab;
@@ -3500,7 +3107,7 @@ input, select { font-family: inherit; }
 .studio-empty .step { display: flex; align-items: baseline; gap: 10px; line-height: 1.5; }
 .studio-empty .n {
   width: 20px; height: 20px; flex: none; border-radius: 50%; text-align: center; line-height: 20px;
-  background: var(--panel); color: var(--accent-light); font-size: 11px;
+  background: var(--panel); color: var(--link); font-size: 11px;
 }
 .studio-scroll { flex: none; width: calc(100% - 150px); margin: 4px 0 4px 150px; accent-color: var(--accent); height: 12px; }
 .studio-keys {
@@ -3527,8 +3134,8 @@ input, select { font-family: inherit; }
 .sp-card.on { border-color: var(--accent); }
 .sp-cardhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .sp-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--accent); }
-.sp-dot.c0 { background: var(--cyan); } .sp-dot.c1 { background: var(--amber); }
-.sp-dot.c2 { background: var(--violet); } .sp-dot.c3 { background: var(--green); }
+.sp-dot.c0 { background: var(--link); } .sp-dot.c1 { background: var(--warn); }
+.sp-dot.c2 { background: var(--run); } .sp-dot.c3 { background: var(--ok); }
 .sp-dot.c4 { background: var(--vocal); } .sp-dot.c5 { background: var(--accent); }
 .sp-dot.c6 { background: var(--warn); } .sp-dot.c7 { background: var(--bed); }
 .sp-role { flex: none; font-size: 9px; font-weight: 600; color: var(--muted); }
@@ -3601,7 +3208,7 @@ input, select { font-family: inherit; }
   height: 22px; padding: 0 6px; border: 1px solid var(--line-2); border-radius: var(--r-chip);
   background: var(--panel); color: var(--fg-2); font: 600 9.5px var(--font-ui); cursor: pointer;
 }
-.studio-stem-btns button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-light); }
+.studio-stem-btns button:hover:not(:disabled) { border-color: var(--accent); color: var(--link); }
 .studio-stem-btns button:disabled { opacity: 0.35; cursor: default; }
 .layer-sugs { display: flex; flex-direction: column; gap: 8px; padding: 2px 4px 8px; border-bottom: 1px solid var(--line-soft); }
 .layer-sug-group { display: flex; flex-direction: column; gap: 3px; }

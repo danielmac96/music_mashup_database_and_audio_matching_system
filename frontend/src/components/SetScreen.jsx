@@ -196,7 +196,7 @@ function FlowGraph({ items, f, layout, pps, curve, sel, onCurve, onCommit }) {
     c.setTransform(dpr, 0, 0, dpr, 0, 0);
     c.clearRect(0, 0, W, FLOW_H);
     const ink = { band: cssVar("--well"), grid: cssVar("--line-soft"), label: cssVar("--faint"),
-                  fg: cssVar("--fg"), key: cssVar("--violet"), warn: cssVar("--warn"),
+                  fg: cssVar("--fg"), key: cssVar("--run"), warn: cssVar("--warn"),
                   sel: cssVar("--accent-bg"), bg: cssVar("--bg") };
     c.fillStyle = ink.band; c.fillRect(0, 10, W, 80); c.fillRect(0, 100, W, 80);
     c.font = `9.5px ${cssVar("--font-mono") || "monospace"}`; c.textBaseline = "top";

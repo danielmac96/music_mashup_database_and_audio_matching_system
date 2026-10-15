@@ -304,11 +304,11 @@ here* pill shows until it has been opened once. In a dev build (`npm run dev`),
 `?styleguide` (or ◇ in the rail) shows every token and shared primitive
 (`components/ui/primitives.jsx`).
 
-The UI is mid-revamp (`design_handoff_mashup_engine_revamp/`, §9 item 9): colours,
-type and spacing are the `:root` tokens in `styles.css` (`--bg`, `--fg`, `--vocal`,
-`--bed`, `--accent`, the status and tier colours…); the old variable names are
-aliases to them until the last screen is rebuilt. Canvas code reads a token with
-`theme.cssVar`. Camelot chips use the Mixed In Key wheel (`theme.camelotColor`).
+Colours, type and spacing are the `:root` tokens in `styles.css` (`--bg`,
+`--fg`, `--vocal`, `--bed`, `--accent`, the status, tier and section colours…;
+the revamp, §9 item 9). Nothing outside `:root` writes a hex colour, and no
+component does: canvas code reads a token with `theme.cssVar`. Camelot chips
+use the Mixed In Key wheel (`theme.camelotColor`).
 
 ### Library
 
@@ -2287,8 +2287,12 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    grid, the bottom Adjustments panel with per-lane cards, suggestion ticks
    from `plan.lanes` and the Uses strip; the FL session now sends the lanes;
    the side rail is gone).
-   Next: 8 clean-up (drop the legacy CSS aliases and dead rules, check
-   1280, 1440 and 1920 wide).
+   8 (clean-up: the legacy colour aliases are gone — every rule and component
+   reads the tokens; unreferenced rules and the comments that described them
+   are pruned; no hex outside `:root`; Help's steps, glossary and keys match
+   the screens). Not done in 8: a walk at 1280×720, 1440×900 and 1920×1080 —
+   the scratch server was stopped for memory before it could run; the screens
+   were each checked at 1440 as they landed.
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in
 Discover (nothing external is analysed — rows show the tempo an upload prints,

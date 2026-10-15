@@ -116,9 +116,9 @@ export function keyRel(vocalCamelot, instCamelot) {
     suggest = candidates.reduce((best, s) => (Math.abs(s) < Math.abs(best) ? s : best));
   }
 
-  const green = { tagColor: "var(--green)", tagBg: "rgba(46,204,113,0.13)", color: "var(--green)" };
-  const amber = { tagColor: "var(--amber-light)", tagBg: "rgba(245,166,35,0.13)", color: "var(--amber-light)" };
-  const red = { tagColor: "var(--red)", tagBg: "rgba(248,113,113,0.13)", color: "var(--red)" };
+  const green = { tagColor: "var(--ok)", tagBg: "rgba(46,204,113,0.13)", color: "var(--ok)" };
+  const amber = { tagColor: "var(--star)", tagBg: "rgba(245,166,35,0.13)", color: "var(--star)" };
+  const red = { tagColor: "var(--fail)", tagBg: "rgba(248,113,113,0.13)", color: "var(--fail)" };
 
   if (steps === 0 && sameLetter) {
     return { ...green, tag: "SAME KEY", arrow: "=", suggest: 0,
@@ -300,9 +300,9 @@ export function fmtPlays(n) {
 // The number's colour carries popularity, so the column reads without being
 // compared row to row.
 export function playsColor(n) {
-  if (!n) return "var(--faint-2)";
-  if (n >= 500_000) return "var(--green)";
-  if (n >= 50_000) return "var(--text-2)";
+  if (!n) return "var(--disabled)";
+  if (n >= 500_000) return "var(--ok)";
+  if (n >= 50_000) return "var(--fg-2)";
   return "var(--faint)";
 }
 
@@ -312,7 +312,7 @@ export function playsColor(n) {
 export function fmtYear(year) {
   return year ? String(year) : "—";
 }
-export const yearColor = (year) => (year ? "var(--text-2)" : "var(--faint-2)");
+export const yearColor = (year) => (year ? "var(--fg-2)" : "var(--disabled)");
 
 // The year a Discover row actually shows: its own release_year when SoundCloud
 // carries one, the upload year otherwise. It lives here, beside fmtYear, so the
