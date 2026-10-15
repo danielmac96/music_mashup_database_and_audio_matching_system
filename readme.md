@@ -293,7 +293,10 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
 The shell is a left **rail** (Library · Queue · Analysis · Discover · Mixes · Sets ·
 Studio, plus library groups, the screen's status readout, **?** help and ⚙ Settings) and
 one 56px **player bar** at the bottom that every screen shares. The rail collapses to
-56px with **«** (remembered as `mashup.rail.v1`); at its foot a **pipeline readout**
+56px with **«** (remembered as `mashup.rail.v1`). Its foot shows the scorer,
+the **judged** count and **tuning ♥ x/10 ✗ y/10** — how far your 4–5★ and
+1–2★ ratings are from the 10 each the term report needs (§5.7) before it can
+say which terms agree with your ears — and a **pipeline readout**
 ("7 running · 271 waiting · 51 failed · clears in ~2.9 h", from `/api/jobs/queue` and
 the library's `error_*` tracks) opens the Queue. **⌘K** (ctrl+K) opens a command
 palette — Go to · Actions · Saved views · Tracks (from two characters) · Pairs (the
@@ -379,7 +382,10 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
   the list is scoped to — or **Best in library**. Keys (when the table does
   not have focus — tab across): `↑↓` move · `space` loop · `1–5` rate and move
   on, still looping · `⏎` expand · double-click open in Studio · `V`/`B` solo ·
-  `h` hide · `a` add to the active set · `c` compare the two tracks in Analysis.
+  `h` hide · `a` add to the active set · `c` compare the two tracks in Analysis
+  · `q w e r t y u` tag the WHY reasons of the pair just rated (for 8 s after a
+  rating, even once auto-advance has moved the cursor on — `usePairDock`
+  `lastRated`).
   **auto-advance** (in the key strip, on unless you switch it off; remembered
   per browser) is the "move on" after a rating.
 - **Tier chips** (Strong / Good / Maybe / Long-shot, with counts) narrow the
@@ -397,7 +403,7 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
 - **The library-wide row**: the search box (either side's title or artist,
   across every scored pair; two songs as **`A + B`** or `A w/ B` find the pairs
   of exactly those two, either way round — `models._two_track_query`; no result
-  says they were never scored together and why that usually is), **★ Keepers**
+  says they were never scored together and why that usually is), **★ Keepers** (empty, it says to rate a pair 4–5★ — not to loosen filters)
   (the pairs you rated 4–5, every section pairing, uncapped), **Sort** (Score,
   Effort, Uncertain, or one section term — Section / Length / Vocal / Phrase;
   every order but Effort is the server's, so it ranks the library; an
@@ -420,7 +426,8 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
   key chip and BPM; then the result line — the percentile, the tier, `→` the
   landing key with the bed's transpose (or same key / relative / ±1 step), the
   stretch `Δ%` with ½× / 2× when folded, ▶ and the stars. ⏎ or a click
-  **expands** it: the two sections (label, span, bars, the vocal section's line
+  **expands** it (a click on an expanded card collapses it only once a
+  double-click is ruled out, so double-click opens Studio from either state): the two sections (label, span, bars, the vocal section's line
   when you have typed one) with their waveforms; the **recipe** (§5.7) as a
   **DO** row of what building it takes (`bed at half time`, `bed tempo −1.5%`,
   `bed +3 st`, `nudge bed +12 ms`, `loop bed ×2`, `bed −6.0 dB`, `bed high-pass
@@ -439,7 +446,9 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
   and **⊘ Hide** (a display preference, never a verdict — Undo on the toast,
   or *Show hidden* in Filters, or ⚙ restores it). Clicking the star you
   already set **clears** the rating, which removes the judgement entirely (§7).
-  Once rated, a **WHY** row offers reasons — praise for 4–5 stars (vocal sits,
+  Once rated, a **WHY** row offers reasons — on the expanded card, and for
+  8 s under a collapsed card you just rated (each chip with its key), so a
+  reason never needs the card opened first — praise for 4–5 stars (vocal sits,
   groove locks, energy lift, keys sing, great contrast), faults for 1–2 (key
   clash, timing off, vocal buried, bass mud, energy mismatch, bad separation,
   boring), both for a 3. They sit beside the verdict

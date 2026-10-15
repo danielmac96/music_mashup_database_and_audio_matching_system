@@ -153,7 +153,10 @@ def test_cards_are_compact_and_expand_on_enter():
     hook = _read("hooks/usePairDock.js")
     assert 'if (e.key === "Enter") { e.preventDefault(); toggleExpand(row); return; }' in hook
     card = _read("components/PairCard.jsx")
-    assert "onClick={onToggle} onDoubleClick={onStudio}" in card
+    # The click toggles (an expanded card's collapse waits out a double-click,
+    # phase 2) and a double-click opens Studio.
+    assert "onClick={onClick} onDoubleClick={onDoubleClick}" in card
+    assert "onToggle?.()" in card and "onStudio?.()" in card
     assert "{expanded && (" in card
 
 
@@ -194,8 +197,8 @@ def test_the_filter_overlay_is_easy_to_put_away():
 
 def test_rating_a_card_keeps_it_focused_for_the_why_chips():
     """A click on a star moves the cursor to that card (it does not advance);
-    the WHY chips then show on its expanded state."""
+    the WHY chips then show on it, expanded or not (phase 2)."""
     dock = _read("components/PairDock.jsx")
-    assert "onRate={(n) => { setCursor(i); ratings.rate(c, n); }}" in dock
+    assert "onRate={(n) => { setCursor(i); ratings.rate(c, n); dock.noteRated?.(c, n); }}" in dock
 
 

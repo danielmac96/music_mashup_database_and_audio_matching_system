@@ -24,7 +24,7 @@ const DOCK_MIN = 320;
 const DOCK_MAX = 640;
 const DOCK_DEFAULT = 400;
 
-const KEYS = "↑↓ move · space loop · 1–5 rate · ⏎ expand · V/B solo · h hide · a +set · c compare";
+const KEYS = "↑↓ move · space loop · 1–5 rate · q–u why · ⏎ expand · V/B solo · h hide · a +set · c compare";
 
 // Values offered by the library-wide menus. Bands, not free ranges, because
 // they are what the server accepts (database/models.py ERA_BANDS etc.).
@@ -193,6 +193,10 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
     c.compat?.genre?.vocal ?? c.vocal_genre, c.compat?.genre?.bed ?? c.inst_genre,
   ]).filter(Boolean))].sort();
   const empty = !error && !loading && rows.length === 0;
+  // Keepers on its own, with nothing kept: the cause is "no 4–5★ ratings",
+  // not a filter to loosen.
+  const keepersOnly = filters.rated === "loved" && nServer === 1 && !filters.search
+    && !Object.values(ratings.byPair || {}).some((n) => n >= 4);
 
   // The card list, with a header before each tier (Score order only).
   const items = [];
@@ -214,7 +218,8 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
     items.push(
       <PairCard key={k} candidate={c}
         rating={ratings.ratingOf(c)}
-        onRate={(n) => { setCursor(i); ratings.rate(c, n); }}
+        onRate={(n) => { setCursor(i); ratings.rate(c, n); dock.noteRated?.(c, n); }}
+        justRated={dock.lastRated?.key === k}
         reasons={ratings.reasonsOf ? ratings.reasonsOf(c) : []}
         onReason={ratings.toggleReason ? (r) => ratings.toggleReason(c, r) : null}
         focused={i === cursor}
@@ -605,7 +610,11 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
               </span>
             </div>
           )}
-          {empty && (nServer > 0 || filters.search) && !TWO_TRACK.test(filters.search) && (
+          {empty && keepersOnly && (
+            <div className="pd-msg"><b>No keepers yet.</b>
+              <span>Rate a pair 4–5★ (or press 4 or 5 on it) to keep it here.</span></div>
+          )}
+          {empty && !keepersOnly && (nServer > 0 || filters.search) && !TWO_TRACK.test(filters.search) && (
             <div className="pd-msg"><b>No pairs match these filters.</b>
               <span>Loosen a filter, or reset them.</span></div>
           )}

@@ -241,6 +241,9 @@ input, select { font-family: inherit; }
   font-size: 10px; color: var(--muted); white-space: nowrap;
 }
 .rail-judged { color: var(--muted); }
+.rail-scorer { flex-wrap: wrap; row-gap: 2px; }
+.rail-tuning { flex: 1 1 100%; color: var(--faint); }
+.rail-tuning.ready { color: var(--ok); }
 .rail-btn {
   height: 26px; min-width: 26px; padding: 0 6px; flex: none; cursor: pointer;
   border: 1px solid var(--line-2); border-radius: var(--r-ctl);
@@ -1946,6 +1949,8 @@ input, select { font-family: inherit; }
   color: var(--fg); padding: 0 8px; font: 400 12px var(--font-ui);
 }
 .pcx-why { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.pc-why { padding: 6px 0 2px; }
+.pcx-reason .kbd { margin-right: 4px; }
 .pcx-reason {
   height: 22px; padding: 0 8px; border-radius: 11px; border: 1px solid var(--line-2);
   background: none; color: var(--fg-2); cursor: pointer; font: 400 11px var(--font-ui);

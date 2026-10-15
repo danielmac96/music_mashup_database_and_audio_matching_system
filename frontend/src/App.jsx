@@ -432,6 +432,7 @@ export default function App() {
         settingsOpen={settingsOpen}
         onOpenSettings={() => setSettingsOpen((v) => !v)}
         judged={ratings.count}
+        tuning={ratings.tuning}
         onHelp={openHelp} helpSeen={helpSeen}
         status={headerStatus?.text ? (
           // The screen's status readout lives in the rail, not floating over

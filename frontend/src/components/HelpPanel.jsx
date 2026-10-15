@@ -8,7 +8,7 @@ import { useEffect } from "react";
 const STEPS = [
   ["Get tracks in", "Library → ＋ Import: paste a SoundCloud or YouTube link (a track or a whole set), or dig in Discover and import your shortlist. Each track downloads, splits into a vocal and an instrumental stem, and is analysed — tempo, key, sections. The Queue (or the rail's pipeline readout) shows where each one is."],
   ["Score the library", "The dock's ↻ Re-score (or ⚙ → Score library). Every vocal section is tried over every instrumental section; the best pairings land in the pair dock on the right of the Library."],
-  ["Audition pairs", "In the dock, ↑↓ moves, space loops the pair (the vocal's section over the bed's), 1–5 rates it and moves on. Select a library row to see the pairs for that track — As vocal or As bed."],
+  ["Audition pairs", "In the dock, ↑↓ moves, space loops the pair (the vocal's section over the bed's), 1–5 rates it and moves on, and q w e r… tag why on the pair you just rated. Select a library row to see the pairs for that track — it opens on the side holding its best pair."],
   ["Keep the good ones", "★ Keepers lists what you rated 4–5. + Set (or a) puts a pair into the active set — the running order of your mix."],
   ["Build it", "⏎ expands a card; Open in Studio lays the pair out conformed and lined up. Nudge, transpose, trim or extend, fade, high-pass the bed, add a second vocal from ＋ Add, then Render ▾ a WAV, stems or an FL Studio session."],
   ["Plan the mix", "Sets: drag slots into order, shape the energy curve, fill gaps from the suggestions, preview each transition, open the pairs in Studio back to back, and export a cue sheet, CSV, rekordbox XML or FL sessions."],
@@ -40,7 +40,7 @@ const KEYS = [
   ["Discover", "⏎ search (or paste a link) · ↓ into the results · ↑↓ move · x shortlist · ⏎ preview a track, open a set or artist · / back to the search"],
   ["Mixes › Match", "click a vocal, then the bed it went over · esc cancel the pick · ctrl/⌘+Z undo the last move"],
   ["Sets", "←/→ select a slot · alt+←/→ move it · t preview the transition · g insert a gap after · del remove (Undo on the toast) · esc deselect · flow graph: drag an energy point, shift-click adds, double-click removes"],
-  ["Pair dock", "↑↓ move · space loop · 1–5 rate and move on (again to clear) · ⏎ expand the card · double-click open in Studio · V/B solo vocal/bed · h hide · a add to set · c compare the two tracks in Analysis"],
+  ["Pair dock", "↑↓ move · space loop · 1–5 rate and move on (again to clear) · q–u tag why (8 s after a rating) · ⏎ expand the card · double-click open in Studio · V/B solo vocal/bed · h hide · a add to set · c compare the two tracks in Analysis"],
   ["Studio", "space play · ←/→ nudge the selected lane a beat (shift: a bar) · m mute · s solo · ⏎ next pair · del remove the lane · L loop · [ ] timing options · 1–6 jump · ctrl/⌘+Z undo · shift+ctrl/⌘+Z redo · drag a clip (alt: off the grid) · drag an edge to trim or extend · alt+click a beat line sets bar 1"],
   ["Everywhere", "⌘K / ctrl+K command palette (↑↓ move · ⏎ open · esc close) · / focus search · space play/pause the player bar · esc back one layer · ? this help"],
   ["Player bar", "click or drag the strip to seek · ←/→ nudge 5 s (shift 15 s) · Home to the start"],

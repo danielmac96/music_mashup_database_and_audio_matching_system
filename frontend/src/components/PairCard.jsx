@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { StarRating } from "./StarRating";
 import { CompatMeter, KeyChip, MiniWave } from "./ui/primitives";
 import { useWaveform } from "../hooks/useWaveform";
 import {
-  BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, pctOf, reasonsFor, songTermsOf, termsOf, tierOf,
+  BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, pctOf, REASON_KEYS, reasonsFor, songTermsOf, termsOf,
+  tierOf,
 } from "./pairs/pairModel";
 import { compatColor, fmtTime } from "../theme";
 
@@ -59,7 +60,7 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
                            onHide = null, onAddToSet = null, setName = null,
                            note = "", onNote = null, onCompare = null,
                            reasons = [], onReason = null, durationOf = () => null,
-                           hidden = false }) {
+                           hidden = false, justRated = false }) {
   const tier = tierOf(c);
   const ck = c.compat?.key || {};
   const cb = c.compat?.bpm || {};
@@ -76,11 +77,24 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
   const genreDiffers = cg.same === false;
   const fmtBpm = (v) => (v != null ? Number(v).toFixed(1) : "—");
 
+  // A click on an expanded card collapses it only once a double-click is ruled
+  // out: collapsing at once moved the card under the pointer, so the second
+  // click of a double-click landed elsewhere and Studio never opened.
+  const clickTimer = useRef(null);
+  useEffect(() => () => clearTimeout(clickTimer.current), []);
+  const onClick = (e) => {
+    if (e.detail > 1) return;
+    if (!expanded) { onToggle?.(); return; }
+    clearTimeout(clickTimer.current);
+    clickTimer.current = setTimeout(() => onToggle?.(), DBL_CLICK_MS);
+  };
+  const onDoubleClick = () => { clearTimeout(clickTimer.current); onStudio?.(); };
+
   return (
     <div className={`pair-card${focused ? " focused" : ""}${expanded ? " expanded" : ""}`
         + `${playing ? " playing" : ""}${hidden ? " is-hidden" : ""}`}
       title="Click to expand (⏎) · double-click opens Studio"
-      onClick={onToggle} onDoubleClick={onStudio}>
+      onClick={onClick} onDoubleClick={onDoubleClick}>
       <div className="pc-grid">
         <span className="pc-role vox mono">VOX</span>
         <div className="pc-name"><span className="t vox">{c.vocal_title || "—"}</span>
@@ -126,6 +140,13 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
           <StarRating value={rating} onRate={onRate} size={11} />
         </div>
       </div>
+
+      {!expanded && justRated && rating && onReason && (
+        <div className="pc-why" onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}>
+          <WhyRow rating={rating} reasons={reasons} onReason={onReason} keys />
+        </div>
+      )}
 
       {expanded && (
         <Expanded c={c} rating={rating} note={note} onNote={onNote} reasons={reasons}
@@ -240,16 +261,7 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
           }} />
       )}
 
-      {rating && onReason && (
-        <div className="pcx-why"
-          title="Why this rating? Never changes the verdict — it is what the scorer's terms get checked against">
-          <span className="caps">WHY</span>
-          {reasonsFor(rating).map((x) => (
-            <button key={x.key} className={`pcx-reason ${x.tone}${reasons.includes(x.key) ? " on" : ""}`}
-              onClick={() => onReason(x.key)}>{x.label}</button>
-          ))}
-        </div>
-      )}
+      {rating && onReason && <WhyRow rating={rating} reasons={reasons} onReason={onReason} />}
 
       <div className="pcx-actions">
         <button className="btn-primary" onClick={onStudio} title="Open both tracks in Studio">Open in Studio</button>
@@ -269,6 +281,25 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+const DBL_CLICK_MS = 260;
+
+// The reasons beside a verdict (never in place of one). `keys` shows the key
+// that tags each one — q w e r… — on the row under a card just rated.
+function WhyRow({ rating, reasons, onReason, keys = false }) {
+  return (
+    <div className="pcx-why"
+      title="Why this rating? Never changes the verdict — it is what the scorer's terms get checked against">
+      <span className="caps">WHY</span>
+      {reasonsFor(rating).map((x, i) => (
+        <button key={x.key} className={`pcx-reason ${x.tone}${reasons.includes(x.key) ? " on" : ""}`}
+          onClick={() => onReason(x.key)}>
+          {keys && REASON_KEYS[i] && <span className="kbd">{REASON_KEYS[i]}</span>}{x.label}
+        </button>
+      ))}
     </div>
   );
 }

@@ -79,7 +79,7 @@ export function usePipelineReadout(tracks) {
 
 export function Sidebar({ route, onRoute, counts = {}, children,
                           onOpenSettings, settingsOpen, status = null,
-                          judged = null, onHelp = null, helpSeen = true,
+                          judged = null, tuning = null, onHelp = null, helpSeen = true,
                           collapsed = false, onToggle, pipeline = null,
                           onOpenPalette, onStyleguide = null }) {
   // The footer says which scorer is ranking pairs and how many judgements it
@@ -150,6 +150,12 @@ export function Sidebar({ route, onRoute, counts = {}, children,
               {judged != null || scorer
                 ? `${fmtCount(judged ?? scorer?.n_judgments ?? 0)} judged` : ""}
             </span>
+            {tuning && (
+              <span className={`rail-tuning${tuning.loved >= tuning.need && tuning.rejected >= tuning.need ? " ready" : ""}`}
+                title={`The term report (⚙ Tuning) reads which scoring terms agree with your ears once it has ${tuning.need} pairs rated 4–5★ and ${tuning.need} rated 1–2★`}>
+                tuning ♥ {Math.min(tuning.loved, tuning.need)}/{tuning.need} ✗ {Math.min(tuning.rejected, tuning.need)}/{tuning.need}
+              </span>
+            )}
           </div>
         )}
         <button className="rail-btn mono" onClick={onOpenPalette}

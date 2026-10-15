@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
 import { onNextForSet } from "../dockModes";
-import { keyOf, SCORE_TERMS } from "../components/pairs/pairModel";
+import { keyOf, REASON_KEYS, reasonsFor, SCORE_TERMS } from "../components/pairs/pairModel";
 import { TIERS } from "../theme";
 
 // The pair dock: what it shows, where the cursor is, and what the keyboard does.
@@ -306,6 +306,19 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     setCursor((c) => Math.max(0, Math.min(visibleRef.current.length - 1, c + delta)));
   }, []);
 
+  // The pair just rated, for 8 s: its card shows the WHY chips even when
+  // collapsed, and q w e r t y u tag them — after auto-advance has moved the
+  // cursor on, the keys still mean the pair you just judged.
+  const [lastRated, setLastRated] = useState(null);   // { key, candidate, n }
+  const noteRated = useCallback((candidate, n) => {
+    if (candidate && n) setLastRated({ key: keyOf(candidate), candidate, n });
+  }, []);
+  useEffect(() => {
+    if (!lastRated) return undefined;
+    const t = setTimeout(() => setLastRated(null), 8000);
+    return () => clearTimeout(t);
+  }, [lastRated]);
+
   const toggleExpand = useCallback((candidate) => {
     if (!candidate) return;
     const k = keyOf(candidate);
@@ -317,6 +330,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   const rateAndAdvance = useCallback((candidate, n) => {
     if (!candidate) return;
     ratings.rate(candidate, n);
+    noteRated(candidate, n);
     if (!autoAdvance) return;
     const list = visibleRef.current;
     const at = list.findIndex((c) => keyOf(c) === keyOf(candidate));
@@ -325,7 +339,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     setCursor(at + 1);
     if (expanded === keyOf(candidate)) setExpanded(keyOf(list[at + 1]));
     if (wasLooping) play(list[at + 1]);
-  }, [ratings, autoAdvance, armedKey, audio, play, expanded]);
+  }, [ratings, autoAdvance, armedKey, audio, play, expanded, noteRated]);
 
   // Hiding is a display preference, not a verdict: it is suppressed by the SQL
   // and never becomes training data. The card goes at once, and the toast's
@@ -394,11 +408,22 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       if (e.key >= "1" && e.key <= "5" && row) {
         e.preventDefault();
         rateAndAdvance(row, Number(e.key));
+        return;
+      }
+      const ri = REASON_KEYS.indexOf(e.key.toLowerCase());
+      if (ri >= 0 && lastRated && ratings.toggleReason) {
+        const reason = reasonsFor(lastRated.n)[ri];
+        if (reason) {
+          e.preventDefault();
+          ratings.toggleReason(lastRated.candidate, reason.key);
+          setLastRated((r) => (r ? { ...r } : r));      // keep the chips up another 8 s
+        }
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cursor, move, play, toggleExpand, hide, audio, onAddToSet, onCompare, rateAndAdvance]);
+  }, [cursor, move, play, toggleExpand, hide, audio, onAddToSet, onCompare, rateAndAdvance,
+      lastRated, ratings]);
 
   return {
     order, setOrder, rows: visible, loaded: rows.length, filteredCount: filtered.length,
@@ -409,6 +434,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     hiddenCount: hiddenKeys.size,
     isHidden: (c) => hiddenKeys.has(keyOf(c)),
     cursor, setCursor, current, armedKey, expanded, setExpanded, toggleExpand,
+    lastRated, noteRated,
     play, move, openStudio, hide, unhide, rateAndAdvance, bindKeys, audio,
     reload, autoAdvance, setAutoAdvance,
     nextFor, clearNextFor,
