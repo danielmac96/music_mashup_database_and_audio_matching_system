@@ -62,8 +62,11 @@ def test_breaks_and_gaps_are_not_graded_but_take_time():
     f = flow(items)
     assert [t["grade"] for t in f["transitions"]] == ["none", "none", "none"]
     assert all(t["move"] is None and t["overlap_secs"] == 0 for t in f["transitions"])
-    assert f["starts"] == [0, 40, 70, 110]
-    assert f["total_secs"] == 200
+    # A pair plays its slot length (32 bars at its landing tempo), not just
+    # its vocal section; a break and a gap their own seconds.
+    play = 32 * 240.0 / 124
+    assert f["starts"] == pytest.approx([0, play, play + 30, 2 * play + 30], abs=0.01)
+    assert f["total_secs"] == pytest.approx(2 * play + 120, abs=0.01)
     assert f["grades"]["smooth"] == 0
 
 
@@ -72,7 +75,8 @@ def test_a_track_lands_at_its_own_tempo_and_key():
     track = {"item_id": 2, "kind": "track", "song_id": 9, "bpm": 126.0,
              "camelot": "9A", "song_duration": 200.0}
     f = flow([_pair(1, 124, "8A"), track])
-    assert f["landings"][1] == {"bpm": 126.0, "camelot": "9A", "secs": 200.0, "bed_shift": None}
+    assert f["landings"][1] == {"bpm": 126.0, "camelot": "9A", "secs": 200.0,
+                                "vocal_secs": None, "play_bars": None, "bed_shift": None}
     t = f["transitions"][0]
     assert t["grade"] == "smooth" and t["fit"] == "ok"
     # Two tracks never look like a bed or vocal swap (None == None).

@@ -1026,7 +1026,7 @@ _CRATES_OPTIONAL_COLUMNS = (
 # means "not set": no curve (every mashup at its vocal's tempo, as before) and
 # the suggested transition.
 _SETS_OPTIONAL_COLUMNS = (("tempo_plan_json", "TEXT"), ("energy_plan_json", "TEXT"))
-_SET_ITEMS_OPTIONAL_COLUMNS = (("transition_json", "TEXT"),)
+_SET_ITEMS_OPTIONAL_COLUMNS = (("transition_json", "TEXT"), ("play_bars", "INTEGER"))
 
 SET_ITEM_KINDS = ("pair", "track", "break", "gap")
 _SET_ITEMS_INDEXES = (
@@ -4472,10 +4472,14 @@ def add_set_item(set_id: int, vocal_song_id: Optional[int] = None,
 
 
 def update_set_item(set_id: int, item_id: int, *, label=_UNSET, duration_secs=_UNSET,
-                    db_path: Path = DB_PATH) -> bool:
-    """A slot's label (a break's name) or length. False when the item is not in
-    this set."""
+                    play_bars=_UNSET, db_path: Path = DB_PATH) -> bool:
+    """A slot's label (a break's name), length, or how many bars a pair or
+    track plays (None: setflow.DEFAULT_PLAY_BARS). False when the item is not
+    in this set."""
     cols, args = [], []
+    if play_bars is not _UNSET:
+        cols.append("play_bars=?")
+        args.append(int(play_bars) if play_bars else None)
     if label is not _UNSET:
         cols.append("label=?")
         args.append((label or "").strip() or None)
@@ -4594,6 +4598,7 @@ def get_set(set_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
         base = {
             "item_id": it["id"], "position": it["position"], "kind": kind,
             "label": it.get("label") or "", "duration_secs": it.get("duration_secs"),
+            "play_bars": it.get("play_bars"),
             "transition": json.loads(it["transition_json"]) if it.get("transition_json") else None,
         }
         if kind == "track":

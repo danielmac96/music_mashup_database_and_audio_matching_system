@@ -107,6 +107,8 @@ class ItemBody(BaseModel):
 class ItemEditBody(BaseModel):
     label: Optional[str] = Field(default=None, max_length=120)
     duration_secs: Optional[float] = Field(default=None, ge=1, le=3600)
+    # Bars a pair or track plays for; null resets to setflow.DEFAULT_PLAY_BARS.
+    play_bars: Optional[int] = Field(default=None, ge=4, le=256)
 
 
 class ReorderBody(BaseModel):
@@ -166,7 +168,8 @@ def add_item(set_id: int, body: ItemBody) -> dict:
 
 @router.patch("/{set_id}/items/{item_id}")
 def edit_item(set_id: int, item_id: int, body: ItemEditBody) -> dict:
-    """A break's label and length (5–240 s in the UI), a gap's length."""
+    """A break's label and length (5–240 s in the UI), a gap's length, how
+    many bars a pair or track plays."""
     kw = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
     if not update_set_item(set_id, item_id, **kw):
         raise HTTPException(status_code=404, detail="item not in this set")

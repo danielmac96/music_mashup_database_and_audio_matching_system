@@ -395,8 +395,33 @@ async def t_set_view(pg, P, rng, st):
     empty = await pg.locator(".ss-empty").all_inner_texts()
     notes = []
     if slots == 0: notes.append(f"set empty: {empty[:1]}")
-    rough = [f for f in fits if "!" in f]
-    return dict(ok=slots > 0, notes=notes, data=dict(slots=slots, fits=fits[:12], head=head[:200]))
+    # The set as the API sees it: its clock, its repeats, its suggestions.
+    sets = api("/api/sets").get("sets", [])
+    sid = max((x for x in sets), key=lambda x: x.get("updated_at") or "", default={}).get("id")
+    clock = repeats_seen = repeats_flagged = relaxed_bad = None
+    if sid:
+        d = api(f"/api/sets/{sid}")
+        items = [i for i in d.get("items", []) if (i.get("kind") or "pair") == "pair"]
+        f = d.get("flow") or {}
+        clock = round((f.get("total_secs") or 0) / max(1, len(items)), 1)
+        repeats_seen = repeats_flagged = 0
+        for k in range(2, len(items)):
+            back = {items[k - 2].get("vocal_song_id"), items[k - 2].get("inst_song_id")}
+            if {items[k].get("vocal_song_id"), items[k].get("inst_song_id")} & back:
+                repeats_seen += 1
+                t = (f.get("transitions") or [])[k - 1] if len(f.get("transitions") or []) >= k else {}
+                repeats_flagged += "repeat" in (t.get("violations") or [])
+        nxt = api(f"/api/sets/{sid}/next?limit=6").get("candidates", [])
+        relaxed_bad = sum(1 for c in nxt if not c.get("next_relaxed")
+                          and re.search(r"(\d+(?:\.\d+)?)% tempo", c.get("next_why") or "")
+                          and float(re.search(r"(\d+(?:\.\d+)?)% tempo", c["next_why"]).group(1)) > 4.0)
+        if clock is not None and clock < 40: notes.append(f"set clock only {clock}s per mashup")
+        if repeats_seen and repeats_flagged < repeats_seen:
+            notes.append(f"{repeats_seen - repeats_flagged} repeated records not flagged")
+        if relaxed_bad: notes.append(f"{relaxed_bad} 'easy' next moves outside ±4% tempo")
+    return dict(ok=slots > 0, notes=notes, data=dict(slots=slots, fits=fits[:12], head=head[:200],
+                secs_per_mashup=clock, repeats_seen=repeats_seen, repeats_flagged=repeats_flagged,
+                next_outside_rule=relaxed_bad))
 
 async def t_set_autoorder(pg, P, rng, st):
     await go(pg, "Sets")

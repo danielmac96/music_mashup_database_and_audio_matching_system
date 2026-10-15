@@ -770,13 +770,17 @@ line of points you drag (shift-click adds one, double-click removes one;
 holds zoom (− / + / Fit), the **tempo curve** (start → end BPM: every slot
 lands at its point on it, recipes re-priced — blank start = off), **⇅
 Auto-order** (smallest moves from the first slot; breaks and gaps keep their
-places) and **◫ Studio** (every pair back to back, each at its curve tempo).
+places) and **◫ Studio** (pairs back to back from the selected slot, each at
+its own landing tempo — the curve's point, or its vocal's — at most
+`STUDIO_CHAIN_MAX` = 12 at a time, which a toast says; an 82-lane Studio for a
+41-pair set was unreadable). Needs attention names a record that comes back
+too soon; What comes next marks a relaxed suggestion with what it breaks.
 
 The **inspector** (290 px) follows the selection. *Nothing*: the key path,
 **Needs attention** (every rough move — click one to select it), **What comes
 next** (pairs good on their own and an easy move from the last landing) and
 Delete (click twice). *A pair*: both sides with their sections, the landing,
-the recipe (DO row), its note, its fit from the slot before and into the slot
+**Plays 16 / 32 / 64 bars** (the slot's length in the set), the recipe (DO row), its note, its fit from the slot before and into the slot
 after, ▶ Loop, **Open in Studio**, Insert gap after, Remove. *A track*: the
 same for one song, with ▶ Preview and Open track. *A break*: its label and a
 5–240 s length slider. *A gap*: up to six pairs that fit **both** neighbours,
@@ -1466,13 +1470,22 @@ a shared bed → vocal swap (8 bars each), smooth → 8-bar blend, workable →
 4-bar blend, a jump of more than two key steps → echo out, else cut. The user's
 choice is stored on the **incoming** item (`set_items.transition_json`,
 `PUT /api/sets/{id}/items/{item}/transition`; an empty body resets) and the
-suggestion is kept beside it. Running time is the sum of the vocal sections
-minus each move's overlap (its bars at the incoming landing tempo), capped at
-half the shorter of the two — an 8-bar blend out of an 8-bar section would
-swallow it. **What comes next** (`next_candidates`, `GET /api/sets/{id}/next`):
+suggestion is kept beside it. Running time is the sum of the slots' **play
+lengths** — `set_items.play_bars` bars at the landing tempo, 32 by default
+(`DEFAULT_PLAY_BARS`): the vocal section is what is layered, not how long the
+mashup stays on, and counting only sections made a 41-pair set read 13½
+minutes — minus each move's overlap (its bars at the incoming landing tempo),
+capped at half the shorter of the two **vocal sections** — an 8-bar blend out
+of an 8-bar section would swallow it. A record that comes back within
+`REPEAT_WINDOW` (3) playable slots, other than in the slot right after (a bed
+or vocal swap), adds `repeat` to the move's `violations` and worsens its fit
+one notch (`repeated_song_ids` names it). **What comes next** (`next_candidates`, `GET /api/sets/{id}/next`):
 the top 400 scored pairs ranked by percentile − 0.06 × key steps − 0.02 ×
 |tempo %| (+0.05 for a shared record), landed at the curve's end tempo when
-there is one. **Auto-order** is greedy from a start item —
+there is one, **keeping only moves inside the fit rule** (key fits, ±4% after
+the fold, no record back too soon). When fewer than `NEXT_MIN_FITS` (4) fit,
+the closest others follow with `next_relaxed: true` and `next_violations` —
+"an easy move" used to include a 14% tempo jump. **Auto-order** is greedy from a start item —
 take the cheapest next move, cost = steps + tempo% / 3 (one wheel step weighs
 about a 3% tempo move, both what "smooth" allows) — which is what a DJ does by
 hand; it is advisory until posted to `/reorder`.
@@ -1481,7 +1494,8 @@ hand; it is advisory until posted to `/reorder`.
 song, landing at its own tempo and key — `set_items.song_id`), a `break` (a
 labelled pause, `duration_secs`, 30 s by default) or a `gap` (a placeholder to
 fill, 90 s). `POST /items` takes `kind` and an optional `position` to insert
-at; `PATCH /items/{item}` sets a break's label and length. Breaks and gaps are
+at; `PATCH /items/{item}` sets a break's label and length, and a pair's or
+track's `play_bars` (4–256; null back to the default). Breaks and gaps are
 never graded (a move touching one has grade and fit `none` and no overlap), take
 no point on the tempo curve, keep their places under Auto-order, and still
 advance the running time. Every graded move also carries the screen's **fit

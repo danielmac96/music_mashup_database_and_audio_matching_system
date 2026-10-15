@@ -142,7 +142,7 @@ def cue_sheet(items: Sequence[Dict], title: str = "") -> str:
     if title:
         lines += [title, "=" * len(title)]
     pairs = sum(1 for r in rows if r["kind"] == "pair")
-    lines.append(f"{pairs} mashups · {mmss(f['total_secs'])} of vocal sections")
+    lines.append(f"{pairs} mashups · {mmss(f['total_secs'])} running time")
     lines.append("")
     for r, k in zip(rows, written):
         t = trans[k]
