@@ -355,7 +355,7 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
           </select>
           <button className={`pd-exportbtn${exportOpen ? " on" : ""}`}
             onClick={() => setExportOpen((o) => !o)}
-            title="Export the top pairs under these filters: CSV, cue sheet, rekordbox XML or FL session folders">
+            title="Export the top pairs under these filters: CSV, cue sheet, rekordbox, Serato, Traktor or FL session folders">
             Export ▾
           </button>
         </div>
@@ -374,7 +374,9 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
               <span className="muted">as a file</span>
               {[["csv", "CSV", "One row per pair: both sides, sections, landing key and tempo, bed transpose, harmony, note"],
                 ["cue", "cue sheet", "A timed running order you can read or paste into a tracklist"],
-                ["rekordbox", "rekordbox", "rekordbox XML: each vocal's acapella and each bed, with a beat grid and a hot cue at the paired section"]]
+                ["rekordbox", "rekordbox", "rekordbox XML: each vocal's acapella and each bed, with a beat grid and a hot cue at the paired section"],
+                ["serato", "Serato", "A Serato crate of the same files, in order — put it in _Serato_/Subcrates"],
+                ["traktor", "Traktor", "A Traktor collection (.nml) with tempo, key and a hot cue at each paired section"]]
                 .map(([fmt, label, why]) => (
                   <button key={fmt} className="ui-btn" title={why} disabled={!rows.length || perVocal}
                     onClick={() => api.exportPairs(rows.slice(0, exportN), fmt, "pairs")

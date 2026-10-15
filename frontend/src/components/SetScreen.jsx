@@ -769,10 +769,11 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
       catch (e) { toast(`FL export: ${e.message}`); }
       return;
     }
-    if (format === "rekordbox") {
+    const usesBase = ["rekordbox", "serato", "traktor"].includes(format);
+    if (usesBase) {
       try { localStorage.setItem(BASE_KEY, base); } catch { /* ignore */ }
     }
-    window.location.href = api.setExportUrl(data.id, format, format === "rekordbox" ? base : "");
+    window.location.href = api.setExportUrl(data.id, format, usesBase ? base : "");
   };
 
   const del = async () => {
@@ -1052,6 +1053,8 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
                       placeholder="audio folder as rekordbox sees it (Docker: the host’s ./data/audio)"
                       title="Leave blank when rekordbox runs on the machine the library is on" />
                   </div>
+                  <button onClick={() => exportAs("serato")}><b>Serato crate</b><span>The same files in order — drop into _Serato_/Subcrates</span></button>
+                  <button onClick={() => exportAs("traktor")}><b>Traktor NML</b><span>A playlist with tempo, key and hot cues — Import Collection</span></button>
                   <button onClick={() => exportAs("fl")}><b>FL Studio sessions</b><span>One session folder per pair, aligned like Studio</span></button>
                   <button onClick={() => exportAs("csv")}><b>CSV</b><span>Every slot with its key, tempo, move and note</span></button>
                 </div>

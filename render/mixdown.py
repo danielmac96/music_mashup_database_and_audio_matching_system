@@ -25,7 +25,7 @@ from render.dsp import (
     MAX_CLIPS, MAX_RENDER_SECS, RENDER_SR, STEM_TYPES, AudioStackMissing,
     ProgressCb, apply_fades, apply_filters, clamp_gain, clamp_rate,
     clamp_semitones, conform, is_valid_token,
-    load_segment, peak_normalise, require_audio_stack, resolve_stem_path,
+    load_segment, require_audio_stack, resolve_stem_path,
 )
 
 log = logging.getLogger(__name__)
@@ -48,7 +48,8 @@ def mixdown_path(token: str) -> Optional[Path]:
 
 def build_mixdown(token: str, clips: list[dict],
                   on_progress: ProgressCb = None,
-                  db_path=None) -> Optional[Path]:
+                  db_path=None, loudness_target: Optional[float] = None,
+                  report: Optional[dict] = None) -> Optional[Path]:
     """Render `clips` to one WAV. Each clip dict:
         song_id: int, stem: str, offset_sec: float,
         rate: float (>0), semitones: int, gain: float (linear),
@@ -143,10 +144,19 @@ def build_mixdown(token: str, clips: list[dict],
         end = min(total, start + len(y))
         mix[start:end] += y[: end - start] * gain
 
-    mix = peak_normalise(mix)
+    # Mastered, not just un-clipped: to the loudness target when one is asked
+    # for, and never past −1 dBTP (render/master.py). A plain peak-normalise
+    # left exports at whatever level the lanes summed to, true peak 0 dBFS.
+    _tick(95, "Mastering (loudness, true-peak limit)…")
+    from render.master import master
+    mix, meas = master(mix, MIXDOWN_SR, target_lufs=loudness_target)
+    if report is not None:
+        report.update(meas)
 
     PREVIEWS_DIR.mkdir(parents=True, exist_ok=True)
     sf.write(str(out), mix.astype("float32"), MIXDOWN_SR)
-    _tick(100, "Mixdown ready")
+    lufs = f"{meas['lufs']:.1f} LUFS" if meas.get("lufs") is not None else "silent"
+    tp = f"{meas['true_peak']:.1f} dBTP" if meas.get("true_peak") is not None else ""
+    _tick(100, f"Mixdown ready — {lufs}{' · ' + tp if tp else ''}")
     log.info("studio mixdown rendered: %s (%d clips)", out.name, len(clips))
     return out

@@ -721,6 +721,9 @@ step). The player bar hides in Studio.
   percentile), **＋ Add**, and **Render ▾** — **WAV mixdown** (every audible
   lane, server-side with the same trims, fades and filters), **Stems per lane**
   (one WAV per audible lane, links appear in the header) and **FL session**
+  — the WAV is mastered to −14 LUFS / −1 dBTP, the header prints its measured
+  level, and **▶ hear export** plays the rendered file in place (the server's
+  stretch and mastering, exactly what shipped) —
   (§5.11; it now sends the pair's two lanes as they stand — rate, transpose,
   nudge off the matcher's, trim, level, fades, filters — and downloads the zip
   when built).
@@ -1417,13 +1420,25 @@ caches responses, and opens a breaker after repeated failures.
 ### 5.11 Rendering and export
 
 - **`render/dsp.py`** is shared by every offline render: load a segment, clamp
-  rate/semitones/gain, time-stretch then pitch-shift with librosa's phase
-  vocoder (skipped when identity), peak-normalise only if clipped. `rate` is
+  rate/semitones/gain, then stretch and shift — with **Rubber Band** (ffmpeg's
+  `rubberband` filter, one pass, `pitchq=quality`) when the build has it, else
+  librosa's phase vocoder (`stretch_engine`, `MASHUP_STRETCH=auto|rubberband|
+  librosa`; a Rubber Band failure falls back), skipped when identity.
+- **`render/master.py`** is the last stage of every mixdown and transition
+  render: integrated loudness (ITU-R BS.1770-4 — K-weighting, 400 ms blocks,
+  absolute and relative gates; a −20 dBFS 997 Hz sine reads −23.0 LUFS), true
+  peak at 4× oversampling, and a lookahead limiter that holds −1 dBTP. With a
+  `loudness_target` the mix is brought to it in two passes (limiting costs a
+  little loudness); without one only the ceiling applies and a quiet mix is
+  never boosted. It replaced a peak-normalise-if-clipped that left every
+  export at whatever level its lanes summed to. `rate` is
   playback speed, so display duration = raw duration / rate — the same maths as
   the browser's SoundTouch engine.
 - **Mixdown** (`render/mixdown.py`): N clips (song, stem, offset, rate,
-  semitones, gain, optional trim, fades, high/low-pass) summed on one timeline
-  → WAV. `offset_sec` is where the clip's **first rendered sample** lands — the
+  semitones, gain, optional trim, fades, high/low-pass) summed on one timeline,
+  mastered (`render/master.py`; `POST /api/studio/mixdown` takes
+  `loudness_target`, Studio sends −14 LUFS) → WAV; the job's result carries
+  the measured `lufs` and `true_peak`. `offset_sec` is where the clip's **first rendered sample** lands — the
   trim start when there is one (§7). Fades and filters are
   `dsp.apply_fades` / `apply_filters` (2nd-order Butterworth, the slope of
   Studio's Web Audio biquads).
@@ -1468,7 +1483,15 @@ caches responses, and opens a breaker after repeated failures.
   full mix's beat grid (`TEMPO` from the bar-1 beat) and a hot cue at the
   paired section, memory cues at every section. Files are referenced in place,
   not copied; `base` swaps the library root for the folder rekordbox sees
-  (Docker: the host's `./data/audio`). Serato and Traktor are not written.
+  (Docker: the host's `./data/audio`). The same collection (`_collect`: each
+  file once, its cues, the playlist order) also writes a **Serato crate**
+  (`.crate`: `vrsn`, then an `otrk`/`ptrk` per file, UTF-16BE paths relative to
+  the drive — drop it in `_Serato_/Subcrates`; the format has no cues) and a
+  **Traktor NML** (version 19: LOCATION as VOLUME + `/:`-joined DIR + FILE,
+  TEMPO, MUSICAL_KEY 0–23, a CUE_V2 hot cue per paired section, one playlist —
+  Import Collection). Not written: an Ableton `.als`, which like FL's `.flp`
+  needs a template set saved from the user's own Live version to be safe to
+  generate (§9 item 8.6).
   A set's **tracks** export as a row with only the bed side (rekordbox: the
   full track); a **break** is a CSV row (`kind=break`) and a cue with no
   track; a **gap** is written nowhere, and rekordbox leaves out breaks too.
@@ -1641,7 +1664,7 @@ read the endpoint (extra keys on pair rows, jobs and mixes are ignored).
 | `stems/separate.py` | Demucs / MDX-Net, two or four stems |
 | `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`; `essentia_groups.py` (the Essentia analyser), `ml_models.py` (the EffNet models: catalogue, download, predictors), `project.py` (payloads → `features` columns); `decode.py` (one decode per file + per-signal memo; ffprobe/FFmpeg decode for Essentia), `frames.py` (the shared transforms), `registry.py` (feature groups + versions), `cache.py` (content hash → cached group results); `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
 | `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py`, `setflow.py` (set transitions, §5.12), `recipe.py` (the bed's transpose, one definition — §7) |
-| `render/` | `dsp.py`, `mixdown.py`, `session.py`, `exports.py` (CSV, cue sheet, rekordbox XML) |
+| `render/` | `dsp.py`, `master.py` (loudness, true peak, limiter), `mixdown.py`, `session.py`, `exports.py` (CSV, cue sheet, rekordbox XML, Serato crate, Traktor NML) |
 | `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen`, `AnalysisScreen` + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, `useSets`, `usePairNotes`, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`, `attributes.js` (attribute formatting + `attr:` columns); `public/soundtouch-processor.js` |
 | `scripts/` | `bench_analyzers.py` — librosa vs Essentia timing + agreement on library tracks (§8) |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS |
@@ -2025,7 +2048,9 @@ import, which is the Windows leg (and native Windows). `tests/conftest.py` pins
 `analyzer=librosa` for every test (Essentia-mode tests opt in) and switches
 model downloads off (`MASHUP_ESSENTIA_MODEL_FETCH=0`): an analysis test must
 never fetch 30 MB over the network. It also sets `MASHUP_REACH_CHECK=0`, so the
-preview's reachability probe never leaves the machine. Running the Essentia tests inside the
+preview's reachability probe never leaves the machine, and `MASHUP_STRETCH=librosa`,
+so renders stay exact and ffmpeg-independent (`tests/test_phase6_export.py`
+opts into Rubber Band). Running the Essentia tests inside the
 container, unset its `MASHUP_*` path variables first, or they read the live
 `/data`.
 
@@ -2284,7 +2309,7 @@ driven by the 100-persona browser simulation (§9) against a synthesised
      vocal stem (a Whisper-class model) would be an optional analyser group
      like Essentia; HuggingFace was unreachable from the sandbox, so nothing
      was built that could not be tested.
-   - **Serato / Traktor exports** — only rekordbox XML is written.
+   - ~~**Serato / Traktor exports**~~ — written beside rekordbox (§5.11).
    - **The Library table scrolls inside itself below ~1500 px** — its default
      columns total 1088 px (1270 before Year, Length and Plays started hidden)
      beside the 400 px dock; the page itself never scrolls sideways (item 9).

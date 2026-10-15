@@ -135,15 +135,70 @@ def load_segment(path: Path, sr: int = RENDER_SR, *,
     return y
 
 
+def stretch_engine() -> str:
+    """Which engine conforms clips: `rubberband` (ffmpeg's filter, when the
+    build has it) or `librosa` (the phase vocoder). MASHUP_STRETCH=librosa or
+    =rubberband forces one; the default, `auto`, prefers Rubber Band — its
+    transients and pads survive a stretch the phase vocoder smears, so a
+    render sounds closer to Studio's SoundTouch playback (2026-10-15)."""
+    import os
+    want = os.environ.get("MASHUP_STRETCH", "auto").strip().lower()
+    if want == "librosa":
+        return "librosa"
+    if want in ("auto", "rubberband") and _rubberband_available():
+        return "rubberband"
+    return "librosa"
+
+
+_RB_CACHE: dict = {}
+
+
+def _rubberband_available() -> bool:
+    if "ok" not in _RB_CACHE:
+        import subprocess
+        try:
+            out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+                                 capture_output=True, text=True, timeout=20).stdout
+            _RB_CACHE["ok"] = " rubberband " in out
+        except Exception:  # noqa: BLE001 — no ffmpeg is "not available"
+            _RB_CACHE["ok"] = False
+    return _RB_CACHE["ok"]
+
+
+def _rubberband(y, sr: int, rate: float, semitones: int):
+    """Stretch by `rate` (playback speed) and shift by `semitones` in one
+    ffmpeg rubberband pass, mono float32 through pipes."""
+    import subprocess
+    np, _librosa, _sf = require_audio_stack()
+    af = (f"rubberband=tempo={rate:.6f}:pitch={2.0 ** (semitones / 12.0):.6f}"
+          ":pitchq=quality:transients=mixed")
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+           "-f", "f32le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
+           "-af", af, "-f", "f32le", "-ar", str(sr), "-ac", "1", "pipe:1"]
+    res = subprocess.run(cmd, input=np.asarray(y, dtype="float32").tobytes(),
+                         capture_output=True, timeout=900)
+    if res.returncode != 0 or not res.stdout:
+        raise RuntimeError(res.stderr.decode("utf-8", "replace")[:300] or "rubberband failed")
+    return np.frombuffer(res.stdout, dtype="float32").copy()
+
+
 def conform(y, sr: int, rate: float, semitones: int,
             on_progress: ProgressCb = None, label: str = ""):
     """Time-stretch then pitch-shift, decoupled. Returns the new samples.
 
     Both operations are skipped when they would be identity, so a clip that
     needs neither is returned untouched rather than round-tripped through a
-    phase vocoder for nothing.
+    phase vocoder for nothing. Rubber Band does both in one pass when
+    stretch_engine() picks it; a failure there falls back to the vocoder.
     """
     _np, librosa, _sf = require_audio_stack()
+    if (abs(rate - 1.0) > 1e-3 or semitones) and stretch_engine() == "rubberband":
+        if on_progress:
+            on_progress(None, f"{label}Rubber Band ×{rate:.3f}, {semitones:+d} st…")
+        try:
+            return _rubberband(y, sr, rate, semitones)
+        except Exception:  # noqa: BLE001
+            log.warning("rubberband failed; using the phase vocoder", exc_info=True)
     if abs(rate - 1.0) > 1e-3:
         if on_progress:
             on_progress(None, f"{label}time-stretching ×{rate:.3f}…")

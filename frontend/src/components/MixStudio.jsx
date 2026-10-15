@@ -508,6 +508,10 @@ export function placementFor(opt, vRate, bRate) {
 
 // ── main component ────────────────────────────────────────────────────────────
 
+// The WAV mixdown's loudness target (render/master.py): streaming-safe, so a
+// render is never crushed; the booth can always add gain.
+const MIXDOWN_LUFS = -14;
+
 export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                            onAppendNext = null, onAddToSet = null, setName = null,
                            notes = null }) {
@@ -540,6 +544,27 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   const [error, setError] = useState(null);
   const [exportJobId, setExportJobId] = useState(null);
   const [exportToken, setExportToken] = useState(null);
+  // "Hear export": the rendered WAV itself, played in place — what the
+  // server's Rubber Band and mastering made of the lanes, which is what
+  // ships, not the browser's SoundTouch preview of it.
+  const [exportMeas, setExportMeas] = useState(null);
+  const [hearing, setHearing] = useState(false);
+  const hearRef = useRef(null);
+  useEffect(() => () => { hearRef.current?.pause(); }, []);
+  const toggleHear = () => {
+    if (hearing) { hearRef.current?.pause(); setHearing(false); return; }
+    if (!exportToken) return;
+    engineRef.current?.stop();
+    if (!hearRef.current || hearRef.current.dataset.token !== exportToken) {
+      hearRef.current?.pause();
+      const a = new Audio(api.mixdownAudioUrl(exportToken));
+      a.dataset.token = exportToken;
+      a.onended = () => setHearing(false);
+      hearRef.current = a;
+    }
+    hearRef.current.play().then(() => setHearing(true))
+      .catch((e) => toast(`Could not play the export: ${e.message}`));
+  };
   const [sessionJobId, setSessionJobId] = useState(null);
   const [sessionToken, setSessionToken] = useState(null);
   const [dragSnapped, setDragSnapped] = useState(false);
@@ -1649,7 +1674,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     if (clips.length === 0) { toast("Nothing audible to export"); return; }
     setError(null);
     try {
-      const { job_id } = await api.startMixdown(clips);
+      const { job_id } = await api.startMixdown(clips, MIXDOWN_LUFS);
       setExportToken(null);
       setExportJobId(job_id);
       toast("Rendering mixdown WAV…");
@@ -1983,10 +2008,22 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
         {exportJobId && (
           <JobBadge jobId={exportJobId} onComplete={(job) => {
             setExportJobId(null);
-            if (job.status === "completed") { setExportToken(job.id); startDownload(api.mixdownAudioUrl(job.id)); }
+            if (job.status === "completed") {
+              setExportToken(job.id); setExportMeas(job.result || null);
+              startDownload(api.mixdownAudioUrl(job.id));
+            }
           }} />
         )}
         {exportToken && <a className="ui-link" href={api.mixdownAudioUrl(exportToken)} target="_blank" rel="noreferrer">↓ WAV</a>}
+        {exportToken && (
+          <button className="ui-link" onClick={toggleHear}
+            title="Play the rendered WAV — the server's stretch and mastering, exactly what was exported">
+            {hearing ? "■ stop export" : "▶ hear export"}</button>
+        )}
+        {exportToken && exportMeas?.lufs != null && (
+          <span className="mono muted small" title="Integrated loudness and true peak of the rendered WAV">
+            {exportMeas.lufs.toFixed(1)} LUFS · {exportMeas.true_peak?.toFixed(1)} dBTP</span>
+        )}
         {sessionJobId && (
           <JobBadge jobId={sessionJobId} onComplete={(job) => {
             setSessionJobId(null);

@@ -852,8 +852,9 @@ class PairExportBody(BaseModel):
 def export_pairs(body: PairExportBody):
     """The pairs the dock is showing, as CSV / cue sheet / rekordbox XML — the
     same files a set exports (render/exports.py)."""
-    if body.format not in ("csv", "cue", "rekordbox"):
-        raise HTTPException(status_code=400, detail="format must be csv, cue or rekordbox")
+    if body.format not in ("csv", "cue", "rekordbox", "serato", "traktor"):
+        raise HTTPException(status_code=400,
+                            detail="format must be csv, cue, rekordbox, serato or traktor")
     from api.routes.sets import export_response
     from database.models import candidate_for_pair, get_pair_notes
     notes = {(n["vocal_song_id"], n["inst_song_id"], n["vocal_section"],

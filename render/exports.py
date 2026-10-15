@@ -24,6 +24,7 @@ leaves out breaks as well.
 from __future__ import annotations
 
 import csv
+import re
 import io
 from typing import Callable, Dict, List, Optional, Sequence
 from urllib.parse import quote
@@ -207,15 +208,11 @@ def _file_url(path: str, base: Optional[str] = None, root: Optional[str] = None)
     return "file://localhost" + quote(full, safe="/:")
 
 
-def rekordbox_xml(items: Sequence[Dict], playlist: str,
-                  resolve: Callable[[int, str], Optional[Dict]],
-                  base: Optional[str] = None, root: Optional[str] = None) -> Dict:
-    """The XML and the audio files it references.
-
-    `resolve(song_id, stem)` returns {"path", "title", "artist", "bpm", "key",
-    "mode", "duration", "beat_times", "beat_phase", "sections"} or None when the
-    audio is not on disk. Returns {"xml": str, "files": [paths], "skipped": n}.
-    """
+def _collect(items: Sequence[Dict], resolve: Callable[[int, str], Optional[Dict]]):
+    """The files a set or pair list plays, once each, in first-play order, with
+    the cues each carries (≤ 8), and the playlist order as track ids — one
+    collection for rekordbox, Serato and Traktor, so the three exports name
+    the same files and cues. Returns (tracks, order, skipped)."""
     tracks: List[Dict] = []
     order: List[int] = []
     index: Dict[tuple, int] = {}
@@ -251,6 +248,19 @@ def rekordbox_xml(items: Sequence[Dict], playlist: str,
         add(it["inst_song_id"], "full", "", it.get("inst_section_start"),
             f"#{n} BED {it.get('inst_section_label') or ''}".strip())
 
+    return tracks, order, skipped
+
+
+def rekordbox_xml(items: Sequence[Dict], playlist: str,
+                  resolve: Callable[[int, str], Optional[Dict]],
+                  base: Optional[str] = None, root: Optional[str] = None) -> Dict:
+    """The XML and the audio files it references.
+
+    `resolve(song_id, stem)` returns {"path", "title", "artist", "bpm", "key",
+    "mode", "duration", "beat_times", "beat_phase", "sections"} or None when the
+    audio is not on disk. Returns {"xml": str, "files": [paths], "skipped": n}.
+    """
+    tracks, order, skipped = _collect(items, resolve)
     out = ['<?xml version="1.0" encoding="UTF-8"?>',
            '<DJ_PLAYLISTS Version="1.0.0">',
            '  <PRODUCT Name="Mashup Engine" Version="1.0" Company=""/>',
@@ -313,3 +323,104 @@ def library_resolver(db_path=None) -> Callable[[int, str], Optional[Dict]]:
                 "beat_phase": full.get("beat_phase") or 0,
                 "sections": models.get_sections(song_id, db_path=db)}
     return resolve
+
+
+# ── Serato and Traktor ────────────────────────────────────────────────────────
+
+def _local_path(path: str, base: Optional[str] = None, root: Optional[str] = None) -> str:
+    """The file's path as the DJ software's machine sees it: the library root
+    swapped for `base` (Docker's /data/audio → the host's folder), forward
+    slashes."""
+    full = str(path).replace("\\", "/")
+    if base and root:
+        r = str(root).replace("\\", "/").rstrip("/")
+        if full.startswith(r + "/"):
+            full = base.replace("\\", "/").rstrip("/") + full[len(r):]
+    return full
+
+
+def _serato_tag(name: bytes, payload: bytes) -> bytes:
+    import struct
+    return name + struct.pack(">I", len(payload)) + payload
+
+
+def serato_crate(items: Sequence[Dict], resolve: Callable[[int, str], Optional[Dict]],
+                 base: Optional[str] = None, root: Optional[str] = None) -> Dict:
+    """A Serato DJ crate (.crate): a `vrsn` header, then one `otrk` per file
+    holding its `ptrk` path, UTF-16BE, relative to the drive root (Serato
+    stores "Users/me/Music/x.mp3", no leading slash or drive letter). Drop it
+    in _Serato_/Subcrates on the drive that holds the audio. Cues are not
+    part of the crate format; the rekordbox XML carries them.
+    Returns {"data": bytes, "files": [...], "skipped": n}."""
+    tracks, order, skipped = _collect(items, resolve)
+    out = _serato_tag(b"vrsn", "1.0/Serato ScratchLive Crate".encode("utf-16-be"))
+    by_tid = {t["tid"]: t for t in tracks}
+    seen = set()
+    for tid in order:
+        if tid in seen:
+            continue
+        seen.add(tid)
+        p = _local_path(by_tid[tid]["path"], base, root)
+        p = re.sub(r"^[A-Za-z]:", "", p).lstrip("/")
+        out += _serato_tag(b"otrk", _serato_tag(b"ptrk", p.encode("utf-16-be")))
+    return {"data": out, "files": [t["path"] for t in tracks], "skipped": skipped}
+
+
+# Traktor's MUSICAL_KEY: 0–11 the major keys from C, 12–23 the minor keys from Cm.
+_PITCH = {n: i for i, n in enumerate(
+    ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"])}
+_PITCH.update({"Db": 1, "Eb": 3, "Gb": 6, "Ab": 8, "Bb": 10})
+
+
+def _traktor_location(path: str) -> Dict[str, str]:
+    """VOLUME / DIR / FILE as Traktor writes them: DIR is every folder
+    prefixed "/:" ("/:Users/:me/:Music/:"), VOLUME the drive ("C:") or empty
+    on a Unix path, where Traktor resolves from the root."""
+    p = path.replace("\\", "/")
+    m = re.match(r"^([A-Za-z]:)(/.*)$", p)
+    volume, rest = (m.group(1), m.group(2)) if m else ("", p)
+    folders = [x for x in rest.split("/")[:-1] if x]
+    return {"VOLUME": volume, "DIR": "".join(f"/:{f}" for f in folders) + "/:",
+            "FILE": rest.split("/")[-1]}
+
+
+def traktor_nml(items: Sequence[Dict], playlist: str,
+                resolve: Callable[[int, str], Optional[Dict]],
+                base: Optional[str] = None, root: Optional[str] = None) -> Dict:
+    """A Traktor collection (.nml, version 19) holding each file with its
+    tempo, key and the paired sections as hot cues, and one playlist in set
+    order. Import it from Traktor's browser (Import Collection).
+    Returns {"xml": str, "files": [...], "skipped": n}."""
+    tracks, order, skipped = _collect(items, resolve)
+    loc = {t["tid"]: _traktor_location(_local_path(t["path"], base, root)) for t in tracks}
+    out = ['<?xml version="1.0" encoding="UTF-8" standalone="no" ?>',
+           '<NML VERSION="19"><HEAD COMPANY="www.native-instruments.com" PROGRAM="Traktor"></HEAD>',
+           f'<COLLECTION ENTRIES="{len(tracks)}">']
+    for t in tracks:
+        name = t["title"] + (f" ({t['label']})" if t["label"] else "")
+        L = loc[t["tid"]]
+        out.append(f'<ENTRY TITLE={quoteattr(name)} ARTIST={quoteattr(t.get("artist") or "")}>')
+        out.append(f'<LOCATION DIR={quoteattr(L["DIR"])} FILE={quoteattr(L["FILE"])} '
+                   f'VOLUME={quoteattr(L["VOLUME"])} VOLUMEID={quoteattr(L["VOLUME"])}></LOCATION>')
+        out.append(f'<INFO PLAYTIME="{int(round(t.get("duration") or 0))}" '
+                   f'COMMENT="Mashup Engine export"></INFO>')
+        if t.get("bpm"):
+            out.append(f'<TEMPO BPM="{float(t["bpm"]):.6f}" BPM_QUALITY="100.000000"></TEMPO>')
+        if t.get("key") in _PITCH:
+            minor = (t.get("mode") or "").lower().startswith("min")
+            out.append(f'<MUSICAL_KEY VALUE="{_PITCH[t["key"]] + (12 if minor else 0)}"></MUSICAL_KEY>')
+        for num, (cname, at) in enumerate(t["cues"]):
+            out.append(f'<CUE_V2 NAME={quoteattr(cname)} DISPL_ORDER="0" TYPE="0" '
+                       f'START="{at * 1000.0:.6f}" LEN="0.000000" REPEATS="-1" HOTCUE="{num}"></CUE_V2>')
+        out.append("</ENTRY>")
+    out.append("</COLLECTION>")
+    out.append('<PLAYLISTS><NODE TYPE="FOLDER" NAME="$ROOT"><SUBNODES COUNT="1">')
+    out.append(f'<NODE TYPE="PLAYLIST" NAME={quoteattr(playlist)}>'
+               f'<PLAYLIST ENTRIES="{len(order)}" TYPE="LIST" UUID="">')
+    for tid in order:
+        L = loc[tid]
+        out.append(f'<ENTRY><PRIMARYKEY TYPE="TRACK" '
+                   f'KEY={quoteattr(L["VOLUME"] + L["DIR"] + L["FILE"])}></PRIMARYKEY></ENTRY>')
+    out.append("</PLAYLIST></NODE></SUBNODES></NODE></PLAYLISTS></NML>")
+    return {"xml": "\n".join(out) + "\n", "files": [t["path"] for t in tracks],
+            "skipped": skipped}

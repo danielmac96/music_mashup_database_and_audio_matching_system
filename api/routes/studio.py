@@ -62,6 +62,10 @@ class Clip(BaseModel):
 
 class MixdownRequest(BaseModel):
     clips: list[Clip]
+    # Integrated loudness to master to (render/master.py); null = only the
+    # −1 dBTP ceiling. Studio sends −14 (streaming-safe; a DJ can push it in
+    # the booth, nothing can undo a crushed render).
+    loudness_target: Optional[float] = Field(default=None, ge=-30, le=-6)
 
 
 def _require_songs(song_ids: list[int]) -> None:
@@ -87,7 +91,7 @@ def queue_mixdown(req: MixdownRequest, background: BackgroundTasks) -> dict:
 
     job_id = jobs.new_job(kind="mixdown", message="Queued for mixdown render")
     background.add_task(mixdown_worker.run, job_id,
-                        [c.render_clip() for c in req.clips])
+                        [c.render_clip() for c in req.clips], req.loudness_target)
     return {"job_id": job_id, "audio_url": f"/api/studio/mixdown/{job_id}/audio"}
 
 
