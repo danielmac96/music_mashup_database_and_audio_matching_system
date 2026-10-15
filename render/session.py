@@ -31,6 +31,7 @@ from typing import Optional
 
 from config import PREVIEWS_DIR
 from render.dsp import (
+    DUCK_MAX_DB, DUCK_SMOOTH_HZ, EQ_BANDS, EQ_RANGE_DB,
     MAX_RENDER_SECS, RENDER_SR, STEM_TYPES, AudioStackMissing, ProgressCb,
     clamp_rate, clamp_semitones, conform, is_valid_token, load_segment,
     require_audio_stack, resolve_stem_path,
@@ -260,7 +261,8 @@ def conform_stem(song_id: int, stem: str, *, start_sec: Optional[float],
 
 LANE_ROLES = ("vocal", "bed")
 LANE_KEYS = ("semitones", "rate", "gain", "offset_ms", "fade_in", "fade_out",
-             "highpass_hz", "lowpass_hz", "clip_start", "clip_end")
+             "highpass_hz", "lowpass_hz", "clip_start", "clip_end",
+             "eq_low", "eq_mid", "eq_high", "duck_db")
 # Studio's clip vocabulary, accepted for the same settings (revamp B5).
 LANE_ALIASES = {"hp_hz": "highpass_hz", "lp_hz": "lowpass_hz"}
 MAX_LANE_OFFSET_MS = 60_000.0
@@ -291,9 +293,14 @@ def lane_overrides(lanes) -> dict:
             clean["offset_ms"] = max(-MAX_LANE_OFFSET_MS,
                                      min(MAX_LANE_OFFSET_MS, clean["offset_ms"]))
         for key in ("gain", "fade_in", "fade_out", "highpass_hz", "lowpass_hz",
-                    "clip_start", "clip_end"):
+                    "clip_start", "clip_end", "duck_db"):
             if key in clean:
                 clean[key] = max(0.0, clean[key])
+        for key in ("eq_low", "eq_mid", "eq_high"):
+            if key in clean:
+                clean[key] = max(EQ_RANGE_DB[0], min(EQ_RANGE_DB[1], clean[key]))
+        if "duck_db" in clean:
+            clean["duck_db"] = min(DUCK_MAX_DB, clean["duck_db"])
         # A trim is a window in the stem's own seconds: an empty one is dropped.
         if ("clip_start" in clean and "clip_end" in clean
                 and clean["clip_end"] <= clean["clip_start"]):
@@ -324,7 +331,9 @@ def _gain_db(gain: float) -> Optional[float]:
 def _lane_clip(lane: dict) -> dict:
     """A lane's unbaked settings in build_mixdown's clip vocabulary."""
     names = {"fade_in": "fade_in", "fade_out": "fade_out",
-             "highpass_hz": "hp_hz", "lowpass_hz": "lp_hz"}
+             "highpass_hz": "hp_hz", "lowpass_hz": "lp_hz",
+             "eq_low": "eq_low", "eq_mid": "eq_mid", "eq_high": "eq_high",
+             "duck_db": "duck_db"}
     return {clip_key: lane[key] for key, clip_key in names.items() if key in lane}
 
 
@@ -362,10 +371,18 @@ def _lane_notes(lanes: dict) -> list:
             todo.append(f"high-pass {lane['highpass_hz']:.0f} Hz")
         if lane.get("lowpass_hz"):
             todo.append(f"low-pass {lane['lowpass_hz']:.0f} Hz")
+        eq = [f"{band} {lane[k]:+.1f} dB @ {EQ_BANDS[band]:.0f} Hz"
+              for band, k in (("low", "eq_low"), ("mid", "eq_mid"), ("high", "eq_high"))
+              if lane.get(k)]
+        if eq:
+            todo.append("EQ " + ", ".join(eq))
+        if lane.get("duck_db"):
+            todo.append(f"sidechain-duck {lane['duck_db']:.0f} dB under the vocal "
+                        f"(~{1000 / (2 * 3.14159 * DUCK_SMOOTH_HZ):.0f} ms smoothing)")
         lines.append(f"  {name}")
         lines.append(f"    baked in   : {', '.join(baked) if baked else 'nothing beyond the plan'}")
         lines.append(f"    set in FL  : {', '.join(todo) if todo else 'nothing'}")
-    lines += ["", "Level, fades and filters are NOT baked in: they are mixer and",
+    lines += ["", "Level, fades, filters, EQ and duck are NOT baked in: they are mixer and",
               "clip settings, and baking them would take the choice away.", ""]
     return lines
 

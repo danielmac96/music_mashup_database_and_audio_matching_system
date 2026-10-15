@@ -31,6 +31,11 @@ export const HIGH_CUTS = [[0, "off"], [12000, "12 kHz"], [6000, "6 kHz"], [3000,
 
 // A lane's gain is LINEAR (MashupEngine's gain node), so its level in dB is
 // 20·log10. It used to print v×24−12, which read 0.8 as +7.2 dB.
+// The lane EQ's three bands (MashupEngine EQ_BANDS) and the duck, in dB.
+export const EQ_KNOBS = [["eqLow", "Low", "250 Hz"], ["eqMid", "Mid", "1 kHz"],
+                         ["eqHigh", "High", "4 kHz"]];
+const dbText = (v) => (v ? `${v > 0 ? "+" : "−"}${Math.abs(v).toFixed(1)} dB` : "flat");
+
 export const gainDb = (v) => (v > 0 ? `${(20 * Math.log10(v)).toFixed(1)} dB` : "−∞ dB");
 
 function Knob({ label, value, min, max, step, suggest = null, format, hint,
@@ -98,7 +103,8 @@ function LaneCard({ lane, idx, sel, sug, nudge, roleLabel, projectBpm, tracks, s
   const bar = beat ? beat * 4 : null;
   // The bed's offset is THE nudge — bed against vocal, from the sections lined
   // up — which the toolbar chip and "edited" read too. Any other lane's offset
-  // is measured from where the matcher placed it (or from 0:00).
+  // is measured from where it was placed — the matcher's placement for a
+  // pair, where it was dropped otherwise — never from 0:00.
   const offMs = nudge ? nudge.ms : Math.round((lane.offsetSec - (sug?.offsetSec ?? 0)) * 1000);
   const offSug = nudge ? nudge.suggestMs : (sug?.offsetSec != null ? 0 : null);
   const range = Math.ceil(Math.max(2000, bar ? bar * 1000 : 0, Math.abs(offSug ?? 0) + 500,
@@ -144,11 +150,24 @@ function LaneCard({ lane, idx, sel, sug, nudge, roleLabel, projectBpm, tracks, s
           hint={nudge && nudge.suggestMs == null
             ? "No stored downbeat grid — this offset is unmeasured, not zero"
             : nudge ? "The bed against the vocal, from the sections lined up"
-            : sug?.offsetSec != null ? "From where the matcher placed it" : "From 0:00"}
+            : sug?.placed ? "From where it was placed"
+            : sug?.offsetSec != null ? "From where the matcher placed it" : "From where it was placed"}
           onChange={(v) => (nudge ? nudge.set(v)
             : patchLane(lane.id, { offsetSec: (sug?.offsetSec ?? 0) + v / 1000 }))} />
         <Knob label="Gain" value={lane.gain} min={0} max={1.25} step={0.01} suggest={sug?.gain ?? null}
           format={gainDb} onChange={(v) => patchLane(lane.id, { gain: v })} />
+      </div>
+
+      <div className="sp-knobs sp-eq">
+        {EQ_KNOBS.map(([key, label, hint]) => (
+          <Knob key={key} label={label} value={lane[key] || 0} min={-24} max={12} step={0.5} suggest={0}
+            format={dbText} hint={hint} onChange={(v) => patchLane(lane.id, { [key]: v })} />
+        ))}
+        <Knob label="Duck" value={lane.stem === "vocals" ? 0 : (lane.duckDb || 0)} min={0} max={18} step={1}
+          disabled={lane.stem === "vocals"}
+          format={(v) => (v ? `−${v} dB` : "off")}
+          hint={lane.stem === "vocals" ? "the key" : "under vocals"}
+          onChange={(v) => patchLane(lane.id, { duckDb: v })} />
       </div>
 
       <Uses lane={lane} trim={trim} onExtend={(edge) => onExtend(lane, edge)} onSection={() => onSection(lane)} />

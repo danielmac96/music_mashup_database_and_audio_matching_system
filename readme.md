@@ -750,10 +750,15 @@ step). The player bar hides in Studio.
   remembered as `mashup.studio.panel.v1`; the timeline is as tall as its
   lanes and the panel takes the rest, never leaving the timeline under
   96px): one 370px card per lane with **Tempo**, **Pitch**, **Offset** (the
-  bed's is the nudge against the vocal; any other lane's is from where the
-  matcher placed it, shown in ms or beats and its start bar) and **Gain** (dB
-  of the linear gain) — each with a grey tick at the suggestion
-  (`plan.lanes`, §5.11) and "edited" once moved; M, S, SYNC, ⚡ key, ⇥ grid,
+  bed's is the nudge against the vocal; any other lane's is from where it
+  was placed — the matcher's placement for a pair, where it was dropped
+  otherwise (`placedSec`), never from 0:00 — shown in ms or beats and its
+  start bar) and **Gain** (dB of the linear gain) — each with a grey tick at
+  the suggestion (`plan.lanes`, §5.11) and "edited" once moved; under them a
+  second row: a three-band **EQ** (Low 250 Hz shelf, Mid 1 kHz, High 4 kHz
+  shelf, −24 to +12 dB) and **Duck** (0–18 dB: the lane dips while the vocals
+  sing — the sidechain a producer puts on a bed first; a vocals lane is the
+  key and cannot be ducked); M, S, SYNC, ⚡ key, ⇥ grid,
   ↺ and **more ▾** (the stem, fades 0–8 s, low and high cut, ▲▼, remove); a
   **Uses** strip of the whole song with the played span outlined and ◂ +1 bar /
   +1 bar ▸ / ⟷ section. **↺ all to suggestion** resets every lane. The right
@@ -1440,7 +1445,8 @@ caches responses, and opens a breaker after repeated failures.
   playback speed, so display duration = raw duration / rate — the same maths as
   the browser's SoundTouch engine.
 - **Mixdown** (`render/mixdown.py`): N clips (song, stem, offset, rate,
-  semitones, gain, optional trim, fades, high/low-pass), checked first and
+  semitones, gain, optional trim, fades, high/low-pass, `eq_low` / `eq_mid` /
+  `eq_high`, `duck_db`, `key_only`), checked first and
   then rendered `RENDER_THREADS` (3) at a time — Rubber Band is its own ffmpeg
   process and costs ~8.5 s per 200 s stem at 44.1 kHz, so one at a time an
   exported pair took ~16 s — summed on one timeline,
@@ -1448,8 +1454,16 @@ caches responses, and opens a breaker after repeated failures.
   `loudness_target`, Studio sends −14 LUFS) → WAV; the job's result carries
   the measured `lufs` and `true_peak`. `offset_sec` is where the clip's **first rendered sample** lands — the
   trim start when there is one (§7). Fades and filters are
-  `dsp.apply_fades` / `apply_filters` (2nd-order Butterworth, the slope of
-  Studio's Web Audio biquads).
+  `dsp.apply_fades` / `apply_filters` (2nd-order Butterworth — Studio's Web
+  Audio biquads now set the same Q, which Web Audio reads in dB). The EQ is
+  `dsp.apply_eq`: three biquads by the Web Audio spec's own formulas (the
+  Audio EQ Cookbook, S = 1 shelves, Q 0.7 peak). The **duck** keys on every
+  `vocals`-stem clip as heard: |key| through a 2nd-order Butterworth
+  low-pass at 8 Hz, then gain = 1 − depth × min(1, env / 0.05), depth =
+  1 − 10^(−dB/20) — the graph `MashupEngine` builds from WaveShapers and a
+  biquad, so the render ducks where Studio ducked (a test runs the engine's
+  graph node by node against it). A `key_only` clip feeds the key and is not
+  mixed: Studio's stems-per-lane sends the vocals that way with a ducked lane.
 - **Candidate preview**: two clips from a candidate row's section spans, tempo,
   transpose and offset.
 - **FL session** (`render/session.py`), one folder per pair, e.g.
@@ -1464,14 +1478,15 @@ caches responses, and opens a breaker after repeated failures.
   **Lane state**: `POST /api/studio/session` takes optional `lanes` — one per
   role (`vocal` / `bed`) with `semitones`, `rate`, `gain`, `offset_ms`,
   `fade_in`, `fade_out`, `highpass_hz`, `lowpass_hz` (or the mixdown clip's
-  names `hp_hz` / `lp_hz`) and `clip_start` / `clip_end` — the clip's trim in
+  names `hp_hz` / `lp_hz`), `eq_low` / `eq_mid` / `eq_high`, `duck_db` and
+  `clip_start` / `clip_end` — the clip's trim in
   the stem's own seconds, Studio's `clipStart` / `clipEnd` — each optional. A
   value given replaces the plan's for that lane
   (`render/session.lane_overrides`): rate, transpose, nudge and the trim are
   baked into the WAVs (a later nudge pads the head, an earlier one trims it; a
   trim replaces the section's edges, so a clip extended past its section or
   cut short of it renders as it plays; the bed's parts move with the bed); level,
-  fades and filters are left to the mixer, recorded in `session.json` (`lanes`,
+  fades, filters, EQ and duck are left to the mixer, recorded in `session.json` (`lanes`,
   and each clip in `build_mixdown`'s vocabulary) and in the README's "FROM
   YOUR STUDIO LANES". Without `lanes` nothing changes. The plan carries each
   lane's suggestion in Studio's terms — `plan.lanes.{vocal,bed}` = `rate`,
@@ -1737,6 +1752,17 @@ Existing databases migrate on start.
   `keyRel`'s suggestion (a label on an unmeasured card) or a fresh Camelot sum.
   A pair's section indexes travel with it to the export
   (`tests/test_pair_recipe_consistency.py`).
+- **Studio is the audition and sketch surface; the track is finished in the
+  DAW.** Studio gets the moves a producer reaches for first — trim, tempo,
+  pitch, nudge, level, fades, cuts, a three-band EQ and a duck under the
+  vocal — and every one of them renders server-side with the browser's maths
+  (`MashupEngine` `EQ_BANDS` / `DUCK_*` ≡ `render/dsp.py`, test-pinned) and
+  travels to the FL session as settings, not baked audio. Anything past that
+  (automation, sends, plug-ins, mastering chains) belongs in the DAW the
+  export opens in (§5.11), not in another Studio control. A new lane control
+  goes in `LANE_KEYS`, the engine's `setVoice` / `updateVoiceParams`, the
+  mixdown clip and `render/session.LANE_KEYS` together, or one of snapshots,
+  undo, the WAV or the FL folder silently drops it.
 - **Studio's lane gain is linear** (`MashupEngine`'s gain node), so the panel
   prints `20·log10(gain)` dB (`StudioPanel.gainDb`). It printed `gain×24−12`,
   reading 0.8 as +7.2 dB.
@@ -2286,7 +2312,9 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    saved one track of 206, and the Firecrawl failures that threw away scrapes
    the dashboard had already billed.
 4. **Studio:** multiple clips per lane → auto-arrange → stereo mixdown +
-   limiter/meters. (Per-lane fades, low/high-cut and undo/redo are done.)
+   limiter/meters. (Per-lane fades, low/high-cut, undo/redo, a three-band
+   EQ, a duck under the vocal and a −1 dBTP limiter with a LUFS target are
+   done.)
 5. **Engine:** match 8/16/32-bar **phrases** instead of whole sections (the
    biggest engine win left — plan it first), per-bar chroma for progressions,
    vocal melody features (f0 range, note histogram), onset-accurate

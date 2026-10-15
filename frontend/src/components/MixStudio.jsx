@@ -93,7 +93,7 @@ let laneUid = 1;
 // property added later (fades, filters) is kept by all three or by none.
 const LANE_KEYS = ["songId", "stem", "offsetSec", "rate", "semitones", "gain",
   "muted", "synced", "colorIdx", "clipStart", "clipEnd",
-  "fadeIn", "fadeOut", "hpHz", "lpHz"];
+  "fadeIn", "fadeOut", "hpHz", "lpHz", "eqLow", "eqMid", "eqHigh", "duckDb", "placedSec"];
 const laneState = (l) => Object.fromEntries(LANE_KEYS.map((k) => [k, l[k]]));
 
 function readSnapshots() {
@@ -681,6 +681,13 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       // breakdown the matcher's advice keeps asking for.
       fadeIn: saved.fadeIn ?? 0, fadeOut: saved.fadeOut ?? 0,
       hpHz: saved.hpHz ?? 0, lpHz: saved.lpHz ?? 0,
+      // Three-band EQ and the duck under the vocals, in dB (0 = flat / off):
+      // the same maths in the engine and the server render (render/dsp.py).
+      eqLow: saved.eqLow ?? 0, eqMid: saved.eqMid ?? 0, eqHigh: saved.eqHigh ?? 0,
+      duckDb: saved.duckDb ?? 0,
+      // Where the lane was first laid (the matcher's placement for a pair, the
+      // drop point otherwise): the Offset knob reads from here, never 0:00.
+      placedSec: saved.placedSec ?? saved.offsetSec ?? 0,
       waveform: [], beatTimes: [], beatPhase: 0, sections: [],
       buffer: null, rawDur: track.duration_secs || 0,
       loading: true, loadError: null,
@@ -792,6 +799,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     return 1;
   }, [cross, lanes.length]);
 
+  // A vocals lane is the duck's key and is never ducked itself.
+  const voiceMix = (l) => ({ eqLow: l.eqLow || 0, eqMid: l.eqMid || 0, eqHigh: l.eqHigh || 0,
+                             duckDb: l.stem === "vocals" ? 0 : (l.duckDb || 0),
+                             isKey: l.stem === "vocals" });
   const gainFor = useCallback((l, idx) => {
     if (soloId) return l.id === soloId ? l.gain : 0;
     return l.muted ? 0 : l.gain * crossFactor(idx);
@@ -811,7 +822,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
           semitones: l.semitones, gain: gainFor(l, idx),
           clipStartSec: l.clipStart ?? 0, clipEndSec: l.clipEnd ?? null,
           fadeInSec: l.fadeIn || 0, fadeOutSec: l.fadeOut || 0,
-          hpHz: l.hpHz || 0, lpHz: l.lpHz || 0,
+          hpHz: l.hpHz || 0, lpHz: l.lpHz || 0, ...voiceMix(l),
         });
         structural = true; // new voice needs arming if we're mid-playback
       } else {
@@ -823,7 +834,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
           semitones: l.semitones, gain: gainFor(l, idx),
           clipStartSec: l.clipStart ?? 0, clipEndSec: l.clipEnd ?? null,
           fadeInSec: l.fadeIn || 0, fadeOutSec: l.fadeOut || 0,
-          hpHz: l.hpHz || 0, lpHz: l.lpHz || 0,
+          hpHz: l.hpHz || 0, lpHz: l.lpHz || 0, ...voiceMix(l),
         });
       }
     });
@@ -871,9 +882,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   };
 
   const resetLane = (lane) => {
-    patchLane(lane.id, { offsetSec: 0, rate: 1, semitones: 0, gain: 0.8,
+    patchLane(lane.id, { offsetSec: lane.placedSec ?? 0, rate: 1, semitones: 0, gain: 0.8,
                          muted: false, synced: false,
-                         clipStart: 0, clipEnd: null });
+                         clipStart: 0, clipEnd: null,
+                         eqLow: 0, eqMid: 0, eqHigh: 0, duckDb: 0 });
     toast("Lane reset");
   };
 
@@ -1650,6 +1662,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   }, [lanes.length, locked, projectBpm, onStatus]);
 
   // ── export ──────────────────────────────────────────────────────────────
+  const clipMix = (l) => ({ eq_low: l.eqLow || 0, eq_mid: l.eqMid || 0, eq_high: l.eqHigh || 0,
+                            duck_db: l.stem === "vocals" ? 0 : (l.duckDb || 0) });
   const clipFor = (l) => {
         const { cs, ce, trimmed } = clipRangeOf(l);
         return {
@@ -1661,7 +1675,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
           offset_sec: trimmed ? l.offsetSec + cs / (l.rate || 1) : l.offsetSec,
           rate: l.rate, semitones: l.semitones, gain: l.gain,
           fade_in: l.fadeIn || 0, fade_out: l.fadeOut || 0,
-          hp_hz: l.hpHz || 0, lp_hz: l.lpHz || 0,
+          hp_hz: l.hpHz || 0, lp_hz: l.lpHz || 0, ...clipMix(l),
           // Send a trim only when there is one. An untrimmed clip must reach
           // build_mixdown with start/end absent, which is how it reads "play
           // the whole stem" — a clip that starts at 0.0 is a different
@@ -1837,14 +1851,14 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     if (vocalLane && l.id === vocalLane.id) {
       return { rate: vSugRate, semitones: 0,
                gain: pairPlan?.lanes?.vocal?.gain ?? suggested.vocalGain ?? 0.85,
-               offsetSec: sugPlace?.vocal.offsetSec ?? null };
+               offsetSec: sugPlace?.vocal.offsetSec ?? l.placedSec ?? null };
     }
     if (bedLane && l.id === bedLane.id) {
       return { rate: bSugRate, semitones: suggested.semitones,
                gain: pairPlan?.lanes?.bed?.gain ?? suggested.bedGain ?? 0.8,
                offsetSec: null };
     }
-    return null;
+    return { offsetSec: l.placedSec ?? null, placed: true };
   };
   const suggestNudgeMs = suggested.nudgeSec == null ? null : Math.round(suggested.nudgeSec * 1000);
   const roleOf = (l) => (vocalLane && l.id === vocalLane.id ? "VOX"
@@ -1853,8 +1867,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   // One lane back to the suggestion, or (with none) to the defaults.
   const resetLaneTo = (l) => {
     const sg = suggestFor(l);
-    if (!sg) { resetLane(l); return; }
-    const patch = { gain: sg.gain, synced: false };
+    if (!sg || sg.placed) { resetLane(l); return; }
+    const patch = { gain: sg.gain, synced: false, eqLow: 0, eqMid: 0, eqHigh: 0, duckDb: 0 };
     if (sg.rate != null) patch.rate = sg.rate;
     if (sg.semitones != null) patch.semitones = sg.semitones;
     if (sg.offsetSec != null) patch.offsetSec = sg.offsetSec;
@@ -1868,7 +1882,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     if (activeOption) applyTimingOption(activeOption);
     for (const l of lanesRef.current) {
       const sg = suggestFor(l);
-      if (!sg) continue;
+      if (!sg || sg.placed) continue;
       patchLane(l.id, { gain: sg.gain, synced: false,
                         ...(sg.rate != null ? { rate: sg.rate } : {}),
                         ...(sg.semitones != null ? { semitones: sg.semitones } : {}) });
@@ -1903,7 +1917,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       const { cs, ce } = clipRangeOf(l);
       return { role, rate: l.rate, semitones: l.semitones, gain: l.gain,
                fade_in: l.fadeIn || 0, fade_out: l.fadeOut || 0,
-               hp_hz: l.hpHz || 0, lp_hz: l.lpHz || 0,
+               hp_hz: l.hpHz || 0, lp_hz: l.lpHz || 0, ...clipMix(l),
                ...(ce > cs ? { clip_start: cs, clip_end: ce } : {}),
                // The session lines both sections up on their first downbeat,
                // which is the matcher's measured offset: what it is told is
@@ -1921,7 +1935,11 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     try {
       const jobs = [];
       for (const l of audible) {
-        const { job_id } = await api.startMixdown([clipFor(l)]);
+        // A ducked lane rendered alone still hears the vocals it ducks under.
+        const keys = l.stem !== "vocals" && l.duckDb > 0
+          ? audible.filter((k) => k.stem === "vocals").map((k) => ({ ...clipFor(k), key_only: true }))
+          : [];
+        const { job_id } = await api.startMixdown([clipFor(l), ...keys]);
         jobs.push({ laneId: l.id, label: `${roleOf(l)} · ${l.title}`, jobId: job_id, token: null });
       }
       setStemJobs(jobs);

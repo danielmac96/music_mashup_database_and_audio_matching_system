@@ -35,6 +35,21 @@ import { SoundTouchNode } from "@soundtouchjs/audio-worklet";
 // copy in public/ is kept in sync with the installed package version.
 const processorUrl = "/soundtouch-processor.js";
 
+// Lane EQ and duck — the same numbers render/dsp.py renders with (test-pinned):
+// EQ_BANDS / EQ_MID_Q for the three biquads, and the duck's key envelope
+// (|vocals| → 2nd-order Butterworth low-pass at DUCK_SMOOTH_HZ) mapped to a
+// gain of 1 − depth × min(1, env / DUCK_FULL), depth = 1 − 10^(−dB/20).
+export const EQ_BANDS = { low: 250, mid: 1000, high: 4000 };
+export const EQ_MID_Q = 0.7;
+export const DUCK_SMOOTH_HZ = 8;
+export const DUCK_FULL = 0.05;
+export const DUCK_MAX_DB = 18;
+// Web Audio reads a low/high-pass Q in dB: −3.0103 dB is Q = 1/√2, the
+// Butterworth the server's filters are (scipy butter(2)).
+export const BUTTERWORTH_Q_DB = -3.0103;
+export const duckDepth = (db) => 1 - 10 ** (-Math.max(0, Math.min(DUCK_MAX_DB, db || 0)) / 20);
+const SHAPER_N = 4097;
+
 export class MashupEngine {
   constructor() {
     this.ctx = null;
@@ -70,6 +85,7 @@ export class MashupEngine {
       this.master = ctx.createGain();
       this.master.gain.value = 1;
       this.master.connect(ctx.destination);
+      this._buildKeyBus(ctx);
     })();
     return this._initPromise;
   }
@@ -84,33 +100,84 @@ export class MashupEngine {
   // `semitones` is the pitch offset. Changing config while playing re-arms the
   // voices from the current position so the new settings take effect in sync.
   //
-  // Per voice: SoundTouch → high-pass → low-pass → fade → gain → master. The
-  // filters are the bass swap the app keeps advising ("high-pass the bed") and
-  // a dark low-pass for breakdowns; 0 Hz means off. Fades are seconds at the
-  // clip's head and tail, in display (timeline) time.
+  // Per voice: SoundTouch → high-pass → low-pass → EQ low/mid/high → fade →
+  // duck → gain → master. The filters are the bass swap the app keeps advising
+  // ("high-pass the bed") and a dark low-pass for breakdowns; 0 Hz means off.
+  // The EQ is three bands in dB (0 = flat). Fades are seconds at the clip's
+  // head and tail, in display (timeline) time. `duckDb` turns the voice down
+  // while the key sings (0 = off); an `isKey` voice (a vocals lane) feeds the
+  // key and is never ducked itself.
   setVoice(role, { buffer, offsetSec = 0, rate = 1, semitones = 0, gain = 1,
                    clipStartSec = 0, clipEndSec = null,
-                   fadeInSec = 0, fadeOutSec = 0, hpHz = 0, lpHz = 0 }) {
+                   fadeInSec = 0, fadeOutSec = 0, hpHz = 0, lpHz = 0,
+                   eqLow = 0, eqMid = 0, eqHigh = 0, duckDb = 0, isKey = false }) {
     const existing = this.voices.get(role);
     const gainNode = existing?.gainNode ?? this.ctx.createGain();
     gainNode.gain.value = gain;
     if (!existing) gainNode.connect(this.master);
-    let { hp, lp, fade } = existing || {};
+    let { hp, lp, eq, fade, duck, duckAmt } = existing || {};
     if (!hp) {
-      hp = this.ctx.createBiquadFilter(); hp.type = "highpass"; hp.Q.value = 0.707;
-      lp = this.ctx.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = 0.707;
+      hp = this.ctx.createBiquadFilter(); hp.type = "highpass"; hp.Q.value = BUTTERWORTH_Q_DB;
+      lp = this.ctx.createBiquadFilter(); lp.type = "lowpass"; lp.Q.value = BUTTERWORTH_Q_DB;
+      eq = [["lowshelf", EQ_BANDS.low], ["peaking", EQ_BANDS.mid], ["highshelf", EQ_BANDS.high]]
+        .map(([type, f]) => {
+          const b = this.ctx.createBiquadFilter();
+          b.type = type; b.frequency.value = f; b.gain.value = 0;
+          if (type === "peaking") b.Q.value = EQ_MID_Q;
+          return b;
+        });
       fade = this.ctx.createGain();
-      hp.connect(lp); lp.connect(fade); fade.connect(gainNode);
+      duck = this.ctx.createGain(); duck.gain.value = 1;
+      duckAmt = this.ctx.createGain(); duckAmt.gain.value = 0;
+      this.keyOut.connect(duckAmt); duckAmt.connect(duck.gain);
+      hp.connect(lp); lp.connect(eq[0]); eq[0].connect(eq[1]); eq[1].connect(eq[2]);
+      eq[2].connect(fade); fade.connect(duck); duck.connect(gainNode);
     }
     this._setFilters(hp, lp, hpHz, lpHz);
+    this._setEq(eq, eqLow, eqMid, eqHigh);
+    this._setKey(gainNode, existing?.isKey ?? false, isKey);
+    duckAmt.gain.value = isKey ? 0 : duckDepth(duckDb);
     this.voices.set(role, {
       buffer, offsetSec, rate, semitones, gainNode, clipStartSec, clipEndSec,
-      hp, lp, fade, fadeInSec, fadeOutSec, hpHz, lpHz,
+      hp, lp, eq, fade, duck, duckAmt, fadeInSec, fadeOutSec, hpHz, lpHz,
+      eqLow, eqMid, eqHigh, duckDb, isKey,
       loop: existing?.loop ?? null,          // per-voice loop {start,end} (display secs)
       src: existing?.src ?? null, st: existing?.st ?? null,
       _armWhen: 0, _looped: false, _loopPhase: 0, // filled at arm for voicePosition()
       _img: existing?._img ?? null,          // cached loop image (see _loopImage)
     });
+  }
+
+  // The duck's key: every key voice's output summed, rectified, smoothed and
+  // mapped to −min(1, env / DUCK_FULL). A ducked voice scales that by its
+  // depth into its duck gain, whose resting value is 1.
+  _buildKeyBus(ctx) {
+    this.keyBus = ctx.createGain();
+    const abs = ctx.createWaveShaper();
+    const env = ctx.createBiquadFilter();
+    const map = ctx.createWaveShaper();
+    const absCurve = new Float32Array(SHAPER_N);
+    const mapCurve = new Float32Array(SHAPER_N);
+    for (let i = 0; i < SHAPER_N; i++) {
+      const x = -1 + (2 * i) / (SHAPER_N - 1);
+      absCurve[i] = Math.abs(x);
+      mapCurve[i] = -Math.min(1, Math.max(0, x) / DUCK_FULL);
+    }
+    abs.curve = absCurve; map.curve = mapCurve;
+    env.type = "lowpass"; env.frequency.value = DUCK_SMOOTH_HZ; env.Q.value = BUTTERWORTH_Q_DB;
+    this.keyBus.connect(abs); abs.connect(env); env.connect(map);
+    this.keyOut = map;
+  }
+
+  _setKey(gainNode, was, is) {
+    if (was === is) return;
+    if (is) gainNode.connect(this.keyBus);
+    else { try { gainNode.disconnect(this.keyBus); } catch { /* not connected */ } }
+  }
+
+  _setEq(eq, low, mid, high) {
+    const clamp = (g) => Math.max(-24, Math.min(12, Number(g) || 0));
+    eq[0].gain.value = clamp(low); eq[1].gain.value = clamp(mid); eq[2].gain.value = clamp(high);
   }
 
   _setFilters(hp, lp, hpHz, lpHz) {
@@ -135,7 +202,10 @@ export class MashupEngine {
     if (!v) return;
     this._stopVoice(v);
     try { v.gainNode.disconnect(); } catch { /* already gone */ }
-    for (const n of [v.hp, v.lp, v.fade]) { try { n?.disconnect(); } catch { /* gone */ } }
+    try { this.keyOut?.disconnect(v.duckAmt); } catch { /* gone */ }
+    for (const n of [v.hp, v.lp, ...(v.eq || []), v.fade, v.duck, v.duckAmt]) {
+      try { n?.disconnect(); } catch { /* gone */ }
+    }
     this.voices.delete(role);
   }
 
@@ -189,10 +259,19 @@ export class MashupEngine {
   // re-arm because they remap the whole timeline.
   updateVoiceParams(role, { rate, semitones, offsetSec, gain,
                             clipStartSec, clipEndSec,
-                            fadeInSec, fadeOutSec, hpHz, lpHz }) {
+                            fadeInSec, fadeOutSec, hpHz, lpHz,
+                            eqLow, eqMid, eqHigh, duckDb, isKey }) {
     const v = this.voices.get(role);
     if (!v) return;
     let needsRearm = false;
+    // EQ and duck apply in place, like the filters.
+    if (eqLow !== undefined) v.eqLow = eqLow;
+    if (eqMid !== undefined) v.eqMid = eqMid;
+    if (eqHigh !== undefined) v.eqHigh = eqHigh;
+    this._setEq(v.eq, v.eqLow, v.eqMid, v.eqHigh);
+    if (isKey !== undefined && isKey !== v.isKey) { this._setKey(v.gainNode, v.isKey, isKey); v.isKey = isKey; }
+    if (duckDb !== undefined) v.duckDb = duckDb;
+    v.duckAmt.gain.value = v.isKey ? 0 : duckDepth(v.duckDb);
     // Filters apply in place; a fade change re-arms so its ramps are rescheduled.
     if ((hpHz !== undefined && hpHz !== v.hpHz) || (lpHz !== undefined && lpHz !== v.lpHz)) {
       v.hpHz = hpHz ?? v.hpHz; v.lpHz = lpHz ?? v.lpHz;

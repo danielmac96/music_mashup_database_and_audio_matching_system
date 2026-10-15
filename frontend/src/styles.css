@@ -3152,6 +3152,7 @@ input, select { font-family: inherit; }
 .sp-role { flex: none; font-size: 9px; font-weight: 600; color: var(--muted); }
 .sp-title { min-width: 0; flex: 0 1 120px; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sp-knobs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.sp-knobs.sp-eq { grid-template-columns: repeat(4, 1fr); gap: 8px 10px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
 .sp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .sp-more { display: flex; flex-direction: column; gap: 10px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
 .sp-sel { display: flex; flex-direction: column; gap: 3px; }

@@ -48,7 +48,7 @@ ARCHETYPES = {
   "club_dj":           dict(daws=["rekordbox","Serato","Traktor"], tasks=["pick_track","audition","set_build","set_view","export_cue","search_parse","palette"]),
   "wedding_dj":        dict(daws=["Serato","rekordbox"], tasks=["search_parse","pick_track","audition","keepers","set_build","set_view","export_cue"]),
   "bedroom_beginner":  dict(daws=["GarageBand","FL Studio"], tasks=["first_look","help","pick_track","audition","expand","studio","import_link"]),
-  "ableton_live_pro":  dict(daws=["Ableton Live"], tasks=["pick_track","expand","studio","studio_play","studio_edit","studio_render","detail"]),
+  "ableton_live_pro":  dict(daws=["Ableton Live"], tasks=["pick_track","expand","studio","studio_play","studio_edit","studio_mix","studio_render","detail"]),
   "crate_digger":      dict(daws=["rekordbox","Ableton Live"], tasks=["discover","import_link","palette","search_parse","detail","queue"]),
   "analyst":           dict(daws=["Logic Pro","Ableton Live"], tasks=["analysis","compare","detail","rescore","tuning","pick_track","expand"]),
   "mix_archaeologist": dict(daws=["FL Studio","rekordbox"], tasks=["mix_paste","pick_track","ab_search","rate","queue"]),
@@ -362,20 +362,30 @@ async def t_studio_edit(pg, P, rng, st):
     await pg.wait_for_timeout(300)
     chips2 = await pg.locator(".align-chip").all_inner_texts()
     panel = await pg.locator(".st-group, .studio-body").first.inner_text() if await pg.locator(".st-group, .studio-body").count() else ""
-    has_eq = any(w in panel for w in ["EQ", "Reverb", "Delay", "Compress", "Sidechain"])
+    has_eq = await pg.locator('.sp-card input[aria-label="Duck"]').count() > 0 or \
+        any(w in panel for w in ["EQ", "Reverb", "Delay", "Compress", "Sidechain"])
     notes = []
     if not has_eq: notes.append("no per-lane EQ / reverb / delay / sidechain — only HP/LP cut and fades")
     notes.append("no automation lanes, no warp markers, single clip per lane")
     return dict(ok=True, notes=notes, data=dict(after_nudge=chips1, after_undo=chips2))
 
+async def _render_settled(pg, secs=60):
+    """Wait out a mixdown still rendering from an earlier task."""
+    for _ in range(secs * 2):
+        busy = await pg.locator(".studio-screen .badge.running, .studio-screen .badge.queued").count()
+        if not busy: return
+        await pg.wait_for_timeout(500)
+
 async def t_studio_render(pg, P, rng, st):
     await ensure_studio(pg, P, rng, st)
+    await _render_settled(pg)
+    old = set(await pg.evaluate("() => [...document.querySelectorAll('a[href*=\"mixdown\"], a[download]')].map(a=>a.href)"))
     await pg.locator("button", has_text="Render ▾").click()
     t0 = time.time()
     await pg.locator("button", has_text="WAV mixdown").click()
     link = None
     for _ in range(120):
-        hrefs = await pg.evaluate("() => [...document.querySelectorAll('a[href*=\"mixdown\"], a[download]')].map(a=>a.href)")
+        hrefs = [h for h in await pg.evaluate("() => [...document.querySelectorAll('a[href*=\"mixdown\"], a[download]')].map(a=>a.href)") if h not in old]
         toasts = await pg.evaluate("() => [...document.querySelectorAll('.toast, [class*=toast]')].map(t=>t.innerText).join(' | ')")
         if hrefs: link = hrefs[0]; break
         if "fail" in toasts.lower(): break
@@ -396,8 +406,10 @@ async def t_fl_session(pg, P, rng, st):
     await ensure_studio(pg, P, rng, st)
     await pg.locator("button", has_text="Render ▾").click()
     t0 = time.time()
+    await _render_settled(pg)
     try:
-        async with pg.expect_download(timeout=90000) as dl:
+        async with pg.expect_download(timeout=90000,
+                                      predicate=lambda d: d.suggested_filename.endswith(".zip")) as dl:
             await pg.locator("button", has_text="FL session").first.click()
         d = await dl.value
         ms = int((time.time()-t0)*1000)
@@ -409,6 +421,85 @@ async def t_fl_session(pg, P, rng, st):
         return dict(ok=True, ms=ms, notes=notes, data=dict(files=names[:12]))
     except Exception as e:
         return dict(ok=False, ms=int((time.time()-t0)*1000), notes=[f"FL session failed: {str(e)[:100]}"])
+
+async def _knob_val(card, label):
+    k = card.locator(".knob", has=card.page.locator(".knob-label", has_text=label)).first
+    return (await k.locator(".knob-value").inner_text()).strip()
+
+async def _set_knob(pg, card, label, value):
+    rng_input = card.locator(f'input[type=range][aria-label="{label}"]').first
+    await rng_input.evaluate("""(el, v) => {
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        set.call(el, String(v)); el.dispatchEvent(new Event('input', { bubbles: true }));
+    }""", value)
+
+async def t_studio_mix(pg, P, rng, st):
+    """Phase 7: EQ and duck on the bed, kept by undo and snapshots, sent to the render."""
+    await ensure_studio(pg, P, rng, st)
+    cards = pg.locator(".sp-card")
+    if await cards.count() < 2:
+        return dict(ok=False, notes=["fewer than two lane cards"])
+    bed = None
+    for i in range(await cards.count()):
+        c = cards.nth(i)
+        if await c.locator('input[aria-label="Duck"]:not([disabled])').count():
+            bed = c; break
+    if bed is None:
+        return dict(ok=False, notes=["no lane offers Duck"])
+    notes = []
+    vocal_locked = await pg.locator('.sp-card input[aria-label="Duck"][disabled]').count() > 0
+    if not vocal_locked: notes.append("the vocal lane can be ducked")
+    await bed.click(position={"x": 5, "y": 5})
+    await _set_knob(pg, bed, "Duck", 6)
+    await _set_knob(pg, bed, "Low", -6)
+    await pg.wait_for_timeout(1500)
+    duck, low = await _knob_val(bed, "Duck"), await _knob_val(bed, "Low")
+    if "6" not in duck or "−6" not in low.replace("-", "−"): notes.append(f"knobs did not take: duck={duck} low={low}")
+    # Snapshot, change, load: the snapshot brings EQ and duck back.
+    await pg.locator("button", has_text="Save snapshot").click()
+    await pg.wait_for_timeout(400)
+    await _set_knob(pg, bed, "Duck", 12)
+    await pg.wait_for_timeout(1500)
+    await pg.locator("button", has_text="Snapshots").click()
+    await pg.locator(".snap-load").first.click()
+    await pg.wait_for_timeout(1500)
+    cards = pg.locator(".sp-card")
+    bed2 = None
+    for i in range(await cards.count()):
+        c = cards.nth(i)
+        if await c.locator('input[aria-label="Duck"]:not([disabled])').count():
+            bed2 = c; break
+    snap_duck = await _knob_val(bed2, "Duck") if bed2 else None
+    snap_low = await _knob_val(bed2, "Low") if bed2 else None
+    if snap_duck is None or "−6" not in snap_duck: notes.append(f"snapshot did not restore duck ({snap_duck})")
+    if snap_low is None or "6" not in snap_low: notes.append(f"snapshot did not restore EQ ({snap_low})")
+    # Undo takes the last change back.
+    await _set_knob(pg, bed2, "Duck", 0)
+    await pg.wait_for_timeout(1500)
+    await pg.evaluate("() => document.activeElement && document.activeElement.blur()")
+    await pg.keyboard.press("Control+z")
+    await pg.wait_for_timeout(800)
+    undo_duck = await _knob_val(pg.locator(".sp-card", has=pg.locator('input[aria-label="Duck"]:not([disabled])')).first, "Duck")
+    if "6" not in undo_duck: notes.append(f"undo did not bring the duck back ({undo_duck})")
+    # The render carries them.
+    sent = {}
+    def grab(req):
+        if req.url.endswith("/api/studio/mixdown") and req.method == "POST":
+            try: sent.update(json.loads(req.post_data or "{}"))
+            except Exception: pass
+    pg.on("request", grab)
+    await pg.locator("button", has_text="Render ▾").click()
+    await pg.locator("button", has_text="WAV mixdown").click()
+    await pg.wait_for_timeout(1500)
+    await _render_settled(pg)
+    clips = sent.get("clips") or []
+    ducked = [c for c in clips if c.get("duck_db")]
+    eqd = [c for c in clips if c.get("eq_low")]
+    if not ducked: notes.append("the mixdown request carried no duck_db")
+    if not eqd: notes.append("the mixdown request carried no EQ")
+    await pg.keyboard.press("Escape")
+    return dict(ok=not notes, notes=notes, data=dict(duck=duck, low=low, snap=[snap_duck, snap_low],
+                                                     undo=undo_duck, clips=len(clips), vocal_locked=vocal_locked))
 
 async def t_set_build(pg, P, rng, st):
     await library(pg)
