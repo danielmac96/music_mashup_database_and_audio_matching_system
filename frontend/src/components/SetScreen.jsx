@@ -325,10 +325,10 @@ function FlowGraph({ items, f, layout, pps, curve, sel, onCurve, onCommit }) {
 // What each rule a move or candidate breaks reads as (matcher/setflow).
 const VIOLATION_TEXT = { key: "key", bpm: "tempo", repeat: "record repeats" };
 
-// Studio arranges at most this many mashups from a set at once: two lanes
-// each, and past a dozen the lanes no longer fit to read (82 lanes for a
-// 41-pair set, 2026-10-15). A/B decks are the lasting fix (readme §9).
-export const STUDIO_CHAIN_MAX = 12;
+// Studio lays a set on two A/B deck rows, many clips each, decoding only the
+// clips near the playhead — so a whole set opens (82 lanes for a 41-pair set
+// before decks, 2026-10-15). The cap only bounds a runaway set.
+export const STUDIO_CHAIN_MAX = 64;
 
 // How long a slot plays, in bars at its landing tempo — the set's clock, the
 // cue sheet and the energy curve all run on it (setflow.DEFAULT_PLAY_BARS).
@@ -714,7 +714,9 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
     const from = Math.max(0, selIdx);
     const pairs = items.map((it, k) => ({ it, k }))
       .filter(({ it, k }) => (it.kind || "pair") === "pair" && k >= from)
-      .map(({ it, k }) => ({ ...it, set_bpm: it.set_bpm ?? f.landings[k]?.bpm ?? null }));
+      .map(({ it, k }) => ({ ...it, set_bpm: it.set_bpm ?? f.landings[k]?.bpm ?? null,
+                             // The move into this slot overlaps the previous one.
+                             overlap_secs: k > from ? (f.transitions[k - 1]?.overlap_secs ?? 0) : 0 }));
     const all = items.filter((it) => (it.kind || "pair") === "pair").length;
     const chain = pairs.slice(0, STUDIO_CHAIN_MAX);
     if (!chain.length) return;

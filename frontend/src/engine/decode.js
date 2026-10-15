@@ -19,3 +19,10 @@ export function decodeStem(ctx, url) {
   cache.set(url, p);
   return p;
 }
+
+// Drop a decoded stem from the cache (a deck clip the playhead has left), so
+// a whole set does not hold every song's audio at once. A later decodeStem of
+// the same URL fetches and decodes it again.
+export function releaseStem(url) {
+  cache.delete(url);
+}

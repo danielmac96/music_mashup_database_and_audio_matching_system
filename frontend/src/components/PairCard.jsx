@@ -137,6 +137,9 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
           {c.scorer === "forced" && (
             <span className="pc-forced mono" title="Scored on request, outside the tempo or key gate — read the DO and WATCH rows">forced</span>
           )}
+          {c.scorer === "provisional" && (
+            <span className="pc-prov mono" title="Scored from the full mix before its stems exist — re-scored on its own when they land">prov</span>
+          )}
           <span className="grow" />
           <button className={`pc-play${playing ? " on" : ""}`}
             title={playing ? "Stop the loop (space)" : "Loop this pair (space)"}

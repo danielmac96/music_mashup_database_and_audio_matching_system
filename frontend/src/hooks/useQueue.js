@@ -152,6 +152,7 @@ export function useQueue() {
   const [jobs, setJobs] = useState([]);
   const [pools, setPools] = useState(null);
   const [positions, setPositions] = useState({});
+  const [nextPlayable, setNextPlayable] = useState(null);
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0);
 
@@ -167,6 +168,7 @@ export function useQueue() {
         setJobs(j.jobs);
         setPools(q.stages);
         setPositions(q.positions);
+        setNextPlayable(q.next_playable_secs ?? null);
         setError(null);
         timer = setTimeout(poll, j.jobs.some(isActiveJob) ? 1000 : 4000);
       } catch (e) {
@@ -179,5 +181,5 @@ export function useQueue() {
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [tick]);
 
-  return { jobs, pools, positions, error, refresh };
+  return { jobs, pools, positions, nextPlayable, error, refresh };
 }

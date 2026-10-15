@@ -2543,6 +2543,29 @@ def bulk_upsert_candidates(rows, db_path: Path = DB_PATH,
     return len(rows)
 
 
+def delete_song_candidates(song_ids, keep_scorers=(), db_path: Path = DB_PATH) -> int:
+    """Remove the vocal-over-instrumental rows with any of `song_ids` on
+    either side — the rows a per-track scoring run is about to rewrite.
+    Rows whose scorer is in `keep_scorers` (a forced pair) stay."""
+    ids = [int(x) for x in song_ids]
+    if not ids:
+        return 0
+    marks = ",".join("?" * len(ids))
+    keep = list(keep_scorers)
+    keep_sql = f" AND COALESCE(scorer, '') NOT IN ({','.join('?' * len(keep))})" if keep else ""
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            f"""DELETE FROM mashup_candidates
+                WHERE combo_type='vocal_over_instrumental'
+                  AND (vocal_song_id IN ({marks}) OR inst_song_id IN ({marks})){keep_sql}""",
+            (*ids, *ids, *keep))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
 def clear_candidates(db_path: Path = DB_PATH) -> None:
     """Wipe all scored pairs so a re-score reflects exactly the current features
     and pre-filter thresholds (no stale pairs left over from a looser run).

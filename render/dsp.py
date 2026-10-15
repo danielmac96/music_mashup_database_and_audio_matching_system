@@ -27,7 +27,7 @@ ProgressCb = Optional[Callable[[Optional[int], str], None]]
 
 RENDER_SR = 44100
 MAX_RENDER_SECS = 900.0   # 15 min safety cap so a runaway render can't fill the disk
-MAX_CLIPS = 16
+MAX_CLIPS = 128     # a whole set on A/B decks is many trimmed clips; MAX_RENDER_SECS bounds the render
 
 # Playable stems. drums/bass/other exist only when the track was separated in
 # four-stem mode (Phase D); resolve_stem_path returns None otherwise, and the

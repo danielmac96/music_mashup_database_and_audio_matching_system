@@ -74,7 +74,9 @@ export function usePipelineReadout(tracks) {
   const clears = stages.reduce((m, s) => (s.clears_in_secs != null
     ? Math.max(m ?? 0, s.clears_in_secs) : m), null);
   const failed = (tracks || []).filter((t) => String(t.status || "").startsWith("error")).length;
-  return { running, waiting, failed, clearsIn: clears, loaded: snap != null };
+  // When the next track gets its first (provisional) pairs: after its quick tier.
+  return { running, waiting, failed, clearsIn: clears, loaded: snap != null,
+           nextPlayable: snap?.next_playable_secs ?? null };
 }
 
 export function Sidebar({ route, onRoute, counts = {}, children,
@@ -100,7 +102,8 @@ export function Sidebar({ route, onRoute, counts = {}, children,
   const clears = pipeline ? fmtClears(pipeline.clearsIn) : null;
   const pipeText = pipeline
     ? [`${fmtCount(pipeline.running)} running`, `${fmtCount(pipeline.waiting)} waiting`,
-      `${fmtCount(pipeline.failed)} failed`, busy && clears ? `clears in ${clears}` : null]
+      `${fmtCount(pipeline.failed)} failed`, busy && clears ? `clears in ${clears}` : null,
+      busy && pipeline.nextPlayable != null ? `next pairs in ${fmtClears(pipeline.nextPlayable)}` : null]
       .filter(Boolean).join(" · ")
     : "";
 

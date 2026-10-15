@@ -564,19 +564,29 @@ async def t_set_autoorder(pg, P, rng, st):
     return dict(ok=True, data=dict(fits=fits[:12]))
 
 async def t_set_studio(pg, P, rng, st):
+    """Phase 8: a set opens on two A/B deck rows, however many pairs it has."""
     await go(pg, "Sets")
     b = pg.locator(".ss-toolbar button, .ss-head button", has_text="◫ Studio")
     if not await b.count(): return dict(ok=False, notes=["no Studio button on Sets"])
+    slots = await pg.locator(".ss-dot").count() + 1
     t0 = time.time()
     await b.first.click()
     try:
         await pg.locator(".studio-screen").wait_for(timeout=8000)
-        lanes = 0
+        rows = 0
         for _ in range(40):
-            lanes = await pg.locator(".lh-title").count()
-            if lanes: break
+            rows = await pg.locator(".studio-lanehead").count()
+            if rows: break
             await pg.wait_for_timeout(250)
-        return dict(ok=lanes > 0, ms=int((time.time()-t0)*1000), notes=[] if lanes else ["set opened Studio with no lanes"], data=dict(lanes=lanes))
+        await pg.wait_for_timeout(2500)
+        rows = await pg.locator(".studio-lanehead").count()
+        decks = await pg.locator(".studio-lanehead.deckhead").count()
+        loaded = await pg.locator(".deckhead .lh-meta[title*='decoded']").all_inner_texts()
+        notes = [] if rows else ["set opened Studio with no lanes"]
+        if decks and rows > 2: notes.append(f"{rows} rows for a decked set")
+        if not decks and rows > 2: notes.append(f"set opened as {rows} lanes, not A/B decks")
+        return dict(ok=rows > 0 and not notes, ms=int((time.time()-t0)*1000), notes=notes,
+                    data=dict(rows=rows, decks=decks, slots=slots, loaded=loaded))
     except Exception as e:
         return dict(ok=False, notes=[f"set → Studio failed {str(e)[:80]}"])
 

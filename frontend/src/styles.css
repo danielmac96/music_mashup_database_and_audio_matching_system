@@ -3098,6 +3098,13 @@ input, select { font-family: inherit; }
 .studio-lane:active { cursor: grabbing; }
 .studio-lane canvas { width: 100%; height: 100%; display: block; }
 .studio-lane.snapped { box-shadow: inset 0 0 0 1px var(--ok); }
+/* A/B deck rows: many clips in one row, the vocal in the top half and the bed
+   in the bottom; each clip is its own transparent canvas. */
+.studio-lane.deck canvas { position: absolute; left: 0; width: 100%; height: 50%; }
+.studio-lane.deck .deck-top { top: 0; }
+.studio-lane.deck .deck-bot { top: 50%; }
+.studio-lane.deck .lane-trim.deck-top { top: 0; bottom: 50%; }
+.studio-lane.deck .lane-trim.deck-bot { top: 50%; bottom: 0; }
 /* Trim grab zones on the clip edges: the canvas draws the grip, these own the
    cursor and the drag. */
 .lane-trim { position: absolute; top: 9px; bottom: 0; width: 8px; cursor: ew-resize; z-index: 2; }
@@ -3254,4 +3261,5 @@ input, select { font-family: inherit; }
 .pcx-details > summary::before { content: "▸ "; }
 .pcx-details[open] > summary::before { content: "▾ "; }
 .pcx-details[open] > .pcx-cols { margin-top: 6px; }
+.pc-prov { font-size: 9px; color: var(--muted); border: 1px dashed var(--line); border-radius: 3px; padding: 0 3px; }
 .pc-forced { font-size: 9px; color: var(--warn-soft); border: 1px solid var(--warn-bg); border-radius: 3px; padding: 0 3px; }

@@ -262,6 +262,7 @@ export function QueueScreen({ library, onOpen, onRailSlot }) {
         <span className="mono muted q-sub">
           {`${counts.running} running · ${counts.waiting} waiting · ${counts.failed} failed`}
           {clearsAll != null && counts.active ? ` · clears in ~${fmtSecs(clearsAll)}` : ""}
+          {q.nextPlayable != null && counts.active ? ` · next pairs in ~${fmtSecs(q.nextPlayable)}` : ""}
         </span>
         <div className="q-tabs" role="tablist" aria-label="Show">
           {TABS.map(([id, label]) => (

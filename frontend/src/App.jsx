@@ -262,6 +262,8 @@ export default function App() {
       semitoneShift: c.semitone_shift ?? 0, recipe: c.recipe ?? null,
       // On a set's tempo curve, each mashup lands at its own point on it.
       targetBpm: c.set_bpm ?? null,
+      // How far it comes in before the previous mashup ends (the move's bars).
+      overlapSecs: c.overlap_secs ?? 0,
       scoredOption: scoredOptionOf(c),
     })),
   });

@@ -7,7 +7,7 @@ import { StudioPanel } from "./StudioPanel";
 import { sectionTokenOf } from "./StructureStrip";
 import { TierBadge } from "./ui/primitives";
 import { MashupEngine } from "../engine/MashupEngine";
-import { decodeStem } from "../engine/decode";
+import { decodeStem, releaseStem } from "../engine/decode";
 import { downbeatsOf, isDownbeat, phaseForDownbeatAt } from "../engine/grid";
 import { usePlan } from "../hooks/usePlan";
 import { BASS_CLASH_ADVICE, harmonyOf, nudgeText } from "./pairs/pairModel";
@@ -87,13 +87,15 @@ const SNAPSHOT_KEY = "mashup.studio.snapshots.v1";
 const MAX_SNAPSHOTS = 20;
 
 let laneUid = 1;
+// Deck clips decode within this window around the playhead (seconds).
+const DECK_AHEAD = 90, DECK_BEHIND = 15;
 
 // Everything about a lane that is the user's arrangement rather than loaded
 // audio. ONE list, read by the saved project, snapshots and undo, so a lane
 // property added later (fades, filters) is kept by all three or by none.
 const LANE_KEYS = ["songId", "stem", "offsetSec", "rate", "semitones", "gain",
   "muted", "synced", "colorIdx", "clipStart", "clipEnd",
-  "fadeIn", "fadeOut", "hpHz", "lpHz", "eqLow", "eqMid", "eqHigh", "duckDb", "placedSec"];
+  "fadeIn", "fadeOut", "hpHz", "lpHz", "eqLow", "eqMid", "eqHigh", "duckDb", "placedSec", "deck", "slot"];
 const laneState = (l) => Object.fromEntries(LANE_KEYS.map((k) => [k, l[k]]));
 
 function readSnapshots() {
@@ -634,7 +636,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   // Waveform, structure and decoded audio for one (song, stem). Shared by
   // addLane and the in-place stem switch so both land in the same state — a
   // second copy is how a lane ends up drawing one stem and playing another.
-  const loadLaneMedia = useCallback(async (laneId, songId, stem) => {
+  const loadLaneMedia = useCallback(async (laneId, songId, stem, { audio = true } = {}) => {
     const engine = engineRef.current;
     if (!engine) return;
     const patch = (p) => setLanes((ls) => ls.map((l) => (l.id === laneId ? { ...l, ...p } : l)));
@@ -646,6 +648,8 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     api.getSections(songId)
       .then((d) => patch({ sections: d.sections }))
       .catch(() => {});
+    // A deck clip decodes only when the playhead comes near it (deckWindow).
+    if (!audio) { patch({ loading: false }); return; }
     try {
       await engine.init();
       const buf = await decodeStem(engine.ctx, api.audioUrl(songId, stem));
@@ -688,13 +692,16 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       // Where the lane was first laid (the matcher's placement for a pair, the
       // drop point otherwise): the Offset knob reads from here, never 0:00.
       placedSec: saved.placedSec ?? saved.offsetSec ?? 0,
+      // A/B decks: a set's pairs alternate between two rows, many clips per
+      // row (null = a lane of its own); `slot` is the pair's place in the set.
+      deck: saved.deck ?? null, slot: saved.slot ?? null,
       waveform: [], beatTimes: [], beatPhase: 0, sections: [],
       buffer: null, rawDur: track.duration_secs || 0,
       loading: true, loadError: null,
     };
     setLanes((ls) => [...ls, lane]);
     setSelectedId(id);
-    await loadLaneMedia(id, track.id, stem);
+    await loadLaneMedia(id, track.id, stem, { audio: !lane.deck });
     return id;
   }, [loadLaneMedia]);
 
@@ -1128,7 +1135,16 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     }
     const first = cursor;
     let color = append ? lanesRef.current.length : 0;
-    for (const { p, v, b } of resolved) {
+    // A/B decks: more than one pair (or an append onto decks) alternates the
+    // pairs between two rows, so a 40-pair set is 2 rows, not 80 lanes, and
+    // each move overlaps the next mashup by its blend (the set's own bars).
+    const decked = append ? lanesRef.current.some((l) => l.deck) : resolved.length > 1;
+    const firstId = `lane${laneUid}`;       // addLane numbers lanes synchronously
+    let slot = append
+      ? lanesRef.current.reduce((m, l) => Math.max(m, l.slot ?? -1), -1) + 1 : 0;
+    for (const [k, { p, v, b }] of resolved.entries()) {
+      const deck = decked ? (slot % 2 ? "B" : "A") : null;
+      if (decked && (k > 0 || append) && p.overlapSecs > 0) cursor -= p.overlapSecs;
       const vStem = v.stems?.vocals ? "vocals" : "full";
       const bStem = b.stems?.instrumental ? "instrumental" : "full";
       const vBpm = laneBpmFor(v, vStem), bBpm = laneBpmFor(b, bStem);
@@ -1147,21 +1163,25 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
         clipStart: place.vocal.clipStart, clipEnd: place.vocal.clipEnd,
         rate: vRate, semitones: 0, gain: p.recipe?.vocal_lane_gain ?? 0.85,
         // A lane at its own curve tempo must not be re-synced to the project's.
-        synced: Boolean(bpm && vBpm) && !p.targetBpm, colorIdx: color++ });
+        synced: Boolean(bpm && vBpm) && !p.targetBpm, colorIdx: color++, deck, slot });
       addLane(b, bStem, { offsetSec: place.bed.offsetSec + shift,
         clipStart: place.bed.clipStart, clipEnd: place.bed.clipEnd,
         rate: bRate, semitones: p.semitoneShift ?? 0,
         gain: p.recipe?.bed_lane_gain ?? 0.8, hpHz: p.recipe?.bed_highpass_hz ?? 0,
-        synced: Boolean(bpm && bBpm) && !p.targetBpm, colorIdx: color++ });
+        synced: Boolean(bpm && bBpm) && !p.targetBpm, colorIdx: color++, deck, slot });
       cursor = shift + Math.max(place.base + vLen, place.base + off + bLen);
+      slot += 1;
     }
     if (bpm) setProjectBpm(bpm);
+    // Each addLane selects itself; a set opens on its first mashup, not its last.
+    if (decked && !append) setSelectedId(firstId);
     // Several pairs share the timeline, so no one pair's timing pills apply.
     setPairCtx(null); setActiveOptionKey(null); setLoop(null);
     setPosition(first); engineRef.current?.seek(first);
     setViewStart(Math.max(0, first - 2));
     setRestored(true);
     toast(append ? "Appended the next pair after the arrangement"
+      : decked ? `${resolved.length} mashups on decks A and B, each blending into the next`
       : `${resolved.length} mashup${resolved.length === 1 ? "" : "s"} laid back to back at ${bpm} BPM`);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tracks, projectBpm, addLane]);
@@ -1177,6 +1197,35 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     onSeedConsumed?.();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seed, tracks, restored, layPairs]);
+
+  // Deck clips hold decoded audio only near the playhead: a 40-pair set is
+  // ~80 stems, several GB decoded at once. Within DECK_AHEAD seconds ahead (or
+  // DECK_BEHIND behind) a clip decodes; further away it lets its buffer go,
+  // and its engine voice with it (the voice effect skips a lane without one).
+  const deckBucket = Math.floor(position / 5);
+  useEffect(() => {
+    const lo = deckBucket * 5 - DECK_BEHIND, hi = deckBucket * 5 + DECK_AHEAD;
+    for (const l of lanesRef.current) {
+      if (!l.deck) continue;
+      const { cs, ce } = clipRangeOf(l);
+      const a = l.offsetSec + cs / (l.rate || 1), z = l.offsetSec + ce / (l.rate || 1);
+      const near = z >= lo && a <= hi;
+      const url = api.audioUrl(l.songId, l.stem);
+      if (near && !l.buffer && !l.loading && !l.loadError) {
+        patchLane(l.id, { loading: true });
+        engineRef.current?.init()
+          .then(() => decodeStem(engineRef.current.ctx, url))
+          .then((buf) => patchLane(l.id, { buffer: buf, loading: false }))
+          .catch((e) => patchLane(l.id, { loading: false, loadError: `audio: ${e.message}` }));
+      } else if (!near && l.buffer) {
+        patchLane(l.id, { buffer: null });
+        const shared = lanesRef.current.some((o) => o.id !== l.id && o.buffer
+          && o.songId === l.songId && o.stem === l.stem);
+        if (!shared) releaseStem(url);
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deckBucket, lanes.length]);
 
   useEffect(() => {
     if (!tracks.length) return;
@@ -1654,12 +1703,18 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     const eff = l.bpm * l.rate;
     return [0.5, 1, 2].some((m) => Math.abs(eff - projectBpm * m) / (projectBpm * m) < 0.02);
   });
+  // A decked set reads as mashups on decks, not as its 80 clips.
+  const deckSlots = new Set(lanes.filter((l) => l.deck).map((l) => l.slot)).size;
+  const loose = lanes.filter((l) => !l.deck).length;
+  const laneCountText = deckSlots
+    ? `${deckSlots} mashup${deckSlots === 1 ? "" : "s"} on decks A/B${loose ? ` + ${loose} lane${loose === 1 ? "" : "s"}` : ""}`
+    : `${lanes.length} lane${lanes.length === 1 ? "" : "s"}`;
   useEffect(() => {
     if (!onStatus) return;
     if (lanes.length === 0) onStatus({ text: "Studio — add tracks to begin" });
-    else if (locked) onStatus({ locked: true, text: `GRID-LOCKED · ${projectBpm} BPM · ${lanes.length} lanes` });
-    else onStatus({ text: `${lanes.length} lane${lanes.length === 1 ? "" : "s"}${projectBpm ? ` · ${projectBpm} BPM` : ""}` });
-  }, [lanes.length, locked, projectBpm, onStatus]);
+    else if (locked) onStatus({ locked: true, text: `GRID-LOCKED · ${projectBpm} BPM · ${laneCountText}` });
+    else onStatus({ text: `${laneCountText}${projectBpm ? ` · ${projectBpm} BPM` : ""}` });
+  }, [laneCountText, lanes.length, locked, projectBpm, onStatus]);
 
   // ── export ──────────────────────────────────────────────────────────────
   const clipMix = (l) => ({ eq_low: l.eqLow || 0, eq_mid: l.eqMid || 0, eq_high: l.eqHigh || 0,
@@ -1861,6 +1916,89 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     return { offsetSec: l.placedSec ?? null, placed: true };
   };
   const suggestNudgeMs = suggested.nudgeSec == null ? null : Math.round(suggested.nudgeSec * 1000);
+  // ── A/B decks ───────────────────────────────────────────────────────────
+  // Timeline rows: a lane of its own, or every clip on deck A / deck B in one
+  // row each — the vocal in the row's top half, the bed in its bottom half.
+  const timelineRows = useMemo(() => {
+    const rows = [], decks = new Map();
+    for (const l of lanes) {
+      if (!l.deck) { rows.push({ key: l.id, deck: null, lanes: [l] }); continue; }
+      if (!decks.has(l.deck)) {
+        const row = { key: `deck:${l.deck}`, deck: l.deck, lanes: [] };
+        decks.set(l.deck, row); rows.push(row);
+      }
+      decks.get(l.deck).lanes.push(l);
+    }
+    return rows;
+  }, [lanes]);
+  // The first clip laid for a slot is its vocal (layPairs adds it first).
+  const deckTop = (l, clips) => clips.find((o) => o.slot === l.slot)?.id === l.id;
+  const pickDeckClip = (e, clips) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const t = viewStart + (e.clientX - r.left) / pps;
+    const top = e.clientY - r.top < r.height / 2;
+    const hits = clips.filter((l) => {
+      if (deckTop(l, clips) !== top) return false;
+      const { cs, ce } = clipRangeOf(l);
+      return t >= l.offsetSec + cs / (l.rate || 1) && t <= l.offsetSec + ce / (l.rate || 1);
+    });
+    return hits[hits.length - 1] || null;
+  };
+  // The panel: lanes of their own, plus only the selected deck slot's two.
+  const selLane = lanes.find((l) => l.id === selectedId);
+  const panelLanes = lanes.filter((l) => !l.deck
+    || (selLane?.deck && l.slot === selLane.slot));
+  const renderDeckRow = (row) => {
+    const clips = row.lanes;
+    const sel = clips.find((l) => l.id === selectedId);
+    const rgb = LANE_COLORS[(row.deck === "A" ? 0 : 3) % LANE_COLORS.length].line;
+    const slots = new Set(clips.map((l) => l.slot)).size;
+    const allMuted = clips.every((l) => l.muted);
+    return (
+      <Fragment key={row.key}>
+        <div className={`studio-lanehead deckhead${sel ? " selected" : ""}${allMuted ? " dim" : ""}`}
+          style={{ borderLeft: `3px solid rgba(${rgb},0.9)` }}>
+          <div className="lh-row">
+            <span className="lh-tag mono" style={{ color: `rgb(${rgb})` }}>DECK {row.deck}</span>
+            <span className="lh-title" title={sel ? `${sel.title}${sel.artist ? ` — ${sel.artist}` : ""}` : undefined}>
+              {sel ? sel.title : `${slots} mashup${slots === 1 ? "" : "s"}`}</span>
+            <span className="grow" />
+            <button className={`lh-btn${allMuted ? " on" : ""}`} title="Mute the deck" aria-label="Mute deck"
+              onClick={(e) => { e.stopPropagation(); clips.forEach((l) => patchLane(l.id, { muted: !allMuted })); }}>M</button>
+          </div>
+          <div className="lh-row">
+            <span className="lh-meta mono">vox ▴ · bed ▾</span>
+            <span className="grow" />
+            <span className="lh-meta mono" title="Clips decoded around the playhead">
+              {clips.filter((l) => l.buffer).length}/{clips.length}</span>
+          </div>
+        </div>
+        <div className={`studio-lane deck${dragSnapped && sel ? " snapped" : ""}`}
+          onMouseDown={(e) => { const c = pickDeckClip(e, clips); if (c) handleLaneDown(e, c); }}>
+          {clips.map((l) => (
+            <canvas key={l.id} className={deckTop(l, clips) ? "deck-top" : "deck-bot"} ref={(c) => {
+              if (c) laneCanvasRefs.current.set(l.id, c);
+              else laneCanvasRefs.current.delete(l.id);
+            }} />
+          ))}
+          {sel && (() => {
+            const { cs, ce, rawDur } = clipRangeOf(sel);
+            if (!rawDur) return null;
+            const edgeX = (raw) => (sel.offsetSec + raw / sel.rate - viewStart) * pps;
+            if (edgeX(ce) - edgeX(cs) < HANDLE_PX * 3) return null;
+            const top = deckTop(sel, clips);
+            return ["start", "end"].map((edge) => (
+              <div key={edge} className={`lane-trim ${top ? "deck-top" : "deck-bot"}`}
+                style={{ left: edgeX(edge === "start" ? cs : ce) - HANDLE_PX / 2 }}
+                title={`Drag to trim or extend the clip's ${edge}`}
+                onMouseDown={(e) => handleTrimDown(e, sel, edge)} />
+            ));
+          })()}
+        </div>
+      </Fragment>
+    );
+  };
+
   const roleOf = (l) => (vocalLane && l.id === vocalLane.id ? "VOX"
     : bedLane && l.id === bedLane.id ? "BED" : (STEM_LABEL[l.stem] || l.stem));
 
@@ -1995,7 +2133,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
             <span className="st-side bed"><span className="tag mono">BED</span><span className="t">{bTitle}</span></span>
           </div>
         ) : (
-          <h1>Studio <span className="mono muted small">{lanes.length} lane{lanes.length === 1 ? "" : "s"}</span></h1>
+          <h1>Studio <span className="mono muted small">{laneCountText}</span></h1>
         )}
         {pairCtx?.tier && <TierBadge tier={pairCtx.tier} />}
         {pairCtx?.pct != null && <span className="mono muted">{(pairCtx.pct * 100).toFixed(1)}%</span>}
@@ -2215,7 +2353,9 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
             <canvas ref={rulerRef} />
           </div>
 
-          {lanes.map((l) => {
+          {timelineRows.map((row) => {
+            if (row.deck) return renderDeckRow(row);
+            const l = row.lanes[0];
             const effBpm = l.bpm ? l.bpm * l.rate : null;
             const rgb = LANE_COLORS[l.colorIdx % LANE_COLORS.length].line;
             const isSel = l.id === selectedId;
@@ -2320,7 +2460,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
       </div>
 
       <StudioPanel
-        lanes={lanes} tracks={tracks} selectedId={selectedId} onSelect={setSelectedId}
+        lanes={panelLanes} tracks={tracks} selectedId={selectedId} onSelect={setSelectedId}
         stemOrder={STEM_ORDER} stemLabel={STEM_LABEL} roleOf={roleOf} suggestFor={suggestFor}
         nudge={bedLane && vocalLane ? {
           laneId: bedLane.id, ms: nudgeMs, suggestMs: suggestNudgeMs,

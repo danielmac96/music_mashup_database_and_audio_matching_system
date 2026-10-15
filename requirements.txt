@@ -51,6 +51,7 @@ mutagen>=1.47              # ID3 TBPM/TKEY on exported FL session stems, so the
 
 # ── Learned pairwise scorer (Phase 5) ─────────────────────────────────────────
 scikit-learn>=1.3,<2     # HistGradientBoostingClassifier + LogisticRegression baseline
+threadpoolctl>=3.1          # analysis/threads.py: per-worker BLAS/OpenMP cap (also a scikit-learn dependency)
 joblib>=1.3.0            # model artifact (de)serialisation
 
 # ── Web API ───────────────────────────────────────────────────────────────────

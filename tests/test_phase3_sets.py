@@ -150,7 +150,8 @@ def test_the_sets_screen_edits_play_length_and_names_repeats():
 
 def test_studio_gets_each_slots_landing_tempo_and_at_most_twelve_pairs():
     sc = (SRC / "components" / "SetScreen.jsx").read_text(encoding="utf-8")
-    assert "export const STUDIO_CHAIN_MAX = 12;" in sc
+    # Phase 8's A/B decks lifted the cap from 12 (tests/test_phase8_throughput.py).
+    assert "export const STUDIO_CHAIN_MAX = 64;" in sc
     body = sc[sc.index("const openChain = () =>"):sc.index("const editSlot")]
     assert "set_bpm: it.set_bpm ?? f.landings[k]?.bpm ?? null" in body
     assert "pairs.slice(0, STUDIO_CHAIN_MAX)" in body

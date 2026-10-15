@@ -59,7 +59,9 @@ def queue_snapshot() -> dict:
         stages_out[stage] = {"workers": info["workers"], "running": busy[stage],
                              "waiting": len(info["waiting"]),
                              "clears_in_secs": (pools.get(stage) or {}).get("clears_in_secs")}
-    return {"stages": stages_out, "positions": positions, "running": running}
+    # The soonest a track in the queue gets its first (provisional) pairs.
+    return {"stages": stages_out, "positions": positions, "running": running,
+            "next_playable_secs": queue_eta.next_playable_secs(active)}
 
 
 # Declared before /{job_id}, like /queue.
