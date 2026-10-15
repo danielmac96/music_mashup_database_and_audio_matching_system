@@ -325,10 +325,11 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
   filters and sorts **in memory** (`GET /api/tracks` is unpaginated). Columns:
   art (hover ▶ previews the hook), Title / Artist (the title opens the track),
   BPM, Key (`8A?` when the key estimate is weak), Energy (0–10, ranked against
-  this library), Genre, Year, Length, VOX% (the sung share), Best pair (its best
-  pairing as a percentile of every scored pair), Pairs V/B (partners as vocal /
-  as bed), Plays, Rating, Status; Shape, Sections, Added and any analysed
-  attribute can be added. Best pair, Pairs and VOX% are computed per track over
+  this library), Genre, VOX% (the sung share), Best pair (its best pairing as a
+  percentile of every scored pair), Pairs V/B (partners as vocal / as bed),
+  Rating, Status; Year, Length, Plays, Shape, Sections, Added and any analysed
+  attribute can be added (Year, Length and Plays start hidden so the defaults,
+  1088px, fit more of the window beside the dock). Best pair, Pairs and VOX% are computed per track over
   the whole of `mashup_candidates` (`GET /api/tracks` `mash`, `shape`), never off
   the dock's truncated list.
 - **The view** — which columns show, their order (drag a header), their width
@@ -2181,9 +2182,9 @@ driven by the 100-persona browser simulation (§9) against a synthesised
      like Essentia; HuggingFace was unreachable from the sandbox, so nothing
      was built that could not be tested.
    - **Serato / Traktor exports** — only rekordbox XML is written.
-   - **The Library table scrolls inside itself below ~1700 px** — its default
-     columns (the design's list) total 1270 px beside the 400 px dock; the page
-     itself never scrolls sideways (item 9).
+   - **The Library table scrolls inside itself below ~1500 px** — its default
+     columns total 1088 px (1270 before Year, Length and Plays started hidden)
+     beside the 400 px dock; the page itself never scrolls sideways (item 9).
    - ~~**Set transitions in Studio share one tempo**~~ — each mashup now lands
      at its own point on the set's tempo curve (§9 item 8, phase 4); ramps
      between them are still not modelled.
@@ -2300,10 +2301,10 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    moved up to the title row), a decode error took a third line in the 64px
    head (now a red underline with the error as the tooltip), and a project
    of a few lanes left a dead band between the timeline and the panel (the
-   timeline is as tall as its lanes and the panel takes the rest). Still
-   open: the Library's default columns need 1270px, so beside the 400px dock
-   the table scrolls inside itself below ~1700px wide (659px of it shows at
-   1280, 819px at 1440).
+   timeline is as tall as its lanes and the panel takes the rest). After the
+   walk Year, Length and Plays start hidden in the Library, taking the default
+   columns from 1270px to 1088px; beside the 400px dock the table still
+   scrolls inside itself below ~1500px wide (819px of it shows at 1440).
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in
 Discover (nothing external is analysed — rows show the tempo an upload prints,

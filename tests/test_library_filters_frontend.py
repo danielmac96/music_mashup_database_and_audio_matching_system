@@ -226,3 +226,15 @@ def test_no_class_filter():
         assert "track_class" not in src
         assert "CLASSES" not in src
         assert "cls:" not in src
+
+
+def test_year_length_and_plays_are_hidden_by_default():
+    """The design's full column set needs 1270px; beside the 400px dock that
+    scrolled the table at 1440. Year, Length and Plays start hidden (Columns ▾
+    brings them back, and a stored view keeps whatever the user chose)."""
+    cols = TABLE[TABLE.index("export const COLUMNS = ["):]
+    cols = cols[:cols.index("];")]
+    hidden = {l.split('"')[1] for l in cols.split("\n")
+              if l.strip().startswith("{ id:") and "defaultVisible: false" in l}
+    assert {"year", "len", "plays"} <= hidden
+    assert not hidden & {"title", "bpm", "key", "energy", "genre", "vox", "best", "pairs", "rating", "status"}
