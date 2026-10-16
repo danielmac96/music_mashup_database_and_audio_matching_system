@@ -374,7 +374,8 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
   — **for {track}**, with an **As vocal / As bed** switch carrying each side's
   partner count; every one of them: the per-song cap never counts the track
   the list is scoped to — or **Best in library**. Keys (when the table does
-  not have focus — tab across): `↑↓` move · `space` loop · `1–5` rate and move
+  not have focus — tab across): `↑↓` move · `←→` step the card's pairings ·
+  `space` loop · `1–5` rate and move
   on, still looping · `⏎` expand · double-click open in Studio · `V`/`B` solo ·
   `h` hide · `a` add to the active set · `c` compare the two tracks in Analysis.
   **auto-advance** (in the key strip, on unless you switch it off; remembered
@@ -416,7 +417,16 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
   its title, artist, genre or Discogs style (the bed's amber when it differs),
   key chip and BPM; then the result line — the percentile, the tier, `→` the
   landing key with the bed's transpose (or same key / relative / ±1 step), the
-  stretch `Δ%` with ½× / 2× when folded, ▶ and the stars. ⏎ or a click
+  stretch `Δ%` with ½× / 2× when folded, ▶ and the stars. A card is one
+  **song pair**; when the scorer stored more than one section pairing of the
+  two songs, a **‹ ● ○ ○ ›** stepper sits before ▶ — one dot per pairing, best
+  score first (hover for "Pairing 2 of 3 — verse ▸ chorus"). Stepping (the
+  arrows, a dot, or `←` `→`) swaps everything the card prints — percentile,
+  tier, landing, transpose, stretch, the expanded sections, recipe and meters,
+  the stars — to that pairing, and ▶, rating, + Set and Studio act on it; if
+  the pair is looping, the loop follows to the new pairing. The card keeps its
+  place and tier header (its listed pairing's), and stays expanded. Keepers
+  lists every judged pairing as its own card, so it has no stepper. ⏎ or a click
   **expands** it: the two sections (label, span, bars, the vocal section's line
   when you have typed one) with their waveforms; the **recipe** (§5.7) as a
   **DO** row of what building it takes (`bed at half time`, `bed tempo −1.5%`,
@@ -1194,7 +1204,12 @@ same two songs (both lifted for your own keepers), a 0–1 popularity percentile
 **surprise reordering** (cross-genre/era contrast, applied only among pairs that
 already fit) and an **uncertain-first** order (closest to a coin flip, where a
 verdict teaches most). Min-match filters the displayed percentile, not the raw
-composite (which clusters near 0.78). A list scoped to one track also carries
+composite (which clusters near 0.78). Every row carries `pairing_count` (how
+many section pairings of its two songs are stored) and `pairing_rank` (its
+place among them by score, 1 = best) — the dock card's stepper; the pairings
+themselves are `GET /api/mashups/pairings?vocal_song_id=&inst_song_id=` (best
+first, hidden pairs included, each through the same enriched query and
+playback terms as a listed row). A list scoped to one track also carries
 each row's **partner rank** (`models.partner_ranks`: best score per partner
 within the row's combo type, hidden pairs and excluded tracks left out), the
 dock's headline there.
@@ -1867,6 +1882,15 @@ Existing databases migrate on start.
   the *overlap* of the two placed clips (the bed starts at `base + off`), and
   resolve lanes by `songId`.
 - **Filtering never fetches**; selection derives from visible rows.
+- **A dock card is a song pair; what it acts on is the pairing it shows.**
+  `usePairDock` filters, tier-chips and groups the *listed* rows, then swaps
+  each for the section pairing its stepper is on (`display`) — so the keys,
+  ▶, stars, hide, + Set and Studio need no stepper logic. Identity that must
+  survive a step (React key, `expanded`, hidden, the tier header via
+  `groupTierOf`) is `pairModel.pairKey`; anything about one pairing (a
+  verdict, `armedKey`, a set item, a note) stays `keyOf`. Mix the two up and
+  a step remounts the card, or a rating lands on a pairing you are not
+  looking at.
 - **The dock's orders are the server's, except Effort.** `SECTION_TERM_ORDERS`
   (`database/models.py`) is the one table the SQL, the route whitelist and the
   dock's buttons all read, and `ORDERS` is built from `SCORE_TERMS` so a button

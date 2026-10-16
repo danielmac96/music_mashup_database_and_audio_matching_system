@@ -15,6 +15,13 @@ export const keyOf = (c) =>
   `${c.vocal_song_id}:${c.inst_song_id}`
   + `:${c.vocal_section_idx ?? -1}:${c.inst_section_idx ?? -1}`;
 
+// The SONG pair, whichever section pairing of it is on screen: a dock card is
+// one song pair and steps through its pairings (‹ ● ○ ○ ›), so the card's
+// identity (React key, expanded) is this, while a verdict, a loop and a set
+// item stay on keyOf.
+export const pairKey = (c) =>
+  `${c.vocal_song_id}:${c.inst_song_id}:${c.combo_type || "vocal_over_instrumental"}`;
+
 // The same key rebuilt from a stored feedback row, whose columns are named
 // differently. Kept next to keyOf so the two cannot drift apart.
 export const feedbackKey = (f) =>

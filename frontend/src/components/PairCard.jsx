@@ -54,12 +54,36 @@ function SectionWave({ songId, stem, start, end, duration, role }) {
   return <MiniWave peaks={peaks} role={role} />;
 }
 
+// ‹ ● ○ ○ › — the stored section pairings of these two songs, best score
+// first. Stepping swaps everything the card prints (and what ▶ loops) to that
+// pairing; the dots never toggle the card.
+function PairingSteps({ c, index, count, onStep }) {
+  const where = [c.vocal_section_label, c.inst_section_label].every(Boolean)
+    ? ` — ${c.vocal_section_label} ▸ ${c.inst_section_label}` : "";
+  const tip = `Pairing ${index + 1} of ${count}${where} · ← → steps through them`;
+  return (
+    <span className="pc-steps" title={tip} onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}>
+      <button className="pc-step" disabled={index <= 0} aria-label="Previous pairing"
+        onClick={() => onStep(-1)}>‹</button>
+      {Array.from({ length: count }, (_, j) => (
+        <button key={j} className={`pc-dot${j === index ? " on" : ""}`}
+          aria-label={`Pairing ${j + 1} of ${count}`} title={tip}
+          onClick={() => onStep(0, j)} />
+      ))}
+      <button className="pc-step" disabled={index >= count - 1} aria-label="Next pairing"
+        onClick={() => onStep(1)}>›</button>
+    </span>
+  );
+}
+
 export function PairCard({ candidate: c, rating, onRate, focused = false, expanded = false,
                            playing = false, onSelect, onToggle, onPlay, onStudio,
                            onHide = null, onAddToSet = null, setName = null,
                            note = "", onNote = null, onCompare = null,
                            reasons = [], onReason = null, durationOf = () => null,
-                           hidden = false }) {
+                           hidden = false, optionIndex = 0, optionCount = 1,
+                           onStep = null }) {
   const tier = tierOf(c);
   const ck = c.compat?.key || {};
   const cb = c.compat?.bpm || {};
@@ -120,6 +144,9 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
             </span>
           )}
           <span className="grow" />
+          {optionCount > 1 && onStep && (
+            <PairingSteps c={c} index={optionIndex} count={optionCount} onStep={onStep} />
+          )}
           <button className={`pc-play${playing ? " on" : ""}`}
             title={playing ? "Stop the loop (space)" : "Loop this pair (space)"}
             onClick={(e) => { e.stopPropagation(); onSelect?.(); onPlay(); }}>{playing ? "❚❚" : "▶"}</button>
