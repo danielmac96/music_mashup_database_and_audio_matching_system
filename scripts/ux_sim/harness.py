@@ -304,12 +304,28 @@ async def t_ab_search(pg, P, rng, st):
         notes.append(f"A + B found nothing{'' if forced is None else ' even after Score anyway'}: '{msg[:120]}'")
     return dict(ok=n > 0, notes=notes, data=dict(found=n, forced=forced, why=msg[:160]))
 
+async def _dblclick_why(pg, loc):
+    """Double-click, and when it cannot, say what Playwright and the DOM saw:
+    which element sits on top of the card's name, and the actionability log."""
+    try:
+        await loc.dblclick(timeout=8000)
+        return None
+    except Exception as e:  # noqa: BLE001
+        log = [l.strip() for l in str(e).splitlines() if l.strip()][-4:]
+        over = await loc.evaluate("""el => { const r = el.getBoundingClientRect();
+            const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+            return {box: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+                    on_top: top ? (top.className || top.tagName) + '' : null,
+                    connected: el.isConnected}; }""")
+        return f"dblclick blocked: {over} | {' / '.join(log)[:300]}"
+
 async def t_studio(pg, P, rng, st):
     await library(pg)
     c = await first_card(pg)
     dbl_ok = True
+    why = None
     if await pg.locator(".pair-card.expanded").count():
-        await pg.locator(".pair-card.expanded .pc-name").first.dblclick()
+        why = await _dblclick_why(pg, pg.locator(".pair-card.expanded .pc-name").first)
         await pg.wait_for_timeout(1200)
         dbl_ok = await pg.locator(".studio-screen").count() > 0
     t0 = time.time()
@@ -317,7 +333,15 @@ async def t_studio(pg, P, rng, st):
         if await pg.locator(".pair-card.expanded").count():
             await pg.locator(".pair-card.expanded").first.locator("button", has_text="Open in Studio").click()
         else:
-            await pg.locator(".pair-card .pc-name").first.dblclick()
+            why = await _dblclick_why(pg, pg.locator(".pair-card .pc-name").first) or why
+            if why and not await pg.locator(".studio-screen").count():
+                # Keep going the keyboard way, so one blocked click does not
+                # cost every later Studio task.
+                await pg.locator(".pair-card").first.click()
+                await pg.keyboard.press("Enter")
+                await pg.wait_for_timeout(600)
+                if await pg.locator(".pair-card.expanded").count():
+                    await pg.locator(".pair-card.expanded").first.locator("button", has_text="Open in Studio").click()
     await pg.locator(".studio-screen").wait_for(timeout=8000)
     ready = None
     for _ in range(60):
@@ -330,6 +354,7 @@ async def t_studio(pg, P, rng, st):
     lanes = await pg.locator(".lh-title").all_inner_texts()
     pills = await pg.locator(".timing-pills button, .timing-pills .tp-n").count()
     notes = [] if dbl_ok else ["double-click on an expanded card collapsed it instead of opening Studio"]
+    if why: notes.append(why)
     if ready is None: notes.append("Studio lanes never drew")
     elif ready > P["patience_ms"]: notes.append(f"Studio took {ready} ms to draw its lanes")
     if errs: notes.append(f"Studio errors: {errs[:2]}")

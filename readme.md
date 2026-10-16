@@ -748,7 +748,7 @@ step). The player bar hides in Studio.
   trim, rate and lane settings (`deck` and `slot` in `LANE_KEYS`). Click a clip
   to select it; the Adjustments panel then shows that mashup's two cards
   only, and the header counts mashups, not clips. Deck clips decode only
-  within 90 s ahead of the playhead (15 s behind) and let their audio go
+  within 45 s ahead of the playhead (10 s behind) and let their audio go
   after (`releaseStem`), so a 40-pair set — 80 stems, several GB decoded —
   holds a handful at a time; the deck head shows how many are loaded. A
   whole-set WAV takes up to 128 clips and renders its first 15 minutes.
@@ -2179,7 +2179,13 @@ randomised personas (ten archetypes, viewports 1280×720–2560×1440), each tas
 ending in DOM and network probes; `analyse.py` summarises per-task success,
 timings and findings by how many personas hit them. Every run restores the
 same seeded database. `UX_SIM_CHROMIUM` points it at a Chromium binary when
-Playwright's own is not installed.
+Playwright's own is not installed. Mind the host: on 4 cores, five browsers
+decoding Studio audio beside server renders (three Rubber Band processes each)
+starve a page's main thread for 30 s at a time, and Studio tasks fail on
+Playwright timeouts that no real session sees — 3–5 of 40 at `--conc 5`, 0 of
+40 at `--conc 2` (2026-10-16). A blocked double-click records what sat on top
+of the card and Playwright's own log, so such a failure can be told from a
+real one.
 
 Walked in a browser against the container: Library, track detail, the pair
 dock, Discover. Every screen — Mixes, Sets and Studio included — was also

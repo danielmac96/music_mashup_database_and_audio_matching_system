@@ -88,7 +88,7 @@ const MAX_SNAPSHOTS = 20;
 
 let laneUid = 1;
 // Deck clips decode within this window around the playhead (seconds).
-const DECK_AHEAD = 90, DECK_BEHIND = 15;
+const DECK_AHEAD = 45, DECK_BEHIND = 10;
 
 // Everything about a lane that is the user's arrangement rather than loaded
 // audio. ONE list, read by the saved project, snapshots and undo, so a lane
