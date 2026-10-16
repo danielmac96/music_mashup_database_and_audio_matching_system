@@ -3028,6 +3028,19 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                        AND sl.anchor_sec >= mc.vocal_section_start
                        AND sl.anchor_sec < mc.vocal_section_end
                      ORDER BY sl.anchor_sec LIMIT 1) AS vocal_section_line,
+                   -- How many section pairings of these two songs are stored,
+                   -- and where this one ranks among them (1 = best score): the
+                   -- dock's card shows one and steps through the rest
+                   -- (GET /api/mashups/pairings).
+                   (SELECT COUNT(*) FROM mashup_candidates x
+                     WHERE x.vocal_song_id = mc.vocal_song_id
+                       AND x.inst_song_id = mc.inst_song_id
+                       AND x.combo_type = mc.combo_type) AS pairing_count,
+                   (SELECT COUNT(*) + 1 FROM mashup_candidates x
+                     WHERE x.vocal_song_id = mc.vocal_song_id
+                       AND x.inst_song_id = mc.inst_song_id
+                       AND x.combo_type = mc.combo_type
+                       AND x.score_total > mc.score_total) AS pairing_rank,
                    (SELECT COUNT(*) FROM sections WHERE song_id = mc.vocal_song_id)
                        AS vocal_section_count,
                    (SELECT COUNT(*) FROM sections WHERE song_id = mc.inst_song_id)

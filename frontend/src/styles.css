@@ -1908,6 +1908,19 @@ input, select { font-family: inherit; }
   border: 1px solid var(--line-2); background: var(--panel); color: var(--fg); font-size: 10px;
 }
 .pc-play.on { background: rgba(91, 140, 255, 0.25); }
+/* ‹ ● ○ ○ › — a card's other section pairings of the same two songs */
+.pc-steps { flex: none; display: inline-flex; align-items: center; gap: 3px; }
+.pc-step {
+  height: 18px; min-width: 14px; padding: 0 2px; border: 0; background: none;
+  color: var(--muted); font-size: 13px; line-height: 1; cursor: pointer;
+}
+.pc-step:hover:not(:disabled) { color: var(--fg); }
+.pc-step:disabled { opacity: 0.3; cursor: default; }
+.pc-dot {
+  width: 6px; height: 6px; padding: 0; border-radius: 50%; cursor: pointer;
+  border: 1px solid var(--muted); background: none;
+}
+.pc-dot.on { background: var(--accent); border-color: var(--accent); }
 
 /* expanded */
 .pcx { display: flex; flex-direction: column; gap: 10px; padding: 8px 0 4px; border-top: 1px solid var(--line); cursor: default; }

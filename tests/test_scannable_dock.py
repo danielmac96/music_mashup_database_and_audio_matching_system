@@ -149,7 +149,9 @@ def test_cards_are_compact_and_expand_on_enter():
     """Collapsed, every pair is the same compact variant-C card; ⏎ or a click
     expands the one under the cursor (double-click opens Studio)."""
     dock = _read("components/PairDock.jsx")
-    assert "focused={i === cursor}" in dock and "expanded={expanded === k}" in dock
+    # Expanded is keyed by the song pair, so stepping through its section
+    # pairings (‹ ● ○ ›) keeps the card open.
+    assert "focused={i === cursor}" in dock and "expanded={expanded === pairKey(c)}" in dock
     hook = _read("hooks/usePairDock.js")
     assert 'if (e.key === "Enter") { e.preventDefault(); toggleExpand(row); return; }' in hook
     card = _read("components/PairCard.jsx")

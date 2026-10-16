@@ -309,6 +309,12 @@ export const api = {
     return jsonFetch(`/api/mashups?${params}`);
   },
 
+  // Every stored section pairing of one song pair, best first — what a dock
+  // card's ‹ ● ○ ○ › steps through. Enriched exactly like a listed row.
+  getPairings: (vocalSongId, instSongId, comboType = "vocal_over_instrumental") =>
+    jsonFetch(`/api/mashups/pairings?vocal_song_id=${vocalSongId}`
+      + `&inst_song_id=${instSongId}&combo_type=${encodeURIComponent(comboType)}`),
+
   // Which genre / era / BPM / energy values the scored pairs actually contain,
   // so the dock's filter menus only offer what will match something.
   getMashupFilters: () => jsonFetch("/api/mashups/filters"),
