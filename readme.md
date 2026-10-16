@@ -1979,6 +1979,40 @@ automatically. TempoCNN needs `deeptemp-k16-3.pb` in `--models-dir`. Without
 Essentia the librosa half still runs. Output: `<data_dir>/bench/<timestamp>/`
 (`summary.md`, `results.csv`, `timings.csv`).
 
+**Golden pairs** (`tests/test_golden_pairs.py`, `tests/fixtures/golden_pairs.json`,
+part of the suite): designed vocals and beds a producer would judge without
+hesitation (same key, relative, one step, tritone, a 10% stretch, an unclear
+harmony) and section shapes whose label is not in doubt, scored through the
+real scorer and the dock's listing route. Three measures, each with a floor in
+the fixture: `pair_auc` (the share of good-vs-bad pairs where good ranks
+higher), `rule_pass` (rows keeping two producer rules: a transpose of 4+
+semitones is never Free or Light, and a transpose the library calls unsure
+never overrides the Camelot estimate) and `label_accuracy`. A change may not
+drop a measure below its floor; a change that improves one raises the floor.
+`expect` is the verdict after the smallest sensible transpose (±1–2 st is
+routine), and section chroma is scale-shaped, as a section's mean chroma is.
+Baseline (2026-10-15): AUC 0.959, rules 0.143, labels 0.882.
+
+**Persona UX simulation** (`scripts/ux_sim/`, not part of the suite — it needs
+Playwright, a built frontend and ~1 h for 100 personas):
+
+```bash
+python scripts/ux_sim/run.py /tmp/uxsim --fresh            # synthesise 40 tracks, seed, 100 personas
+python scripts/ux_sim/run.py /tmp/uxsim --tasks rate,studio --archetypes mashup_producer --n 20
+```
+
+`synth.py` writes each track's mix, vocal and instrumental stems and a
+`meta.json` with the ground truth (tempo, key, every section's label and
+span); `seed.py` runs the real analysis, structure and Score library on them in
+an isolated database (Demucs is not run — the stems are synthesised);
+`truth.py` reports tempo, key, voiceless sections labelled `verse` and drops
+found against that ground truth; `harness.py` drives the built UI with
+randomised personas (ten archetypes, viewports 1280×720–2560×1440), each task
+ending in DOM and network probes; `analyse.py` summarises per-task success,
+timings and findings by how many personas hit them. Every run restores the
+same seeded database. `UX_SIM_CHROMIUM` points it at a Chromium binary when
+Playwright's own is not installed.
+
 Walked in a browser against the container: Library, track detail, the pair
 dock, Discover. Every screen — Mixes, Sets and Studio included — was also
 driven by the 100-persona browser simulation (§9) against a synthesised

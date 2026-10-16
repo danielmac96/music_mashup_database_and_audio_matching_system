@@ -1,0 +1,422 @@
+{
+ "_about": "Designed vocals and beds a producer would judge without hesitation, and section shapes whose label is not in doubt. tests/test_golden_pairs.py scores them through the real scorer and listing route. `floors` are the measured baseline: a change may not drop below them, and a phase that improves a measure raises its floor (readme §8). `expect` is the verdict after the smallest sensible transpose (±1–2 st is routine), not the raw Camelot distance.",
+ "songs": [
+  {
+   "name": "V1 A minor 124",
+   "role": "vocal",
+   "key": "A",
+   "mode": "minor",
+   "bpm": 124.0
+  },
+  {
+   "name": "V2 C major 124",
+   "role": "vocal",
+   "key": "C",
+   "mode": "major",
+   "bpm": 124.0
+  },
+  {
+   "name": "V3 F# minor 126",
+   "role": "vocal",
+   "key": "F#",
+   "mode": "minor",
+   "bpm": 126.0
+  },
+  {
+   "name": "B1 A minor 124",
+   "role": "bed",
+   "key": "A",
+   "mode": "minor",
+   "bpm": 124.0
+  },
+  {
+   "name": "B2 C major 124",
+   "role": "bed",
+   "key": "C",
+   "mode": "major",
+   "bpm": 124.0
+  },
+  {
+   "name": "B3 E minor 125",
+   "role": "bed",
+   "key": "E",
+   "mode": "minor",
+   "bpm": 125.0
+  },
+  {
+   "name": "B4 B minor 124",
+   "role": "bed",
+   "key": "B",
+   "mode": "minor",
+   "bpm": 124.0
+  },
+  {
+   "name": "B5 D# minor 124",
+   "role": "bed",
+   "key": "D#",
+   "mode": "minor",
+   "bpm": 124.0
+  },
+  {
+   "name": "B6 A minor 136",
+   "role": "bed",
+   "key": "A",
+   "mode": "minor",
+   "bpm": 136.0
+  },
+  {
+   "name": "B7 F# minor 126",
+   "role": "bed",
+   "key": "F#",
+   "mode": "minor",
+   "bpm": 126.0
+  },
+  {
+   "name": "B8 G# minor 124",
+   "role": "bed",
+   "key": "G#",
+   "mode": "minor",
+   "bpm": 124.0
+  },
+  {
+   "name": "B9 E minor 124 unclear",
+   "role": "bed",
+   "key": "E",
+   "mode": "minor",
+   "bpm": 124.0,
+   "flat_chroma": true
+  },
+  {
+   "name": "B10 F major 112",
+   "role": "bed",
+   "key": "F",
+   "mode": "major",
+   "bpm": 112.0
+  },
+  {
+   "name": "B11 A cluster 124",
+   "role": "bed",
+   "key": "A",
+   "mode": "minor",
+   "bpm": 124.0,
+   "chroma": "cluster"
+  }
+ ],
+ "pairs": [
+  {
+   "name": "same key, same tempo",
+   "vocal": "V1 A minor 124",
+   "bed": "B1 A minor 124",
+   "expect": "good"
+  },
+  {
+   "name": "relative major",
+   "vocal": "V1 A minor 124",
+   "bed": "B2 C major 124",
+   "expect": "good"
+  },
+  {
+   "name": "one step, 0.8% stretch",
+   "vocal": "V1 A minor 124",
+   "bed": "B3 E minor 125",
+   "expect": "good"
+  },
+  {
+   "name": "two steps",
+   "vocal": "V1 A minor 124",
+   "bed": "B4 B minor 124",
+   "expect": "mid"
+  },
+  {
+   "name": "tritone",
+   "vocal": "V1 A minor 124",
+   "bed": "B5 D# minor 124",
+   "expect": "mid",
+   "why": "a one-semitone transpose lands it a step away"
+  },
+  {
+   "name": "same key, 9.7% stretch",
+   "vocal": "V1 A minor 124",
+   "bed": "B6 A minor 136",
+   "expect": "bad"
+  },
+  {
+   "name": "five steps",
+   "vocal": "V1 A minor 124",
+   "bed": "B8 G# minor 124",
+   "expect": "mid",
+   "why": "a one-semitone transpose lands it on the vocal's key"
+  },
+  {
+   "name": "unclear harmony, one step",
+   "vocal": "V1 A minor 124",
+   "bed": "B9 E minor 124 unclear",
+   "expect": "mid"
+  },
+  {
+   "name": "10% slower, far key",
+   "vocal": "V1 A minor 124",
+   "bed": "B10 F major 112",
+   "expect": "bad"
+  },
+  {
+   "name": "same key (major)",
+   "vocal": "V2 C major 124",
+   "bed": "B2 C major 124",
+   "expect": "good"
+  },
+  {
+   "name": "relative minor",
+   "vocal": "V2 C major 124",
+   "bed": "B1 A minor 124",
+   "expect": "good"
+  },
+  {
+   "name": "major over tritone-ish minor",
+   "vocal": "V2 C major 124",
+   "bed": "B5 D# minor 124",
+   "expect": "mid",
+   "why": "a one-semitone transpose lands it on the relative"
+  },
+  {
+   "name": "major, 9.7% stretch",
+   "vocal": "V2 C major 124",
+   "bed": "B6 A minor 136",
+   "expect": "bad"
+  },
+  {
+   "name": "same key, same tempo (F#m)",
+   "vocal": "V3 F# minor 126",
+   "bed": "B7 F# minor 126",
+   "expect": "good"
+  },
+  {
+   "name": "adjacent, 1.6% stretch",
+   "vocal": "V3 F# minor 126",
+   "bed": "B4 B minor 124",
+   "expect": "good"
+  },
+  {
+   "name": "two steps (F#m)",
+   "vocal": "V3 F# minor 126",
+   "bed": "B8 G# minor 124",
+   "expect": "mid"
+  },
+  {
+   "name": "F#m over Fmaj 112",
+   "vocal": "V3 F# minor 126",
+   "bed": "B10 F major 112",
+   "expect": "bad"
+  },
+  {
+   "name": "F#m over A minor 136",
+   "vocal": "V3 F# minor 126",
+   "bed": "B6 A minor 136",
+   "expect": "bad"
+  },
+  {
+   "name": "minor over a semitone cluster",
+   "vocal": "V1 A minor 124",
+   "bed": "B11 A cluster 124",
+   "expect": "bad",
+   "why": "no transpose makes a cluster agree"
+  },
+  {
+   "name": "major over a semitone cluster",
+   "vocal": "V2 C major 124",
+   "bed": "B11 A cluster 124",
+   "expect": "bad",
+   "why": "no transpose makes a cluster agree"
+  }
+ ],
+ "labels": [
+  {
+   "name": "edm: the drop is the loudest voiceless section",
+   "segments": [
+    {
+     "energy": 0.3,
+     "vocal_presence": 0.0,
+     "repetition": 1
+    },
+    {
+     "energy": 0.55,
+     "vocal_presence": 0.7,
+     "repetition": 2
+    },
+    {
+     "energy": 0.9,
+     "vocal_presence": 0.8,
+     "repetition": 2
+    },
+    {
+     "energy": 0.3,
+     "vocal_presence": 0.0,
+     "repetition": 1
+    },
+    {
+     "energy": 0.64,
+     "vocal_presence": 0.0,
+     "repetition": 1
+    },
+    {
+     "energy": 0.3,
+     "vocal_presence": 0.0,
+     "repetition": 1
+    }
+   ],
+   "expect": {
+    "0": "intro",
+    "1": "verse",
+    "2": "chorus",
+    "3": "breakdown",
+    "4": "drop",
+    "5": "outro"
+   }
+  },
+  {
+   "name": "pop: verse, chorus, verse, chorus",
+   "segments": [
+    {
+     "energy": 0.35,
+     "vocal_presence": 0.1,
+     "repetition": 1
+    },
+    {
+     "energy": 0.5,
+     "vocal_presence": 0.7,
+     "repetition": 2
+    },
+    {
+     "energy": 0.85,
+     "vocal_presence": 0.8,
+     "repetition": 2
+    },
+    {
+     "energy": 0.5,
+     "vocal_presence": 0.7,
+     "repetition": 2
+    },
+    {
+     "energy": 0.88,
+     "vocal_presence": 0.8,
+     "repetition": 2
+    },
+    {
+     "energy": 0.35,
+     "vocal_presence": 0.1,
+     "repetition": 1
+    }
+   ],
+   "expect": {
+    "0": "intro",
+    "1": "verse",
+    "2": "chorus",
+    "3": "verse",
+    "4": "chorus",
+    "5": "outro"
+   }
+  },
+  {
+   "name": "a mid-energy instrumental section is never a verse",
+   "segments": [
+    {
+     "energy": 0.4,
+     "vocal_presence": 0.0,
+     "repetition": 1
+    },
+    {
+     "energy": 0.6,
+     "vocal_presence": 0.75,
+     "repetition": 2
+    },
+    {
+     "energy": 0.55,
+     "vocal_presence": 0.05,
+     "repetition": 1
+    },
+    {
+     "energy": 0.8,
+     "vocal_presence": 0.8,
+     "repetition": 2
+    },
+    {
+     "energy": 0.4,
+     "vocal_presence": 0.0,
+     "repetition": 1
+    }
+   ],
+   "expect": {
+    "2": "drop|breakdown|instrumental",
+    "3": "chorus"
+   }
+  },
+  {
+   "name": "loud voiceless peak in a vocal track",
+   "segments": [
+    {
+     "energy": 0.35,
+     "vocal_presence": 0.0,
+     "repetition": 1
+    },
+    {
+     "energy": 0.6,
+     "vocal_presence": 0.7,
+     "repetition": 2
+    },
+    {
+     "energy": 0.95,
+     "vocal_presence": 0.05,
+     "repetition": 2
+    },
+    {
+     "energy": 0.35,
+     "vocal_presence": 0.0,
+     "repetition": 1
+    }
+   ],
+   "expect": {
+    "2": "drop"
+   }
+  },
+  {
+   "name": "no vocal stem: the loud repeated part",
+   "has_vocals": false,
+   "segments": [
+    {
+     "energy": 0.3,
+     "vocal_presence": null,
+     "repetition": 1
+    },
+    {
+     "energy": 0.9,
+     "vocal_presence": null,
+     "repetition": 2
+    },
+    {
+     "energy": 0.3,
+     "vocal_presence": null,
+     "repetition": 1
+    },
+    {
+     "energy": 0.9,
+     "vocal_presence": null,
+     "repetition": 2
+    },
+    {
+     "energy": 0.3,
+     "vocal_presence": null,
+     "repetition": 1
+    }
+   ],
+   "expect": {
+    "1": "chorus|drop",
+    "2": "breakdown"
+   }
+  }
+ ],
+ "floors": {
+  "pair_auc": 0.95,
+  "rule_pass": 0.14,
+  "label_accuracy": 0.88
+ }
+}
