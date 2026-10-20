@@ -10,6 +10,7 @@ const STEPS = [
   ["Score the library", "The dock's ↻ Re-score (or ⚙ → Score library). Every vocal section is tried over every instrumental section; the best pairings land in the pair dock on the right of the Library."],
   ["Audition pairs", "In the dock, ↑↓ moves, space loops the pair (the vocal's section over the bed's), 1–5 rates it and moves on. Select a library row to see the pairs for that track — As vocal or As bed."],
   ["Keep the good ones", "★ Keepers lists what you rated 4–5. + Set (or a) puts a pair into the active set — the running order of your mix."],
+  ["Mix and match parts", "Segments: every section of every song, vocals beside beds. Pick a chorus acapella and the beds narrow to the sections that fit it — scored live, so pairs Score library left out still show. Pick one and it loops in the mini studio at the bottom: transpose, tempo, nudge, levels, high-pass, then Open in Studio."],
   ["Build it", "⏎ expands a card; Open in Studio lays the pair out conformed and lined up. Nudge, transpose, trim or extend, fade, high-pass the bed, add a second vocal from ＋ Add, then Render ▾ a WAV, stems or an FL Studio session."],
   ["Plan the mix", "Sets: drag slots into order, shape the energy curve, fill gaps from the suggestions, preview each transition, open the pairs in Studio back to back, and export a cue sheet, CSV, rekordbox XML or FL sessions."],
 ];
@@ -35,6 +36,7 @@ const GLOSSARY = [
 const KEYS = [
   ["Library table", "↑↓ move · PgUp/PgDn · Home/End · space preview the hook · ⏎ open the track · esc clear the selection · tab → the pair dock"],
   ["Library search", "type 8A 124-128 house 2015+ vox stems — read as filters · ⏎ pin them · ↓ into the table · esc clear"],
+  ["Segments", "click a vocal (or a bed): the other table narrows to what fits it · click a match: the pair loops in the mini studio · ↑↓ move · space loop the row (nothing focused: play the mini studio) · ⏎ open the track · ←/→ or [ ] next / previous match · 1–5 rate · a add to set · esc drop the match, then the selection · ⇄ match the other side instead"],
   ["Track detail", "space play the hook · esc back to the Library (same selection and scroll) · click a section block to loop it · click or drag the structure to scrub · the dock's keys still work beside it"],
   ["Queue", "↑↓ move (opens the inspector) · ⏎ open the track · r retry a failed track · esc close the inspector"],
   ["Discover", "⏎ search (or paste a link) · ↓ into the results · ↑↓ move · x shortlist · ⏎ preview a track, open a set or artist · / back to the search"],

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MixImporter } from "./components/MixImporter";
 import { LibraryScreen } from "./components/LibraryScreen";
+import { SegmentsScreen } from "./components/segments/SegmentsScreen";
 import { QueueScreen } from "./components/QueueScreen";
 import { AnalysisScreen } from "./components/AnalysisScreen";
 import { PairDock } from "./components/PairDock";
@@ -212,7 +213,10 @@ export default function App() {
   // a region — nothing is trimmed away. `scoredOption` rides along because
   // top_section_pairs is capped at six, so the row you are looking at need not
   // be among the options Studio re-fetches for itself.
-  const pairToStudio = (c) => sendToStudio({
+  // `tweaks` (Segments' mini studio): what was changed there — the bed's
+  // transpose and tempo, the nudge, both levels, the high-pass — so Studio
+  // opens on the pair as it was last heard.
+  const pairToStudio = (c, tweaks = null) => sendToStudio({
     vocalId: c.vocal_song_id,
     instId: c.inst_song_id,
     semitoneShift: c.semitone_shift ?? 0,
@@ -223,7 +227,14 @@ export default function App() {
     // Studio's header: the pair's tier and percentile as the dock printed them.
     confidenceTier: c.confidence_tier ?? null,
     percentile: c.score_percentile ?? null,
+    tweaks,
   });
+
+  // A section handed to Segments (Track detail's "Find beds ▸", ⌘K): it opens
+  // as the lead, its matches ranked. sectionIndex null = the track's
+  // best-suited section for that role. `at` re-seeds the same one.
+  const [segmentsSeed, setSegmentsSeed] = useState(null);
+  const openSegments = (s) => { setSegmentsSeed({ ...s, at: Date.now() }); setRoute("segments"); };
 
   // `c` on a pair (or ⇄ Compare): Analysis › Compare, vocal against bed.
   const [compareSeed, setCompareSeed] = useState(null);
@@ -297,7 +308,9 @@ export default function App() {
   // Space is the app-wide play/pause everywhere the dock is not already using
   // it for its own "loop this pair".
   useEffect(() => {
-    if (route === "library" || route === "track" || route === "studio") return undefined;
+    // Segments routes space itself: the mini studio when a pair is armed.
+    if (route === "library" || route === "track" || route === "studio"
+      || route === "segments") return undefined;
     const onKey = (e) => {
       const el = e.target;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
@@ -493,6 +506,7 @@ export default function App() {
                   onCompareWith={(id) => { setCompareSeed({ a: id, b: null, at: Date.now() }); setRoute("analysis"); }}
                   onChooseAttributes={() => setRoute("analysis")}
                   onOpenQueue={openQueue}
+                  onOpenSegments={openSegments}
                   running={library.pipeJobs.some((j) => j.song_id === selectedTrackId && j.status === "running")}
                 />
               )}
@@ -505,6 +519,13 @@ export default function App() {
               freshness={freshness}
               role={dockRole} onRole={setDockRole} />
           </div>
+        )}
+        {route === "segments" && (
+          <SegmentsScreen tracks={library.tracks} player={player} ratings={ratings}
+            sets={sets} notes={notes}
+            onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}
+            onOpenStudio={pairToStudio} seed={segmentsSeed}
+            onRailSlot={setRailSlot} onStatus={setHeaderStatus} />
         )}
         {route === "queue" && (
           <QueueScreen
@@ -613,6 +634,11 @@ export default function App() {
             { key: "a:search", glyph: "⌕", label: "Focus search", hint: "/", run: focusSearch },
             ...(selectedTrackId != null ? [{ key: "a:clear", glyph: "✕",
               label: "Clear the selected track", hint: "esc", run: clearSelection }] : []),
+            ...(selectedTrack ? [{ key: "a:segments", glyph: "▥",
+              label: dockRole === "vocal" ? `Find beds for ${selectedTrack.title}`
+                : `Find vocals for ${selectedTrack.title}`,
+              hint: "Segments",
+              run: () => openSegments({ songId: selectedTrack.id, sectionIndex: null, role: dockRole }) }] : []),
             { key: "a:rail", glyph: "«", label: "Toggle rail", run: rail.toggle },
             ...(player.source ? [{ key: "a:play", glyph: "▶", label: "Play / pause",
               hint: "space", run: () => (player.playing ? player.pause() : player.resume()) }] : []),

@@ -176,6 +176,7 @@ browser reads `GET /api/settings`.
                 download → quick (mix: BPM, key, provisional sections) → stems → analyse → structure (+ hooks)
  3. SCORE       dock "↻ Re-score" (or ⚙ Score library) → every vocal × bed section pair → mashup_candidates
  4. JUDGE       pair dock: loop the moment, rate 1–5 (again to clear), compare, note, hide, exclude
+                Segments: any vocal section × any bed section, scored live → mini studio loop
  5. BUILD       Studio: conformed lanes, timing pills, trim/loop/level/fades/filters → Export WAV or FL session
  6. PLAN        Sets: keepers in running order, graded transitions → Studio back to back, cue sheet, CSV, rekordbox
  7. LEARN       documented w/ pairs + your verdicts → dataset → model → "Score library" uses it
@@ -290,7 +291,7 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
 
 ## 4. Using the app
 
-The shell is a left **rail** (Library · Queue · Analysis · Discover · Mixes · Sets ·
+The shell is a left **rail** (Library · Segments · Queue · Analysis · Discover · Mixes · Sets ·
 Studio, plus library groups, the screen's status readout, **?** help and ⚙ Settings) and
 one 56px **player bar** at the bottom that every screen shares. The rail collapses to
 56px with **«** (remembered as `mashup.rail.v1`); at its foot a **pipeline readout**
@@ -452,6 +453,56 @@ row's **⋯** menu re-runs a single stage, edits BPM/key, changes the source URL
   boring), both for a 3. They sit beside the verdict
   (`pair_feedback.reasons_json`), never change it and do not train anything
   yet: they are what phase 3 checks the section terms against (§9).
+
+### Segments
+
+The matchup playground: a library of **parts**, not songs. Every row is one
+section of one record — **Vocals** on the left, **Beds** on the right, each its
+own virtualised table (fixed 32px rows) — and a **mini studio** across the
+bottom. Drag the split between the tables and the band's top edge (remembered
+as `mashup.segments.layout.v1`).
+
+- **Vocals** are the sections of tracks with a vocal stem whose vocal level
+  clears the scorer's floor (`matcher.plan.VOCAL_PRESENCE_MIN`, 0.25; unmeasured
+  passes). **Beds** are every section of tracks with an instrumental stem.
+  Provisional (quick-tier) sections and excluded tracks are on neither side.
+  Intros and outros are listed (dimmed) but never ranked as a partner.
+- Columns: ▶ (loops the section on the player bar, `space`), title/artist (opens
+  the track), part, span · bars, BPM and key (the full mix's), energy (0–10,
+  ranked among the sections on that side), VOX (sung share) and the sung range
+  on the vocal side, the residual vocal on the bed side, genre/style, stem
+  quality, and how many stored pairs use the section. A narrow pane drops the
+  low-priority columns rather than scrolling sideways.
+- **Filters** per table, in memory only: the search box reads the Library's
+  tokens (`8A`, `124-128`, `126bpm`, a genre) plus a label (`chorus`, `drop`)
+  and a bar count (`16bars`); one chip per label; **More ▾** for BPM and bar
+  ranges, keys, energy / sung / quality floors, genres, "in stored pairs" and
+  "no intros / outros". An unmeasured value never passes a filter that asks
+  about it.
+- **Select a segment and the other table becomes its matches**: every offered
+  section on that side, scored live against it (§5.13 Segments), best first,
+  with a **Fit** column (percentile and tier) and **Move** (the bed's transpose
+  and stretch). The table's own filters still apply on top, and **stretch ≤
+  2/4/6%**, **allow transpose** and the **tier chips** narrow the ranking
+  itself. The side you selected first leads; selecting on the other side only
+  arms a partner; **⇄ match this instead** hands the lead across.
+- **The mini studio** loops the armed pair from its two cut sections — the
+  bed conformed, transposed and nudged exactly as the card would (the row's
+  `semitone_shift`, the recipe's rates, levels and high-pass, the measured
+  `alignment_offset`). Moves: bed pitch ±1 st, bed tempo ±0.5% on top of the
+  conform, nudge ±10 ms / ±1 beat, both levels (dB of the linear gain), mute /
+  solo, the bed high-pass — each turns amber once moved, and **↺ to
+  suggestion** resets them. Then rate it (or `1–5`), note it, **+ Set** (or
+  `a`), **Render WAV** (the loop as heard, through the server mixdown) or
+  **Open in Studio**, which carries what you changed there.
+- **Ways in**: Track detail's section table (a section's chevron → **Find
+  beds ▸** / **Find vocals ▸**) and ⌘K's **Find beds for {track}** (the selected
+  Library track, as the dock's As vocal / As bed reads it; its most-wanted part
+  by label, then energy) open Segments with that section leading.
+- Keys: `↑↓` move, `space` loops the row (with nothing focused, plays the mini
+  studio), `⏎` opens the track, `←/→` (in the matches) or `[` `]` step through
+  the matches, `1–5` rate, `a` add to the set, `esc` drops the partner, then the
+  selection.
 
 ### Queue
 
@@ -1572,6 +1623,33 @@ read the endpoint (extra keys on pair rows, jobs and mixes are ignored).
   (`mixes.mix_summary`): `needs_review` is a link that fails the trust gate,
   `library` a row matched by name to a song you had, `ingested` any row with
   a library song. The list is three queries however many mixes.
+- **Segments** (`api/routes/segments.py`, `matcher/segment_match.py`,
+  `tests/test_segments_api.py`). `GET /api/segments?role=vocal|bed` →
+  `{role, total, songs: {id: {...}}, columns: [...], rows: [[...]]}`
+  (`models.list_segments`, packed: a song's title, tempo, key, genre, style,
+  stem quality… once per song, each section as one array in `columns` order —
+  38 MB as plain objects on a 5,000-track bed side, 7.7 MB packed, 1.2 MB
+  gzipped). Unpaginated, filtered in the browser; the body is cached per state
+  of the library (`segment_match._fingerprint`: `pairs_input_at`, section and
+  feature ids, stem quality, exclusions, variant clusters, the stored pairs,
+  section lines) and gzipped when the browser accepts it — this route only.
+  `GET /api/segments/{id}/matches?role=&limit=200&max_stretch=&max_shift=&tier=`
+  scores that section, played as `role`, against every offered section on the
+  other side and returns `{anchor, role, rows, scored, gated, count}`: rows are
+  `mashup_candidates`-shaped (`models.candidate_dict`) plus `segment_id` (the
+  partner's), `stored`, `score_percentile` and the listing's playback terms
+  (`semitone_shift`, `recipe`, `confidence_tier`, `compat` — through
+  `mashups._with_playback_terms`). The ranking is the scorer's own arithmetic
+  (the block pass for the song terms and its gate, `score_section_pair`,
+  `_apply_measured_harmony`, `_apply_section_fit`), so a stored pairing gets
+  the same total live, and where one is stored the stored row itself is
+  returned; a live row's percentile is its `PERCENT_RANK` place among the
+  stored totals. Exact top-k: each pairing's total is bounded by its song
+  terms with a perfect harmony and a free transpose, and the walk stops when
+  no bound can beat the k-th total. Measured on 5,000 synthetic tracks (40,000
+  bed sections): ~0.23 s median, 0.27 s p95 per call warm, ~1.9 s for the first
+  call after the library changes (the snapshot); the list ~20 ms cached,
+  0.5 s (vocal) / 1.2 s (bed) to build.
 
 ---
 
@@ -1582,16 +1660,16 @@ read the endpoint (extra keys on pair rows, jobs and mixes are ignored).
 | `config.py` | Paths, weights, gates, settings layer, live readers (`current_*`) |
 | `database/models.py` | SQLite schema, migrations, every query; `resolve_audio_path` is the one audio resolver |
 | `api/server.py` | FastAPI app, routers, health/deps, yt-dlp update, SPA serving with stale-build detection |
-| `api/routes/` | `tracks` (+ neighbours), `playlists`, `jobs`, `analysis` (analyser status, library stats, embeddings backfill), `mashups` (+ pair notes and pair exports), `mixes`, `discovery` (+ library gaps, finds for a track), `crates`, `sets`, `studio`, `settings`, `prefs` (Library view, filter presets), `datasets`, `models`, `database` |
+| `api/routes/` | `tracks` (+ neighbours), `segments` (the section lists and live matches), `playlists`, `jobs`, `analysis` (analyser status, library stats, embeddings backfill), `mashups` (+ pair notes and pair exports), `mixes`, `discovery` (+ library gaps, finds for a track), `crates`, `sets`, `studio`, `settings`, `prefs` (Library view, filter presets), `datasets`, `models`, `database` |
 | `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py`, `api/queue_eta.py` | per-stage worker pools + resume, job registry, playlist preview hydration, per-job ETA and summary (§5.13) |
 | `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage download/stems/analysis/structure; `bulk`, `match`, `hook`, `candidate_preview`, `mixdown`, `session`, `mix_resolve`, `mix_ingest` (Mixes import + ingest), `reverify`, `discovery` (`suggest`), `ml`; `bulk` also backfills descriptive metadata |
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py`, `fit_hints.py` (tempo/key/role an upload prints) |
 | `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
 | `stems/separate.py` | Demucs / MDX-Net, two or four stems |
 | `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`; `essentia_groups.py` (the Essentia analyser), `ml_models.py` (the EffNet models: catalogue, download, predictors), `project.py` (payloads → `features` columns); `decode.py` (one decode per file + per-signal memo; ffprobe/FFmpeg decode for Essentia), `frames.py` (the shared transforms), `registry.py` (feature groups + versions), `cache.py` (content hash → cached group results); `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
-| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py`, `setflow.py` (set transitions, §5.12), `recipe.py` (the bed's transpose, one definition — §7) |
+| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py`, `setflow.py` (set transitions, §5.12), `recipe.py` (the bed's transpose, one definition — §7), `segment_match.py` (one section against the other side, live — §5.13) |
 | `render/` | `dsp.py`, `mixdown.py`, `session.py`, `exports.py` (CSV, cue sheet, rekordbox XML) |
-| `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen`, `AnalysisScreen` + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, `useSets`, `usePairNotes`, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`, `attributes.js` (attribute formatting + `attr:` columns); `public/soundtouch-processor.js` |
+| `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen`, `AnalysisScreen`, `segments/` — the Segments screen, its tables, filters, model and mini studio — + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, `useSets`, `usePairNotes`, `useSegments`, `useMiniStudio`, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`, `attributes.js` (attribute formatting + `attr:` columns); `public/soundtouch-processor.js` |
 | `scripts/` | `bench_analyzers.py` — librosa vs Essentia timing + agreement on library tracks (§8) |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS |
 
@@ -1674,6 +1752,18 @@ Existing databases migrate on start.
   and `/api/jobs/queue` alike. It reads `analysis_runs` and `songs` on its own
   connections, swallows every failure into `eta_secs: null`, and must stay
   that way: it runs inside the poll every screen makes.
+- **Segments' live ranking is the scorer, not a copy of it**
+  (`matcher/segment_match.py`). The song terms and the gate come from
+  `_iter_scored_pairs`, the section term from `score_section_pair`, the
+  harmony and the blend from `_apply_measured_harmony` / `_apply_section_fit`;
+  `tests/test_segments_api.py` clears the table and checks every stored
+  pairing's total comes back identical. A new term in `score_all_pairs` that
+  is not added there too makes the two screens disagree about the same pair.
+  Partners are the sections the scorer would layer — no intros or outros:
+  an intro rarely carries the bed's chroma, kept the Camelot guess where a
+  drop measured the clash, and dropped the golden-pairs AUC from 0.96 to 0.92.
+  Its snapshot and the list's cached body are keyed by `_fingerprint`; a new
+  input either reads must be in it, or the screen serves a stale answer.
 - **`embeddings` is derived from `feature_cache`, keyed to the audio's
   bytes.** `sync_embeddings` is its only writer; it never re-analyses, and it
   drops a vector whose `content_hash` is no longer the full mix's. Nothing but
@@ -2363,6 +2453,15 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    walk Year, Length and Plays start hidden in the Library, taking the default
    columns from 1270px to 1088px; beside the 400px dock the table still
    scrolls inside itself below ~1500px wide (819px of it shows at 1440).
+
+10. **Segments (2026-10-20).** Built: the screen, both lists, live matches,
+    the mini studio, the Studio hand-off. Open: hidden pairs (`pair_hidden`)
+    still appear in the live matches (the dock leaves them out); with a learned
+    model active, a live row's total is the heuristic's while a stored row
+    carries the model's probability, so live rows are ranked against stored ones
+    on two scales — re-score or turn the model off before comparing; the bed is
+    looped under a longer vocal only when the nudge is ≥ 0; segments are whole
+    sections — 8/16-bar phrases (item 5) would make them finer.
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in
 Discover (nothing external is analysed — rows show the tempo an upload prints,
