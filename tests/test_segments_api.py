@@ -315,3 +315,35 @@ def test_the_cached_list_follows_the_library_and_gzips(app):
     assert r.headers["content-encoding"] == "gzip" and r.json()["role"] == "bed"
     plain = client.get("/api/segments?role=bed", headers={"Accept-Encoding": "identity"})
     assert "content-encoding" not in plain.headers and plain.json() == r.json()
+
+
+def test_the_mini_studio_starts_from_the_plans_lane_suggestions(app):
+    """The band arms a pair from the row's own numbers (useMiniStudio.
+    suggestionOf: semitone_shift, the recipe's rate and levels,
+    alignment_offset). Studio's grey ticks read plan.lanes for the same
+    pairing. The two must agree, or "↺ to suggestion" means two things."""
+    client, models = app
+    ids = _library(models)
+    from matcher.match import score_all_pairs
+    score_all_pairs(scorer="heuristic")
+    anchor = _seg_id(client, "vocal", ids["A"], 1)
+    rows = client.get(f"/api/segments/{anchor}/matches?role=vocal").json()["rows"]
+    checked = 0
+    for row in rows:
+        if row["inst_song_id"] == ids["P"]:
+            continue
+        plan = client.get("/api/mashups/plan", params={
+            "vocal_id": row["vocal_song_id"], "inst_id": row["inst_song_id"],
+            "vocal_section": row["vocal_section_idx"],
+            "inst_section": row["inst_section_idx"]}).json()
+        bed, vocal = plan["lanes"]["bed"], plan["lanes"]["vocal"]
+        recipe = row["recipe"]
+        assert bed["semitones"] == row["semitone_shift"]
+        assert bed["rate"] == pytest.approx(recipe.get("bed_rate") or row["stretch_factor"])
+        assert bed["offset_sec"] == pytest.approx(row["alignment_offset"])
+        assert bed["gain"] == pytest.approx(recipe["bed_lane_gain"])
+        assert vocal["gain"] == pytest.approx(recipe["vocal_lane_gain"])
+        assert (bed["clip_start"], bed["clip_end"]) == (row["inst_section_start"],
+                                                        row["inst_section_end"])
+        checked += 1
+    assert checked >= 3

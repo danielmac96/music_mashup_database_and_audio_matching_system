@@ -33,11 +33,11 @@ for _t in TRACKS:
     _t["bpm"] = _f.get("bpm"); _t["camelot"] = _f.get("camelot")
 
 ARCHETYPES = {
-  "mashup_producer":   dict(daws=["FL Studio","Ableton Live"], tasks=["pick_track","audition","expand","rate","studio","studio_play","studio_render","fl_session","ab_search"]),
+  "mashup_producer":   dict(daws=["FL Studio","Ableton Live"], tasks=["pick_track","audition","expand","rate","segments","studio","studio_play","studio_render","fl_session","ab_search"]),
   "club_dj":           dict(daws=["rekordbox","Serato","Traktor"], tasks=["pick_track","audition","set_build","set_view","export_cue","search_parse","palette"]),
   "wedding_dj":        dict(daws=["Serato","rekordbox"], tasks=["search_parse","pick_track","audition","keepers","set_build","set_view","export_cue"]),
   "bedroom_beginner":  dict(daws=["GarageBand","FL Studio"], tasks=["first_look","help","pick_track","audition","expand","studio","import_link"]),
-  "ableton_live_pro":  dict(daws=["Ableton Live"], tasks=["pick_track","expand","studio","studio_play","studio_edit","studio_render","detail"]),
+  "ableton_live_pro":  dict(daws=["Ableton Live"], tasks=["pick_track","expand","segments","studio","studio_play","studio_edit","studio_render","detail"]),
   "crate_digger":      dict(daws=["rekordbox","Ableton Live"], tasks=["discover","import_link","palette","search_parse","detail","queue"]),
   "analyst":           dict(daws=["Logic Pro","Ableton Live"], tasks=["analysis","compare","detail","rescore","tuning","pick_track","expand"]),
   "mix_archaeologist": dict(daws=["FL Studio","rekordbox"], tasks=["mix_paste","pick_track","ab_search","rate","queue"]),
@@ -611,6 +611,59 @@ async def t_mix_paste(pg, P, rng, st):
     if lib < 6: notes.append(f"only {lib}/6 library tracks auto-linked by name")
     tab = pg.locator("button", has_text="Match")
     return dict(ok=lib > 0, notes=notes, data=dict(lib=lib, docpairs=docs))
+
+async def t_segments(pg, P, rng, st):
+    """Segments: pick a vocal part, wait for its beds, arm one, play it in the
+    mini studio, move a control and back, then open it in Studio."""
+    await go(pg, "Segments")
+    vrows = pg.locator('[data-seg-table="vocal"] .seg-row')
+    await vrows.first.wait_for(timeout=10000)
+    n = await vrows.count()
+    notes, match_ms, found = [], None, 0
+    for attempt in range(4):
+        t0 = time.time()
+        await vrows.nth(rng.randrange(min(n, 12))).click()
+        await pg.locator(".seg-pane.bed .seg-scope.match").wait_for(timeout=8000)
+        for _ in range(40):
+            if not await pg.locator(".seg-pane.bed .seg-scope.match .faint", has_text="ranking").count():
+                break
+            await pg.wait_for_timeout(100)
+        match_ms = int((time.time() - t0) * 1000)
+        found = await pg.locator('[data-seg-table="bed"] .seg-row').count()
+        if found:
+            break
+    if not found:
+        return dict(ok=False, notes=["no bed matched any of four vocal segments"], data={})
+    if match_ms > P["patience_ms"]:
+        notes.append(f"matches took {match_ms} ms")
+    await pg.locator('[data-seg-table="bed"] .seg-row').nth(rng.randrange(min(found, 5))).click()
+    await pg.locator(".seg-band .seg-knobs").wait_for(timeout=8000)
+    await pg.locator(".seg-playbtn").click()
+    playing = False
+    for _ in range(40):
+        if (await pg.locator(".seg-playbtn").inner_text()).strip() == "❚❚":
+            playing = True; break
+        await pg.wait_for_timeout(200)
+    if not playing:
+        notes.append("the mini studio never started playing")
+    await pg.locator(".seg-knob", has_text="bed pitch").get_by_role("button", name="+").click()
+    edited = await pg.locator(".seg-knob.edited").count()
+    await pg.get_by_role("button", name="↺ to suggestion").click()
+    reset = await pg.locator(".seg-knob.edited").count() == 0
+    if not edited or not reset:
+        notes.append("a moved control did not show as edited, or ↺ did not reset it")
+    await pg.locator(".seg-playbtn").click()
+    await pg.get_by_role("button", name="Open in Studio").click()
+    await pg.locator(".studio-screen").wait_for(timeout=8000)
+    lanes = 0
+    for _ in range(40):
+        lanes = await pg.evaluate("() => document.querySelectorAll('.studio-timeline canvas').length")
+        if lanes >= 2: break
+        await pg.wait_for_timeout(250)
+    if lanes < 2:
+        notes.append("Studio did not draw the pair's lanes")
+    return dict(ok=playing and lanes >= 2 and edited > 0 and reset, ms=match_ms, notes=notes,
+                data=dict(matches=found, match_ms=match_ms))
 
 TASKS = {k[2:]: v for k, v in globals().items() if k.startswith("t_")}
 

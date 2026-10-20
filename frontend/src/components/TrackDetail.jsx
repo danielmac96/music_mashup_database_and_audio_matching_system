@@ -59,7 +59,7 @@ export function TrackDetail({ track, tracks, attributes = null, ratings, groups,
                               onRole, onBack, onStudio, onOpenTrack, onStatus,
                               onChanged, onDiscover = null, onLinesChanged = null,
                               onPlayPair = null, onCompareWith = null, onChooseAttributes = null,
-                              onOpenQueue = null, running = false }) {
+                              onOpenQueue = null, onOpenSegments = null, running = false }) {
   const [sections, setSections] = useState([]);
   // The "Wrong audio?" picker and the key editor. Closed on every walk to
   // another track: they hold one track's state, which must not sit under
@@ -359,6 +359,9 @@ export function TrackDetail({ track, tracks, attributes = null, ratings, groups,
 
       <SectionTable sections={sections} pairsBySection={pairsBySection}
         playingIndex={sectionPlaying} onPlay={playSection}
+        onMatch={onOpenSegments
+          ? (s, asRole) => onOpenSegments({ songId: track.id, sectionIndex: s.section_index, role: asRole })
+          : null}
         onSaveLine={async (s, text) => {
           try {
             await api.saveSectionLine(track.id, s, text);

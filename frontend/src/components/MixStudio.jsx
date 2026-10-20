@@ -1212,21 +1212,27 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
                  pct: seed.percentile ?? null });
     setActiveOptionKey(seeded ? optionKey(seeded) : null);
 
+    // What the Segments mini studio changed, on top of the suggestion: the
+    // bed's transpose, a tempo change past the conform (which unsyncs it), a
+    // nudge away from the measured one, both levels and the high-pass.
+    const tw = seed.tweaks || null;
+    const bedRateTw = tw?.tempoPct ? bRate * (1 + tw.tempoPct / 100) : bRate;
     addLane(vTrack, vStem, { offsetSec: place ? place.vocal.offsetSec : base - vAt,
                              clipStart: place ? place.vocal.clipStart : 0,
                              clipEnd: place ? place.vocal.clipEnd : null,
                              rate: vRate, semitones: 0,
-                             gain: seed.recipe?.vocal_lane_gain ?? 0.85,
+                             gain: tw?.vocalGain ?? seed.recipe?.vocal_lane_gain ?? 0.85,
                              synced: Boolean(bpm && vBpm), colorIdx: 0 });
-    addLane(bTrack, bStem, { offsetSec: place ? place.bed.offsetSec : base - bAt,
+    addLane(bTrack, bStem, { offsetSec: (place ? place.bed.offsetSec : base - bAt)
+                               + (tw?.nudgeDeltaSec || 0),
                              clipStart: place ? place.bed.clipStart : 0,
                              clipEnd: place ? place.bed.clipEnd : null,
-                             rate: bRate,
-                             semitones: seed.semitoneShift ?? 0,
+                             rate: bedRateTw,
+                             semitones: tw?.semitones ?? seed.semitoneShift ?? 0,
                              // The recipe's level and bass-clash high-pass.
-                             gain: seed.recipe?.bed_lane_gain ?? 0.8,
-                             hpHz: seed.recipe?.bed_highpass_hz ?? 0,
-                             synced: Boolean(bpm && bBpm), colorIdx: 1 });
+                             gain: tw?.bedGain ?? seed.recipe?.bed_lane_gain ?? 0.8,
+                             hpHz: tw?.hpHz ?? seed.recipe?.bed_highpass_hz ?? 0,
+                             synced: Boolean(bpm && bBpm) && !tw?.tempoPct, colorIdx: 1 });
     setRestored(true);
     // Hand the seed back: leaving it live would re-seed — and throw away the
     // user's edits — every time they leave Studio and come back.
