@@ -68,6 +68,12 @@ def _key_relation(camelot_a: str, camelot_b: str) -> str:
     return "distant — pitch the instrumental to match"
 
 
+# Below this mean vocal-stem level a section has nothing to sing over a bed.
+# Shared with the Segments screen's vocal list (models.list_segments), so a
+# segment it offers is one the scorer would also consider.
+VOCAL_PRESENCE_MIN = 0.25
+
+
 def _pick_sections(sections: List[Dict], priority: Dict[str, int],
                    vocal_side: bool) -> List[Dict]:
     """Order a song's sections by usefulness for mashing."""
@@ -77,7 +83,7 @@ def _pick_sections(sections: List[Dict], priority: Dict[str, int],
         if label in ("intro", "outro"):
             continue
         if vocal_side and s.get("vocal_presence") is not None \
-                and s["vocal_presence"] < 0.25:
+                and s["vocal_presence"] < VOCAL_PRESENCE_MIN:
             continue  # nothing to sing over there
         usable.append(s)
     usable.sort(key=lambda s: (priority.get(s.get("label") or "verse", 9),

@@ -209,3 +209,27 @@ def test_section_labels_hold_their_floor():
     acc, wrong = label_accuracy()
     print("\ngolden labels:", acc, wrong)
     assert acc >= FIXTURE["floors"]["label_accuracy"], wrong
+
+
+def test_segments_rank_the_designed_pairs_as_well_as_the_dock(listing):
+    """The Segments screen's live ranking (matcher/segment_match.py) from each
+    vocal's sections, best bed section per song kept, holds the same floor:
+    it is the scorer's arithmetic, so it must not judge the designed pairs
+    worse than the stored table does."""
+    ids, _ = listing
+    import database.models as m
+    from matcher.segment_match import rank_partners
+    mashups = importlib.import_module("api.routes.mashups")
+    vocal_ids = {ids[s["name"]] for s in FIXTURE["songs"] if s["role"] == "vocal"}
+    best = {}
+    for seg in m.list_segments("vocal"):
+        if seg["song_id"] not in vocal_ids:
+            continue
+        out = rank_partners(seg["segment_id"], "vocal", limit=2000)
+        for r in mashups._with_playback_terms(out["rows"]):
+            key = (r["vocal_song_id"], r["inst_song_id"])
+            if key not in best or r["score_total"] > best[key]["score_total"]:
+                best[key] = r
+    got = measure(ids, best)
+    assert not got["missing"], got["missing"]
+    assert got["pair_auc"] >= FIXTURE["floors"]["pair_auc"], got

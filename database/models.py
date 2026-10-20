@@ -2300,25 +2300,49 @@ def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
         (song_id,),
     ).fetchall()
     conn.close()
-    out = []
-    for r in rows:
-        d = dict(r)
-        # Decode the Phase E chroma columns the same way features does, so
-        # callers never see a JSON string where a vector is expected.
-        for src, dest in (("chroma_json", "chroma"),
-                          ("bass_chroma_json", "bass_chroma"),
-                          ("chroma_vocal_json", "chroma_vocal"),
-                          ("chroma_bed_json", "chroma_bed"),
-                          ("beat_times_json", "beat_times"),
-                          ("downbeats_json", "downbeats"),
-                          ("band_energy_vocal_json", "band_energy_vocal"),
-                          ("band_energy_bed_json", "band_energy_bed"),
-                          ("f0_json", "f0")):
-            if d.get(src):
-                d[dest] = json.loads(d.pop(src))
-            else:
-                d.pop(src, None)
-        out.append(d)
+    return [_decode_section(r) for r in rows]
+
+
+_SECTION_JSON_COLUMNS = (("chroma_json", "chroma"),
+                         ("bass_chroma_json", "bass_chroma"),
+                         ("chroma_vocal_json", "chroma_vocal"),
+                         ("chroma_bed_json", "chroma_bed"),
+                         ("beat_times_json", "beat_times"),
+                         ("downbeats_json", "downbeats"),
+                         ("band_energy_vocal_json", "band_energy_vocal"),
+                         ("band_energy_bed_json", "band_energy_bed"),
+                         ("f0_json", "f0"))
+
+
+def _decode_section(row) -> Dict:
+    """A sections row with its JSON columns decoded the same way features
+    does, so callers never see a JSON string where a vector is expected."""
+    d = dict(row)
+    for src, dest in _SECTION_JSON_COLUMNS:
+        if d.get(src):
+            d[dest] = json.loads(d.pop(src))
+        else:
+            d.pop(src, None)
+    return d
+
+
+def sections_for_songs(song_ids, db_path: Path = DB_PATH) -> Dict[int, List[Dict]]:
+    """get_sections for many songs in one query: {song_id: [section, ...]}."""
+    ids = sorted({int(i) for i in song_ids if i is not None})
+    out: Dict[int, List[Dict]] = {i: [] for i in ids}
+    if not ids:
+        return out
+    conn = get_conn(db_path)
+    try:
+        for start in range(0, len(ids), 900):     # SQLite's variable limit
+            chunk = ids[start:start + 900]
+            rows = conn.execute(
+                f"SELECT * FROM sections WHERE song_id IN ({','.join('?' * len(chunk))}) "
+                "ORDER BY song_id, section_index", chunk).fetchall()
+            for r in rows:
+                out[r["song_id"]].append(_decode_section(r))
+    finally:
+        conn.close()
     return out
 
 
@@ -2447,6 +2471,25 @@ SECTION_PAIR_COLUMNS = (
     "alignment_downbeat", "alignment_offset", "target_bpm",
     "tempo_adjustment", "pitch_adjustment", "reason",
 )
+
+
+# The column each candidate_row value binds to, read off the insert itself so
+# the two cannot drift (scored_at is the statement's own datetime('now')).
+CANDIDATE_COLUMNS = tuple(
+    c.strip() for c in
+    _CANDIDATE_INSERT_SQL.split("(", 1)[1].split(")", 1)[0].split(",")
+    if c.strip() and c.strip() != "scored_at")
+
+
+def candidate_dict(vocal: dict, inst: dict, scores: dict,
+                   combo_type: str = "vocal_over_instrumental",
+                   scorer: str = "heuristic",
+                   model_version: Optional[str] = None,
+                   section_pair: Optional[dict] = None) -> Dict:
+    """candidate_row as the dict a stored row reads back as — for a pair
+    scored live (matcher/segment_match.py) rather than read from the table."""
+    return dict(zip(CANDIDATE_COLUMNS, candidate_row(
+        vocal, inst, scores, combo_type, scorer, model_version, section_pair)))
 
 
 def candidate_row(vocal: dict, inst: dict, scores: dict,
@@ -4637,3 +4680,119 @@ def section_lines_for(song_id: int, sections: List[Dict],
                     if s["start_sec"] <= r["anchor_sec"] < s["end_sec"]), None)
         out.append(hit)
     return out
+
+
+# ── Segments (the section-level playground) ──────────────────────────────────
+
+SEGMENT_ROLES = ("vocal", "bed")
+
+
+def list_segments(role: str, db_path: Path = DB_PATH) -> List[Dict]:
+    """Every section worth offering on one side of a mashup, one row each —
+    the Segments screen's two tables (GET /api/segments).
+
+    `vocal`: sections of tracks with an analysed vocal stem whose vocal level
+    clears the scorer's own floor (matcher.plan.VOCAL_PRESENCE_MIN; unmeasured
+    passes, as it does there). `bed`: sections of tracks with an analysed
+    instrumental stem. Provisional (quick-tier) sections and excluded tracks
+    are left out on both sides — the matcher never pairs them either.
+
+    Tempo and key are the full mix's (matcher.match._with_full_bpm: a stem's
+    own estimate is the least reliable number in the table); the section's own
+    tempo and key ride beside them. Heavy columns (chroma, beat grids) are not
+    returned: the list is unpaginated and filtered in the browser. NULL is
+    unmeasured, never zero. One connection, four queries."""
+    from matcher.compat import top_style
+    from matcher.plan import VOCAL_PRESENCE_MIN
+    if role not in SEGMENT_ROLES:
+        raise ValueError(f"role must be one of {SEGMENT_ROLES}")
+    stem = "vocals" if role == "vocal" else "instrumental"
+    side_col = "vocal" if role == "vocal" else "inst"
+    conn = get_conn(db_path)
+    try:
+        rows = conn.execute(
+            f"""SELECT x.id AS segment_id, x.song_id, x.section_index, x.label,
+                       x.start_sec, x.end_sec, x.energy, x.energy_absolute,
+                       x.energy_trend, x.vocal_presence, x.vocal_activity,
+                       x.section_class, x.bar_count, x.phrase_length_bars,
+                       x.bpm AS section_bpm, x.bpm_source,
+                       x.camelot AS section_camelot, x.f0_json, x.confidence,
+                       s.title, s.artist, s.genre, s.release_year, s.duration_secs,
+                       s.thumbnail,
+                       ff.bpm, ff.bpm_confidence, ff.camelot, ff.key, ff.mode,
+                       ff.key_confidence, ff.tags_json, ff.lufs,
+                       sf.residual_vocal_ratio, st.quality AS stem_quality
+                FROM sections x
+                JOIN songs s ON s.id = x.song_id
+                JOIN features sf ON sf.song_id = x.song_id AND sf.stem_type = ?
+                LEFT JOIN features ff ON ff.song_id = x.song_id AND ff.stem_type = 'full'
+                LEFT JOIN stems st ON st.song_id = x.song_id AND st.stem_type = ?
+                WHERE COALESCE(x.provisional, 0) = 0
+                  AND NOT EXISTS (SELECT 1 FROM track_excluded te
+                                  WHERE te.song_id = x.song_id)
+                  {"AND (x.vocal_presence IS NULL OR x.vocal_presence >= ?)"
+                   if role == "vocal" else ""}
+                ORDER BY s.id, x.section_index""",
+            (stem, stem, VOCAL_PRESENCE_MIN) if role == "vocal" else (stem, stem),
+        ).fetchall()
+        lines = conn.execute(
+            "SELECT song_id, anchor_sec, text FROM section_lines "
+            "ORDER BY song_id, anchor_sec").fetchall()
+        uses = conn.execute(
+            f"""SELECT {side_col}_song_id AS song_id, {side_col}_section_idx AS idx,
+                       COUNT(*) AS n
+                FROM mashup_candidates
+                WHERE combo_type = 'vocal_over_instrumental'
+                  AND {side_col}_section_idx IS NOT NULL
+                GROUP BY {side_col}_song_id, {side_col}_section_idx""").fetchall()
+    finally:
+        conn.close()
+
+    lines_by_song: Dict[int, list] = {}
+    for r in lines:
+        lines_by_song.setdefault(r["song_id"], []).append((r["anchor_sec"], r["text"]))
+    use_count = {(r["song_id"], r["idx"]): r["n"] for r in uses}
+    # The section's absolute energy as a rank among this side's sections: the
+    # stored `energy` is relative to its own record, which cannot compare two.
+    ranked = sorted((r["energy_absolute"], r["segment_id"]) for r in rows
+                    if r["energy_absolute"] is not None)
+    n = len(ranked)
+    energy_rank = {sid: (k / (n - 1) if n > 1 else 0.5)
+                   for k, (_, sid) in enumerate(ranked)}
+
+    out = []
+    style: Dict[int, Optional[str]] = {}     # one tags_json parse per song
+    for r in rows:
+        d = dict(r)
+        f0 = json.loads(d.pop("f0_json")) if d.get("f0_json") else None
+        d["sung_low"] = f0.get("p10_midi") if f0 else None
+        d["sung_high"] = f0.get("p90_midi") if f0 else None
+        d["sung_median"] = f0.get("median_midi") if f0 else None
+        tags = d.pop("tags_json")
+        if d["song_id"] not in style:
+            style[d["song_id"]] = top_style(tags)
+        d["style"] = style[d["song_id"]]
+        d["role"] = role
+        d["duration"] = round(float(d["end_sec"]) - float(d["start_sec"]), 3)
+        rank = energy_rank.get(d["segment_id"])
+        d["energy_rank"] = round(rank, 4) if rank is not None else None
+        d["usable"] = (d.get("label") or "verse") not in ("intro", "outro")
+        d["uses"] = use_count.get((d["song_id"], d["section_index"]), 0)
+        d["line"] = next((t for a, t in lines_by_song.get(d["song_id"], ())
+                          if d["start_sec"] <= a < d["end_sec"]), None)
+        out.append(d)
+    return out
+
+
+def get_segment(segment_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
+    """One section by its row id, decoded like get_sections, or None."""
+    conn = get_conn(db_path)
+    try:
+        r = conn.execute("SELECT song_id, section_index FROM sections WHERE id=?",
+                         (int(segment_id),)).fetchone()
+    finally:
+        conn.close()
+    if r is None:
+        return None
+    return next((s for s in get_sections(r["song_id"], db_path=db_path)
+                 if s["section_index"] == r["section_index"]), None)
