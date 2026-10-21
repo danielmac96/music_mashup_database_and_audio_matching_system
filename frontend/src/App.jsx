@@ -241,6 +241,8 @@ export default function App() {
   // as the lead, its matches ranked. sectionIndex null = the track's
   // best-suited section for that role. `at` re-seeds the same one.
   const [segmentsSeed, setSegmentsSeed] = useState(null);
+  const [segmentsVisited, setSegmentsVisited] = useState(false);
+  useEffect(() => { if (route === "segments") setSegmentsVisited(true); }, [route]);
   const openSegments = (s) => { setSegmentsSeed({ ...s, at: Date.now() }); setRoute("segments"); };
 
   // `c` on a pair (or ⇄ Compare): Analysis › Compare, vocal against bed.
@@ -538,12 +540,19 @@ export default function App() {
               role={dockRole} onRole={setDockRole} tracks={library.tracks} />
           </div>
         )}
-        {route === "segments" && (
-          <SegmentsScreen tracks={library.tracks} player={player} ratings={ratings}
-            sets={sets} notes={notes}
-            onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}
-            onOpenStudio={pairToStudio} seed={segmentsSeed}
-            onRailSlot={setRailSlot} onStatus={setHeaderStatus} />
+        {/* Mounted from the first visit on and hidden when not on show, so
+            Studio and back finds the same selection, filters and armed pair
+            (12 of 12 simulated users lost it when it unmounted). `active`
+            takes its keys and status away while hidden. */}
+        {segmentsVisited && (
+          <div className={`seg-host${route === "segments" ? "" : " away"}`}
+            aria-hidden={route !== "segments"}>
+            <SegmentsScreen tracks={library.tracks} player={player} ratings={ratings}
+              sets={sets} notes={notes} active={route === "segments"}
+              onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}
+              onOpenStudio={pairToStudio} seed={segmentsSeed}
+              onRailSlot={setRailSlot} onStatus={setHeaderStatus} />
+          </div>
         )}
         {route === "queue" && (
           <QueueScreen

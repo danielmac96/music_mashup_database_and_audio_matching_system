@@ -50,7 +50,9 @@ export function useSegmentMatches(anchor, opts) {
       setState({ rows: null, loading: false, error: null, meta: null });
       return undefined;
     }
-    setState((s) => ({ ...s, loading: true, error: null }));
+    // The previous anchor's matches are cleared, not kept on screen: a row
+    // clicked there would not be among the new ones.
+    setState({ rows: null, loading: true, error: null, meta: null });
     const c = new AbortController();
     ctrl.current = c;
     const t = setTimeout(async () => {

@@ -19,8 +19,8 @@ const OVERSCAN = 6;
 export const SEG_COLUMNS = [
   { id: "play", label: "", w: 28, prio: 0, nosort: true },
   { id: "fit", label: "Fit", w: 104, prio: 0, match: true, tip: "How well this sits with the selected segment: its percentile among every scored pair, and its tier" },
-  { id: "title", label: "Title / Artist", w: 150, prio: 0, sort: "title", flex: true },
-  { id: "label", label: "Part", w: 82, prio: 1, sort: "label", tip: "The section's label and its place in the song" },
+  { id: "title", label: "Title / Artist", w: 120, prio: 0, sort: "title", flex: true },
+  { id: "label", label: "Part", w: 78, prio: 1, sort: "label", tip: "The section's label and its place in the song" },
   { id: "bars", label: "Span · bars", w: 92, prio: 3, sort: "bars", align: "r", tip: "Where the section sits in the song, and how many bars it lasts" },
   { id: "bpm", label: "BPM", w: 52, prio: 1, sort: "bpm", align: "r", tip: "The full mix's tempo" },
   { id: "key", label: "Key", w: 44, prio: 1, sort: "key", align: "c", tip: "The full mix's Camelot key" },
@@ -31,7 +31,7 @@ export const SEG_COLUMNS = [
   { id: "resid", label: "Resid", w: 50, prio: 5, roles: ["bed"], align: "r", tip: "Vocal left in the instrumental after separation (lower is cleaner)" },
   { id: "genre", label: "Genre", w: 92, prio: 6, sort: "genre", tip: "Genre, or the Discogs style the track leads with" },
   { id: "quality", label: "Q", w: 38, prio: 6, sort: "quality", align: "r", tip: "Stem separation quality, 0–100" },
-  { id: "uses", label: "Pairs", w: 46, prio: 7, sort: "uses", align: "r", tip: "Stored pairs that use this section" },
+  { id: "uses", label: "Pairs", w: 56, prio: 7, sort: "uses", align: "r", tip: "Stored pairs that use this section" },
 ];
 
 const dash = <span className="faint">—</span>;
@@ -137,7 +137,8 @@ const Row = memo(function Row({ r, zebra, sel, cols, ctx }) {
 });
 
 export function SegmentTable({ role, rows, matchMode, sort, onSort, selectedKey,
-                               onSelect, onOpen, onPlay, playingKey, onSwitch, emptyText,
+                               onSelect, onOpen, onPlay, playingKey, onSwitch, onTabOther = null,
+                               emptyText,
                                label }) {
   const scrollRef = useRef(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -197,6 +198,13 @@ export function SegmentTable({ role, rows, matchMode, sort, onSort, selectedKey,
   // tab goes to the other table (the browser's own order). Handled keys stop
   // here so the screen's window keys do not see them twice.
   const onKeyDown = (e) => {
+    // Tab hops straight to the other table: through the controls between them
+    // it took up to a dozen presses (the 2026-10-21 simulation). Shift+Tab
+    // keeps the browser's order, back to this table's filters.
+    if (e.key === "Tab" && !e.shiftKey && onTabOther) {
+      e.preventDefault(); e.stopPropagation(); onTabOther();
+      return;
+    }
     if (!rows.length || e.metaKey || e.ctrlKey || e.altKey) return;
     const step = { ArrowDown: 1, ArrowUp: -1, PageDown: 15, PageUp: -15 }[e.key];
     let next = null;

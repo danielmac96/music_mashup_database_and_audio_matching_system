@@ -104,11 +104,18 @@ export function useMiniStudio(pair) {
     setLoopLen(vLen);
   }, []);
 
+  // Play asked for while the clips are still decoding is kept and honoured
+  // when they land — a keypress there used to do nothing at all (the
+  // 2026-10-21 simulation: every keyboard user's first space was lost).
+  const loadingRef = useRef(false);
+  const pendingPlay = useRef(false);
+
   // A new pair: decode its two clips, keep playing if the band was.
   useEffect(() => {
     const t = ++token.current;
     const e = engineRef.current;
     wasPlaying.current = Boolean(e?.isPlaying);
+    pendingPlay.current = false;
     if (!pair) {
       e?.stop();
       setPlaying(false);
@@ -120,6 +127,7 @@ export function useMiniStudio(pair) {
     setSettings(s);
     setError(null);
     setLoading(true);
+    loadingRef.current = true;
     (async () => {
       try {
         const eng = engine();
@@ -135,11 +143,19 @@ export function useMiniStudio(pair) {
         buffers.current = { vocal, bed };
         apply(s, true);
         setPosition(0);
-        if (wasPlaying.current) await eng.play(0);
+        loadingRef.current = false;
+        if (wasPlaying.current || pendingPlay.current) {
+          pendingPlay.current = false;
+          await eng.play(0);
+        }
       } catch (err) {
-        if (token.current === t) setError(err?.message || "Could not load this pair's sections");
+        if (token.current === t) {
+          pendingPlay.current = false;
+          setPlaying(false);
+          setError(err?.message || "Could not load this pair's sections");
+        }
       } finally {
-        if (token.current === t) setLoading(false);
+        if (token.current === t) { setLoading(false); loadingRef.current = false; }
       }
     })();
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -166,10 +182,18 @@ export function useMiniStudio(pair) {
 
   const play = useCallback(async () => {
     const e = engineRef.current;
-    if (!e || !buffers.current.vocal) return;
+    if (loadingRef.current || !e || !buffers.current.vocal) {
+      pendingPlay.current = true;
+      setPlaying(true);              // the button answers at once
+      return;
+    }
     await e.play(null);
   }, []);
-  const pause = useCallback(() => engineRef.current?.pause(), []);
+  const pause = useCallback(() => {
+    pendingPlay.current = false;
+    engineRef.current?.pause();
+    setPlaying(false);
+  }, []);
   const stop = useCallback(() => { engineRef.current?.stop(); setPlaying(false); }, []);
   const seek = useCallback((pos) => engineRef.current?.seek(Math.max(0, pos)), []);
 

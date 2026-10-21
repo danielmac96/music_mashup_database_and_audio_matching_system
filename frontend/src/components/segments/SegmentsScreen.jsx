@@ -4,7 +4,8 @@ import { SegmentTable } from "./SegmentTable";
 import { SegmentFilters } from "./SegmentFilters";
 import { MiniStudio } from "./MiniStudio";
 import {
-  buildSideRows, cycleSegSort, EMPTY_SEG_FILTERS, OTHER, SEG_SORTS, segKey, STEM_OF,
+  buildSideRows, cycleSegSort, effectiveSegFilters, EMPTY_SEG_FILTERS, OTHER, SEG_SORTS, segKey,
+  STEM_OF,
 } from "./segmentModel";
 import { toast } from "../../toast";
 import { TIERS } from "../../theme";
@@ -20,6 +21,10 @@ import { TIERS } from "../../theme";
 //
 // The side you selected first LEADS (it is the one being matched against);
 // selecting on the other side only arms a partner. ⇄ hands the lead across.
+//
+// App keeps the screen mounted once visited, so a trip to Studio and back
+// finds the same selection, filters and armed pair. While it is not the
+// screen on show (`active` false) it owns no keys and reports no status.
 
 const LAYOUT_KEY = "mashup.segments.layout.v1";
 const STRETCH_STEPS = [["", "any"], ["2", "≤2%"], ["4", "≤4%"], ["6", "≤6%"]];
@@ -32,7 +37,7 @@ function readLayout() {
 }
 
 export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTrack, onOpenStudio,
-                                 seed = null, onRailSlot, onStatus }) {
+                                 seed = null, active = true, onRailSlot, onStatus }) {
   const segs = useSegments();
   const [filters, setFilters] = useState({ vocal: { ...EMPTY_SEG_FILTERS },
                                            bed: { ...EMPTY_SEG_FILTERS } });
@@ -43,7 +48,7 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
   const [layout, setLayout] = useState(readLayout);
   const bodyRef = useRef(null);
 
-  useEffect(() => { onRailSlot?.(null); }, [onRailSlot]);
+  useEffect(() => { if (active) onRailSlot?.(null); }, [active, onRailSlot]);
   useEffect(() => {
     try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch { /* ignore */ }
   }, [layout]);
@@ -71,15 +76,27 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
 
   // What each table lists: the side's sections, or — on the partner side while
   // something leads — only its matches, in the server's order (buildSideRows).
+  // Until the matches arrive the partner side lists nothing: showing every
+  // section meanwhile invited a click on one that was then not among them, and
+  // nothing armed (the 2026-10-21 simulation).
   const view = useMemo(() => {
     const out = {};
     for (const role of ["vocal", "bed"]) {
-      const inMatch = role === partnerRole && matches.rows != null;
-      out[role] = { ...buildSideRows(segs[role], inMatch ? matches.rows : null,
+      const inMatch = role === partnerRole && anchor != null;
+      out[role] = { ...buildSideRows(segs[role], inMatch ? (matches.rows || []) : null,
                                      filters[role], sorts[role], genres), inMatch };
     }
     return out;
-  }, [segs, partnerRole, matches.rows, filters, sorts, genres]);
+  }, [segs, partnerRole, anchor?.segment_id, matches.rows, filters, sorts, genres]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A partner the new matches do not include is dropped, not left selected
+  // with nothing armed.
+  useEffect(() => {
+    if (!partnerRole || matches.rows == null || !sel[partnerRole]) return;
+    if (!matchBySeg.has(sel[partnerRole].segment_id)) {
+      setSel((s) => ({ ...s, [partnerRole]: null }));
+    }
+  }, [matches.rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The armed pair: the partner side's selection, as the match row the server
   // scored (the same shape as a dock card, so rating, + Set and Studio need
@@ -124,6 +141,7 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
 
   // esc: drop the armed partner first, then the lead.
   useEffect(() => {
+    if (!active) return undefined;
     const onKey = (e) => {
       const el = e.target;
       if (e.key !== "Escape" || e.defaultPrevented || (el && (el.tagName === "INPUT"
@@ -133,12 +151,12 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [partnerRole, sel, lead, clearAll]);
+  }, [active, partnerRole, sel, lead, clearAll]);
 
   // 1–5 rate the armed pair (again to clear), a adds it to the active set —
   // the dock's keys, while a table or the band has focus.
   useEffect(() => {
-    if (!armed) return undefined;
+    if (!armed || !active) return undefined;
     const onKey = (e) => {
       const el = e.target;
       if (e.metaKey || e.ctrlKey || e.altKey || (el && (el.tagName === "INPUT"
@@ -148,7 +166,7 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [armed, ratings, sets]);
+  }, [armed, active, ratings, sets]);
 
   const stemsOf = useMemo(() => new Map(tracks.map((t) => [t.id, t.stems])), [tracks]);
   const playSegment = useCallback((role, r) => {
@@ -179,6 +197,7 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
   }, [partnerRole, view, sel]);
 
   useEffect(() => {
+    if (!active) return undefined;
     const onKey = (e) => {
       const el = e.target;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) return;
@@ -186,12 +205,13 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stepPartner]);
+  }, [active, stepPartner]);
 
   useEffect(() => {
+    if (!active) return;
     if (segs.loading) onStatus?.({ text: "Loading segments…", locked: true });
     else onStatus?.({ text: `${segs.vocal.length.toLocaleString()} vocal · ${segs.bed.length.toLocaleString()} bed segments` });
-  }, [segs.loading, segs.vocal.length, segs.bed.length, onStatus]);
+  }, [active, segs.loading, segs.vocal.length, segs.bed.length, onStatus]);
 
   // Drag the split between the tables, and the band's top edge.
   const drag = (kind) => (e) => {
@@ -244,12 +264,19 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
 
   const pane = (role) => {
     const v = view[role];
+    const narrowed = opts.maxStretch !== "" || !opts.transpose || opts.tiers.length;
+    const asked = effectiveSegFilters(filters[role]).labels;
     const empty = segs.loading ? "Loading…"
       : segs.error ? segs.error
-        : v.inMatch ? (matches.error || "No matches pass the gate and these filters.")
+        : v.inMatch ? (matches.loading ? "Ranking matches…"
+          : matches.error || (narrowed
+            ? "No matches pass these options — widen the stretch, allow transpose or clear the tier chips."
+            : "No matches pass the tempo gate and these filters."))
           : segs[role].length === 0
             ? `No ${role === "vocal" ? "vocal" : "bed"} segments yet — they appear once tracks are separated and analysed.`
-            : "No segments match these filters.";
+            : role === "vocal" && asked.some((l) => l === "drop" || l === "breakdown" || l === "build")
+              ? "No vocal segments match. Drops, builds and breakdowns rarely carry a vocal — look for them on the Beds side."
+              : "No segments match these filters.";
     return (
       <section className={`seg-pane ${role}`} aria-label={role === "vocal" ? "Vocal segments" : "Bed segments"}>
         <header className="seg-pane-head">
@@ -293,6 +320,7 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
           onPlay={(r) => playSegment(role, r)}
           playingKey={playingKey}
           onSwitch={role === partnerRole ? stepPartner : null}
+          onTabOther={() => document.querySelector(`[data-seg-table="${OTHER[role]}"]`)?.focus()}
           emptyText={empty}
           label={role === "vocal" ? "Vocal segments" : "Bed segments"} />
       </section>
@@ -312,7 +340,7 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
       </div>
       <div className="seg-bandgrip" onPointerDown={drag("band")}
         title="Drag to resize the mini studio" role="separator" aria-orientation="horizontal" />
-      <MiniStudio pair={armed} lead={lead} sel={sel} player={player}
+      <MiniStudio pair={armed} lead={lead} sel={sel} player={player} active={active}
         ratings={ratings} sets={sets} notes={notes}
         onOpenStudio={onOpenStudio} onNext={() => stepPartner(1)} onPrev={() => stepPartner(-1)} />
     </div>
