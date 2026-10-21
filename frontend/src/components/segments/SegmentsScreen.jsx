@@ -118,19 +118,23 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
   useEffect(() => {
     if (!seed || segs.loading || seeded.current === seed.at) return;
     seeded.current = seed.at;
-    const mine = segs[seed.role].filter((r) => r.song_id === seed.songId);
+    // Normalised here too: the dock names a bed "instrumental", and a role this
+    // screen does not know crashed it (⌘K with the dock on As bed).
+    const role = seed.role === "instrumental" ? "bed" : seed.role;
+    if (!segs[role]) return;
+    const mine = segs[role].filter((r) => r.song_id === seed.songId);
     const hit = seed.sectionIndex != null
       ? mine.find((r) => r.section_index === seed.sectionIndex)
       : mine.filter((r) => r.usable)
         .sort((a, b) => (SEG_SORTS.label(a) - SEG_SORTS.label(b))
           || ((b.energy_rank ?? -1) - (a.energy_rank ?? -1)))[0];
     if (!hit) {
-      toast(`That section is not offered as a ${seed.role === "vocal" ? "vocal" : "bed"} here`);
+      toast(`That section is not offered as a ${role === "vocal" ? "vocal" : "bed"} here`);
       return;
     }
-    setFilters((f) => ({ ...f, [seed.role]: { ...EMPTY_SEG_FILTERS } }));
-    setSel({ vocal: null, bed: null, [seed.role]: hit });
-    setLead(seed.role);
+    setFilters((f) => ({ ...f, [role]: { ...EMPTY_SEG_FILTERS } }));
+    setSel({ vocal: null, bed: null, [role]: hit });
+    setLead(role);
   }, [seed, segs]);
 
   const clearAll = useCallback(() => { setSel({ vocal: null, bed: null }); setLead(null); }, []);

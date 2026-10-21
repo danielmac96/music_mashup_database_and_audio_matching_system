@@ -665,7 +665,9 @@ export default function App() {
               label: dockRole === "vocal" ? `Find beds for ${selectedTrack.title}`
                 : `Find vocals for ${selectedTrack.title}`,
               hint: "Segments",
-              run: () => openSegments({ songId: selectedTrack.id, sectionIndex: null, role: dockRole }) }] : []),
+              // The dock says "instrumental", Segments says "bed".
+              run: () => openSegments({ songId: selectedTrack.id, sectionIndex: null,
+                                        role: dockRole === "instrumental" ? "bed" : "vocal" }) }] : []),
             { key: "a:rail", glyph: "«", label: "Toggle rail", run: rail.toggle },
             ...(player.source ? [{ key: "a:play", glyph: "▶", label: "Play / pause",
               hint: "space", run: () => (player.playing ? player.pause() : player.resume()) }] : []),
