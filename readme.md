@@ -2119,7 +2119,14 @@ python scripts/ux_sim/run.py /tmp/uxsim --tasks rate,studio --archetypes mashup_
 `meta.json` with the ground truth (tempo, key, every section's label and
 span); `seed.py` runs the real analysis, structure and Score library on them in
 an isolated database (Demucs is not run — the stems are synthesised);
-`truth.py` reports tempo, key, voiceless sections labelled `verse` and drops
+`segments_sim.py` is the Segments tab's own simulation (`python
+scripts/ux_sim/segments_sim.py OUT --n 30 --base URL` against a seeded server):
+ten archetypes — club, wedding and open-format DJs, mashup producers, bedroom
+beginners, Ableton pros, set planners, remixers, keyboard power users, radio
+editors — each on its own goal path (search, label chips, More ▾, match,
+match options, preview, arm and play, tweak, step, rate, + Set, note, render,
+Studio and back, ⇄, esc, the deep link, ⌘K, a mouse-free run), each task
+ending in DOM, audio-state and API probes. `truth.py` reports tempo, key, voiceless sections labelled `verse` and drops
 found against that ground truth; `harness.py` drives the built UI with
 randomised personas (ten archetypes, viewports 1280×720–2560×1440), each task
 ending in DOM and network probes; `analyse.py` summarises per-task success,
@@ -2455,7 +2462,23 @@ driven by the 100-persona browser simulation (§9) against a synthesised
    scrolls inside itself below ~1500px wide (819px of it shows at 1440).
 
 10. **Segments (2026-10-20).** Built: the screen, both lists, live matches,
-    the mini studio, the Studio hand-off. Open: hidden pairs (`pair_hidden`)
+    the mini studio, the Studio hand-off. **30-persona simulation
+    (2026-10-21, `segments_sim.py`, the 32-track synthetic library, seven
+    viewports 1280×720–2560×1440, mouse and keyboard users).** First run:
+    211/245 tasks, no console or API errors; what it found, all fixed — going
+    to Studio and back lost the armed pair (12/12; the screen now stays
+    mounted, hidden, and owns no keys or status while hidden); the ◂ ▸ buttons
+    were a component declared inside the render, remounted every frame the
+    loop moved, so clicks fell between them (7/12); space while a pair was
+    still decoding did nothing (every keyboard user's first press; it is now
+    queued); during the first ranking the partner table showed every section,
+    so a click there armed nothing (it now says "Ranking matches…", and a
+    partner the new matches drop is cleared); tab took over a dozen presses
+    from one table to the other (it now hops straight across); the Pairs
+    header clipped and the Move column dropped at 1280–1366 px; a vocal-side
+    search for drops or breakdowns came up empty with no hint (it now points at
+    the Beds side). Re-run, same 30 personas: 245/245 tasks, no findings, no
+    console or API errors, matches in 314 ms median (p90 382 ms). Open: hidden pairs (`pair_hidden`)
     still appear in the live matches (the dock leaves them out); with a learned
     model active, a live row's total is the heuristic's while a stored row
     carries the model's probability, so live rows are ranked against stored ones

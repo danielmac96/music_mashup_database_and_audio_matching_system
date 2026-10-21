@@ -3385,3 +3385,5 @@ input, select { font-family: inherit; }
   border: 1px solid var(--line-2); background: var(--panel); color: var(--link); font: 400 11px var(--font-ui);
 }
 .sectab-match button:hover { border-color: var(--accent); color: var(--fg); }
+.seg-host { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.seg-host.away { display: none; }
