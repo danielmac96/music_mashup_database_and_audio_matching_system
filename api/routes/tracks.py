@@ -168,6 +168,10 @@ def _mash_summary_by_song() -> tuple[dict, dict]:
         out[sid] = {
             "as_vocal": nv, "as_bed": nb,
             "best_pct": pct(best) if (pct and best is not None) else None,
+            # Each role's own best, so the dock can open on the side that
+            # holds best_pct (App.jsx strongerRole) and the switch can show both.
+            "best_pct_vocal": pct(bv) if (pct and bv is not None) else None,
+            "best_pct_bed": pct(bb) if (pct and bb is not None) else None,
             # NULL, not 0, until the vocal stem has been measured.
             "vocal_coverage": round(sung / total, 3) if known and total > 0 else None,
             "vocal_sections": sum(1 for s in known if s["section_class"] == "vocal"),

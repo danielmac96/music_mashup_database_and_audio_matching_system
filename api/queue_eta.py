@@ -221,9 +221,30 @@ def annotate(jobs_list: List[dict], snapshot: Optional[Dict[str, dict]] = None,
     return pools
 
 
+def _playable(job, name, eta, rates, duration) -> None:
+    """When this track will have pairs: its quick tier done (the provisional
+    pairs are scored straight after it, matcher.score_song_pairs). Set on jobs
+    still downloading or in the quick tier; None once past it or unknown."""
+    if eta is None or name not in ("download", "quick"):
+        return
+    if name == "quick":
+        job["playable_eta_secs"] = eta
+        return
+    quick = estimate(RECORD_GROUPS["quick"], rates, duration)
+    if quick is not None:
+        job["playable_eta_secs"] = round(eta + quick, 1)
+
+
+def next_playable_secs(jobs_list: List[dict]) -> Optional[float]:
+    """The soonest any track in the queue gets its first pairs (annotate first)."""
+    etas = [j["playable_eta_secs"] for j in jobs_list if j.get("playable_eta_secs") is not None]
+    return min(etas) if etas else None
+
+
 def _annotate_one(job, rates, durations, position, now, load, unknown) -> None:
     status = job.get("status")
     job["eta_secs"] = None
+    job["playable_eta_secs"] = None
     if status == "completed":
         secs = _done_secs(job)
         job["summary"] = f"Done in {took(secs)}" if secs is not None else "Done"
@@ -257,6 +278,7 @@ def _annotate_one(job, rates, durations, position, now, load, unknown) -> None:
         else:
             unknown[pool] = True
         rec["eta_secs"] = job["eta_secs"] = eta
+        _playable(job, name, eta, rates, duration)
         job["summary"] = (f"{_DOING[name]} — {about(eta)} left" if eta is not None
                           else f"{_DOING[name]}…")
         return
@@ -273,5 +295,6 @@ def _annotate_one(job, rates, durations, position, now, load, unknown) -> None:
     else:
         unknown[pool] = True
     rec["eta_secs"] = job["eta_secs"] = eta
+    _playable(job, name, eta, rates, duration)
     line = f" (#{pos} in line)" if pos else ""
     job["summary"] = f"Waiting for {_WAITING_FOR[name]}{line}"

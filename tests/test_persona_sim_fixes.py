@@ -186,7 +186,8 @@ def test_flow_adds_up_running_time_and_start_times():
     # comes in under the first — capped at half the shorter one, 7.5 s.
     assert f["transitions"][0]["move"]["type"] == "blend"
     assert f["transitions"][0]["overlap_secs"] == 7.5
-    assert f["total_secs"] == 37.5 and f["starts"] == [0, 7.5]
+    # Each slot plays 32 bars (60 s at 128): the second comes in at 60 − 7.5.
+    assert f["total_secs"] == 112.5 and f["starts"] == [0, 52.5]
     assert f["grades"]["smooth"] == 1
 
 
@@ -253,7 +254,7 @@ def test_exports_csv_cue_and_rekordbox():
     assert head.split(",") == list(CSV_COLUMNS)
     assert "Singer,Vox,chorus,0:30,0:45" in first and ",+2," in first and "opener" in first
     cue = cue_sheet(items, "Vol 1")
-    assert "[ 0:00]  1. Singer - Vox" in cue and "↓ smooth" in cue and "[ 0:08]" in cue
+    assert "[ 0:00]  1. Singer - Vox" in cue and "↓ smooth" in cue and "[ 0:52]" in cue
 
     def resolve(sid, stem):
         return {"path": f"/data/audio/{stem}/{sid}.wav", "title": f"T{sid}",
@@ -432,7 +433,7 @@ def test_pair_card_shows_artists_song_terms_and_the_recipe():
     # Looping the bed is a recipe step ("loop bed ×2"), drawn in the DO row.
     assert "r.adjustments" in card
     # A measured harmony is drawn as measured; without one the card says so.
-    assert "harmony not measured — Camelot estimate" in card
+    assert "harmony not measured — key from the Camelot wheel" in card
 
 
 def test_library_summarises_each_track_as_mashup_material(one_vocal_many_beds):

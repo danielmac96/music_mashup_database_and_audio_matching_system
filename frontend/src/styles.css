@@ -241,6 +241,9 @@ input, select { font-family: inherit; }
   font-size: 10px; color: var(--muted); white-space: nowrap;
 }
 .rail-judged { color: var(--muted); }
+.rail-scorer { flex-wrap: wrap; row-gap: 2px; }
+.rail-tuning { flex: 1 1 100%; color: var(--faint); }
+.rail-tuning.ready { color: var(--ok); }
 .rail-btn {
   height: 26px; min-width: 26px; padding: 0 6px; flex: none; cursor: pointer;
   border: 1px solid var(--line-2); border-radius: var(--r-ctl);
@@ -1303,7 +1306,7 @@ input, select { font-family: inherit; }
 }
 .tier-badge .glyph { font-size: 7px; letter-spacing: -1px; }
 .compat-meter {
-  display: grid; grid-template-columns: 40px minmax(0, 1fr) 36px; gap: 8px; align-items: center;
+  display: grid; grid-template-columns: 52px minmax(0, 1fr) 36px; gap: 8px; align-items: center;
 }
 .compat-meter .name { font-size: 10px; color: var(--muted); }
 .compat-meter .track { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; }
@@ -1923,9 +1926,11 @@ input, select { font-family: inherit; }
 .pc-dot.on { background: var(--accent); border-color: var(--accent); }
 
 /* expanded */
-.pcx { display: flex; flex-direction: column; gap: 10px; padding: 8px 0 4px; border-top: 1px solid var(--line); cursor: default; }
-.pcx-secs { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 6px 8px; align-items: center; }
-.pcx-sec { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pcx { display: flex; flex-direction: column; gap: 6px; padding: 6px 0 4px; border-top: 1px solid var(--line); cursor: default; }
+.pcx-secs { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 4px 8px; align-items: center; }
+/* One line per section: its name and span, then its waveform beside them. */
+.pcx-sec { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 2px 8px; min-width: 0; }
+.pcx-sec .pcx-line { grid-column: 1 / -1; }
 .pcx-sechead { display: flex; gap: 6px; align-items: baseline; font-size: 11.5px; }
 .pcx-sechead b { font-weight: 600; text-transform: capitalize; }
 .pcx-sechead b.vox { color: var(--vocal-title); }
@@ -1948,6 +1953,7 @@ input, select { font-family: inherit; }
 .pcx-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
 .pcx-meters { display: flex; flex-direction: column; gap: 4px; }
 .pcx-side { display: flex; flex-direction: column; gap: 6px; font-size: 11px; }
+.pcx-sideline { flex-direction: row; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; }
 .pcx-harm { font-size: 11px; }
 .pcx-clash {
   align-self: flex-start; height: 20px; display: inline-flex; align-items: center; padding: 0 7px;
@@ -1959,12 +1965,15 @@ input, select { font-family: inherit; }
   color: var(--fg); padding: 0 8px; font: 400 12px var(--font-ui);
 }
 .pcx-why { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.pc-why { padding: 6px 0 2px; }
+.pcx-reason .kbd { margin-right: 4px; }
 .pcx-reason {
   height: 22px; padding: 0 8px; border-radius: 11px; border: 1px solid var(--line-2);
   background: none; color: var(--fg-2); cursor: pointer; font: 400 11px var(--font-ui);
 }
 .pcx-reason.on { border-color: var(--accent); background: var(--select); color: var(--fg); }
 .pcx-actions { display: flex; align-items: center; gap: 6px; }
+.pcx-actions .pcx-note { min-width: 80px; }
 .ui-btn.ghosted { background: none; color: var(--muted); }
 .sg-cards { display: flex; flex-direction: column; gap: 12px; width: 400px; max-width: 100%; }
 .pd-filterdone { margin-left: auto; }
@@ -3102,6 +3111,13 @@ input, select { font-family: inherit; }
 .studio-lane:active { cursor: grabbing; }
 .studio-lane canvas { width: 100%; height: 100%; display: block; }
 .studio-lane.snapped { box-shadow: inset 0 0 0 1px var(--ok); }
+/* A/B deck rows: many clips in one row, the vocal in the top half and the bed
+   in the bottom; each clip is its own transparent canvas. */
+.studio-lane.deck canvas { position: absolute; left: 0; width: 100%; height: 50%; }
+.studio-lane.deck .deck-top { top: 0; }
+.studio-lane.deck .deck-bot { top: 50%; }
+.studio-lane.deck .lane-trim.deck-top { top: 0; bottom: 50%; }
+.studio-lane.deck .lane-trim.deck-bot { top: 50%; bottom: 0; }
 /* Trim grab zones on the clip edges: the canvas draws the grip, these own the
    cursor and the drag. */
 .lane-trim { position: absolute; top: 9px; bottom: 0; width: 8px; cursor: ew-resize; z-index: 2; }
@@ -3156,6 +3172,7 @@ input, select { font-family: inherit; }
 .sp-role { flex: none; font-size: 9px; font-weight: 600; color: var(--muted); }
 .sp-title { min-width: 0; flex: 0 1 120px; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sp-knobs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+.sp-knobs.sp-eq { grid-template-columns: repeat(4, 1fr); gap: 8px 10px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
 .sp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .sp-more { display: flex; flex-direction: column; gap: 10px; padding-top: 8px; border-top: 1px solid var(--line-soft); }
 .sp-sel { display: flex; flex-direction: column; gap: 3px; }
@@ -3236,6 +3253,29 @@ input, select { font-family: inherit; }
 .layer-sug .t { font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .layer-sug .a { color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .layer-pct { color: var(--fg-2); }
+
+/* First steps (components/FirstSteps.jsx): one strip above the table. */
+.first-steps {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin: 0 16px 8px;
+  padding: 8px 12px; border: 1px solid var(--line-2); border-radius: var(--r-ctl);
+  background: var(--card); font-size: 12px;
+}
+.first-steps ol { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0; padding: 0; list-style: none; }
+.first-steps li { color: var(--muted); }
+.first-steps li.done { color: var(--ok); }
+.first-steps li.next { color: var(--fg); }
+.first-steps .fs-tick { display: inline-block; width: 14px; }
+.help-more > summary { cursor: pointer; list-style: none; }
+.help-more > summary h3 { display: inline; }
+.help-more > summary::before { content: "▸ "; color: var(--muted); }
+.help-more[open] > summary::before { content: "▾ "; }
+.tt-fit { color: var(--faint); font-size: 10px; justify-content: center; }
+.pcx-details > summary { cursor: pointer; color: var(--muted); list-style: none; }
+.pcx-details > summary::before { content: "▸ "; }
+.pcx-details[open] > summary::before { content: "▾ "; }
+.pcx-details[open] > .pcx-cols { margin-top: 6px; }
+.pc-prov { font-size: 9px; color: var(--muted); border: 1px dashed var(--line); border-radius: 3px; padding: 0 3px; }
+.pc-forced { font-size: 9px; color: var(--warn-soft); border: 1px solid var(--warn-bg); border-radius: 3px; padding: 0 3px; }
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Segments — the matchup playground: vocals | beds over a mini studio band

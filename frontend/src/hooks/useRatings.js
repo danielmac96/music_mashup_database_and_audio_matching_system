@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import { feedbackKey, keyOf } from "../components/pairs/pairModel";
+import { TUNING_MIN_PER_CLASS, feedbackKey, keyOf } from "../components/pairs/pairModel";
 import { toast } from "../toast";
 
 // Every judgement the user has made, in one place.
@@ -144,6 +144,16 @@ export function useRatings() {
     }
   }, [reasons]);
 
+  // How far the term report is from having something to say: it needs
+  // TUNING_MIN_PER_CLASS pairs rated 4–5 and as many rated 1–2
+  // (matcher/term_report MIN_PER_CLASS, GOOD, BAD).
+  const tuning = useMemo(() => {
+    const stars = Object.values(byPair).filter((n) => n != null);
+    return { loved: stars.filter((n) => n >= 4).length,
+             rejected: stars.filter((n) => n <= 2).length,
+             need: TUNING_MIN_PER_CLASS };
+  }, [byPair]);
+
   return { byPair, bySong, ratingOf, verdictOf, rate, refresh: load,
-           reasonsOf, toggleReason, count: rows.length };
+           reasonsOf, toggleReason, count: rows.length, tuning };
 }

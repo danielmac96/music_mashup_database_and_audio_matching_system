@@ -132,9 +132,28 @@ def _structure_pass(job_id: str, song_id: int) -> None:
                     song_id)
 
 
+def _score_track(song_id: int, why: str) -> None:
+    """Score this one track against the library (matcher.score_song_pairs).
+
+    After the quick tier its mix stands in for both stems and the rows are
+    provisional — the first pairs land minutes after download, not after
+    Demucs; after the final analysis the same call replaces them with real
+    ones. Never fails the job: a full Score library covers anything missed.
+    """
+    import time
+    t0 = time.monotonic()
+    try:
+        from matcher.match import score_song_pairs
+        score_song_pairs(song_id)
+        log.info("scored song %s (%s) in %.1f s", song_id, why, time.monotonic() - t0)
+    except Exception:  # noqa: BLE001 — pairs are a bonus here, never a failure
+        log.warning("per-track scoring failed for song %s (%s)", song_id, why, exc_info=True)
+
+
 def _finalize(job_id: str, song_id: int) -> None:
     """Run the trailing structure pass if needed, then mark the job done."""
     _structure_pass(job_id, song_id)
+    _score_track(song_id, "analysed")
     jobs.done(job_id, {"song_id": song_id, "status": _status(song_id)})
 
 
@@ -193,6 +212,8 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
         return "next"
 
     jobs.stage_finish(job_id, stage, "done")
+    if stage == "quick":
+        _score_track(song_id, "provisional")
     if next_stage(song_id) is None:
         _finalize(job_id, song_id)
         return "done"

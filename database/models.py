@@ -1026,7 +1026,7 @@ _CRATES_OPTIONAL_COLUMNS = (
 # means "not set": no curve (every mashup at its vocal's tempo, as before) and
 # the suggested transition.
 _SETS_OPTIONAL_COLUMNS = (("tempo_plan_json", "TEXT"), ("energy_plan_json", "TEXT"))
-_SET_ITEMS_OPTIONAL_COLUMNS = (("transition_json", "TEXT"),)
+_SET_ITEMS_OPTIONAL_COLUMNS = (("transition_json", "TEXT"), ("play_bars", "INTEGER"))
 
 SET_ITEM_KINDS = ("pair", "track", "break", "gap")
 _SET_ITEMS_INDEXES = (
@@ -2293,6 +2293,46 @@ def replace_sections(song_id: int, sections: List[Dict],
             song_id, outcome["moved"], outcome["flagged"])
 
 
+def relabel_sections(db_path: Path = DB_PATH) -> int:
+    """Re-run the section labeller (analysis/structure.label_segments) over the
+    stored measurements of every track — energy, vocal presence, repetition —
+    and write the labels that changed. Returns how many tracks changed.
+
+    The one writer of `sections` besides replace_sections, and only of
+    `label`/`confidence`: boundaries and indexes never move, so judgements in
+    pair_feedback still name the same music and need no remap. It lets a
+    labeller fix reach an analysed library without re-analysing it; Score
+    library runs it first (api/workers/match_worker.py)."""
+    from analysis.structure import label_segments
+    conn = get_conn(db_path)
+    changed = 0
+    try:
+        rows = conn.execute(
+            "SELECT song_id, section_index, label, confidence, energy, vocal_presence, "
+            "repetition FROM sections ORDER BY song_id, section_index").fetchall()
+        by_song: Dict[int, list] = {}
+        for r in rows:
+            by_song.setdefault(r["song_id"], []).append(dict(r))
+        for song_id, secs in by_song.items():
+            has_vocals = any(s["vocal_presence"] is not None for s in secs)
+            fresh = label_segments([{"energy": s["energy"],
+                                     "vocal_presence": s["vocal_presence"],
+                                     "repetition": s["repetition"]} for s in secs],
+                                   has_vocals=has_vocals)
+            diff = [(f["label"], f["confidence"], song_id, s["section_index"])
+                    for s, f in zip(secs, fresh) if f["label"] != s["label"]]
+            if not diff:
+                continue
+            conn.executemany("UPDATE sections SET label=?, confidence=? "
+                             "WHERE song_id=? AND section_index=?", diff)
+            mark_pairs_input(conn, song_id)
+            changed += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return changed
+
+
 def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
     conn = get_conn(db_path)
     rows = conn.execute(
@@ -2544,6 +2584,29 @@ def bulk_upsert_candidates(rows, db_path: Path = DB_PATH,
     finally:
         conn.close()
     return len(rows)
+
+
+def delete_song_candidates(song_ids, keep_scorers=(), db_path: Path = DB_PATH) -> int:
+    """Remove the vocal-over-instrumental rows with any of `song_ids` on
+    either side — the rows a per-track scoring run is about to rewrite.
+    Rows whose scorer is in `keep_scorers` (a forced pair) stay."""
+    ids = [int(x) for x in song_ids]
+    if not ids:
+        return 0
+    marks = ",".join("?" * len(ids))
+    keep = list(keep_scorers)
+    keep_sql = f" AND COALESCE(scorer, '') NOT IN ({','.join('?' * len(keep))})" if keep else ""
+    conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            f"""DELETE FROM mashup_candidates
+                WHERE combo_type='vocal_over_instrumental'
+                  AND (vocal_song_id IN ({marks}) OR inst_song_id IN ({marks})){keep_sql}""",
+            (*ids, *ids, *keep))
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
 
 
 def clear_candidates(db_path: Path = DB_PATH) -> None:
@@ -4488,10 +4551,14 @@ def add_set_item(set_id: int, vocal_song_id: Optional[int] = None,
 
 
 def update_set_item(set_id: int, item_id: int, *, label=_UNSET, duration_secs=_UNSET,
-                    db_path: Path = DB_PATH) -> bool:
-    """A slot's label (a break's name) or length. False when the item is not in
-    this set."""
+                    play_bars=_UNSET, db_path: Path = DB_PATH) -> bool:
+    """A slot's label (a break's name), length, or how many bars a pair or
+    track plays (None: setflow.DEFAULT_PLAY_BARS). False when the item is not
+    in this set."""
     cols, args = [], []
+    if play_bars is not _UNSET:
+        cols.append("play_bars=?")
+        args.append(int(play_bars) if play_bars else None)
     if label is not _UNSET:
         cols.append("label=?")
         args.append((label or "").strip() or None)
@@ -4610,6 +4677,7 @@ def get_set(set_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
         base = {
             "item_id": it["id"], "position": it["position"], "kind": kind,
             "label": it.get("label") or "", "duration_secs": it.get("duration_secs"),
+            "play_bars": it.get("play_bars"),
             "transition": json.loads(it["transition_json"]) if it.get("transition_json") else None,
         }
         if kind == "track":

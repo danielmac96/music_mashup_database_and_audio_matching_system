@@ -5,6 +5,7 @@ import { COLUMNS, TrackTable } from "./TrackTable";
 import { TrackActions } from "./TrackActions";
 import { TrackEditor } from "./TrackEditor";
 import { PlaylistImporter } from "./PlaylistImporter";
+import { FirstSteps } from "./FirstSteps";
 import {
   EMPTY_FILTERS, VIEWS, applyLibraryFilters, countView, cycleSort, effectiveFilters,
   energyRanks, statusKeyOf, useLibraryFilters,
@@ -30,7 +31,7 @@ const attrColumn = (a) => ({
 
 export function LibraryScreen({ library, attributes, ratings, groups, player, selectedId,
                                 onSelect, onOpen, onRailSlot, onStatus, onOpenQueue,
-                                presets, applyPreset = null }) {
+                                presets, applyPreset = null, onHelp = null }) {
   const { tracks, pipeJobs, loading, error, refresh } = library;
 
   const [menuId, setMenuId] = useState(null);
@@ -240,6 +241,10 @@ export function LibraryScreen({ library, attributes, ratings, groups, player, se
         onSearchDown={() => tableRef.current?.focus()} />
 
       {error && <div className="error-text" style={{ padding: "8px 16px" }}>{error}</div>}
+      {!loading && (
+        <FirstSteps tracks={tracks} player={player} onImport={() => setImportOpen(true)}
+          onHelp={onHelp} />
+      )}
       {loading && tracks.length === 0 && <div className="tt-empty">Loading the library…</div>}
 
       {editing && (

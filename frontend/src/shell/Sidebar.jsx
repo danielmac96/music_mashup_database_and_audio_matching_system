@@ -75,12 +75,14 @@ export function usePipelineReadout(tracks) {
   const clears = stages.reduce((m, s) => (s.clears_in_secs != null
     ? Math.max(m ?? 0, s.clears_in_secs) : m), null);
   const failed = (tracks || []).filter((t) => String(t.status || "").startsWith("error")).length;
-  return { running, waiting, failed, clearsIn: clears, loaded: snap != null };
+  // When the next track gets its first (provisional) pairs: after its quick tier.
+  return { running, waiting, failed, clearsIn: clears, loaded: snap != null,
+           nextPlayable: snap?.next_playable_secs ?? null };
 }
 
 export function Sidebar({ route, onRoute, counts = {}, children,
                           onOpenSettings, settingsOpen, status = null,
-                          judged = null, onHelp = null, helpSeen = true,
+                          judged = null, tuning = null, onHelp = null, helpSeen = true,
                           collapsed = false, onToggle, pipeline = null,
                           onOpenPalette, onStyleguide = null }) {
   // The footer says which scorer is ranking pairs and how many judgements it
@@ -101,7 +103,8 @@ export function Sidebar({ route, onRoute, counts = {}, children,
   const clears = pipeline ? fmtClears(pipeline.clearsIn) : null;
   const pipeText = pipeline
     ? [`${fmtCount(pipeline.running)} running`, `${fmtCount(pipeline.waiting)} waiting`,
-      `${fmtCount(pipeline.failed)} failed`, busy && clears ? `clears in ${clears}` : null]
+      `${fmtCount(pipeline.failed)} failed`, busy && clears ? `clears in ${clears}` : null,
+      busy && pipeline.nextPlayable != null ? `next pairs in ${fmtClears(pipeline.nextPlayable)}` : null]
       .filter(Boolean).join(" · ")
     : "";
 
@@ -151,6 +154,12 @@ export function Sidebar({ route, onRoute, counts = {}, children,
               {judged != null || scorer
                 ? `${fmtCount(judged ?? scorer?.n_judgments ?? 0)} judged` : ""}
             </span>
+            {tuning && (
+              <span className={`rail-tuning${tuning.loved >= tuning.need && tuning.rejected >= tuning.need ? " ready" : ""}`}
+                title={`The term report (⚙ Tuning) reads which scoring terms agree with your ears once it has ${tuning.need} pairs rated 4–5★ and ${tuning.need} rated 1–2★`}>
+                tuning ♥ {Math.min(tuning.loved, tuning.need)}/{tuning.need} ✗ {Math.min(tuning.rejected, tuning.need)}/{tuning.need}
+              </span>
+            )}
           </div>
         )}
         <button className="rail-btn mono" onClick={onOpenPalette}

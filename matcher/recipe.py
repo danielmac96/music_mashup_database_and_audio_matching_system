@@ -19,6 +19,7 @@ import json
 import math
 from typing import Dict, List, Optional
 
+from matcher.effort import HEAVY_SHIFT_ST, HEAVY_STRETCH_PCT
 from matcher.match import compute_semitone_shift, effective_bpm
 
 # Level: the bed is set to the loudness the VOCAL's own instrumental had, so the
@@ -37,8 +38,9 @@ STRETCH_FREE_PCT, STRETCH_HEAVY_PCT = 0.5, 6.0
 # A voice smears sooner than a beat does: stretching the vocal turns heavy
 # earlier. Only a set's tempo curve ever moves the vocal (phase 4).
 VOCAL_STRETCH_HEAVY_PCT = 4.0
-STRETCH_WARN_PCT = 8.0
-SHIFT_HEAVY_ST = 4
+# One definition of a heavy move, shared with the effort label.
+STRETCH_WARN_PCT = HEAVY_STRETCH_PCT
+SHIFT_HEAVY_ST = HEAVY_SHIFT_ST
 NUDGE_MIN_MS = 5
 # The fallback for "another transposition fits about as well": confidence is
 # 1 − runner-up/peak on correlations mapped to 0-1, so a clear gap (0.90 vs
@@ -58,17 +60,52 @@ STEM_QUALITY_WARN = 0.5
 TEMPO_LOW, TEMPO_HIGH = 80.0, 175.0
 
 
-def bed_shift(row: Dict) -> Optional[int]:
+def bed_shift(row: Dict, unsure_below: Optional[float] = None) -> Optional[int]:
     """Semitones to move the BED for one scored pair row.
 
-    The measured harmonic shift when the two sections had chroma to compare,
-    else the Camelot estimate from the two whole-track keys; None when neither
-    is known. A measured 0 is an answer ("leave it"), not a missing value."""
+    The measured harmonic shift when the two sections had chroma to compare
+    and the measurement is sure, else the Camelot estimate from the two
+    whole-track keys; None when neither is known. A measured 0 is an answer
+    ("leave it"), not a missing value.
+
+    "Sure" is the row's own `harmonic_sure` when the listing has decided it,
+    else harmony_sure against `unsure_below` (the library's threshold, read
+    here when not given). A close call never imposes its transpose: the
+    simulation found ±5–6 st beds chosen on confidences of 0.002–0.04, where
+    the wheel asked for ±2 at most. The recipe's WATCH row names the measured
+    alternative."""
     measured = row.get("harmonic_shift")
-    if measured is not None:
-        return int(measured)
-    return compute_semitone_shift(row.get("vocal_camelot") or "",
-                                  row.get("inst_camelot") or "")
+    camelot = compute_semitone_shift(row.get("vocal_camelot") or "",
+                                     row.get("inst_camelot") or "")
+    if measured is None:
+        return camelot
+    if camelot is not None and int(measured) != camelot and not _measured_is_sure(row, unsure_below):
+        return camelot
+    return int(measured)
+
+
+def _measured_is_sure(row: Dict, unsure_below: Optional[float]) -> bool:
+    sure = row.get("harmonic_sure")
+    if sure is None:
+        if unsure_below is None:
+            unsure_below = _cached_unsure_below()
+        sure = harmony_sure(_num(row.get("harmonic_confidence")), unsure_below)
+    return sure is not False
+
+
+_UNSURE_CACHE: Dict[str, float] = {}
+
+
+def _cached_unsure_below() -> float:
+    """harmony_unsure_below, re-read at most every 10 s: bed_shift runs per set
+    item and per transition render, and the threshold changes once per Score
+    library run."""
+    import time
+    now = time.monotonic()
+    if now - _UNSURE_CACHE.get("at", -1e9) > 10.0:
+        _UNSURE_CACHE["value"] = harmony_unsure_below()
+        _UNSURE_CACHE["at"] = now
+    return _UNSURE_CACHE["value"]
 
 
 def tempo_hint(full: Optional[dict]) -> Optional[dict]:
@@ -285,22 +322,29 @@ def pair_recipe(row: Dict, facts: Optional[Dict] = None,
                              "text": f"{abs(stretch_pct):.0f}% stretch — listen for smeared transients"})
 
     # ── key ──────────────────────────────────────────────────────────────
-    shift = bed_shift(row)
-    measured = row.get("harmonic_shift") is not None
+    threshold = HARMONY_SURE if unsure_below is None else unsure_below
+    measured_shift = row.get("harmonic_shift")
+    measured = measured_shift is not None
+    fit, conf = _num(row.get("score_key")), _num(row.get("harmonic_confidence"))
+    sure = harmony_sure(conf, threshold) if measured else None
+    shift = bed_shift({**row, "harmonic_sure": sure}, threshold)
+    played_measured = measured and shift == int(measured_shift)
     if shift:
         adjustments.append({
             "key": "shift",
             "level": "heavy" if abs(shift) >= SHIFT_HEAVY_ST else "light",
             "text": f"bed {_signed(shift, ' st')}",
             "why": ("measured: the two sections' notes line up best at this transpose"
+                    if played_measured else
+                    "from the Camelot wheel — the measured transpose was a close call"
                     if measured else
                     "from the Camelot wheel — the sections had no chroma to measure")})
-    fit, conf = _num(row.get("score_key")), _num(row.get("harmonic_confidence"))
-    sure = harmony_sure(conf, HARMONY_SURE if unsure_below is None else unsure_below) \
-        if measured else None
     if sure is False:
+        alt = ("" if played_measured or measured_shift is None
+               else f" (measured {_signed(int(measured_shift), ' st')})")
         warnings.append({"key": "key_unsure",
-                         "text": "a closer transpose call than most of your library — try both"})
+                         "text": "a closer transpose call than most of your library"
+                                 f"{alt} — try both"})
     if measured and fit is not None and fit < HARMONY_CLASH:
         warnings.append({"key": "clash",
                          "text": f"the notes clash (fit {round(fit * 100)}%)"})

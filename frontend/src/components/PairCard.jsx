@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { StarRating } from "./StarRating";
 import { CompatMeter, KeyChip, MiniWave } from "./ui/primitives";
 import { useWaveform } from "../hooks/useWaveform";
 import {
-  BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, pctOf, reasonsFor, songTermsOf, termsOf, tierOf,
+  BASS_CLASH_ADVICE, EFFORT_TONE, harmonyOf, pctOf, REASON_KEYS, reasonsFor, songTermsOf, termsOf,
+  tierOf,
 } from "./pairs/pairModel";
 import { compatColor, fmtTime } from "../theme";
 
@@ -24,17 +25,18 @@ const FOLD = { half: "½×", double: "2×" };
 // the shift says it all; "transpose" itself is never printed.
 const REL = { same: "same key", relative: "relative", adjacent: "±1 step", clash: "clash" };
 
-// The meters the expanded card draws: VOI (real singing in the vocal section),
-// HARM (the measured harmonic fit), RHY (bar-profile agreement) and ENGY (the
-// two sections' energy match). Unmeasured is hatched, never zero.
-function metersOf(c) {
+// The meters the expanded card draws, in plain words (VOI / HARM / RHY / ENGY
+// read as jargon to every persona who opened a card, 2026-10-15): real
+// singing in the vocal section, the measured harmonic fit, bar-profile
+// agreement and the two sections' energy match. Unmeasured is hatched, never zero.
+export function metersOf(c) {
   const h = harmonyOf(c);
   return [
-    ["VOI", "Vocal — how much real singing the vocal section carries", c.score_voice],
-    ["HARM", "Harmony — the two sections' notes, measured at the played transpose",
+    ["Vocal", "How much real singing the vocal section carries", c.score_voice],
+    ["Harmony", "The two sections' notes, measured at the played transpose",
       h.known ? c.score_key : null],
-    ["RHY", "Rhythm — per-bar onset profiles of the two sections", c.score_rhythm],
-    ["ENGY", "Energy — how close the two sections' energies are", c.score_energy_match],
+    ["Rhythm", "Per-bar onset profiles of the two sections", c.score_rhythm],
+    ["Energy", "How close the two sections' energies are", c.score_energy_match],
   ];
 }
 
@@ -51,7 +53,7 @@ function SectionWave({ songId, stem, start, end, duration, role }) {
     });
   }, [waveform, start, end, duration]);
   if (!peaks.length) return <div className="pcx-wave empty" />;
-  return <MiniWave peaks={peaks} role={role} />;
+  return <MiniWave peaks={peaks} role={role} height={16} />;
 }
 
 // ‹ ● ○ ○ › — the stored section pairings of these two songs, best score
@@ -82,8 +84,8 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
                            onHide = null, onAddToSet = null, setName = null,
                            note = "", onNote = null, onCompare = null,
                            reasons = [], onReason = null, durationOf = () => null,
-                           hidden = false, optionIndex = 0, optionCount = 1,
-                           onStep = null }) {
+                           hidden = false, justRated = false, optionIndex = 0,
+                           optionCount = 1, onStep = null }) {
   const tier = tierOf(c);
   const ck = c.compat?.key || {};
   const cb = c.compat?.bpm || {};
@@ -100,11 +102,24 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
   const genreDiffers = cg.same === false;
   const fmtBpm = (v) => (v != null ? Number(v).toFixed(1) : "—");
 
+  // A click on an expanded card collapses it only once a double-click is ruled
+  // out: collapsing at once moved the card under the pointer, so the second
+  // click of a double-click landed elsewhere and Studio never opened.
+  const clickTimer = useRef(null);
+  useEffect(() => () => clearTimeout(clickTimer.current), []);
+  const onClick = (e) => {
+    if (e.detail > 1) return;
+    if (!expanded) { onToggle?.(); return; }
+    clearTimeout(clickTimer.current);
+    clickTimer.current = setTimeout(() => onToggle?.(), DBL_CLICK_MS);
+  };
+  const onDoubleClick = () => { clearTimeout(clickTimer.current); onStudio?.(); };
+
   return (
     <div className={`pair-card${focused ? " focused" : ""}${expanded ? " expanded" : ""}`
         + `${playing ? " playing" : ""}${hidden ? " is-hidden" : ""}`}
       title="Click to expand (⏎) · double-click opens Studio"
-      onClick={onToggle} onDoubleClick={onStudio}>
+      onClick={onClick} onDoubleClick={onDoubleClick}>
       <div className="pc-grid">
         <span className="pc-role vox mono">VOX</span>
         <div className="pc-name"><span className="t vox">{c.vocal_title || "—"}</span>
@@ -143,6 +158,12 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
               Δ{signed(d, 1)}%{FOLD[cb.fold] && <span className="fold"> {FOLD[cb.fold]}</span>}
             </span>
           )}
+          {c.scorer === "forced" && (
+            <span className="pc-forced mono" title="Scored on request, outside the tempo or key gate — read the DO and WATCH rows">forced</span>
+          )}
+          {c.scorer === "provisional" && (
+            <span className="pc-prov mono" title="Scored from the full mix before its stems exist — re-scored on its own when they land">prov</span>
+          )}
           <span className="grow" />
           {optionCount > 1 && onStep && (
             <PairingSteps c={c} index={optionIndex} count={optionCount} onStep={onStep} />
@@ -153,6 +174,13 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
           <StarRating value={rating} onRate={onRate} size={11} />
         </div>
       </div>
+
+      {!expanded && justRated && rating && onReason && (
+        <div className="pc-why" onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}>
+          <WhyRow rating={rating} reasons={reasons} onReason={onReason} keys />
+        </div>
+      )}
 
       {expanded && (
         <Expanded c={c} rating={rating} note={note} onNote={onNote} reasons={reasons}
@@ -214,69 +242,56 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
         ))}
       </div>
 
-      <div className="pcx-cols">
-        <div className="pcx-meters">
-          {metersOf(c).map(([name, tip, v]) => (
-            <CompatMeter key={name} name={name}
-              value={v == null || !Number.isFinite(Number(v)) ? null : Number(v)}
-              title={`${tip}: ${v == null ? "not measured" : `${Math.round(v * 100)}%`}`} />
-          ))}
-        </div>
-        <div className="pcx-side">
-          {h.known ? (
-            <span className="mono pcx-harm"
-              style={{ color: compatColor(h.fitPct) }}
-              title={"Measured harmony: the two sections' notes cross-correlated over 12 transpositions"
-                + (h.sure ? "" : " — another transposition fits almost as well")}>
-              ♪ Measured harmony {h.fitPct != null ? `${h.fitPct}%` : ""}
-              {h.shift ? ` at bed ${h.shift > 0 ? "+" : ""}${h.shift} st` : ""}{h.sure ? "" : " ?"}
-            </span>
-          ) : (
-            <span className="mono muted">♪ harmony not measured — Camelot estimate</span>
-          )}
-          {h.bassClash && <span className="pcx-clash" title={BASS_CLASH_ADVICE}>✕ bass clash</span>}
-          <span className="muted small">{engine}</span>
-          {c.effort_label && (
-            <span className={`small pcx-effort ${EFFORT_TONE[c.effort_label] || ""}`}
-              title={c.effort_reason || "How much stretching, transposing and grid uncertainty building it costs"}>
-              Effort: {c.effort_label}{c.effort_reason ? ` — ${c.effort_reason}` : ""}
-            </span>
-          )}
-          {/* The terms the score is a sum of, as a compact readout: the section
-              fit, then the track fit. Unmeasured is "—", never 0. */}
-          <span className="muted small pcx-terms">
-            {termsOf(c).map((t) => `${t.name} ${t.known ? Math.round(t.value * 100) : "—"}`).join(" · ")}
+      <div className="pcx-side pcx-sideline">
+        {h.known ? (
+          <span className="mono pcx-harm"
+            style={{ color: compatColor(h.fitPct) }}
+            title={"Measured harmony: the two sections' notes cross-correlated over 12 transpositions"
+              + (h.sure ? "" : " — another transposition fits almost as well")}>
+            ♪ Measured harmony {h.fitPct != null ? `${h.fitPct}%` : ""}
+            {h.shift ? ` at bed ${h.shift > 0 ? "+" : ""}${h.shift} st` : ""}{h.sure ? "" : " ?"}
           </span>
-          <span className="muted small pcx-terms">
-            {songTermsOf(c).map((t) => `${t.name} ${t.known ? Math.round(t.value * 100) : "—"}`).join(" · ")}
+        ) : (
+          <span className="mono muted">♪ harmony not measured — key from the Camelot wheel</span>
+        )}
+        {h.bassClash && <span className="pcx-clash" title={BASS_CLASH_ADVICE}>✕ bass clash</span>}
+        {c.effort_label && (
+          <span className={`small pcx-effort ${EFFORT_TONE[c.effort_label] || ""}`}
+            title={c.effort_reason || "How much stretching, transposing and grid uncertainty building it costs"}>
+            Effort: {c.effort_label}{c.effort_reason ? ` — ${c.effort_reason}` : ""}
           </span>
-        </div>
+        )}
       </div>
 
-      {onNote && (
-        <input className="pcx-note" value={draft}
-          placeholder="Note — opener · needs a riser · use the 2nd chorus"
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => { if (draft.trim() !== (note || "")) onNote(draft.trim()); }}
-          onKeyDown={(e) => {
-            e.stopPropagation();
-            if (e.key === "Enter" || e.key === "Escape") {
-              if (e.key === "Escape") setDraft(note || "");
-              e.currentTarget.blur();
-            }
-          }} />
-      )}
-
-      {rating && onReason && (
-        <div className="pcx-why"
-          title="Why this rating? Never changes the verdict — it is what the scorer's terms get checked against">
-          <span className="caps">WHY</span>
-          {reasonsFor(rating).map((x) => (
-            <button key={x.key} className={`pcx-reason ${x.tone}${reasons.includes(x.key) ? " on" : ""}`}
-              onClick={() => onReason(x.key)}>{x.label}</button>
-          ))}
+      {/* The numbers behind the score, folded: most of the time the DO row, the
+          harmony and the effort are the decision. */}
+      <details className="pcx-details">
+        <summary className="caps">Scores</summary>
+        <div className="pcx-cols">
+          <div className="pcx-meters">
+            {metersOf(c).map(([name, tip, v]) => (
+              <CompatMeter key={name} name={name}
+                value={v == null || !Number.isFinite(Number(v)) ? null : Number(v)}
+                title={`${tip}: ${v == null ? "not measured" : `${Math.round(v * 100)}%`}`} />
+            ))}
+          </div>
+          <div className="pcx-side">
+            <span className="muted small">{engine}</span>
+            {/* The terms the score is a sum of: the section fit, then the track
+                fit. Unmeasured is "—", never 0. */}
+            <span className="muted small pcx-terms">
+              {termsOf(c).map((t) => `${t.name} ${t.known ? Math.round(t.value * 100) : "—"}`).join(" · ")}
+            </span>
+            <span className="muted small pcx-terms">
+              {songTermsOf(c).map((t) => `${t.name} ${t.known ? Math.round(t.value * 100) : "—"}`).join(" · ")}
+            </span>
+          </div>
         </div>
-      )}
+      </details>
+
+
+
+      {rating && onReason && <WhyRow rating={rating} reasons={reasons} onReason={onReason} />}
 
       <div className="pcx-actions">
         <button className="btn-primary" onClick={onStudio} title="Open both tracks in Studio">Open in Studio</button>
@@ -285,17 +300,50 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
             title={`Add to the set “${setName || "My set"}” (a)`}>+ Set</button>
         )}
         {onCompare && (
-          <button className="ui-btn" onClick={onCompare}
-            title="Compare the two tracks in Analysis (c)">⇄ Compare</button>
+          <button className="ui-btn" onClick={onCompare} aria-label="Compare"
+            title="Compare the two tracks in Analysis (c)">⇄</button>
         )}
-        <span className="grow" />
+        {onNote && (
+          <input className="pcx-note grow" value={draft}
+            placeholder="Note — opener · use the 2nd chorus"
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={() => { if (draft.trim() !== (note || "")) onNote(draft.trim()); }}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter" || e.key === "Escape") {
+                if (e.key === "Escape") setDraft(note || "");
+                e.currentTarget.blur();
+              }
+            }} />
+        )}
+        {!onNote && <span className="grow" />}
         {onHide && (
           <button className="ui-btn ghosted" onClick={onHide}
-            title="Hide this pair (h) — a display preference, never a verdict">
-            {hidden ? "↺ Unhide" : "⊘ Hide"}
+            aria-label={hidden ? "Unhide" : "Hide"}
+            title={hidden ? "Show this pair again" : "Hide this pair (h) — a display preference, never a verdict"}>
+            {hidden ? "↺" : "⊘"}
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+const DBL_CLICK_MS = 260;
+
+// The reasons beside a verdict (never in place of one). `keys` shows the key
+// that tags each one — q w e r… — on the row under a card just rated.
+function WhyRow({ rating, reasons, onReason, keys = false }) {
+  return (
+    <div className="pcx-why"
+      title="Why this rating? Never changes the verdict — it is what the scorer's terms get checked against">
+      <span className="caps">WHY</span>
+      {reasonsFor(rating).map((x, i) => (
+        <button key={x.key} className={`pcx-reason ${x.tone}${reasons.includes(x.key) ? " on" : ""}`}
+          onClick={() => onReason(x.key)}>
+          {keys && REASON_KEYS[i] && <span className="kbd">{REASON_KEYS[i]}</span>}{x.label}
+        </button>
+      ))}
     </div>
   );
 }

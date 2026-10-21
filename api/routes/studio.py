@@ -41,6 +41,15 @@ class Clip(BaseModel):
     fade_out: float = Field(default=0.0, ge=0, le=60)
     hp_hz: float = Field(default=0.0, ge=0, le=20000)
     lp_hz: float = Field(default=0.0, ge=0, le=22050)
+    # Three-band EQ (dB) and the duck under the vocals (dB, 0 = off) —
+    # render/dsp.apply_eq / duck_*, the browser's maths.
+    eq_low: float = Field(default=0.0, ge=-24, le=12)
+    eq_mid: float = Field(default=0.0, ge=-24, le=12)
+    eq_high: float = Field(default=0.0, ge=-24, le=12)
+    duck_db: float = Field(default=0.0, ge=0, le=18)
+    # Heard by the duck's key, not mixed: how a one-lane stem render of a
+    # ducked bed still ducks where the vocal sings.
+    key_only: bool = False
 
     @model_validator(mode="after")
     def _trim_is_a_real_window(self) -> "Clip":
@@ -62,6 +71,10 @@ class Clip(BaseModel):
 
 class MixdownRequest(BaseModel):
     clips: list[Clip]
+    # Integrated loudness to master to (render/master.py); null = only the
+    # −1 dBTP ceiling. Studio sends −14 (streaming-safe; a DJ can push it in
+    # the booth, nothing can undo a crushed render).
+    loudness_target: Optional[float] = Field(default=None, ge=-30, le=-6)
 
 
 def _require_songs(song_ids: list[int]) -> None:
@@ -87,7 +100,7 @@ def queue_mixdown(req: MixdownRequest, background: BackgroundTasks) -> dict:
 
     job_id = jobs.new_job(kind="mixdown", message="Queued for mixdown render")
     background.add_task(mixdown_worker.run, job_id,
-                        [c.render_clip() for c in req.clips])
+                        [c.render_clip() for c in req.clips], req.loudness_target)
     return {"job_id": job_id, "audio_url": f"/api/studio/mixdown/{job_id}/audio"}
 
 
@@ -127,6 +140,10 @@ class LaneState(BaseModel):
     clip_end: Optional[float] = Field(default=None, gt=0)
     hp_hz: Optional[float] = Field(default=None, ge=0, le=20000)
     lp_hz: Optional[float] = Field(default=None, ge=0, le=22050)
+    eq_low: Optional[float] = Field(default=None, ge=-24, le=12)
+    eq_mid: Optional[float] = Field(default=None, ge=-24, le=12)
+    eq_high: Optional[float] = Field(default=None, ge=-24, le=12)
+    duck_db: Optional[float] = Field(default=None, ge=0, le=18)
 
     @model_validator(mode="after")
     def _trim_is_a_real_window(self) -> "LaneState":

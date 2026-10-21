@@ -144,10 +144,12 @@ def _with_playback_terms(rows: list) -> list:
     every keypress. Deriving these here keeps one implementation of the Camelot
     math — recomputing it in JS would silently drift from the T1.2 fix — and
     costs the browser no extra round-trip per row."""
+    from matcher.recipe import harmony_unsure_below
+    unsure_below = harmony_unsure_below() if rows else None
     for r in rows:
         # The shift the card prints is the shift that plays: measured harmony
-        # first, Camelot only without it (matcher/recipe.py).
-        r["semitone_shift"] = bed_shift(r)
+        # when it is sure, Camelot otherwise (matcher/recipe.bed_shift).
+        r["semitone_shift"] = bed_shift(r, unsure_below)
         r["stretch_factor"] = compute_stretch_factor(
             r.get("vocal_bpm") or 0.0, r.get("inst_bpm") or 0.0)
         # Phase C: the effort bucket and the cost that dominates it, derived
@@ -157,7 +159,10 @@ def _with_playback_terms(rows: list) -> list:
             r["effort_label"] = None
             r["effort_reason"] = None
             continue
-        r["effort_label"] = effort_label(float(effort))
+        sf = r["stretch_factor"]
+        r["effort_label"] = effort_label(
+            float(effort), r["semitone_shift"],
+            abs(sf - 1.0) * 100.0 if sf else None)
         parts = {
             "stretch_cost": r.get("effort_stretch") or 0.0,
             "pitch_cost": r.get("effort_pitch") or 0.0,
@@ -439,6 +444,39 @@ class PairKey(BaseModel):
     inst_song_id: int
     vocal_section: Optional[int] = None
     inst_section: Optional[int] = None
+
+
+class ScorePairBody(BaseModel):
+    vocal_song_id: int
+    inst_song_id: int
+    both_ways: bool = True
+
+
+@router.post("/score-pair")
+def score_pair_anyway(body: ScorePairBody) -> dict:
+    """Score two named songs the library run left unpaired (outside the tempo
+    or key gate) — "Score this pair anyway" on an empty A + B search. Rows are
+    stored as scorer='forced' and come back as listing rows, recipe and
+    warnings included; the next Score library run clears them."""
+    from matcher.match import score_pair
+    if body.vocal_song_id == body.inst_song_id:
+        raise HTTPException(status_code=400, detail="pick two different songs")
+    from database import models as _models
+    db = _models.DB_PATH
+    made = len(score_pair(body.vocal_song_id, body.inst_song_id, db_path=db))
+    if body.both_ways:
+        made += len(score_pair(body.inst_song_id, body.vocal_song_id, db_path=db))
+    if not made:
+        raise HTTPException(status_code=409,
+                            detail="Nothing to score: one of the two has no analysed stems yet.")
+    rows = []
+    for v, i in ((body.vocal_song_id, body.inst_song_id), (body.inst_song_id, body.vocal_song_id)):
+        if v != body.vocal_song_id and not body.both_ways:
+            continue
+        rows += list_candidates(vocal_song_id=v, inst_song_id=i, max_per_song=0,
+                                limit=20)["candidates"]
+    rows.sort(key=lambda r: -(r.get("score_total") or 0))
+    return {"count": len(rows), "candidates": rows}
 
 
 @router.post("/feedback")
@@ -835,8 +873,9 @@ class PairExportBody(BaseModel):
 def export_pairs(body: PairExportBody):
     """The pairs the dock is showing, as CSV / cue sheet / rekordbox XML — the
     same files a set exports (render/exports.py)."""
-    if body.format not in ("csv", "cue", "rekordbox"):
-        raise HTTPException(status_code=400, detail="format must be csv, cue or rekordbox")
+    if body.format not in ("csv", "cue", "rekordbox", "serato", "traktor"):
+        raise HTTPException(status_code=400,
+                            detail="format must be csv, cue, rekordbox, serato or traktor")
     from api.routes.sets import export_response
     from database.models import candidate_for_pair, get_pair_notes
     notes = {(n["vocal_song_id"], n["inst_song_id"], n["vocal_section"],

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { PairCard } from "./PairCard";
 import { JobBadge } from "./JobBadge";
 import {
@@ -24,7 +24,7 @@ const DOCK_MIN = 320;
 const DOCK_MAX = 640;
 const DOCK_DEFAULT = 400;
 
-const KEYS = "↑↓ move · ←→ pairing · space loop · 1–5 rate · ⏎ expand · V/B solo · h hide · a +set · c compare";
+const KEYS = "↑↓ move · ←→ pairing · space loop · 1–5 rate · q–u why · ⏎ expand · V/B solo · h hide · a +set · c compare";
 
 // Values offered by the library-wide menus. Bands, not free ranges, because
 // they are what the server accepts (database/models.py ERA_BANDS etc.).
@@ -116,7 +116,7 @@ function useDockWidth() {
 export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
                           onClearScope = null, freshness = null,
                           onAddToSet = null, setName = null, notes = null,
-                          onCompare = null, durationOf = () => null }) {
+                          onCompare = null, durationOf = () => null, tracks = null }) {
   const { order, setOrder, rows, loading, error, cursor, setCursor, armedKey,
           play, openStudio, hide, unhide, audio, filters, setFilters, resetFilters,
           perVocal, hasMore, loadMore, loadingMore, exportBatch, expanded, toggleExpand,
@@ -193,6 +193,35 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
     c.compat?.genre?.vocal ?? c.vocal_genre, c.compat?.genre?.bed ?? c.inst_genre,
   ]).filter(Boolean))].sort();
   const empty = !error && !loading && rows.length === 0;
+  // "A + B" with nothing scored: the two library tracks the terms name (title,
+  // or artist and title), for "Score this pair anyway".
+  const forceTargets = useMemo(() => {
+    const m = /^(.*?)(?:\s*\+\s*|\s+w\/\s+)(.*)$/i.exec(filters.search || "");
+    if (!m || !tracks?.length) return null;
+    const find = (term) => {
+      const q = term.trim().toLowerCase();
+      if (!q) return null;
+      return tracks.find((t) => (t.title || "").toLowerCase() === q)
+        || tracks.find((t) => `${t.artist || ""} ${t.title || ""}`.toLowerCase().includes(q));
+    };
+    const a = find(m[1]), b = find(m[2]);
+    return a && b && a.id !== b.id ? [a, b] : null;
+  }, [filters.search, tracks]);
+  const [forcing, setForcing] = useState(false);
+  const forceScore = async () => {
+    if (!forceTargets) return;
+    setForcing(true);
+    try {
+      const d = await api.scorePairAnyway(forceTargets[0].id, forceTargets[1].id);
+      toast(`Scored ${d.count} pairing${d.count === 1 ? "" : "s"} outside the gates — marked "forced"`);
+      dock.reload();
+    } catch (e) { toast(`Could not score them: ${e.message}`); }
+    finally { setForcing(false); }
+  };
+  // Keepers on its own, with nothing kept: the cause is "no 4–5★ ratings",
+  // not a filter to loosen.
+  const keepersOnly = filters.rated === "loved" && nServer === 1 && !filters.search
+    && !Object.values(ratings.byPair || {}).some((n) => n >= 4);
 
   // The card list, with a header before each tier (Score order only).
   const items = [];
@@ -220,7 +249,8 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
         optionIndex={opt.index} optionCount={opt.count}
         onStep={(delta, to) => { setCursor(i); dock.stepOption(c, delta, to); }}
         rating={ratings.ratingOf(c)}
-        onRate={(n) => { setCursor(i); ratings.rate(c, n); }}
+        onRate={(n) => { setCursor(i); ratings.rate(c, n); dock.noteRated?.(c, n); }}
+        justRated={dock.lastRated?.key === k}
         reasons={ratings.reasonsOf ? ratings.reasonsOf(c) : []}
         onReason={ratings.toggleReason ? (r) => ratings.toggleReason(c, r) : null}
         focused={i === cursor}
@@ -270,11 +300,17 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
               aria-pressed={role !== "instrumental"} onClick={() => onRole("vocal")}
               title="Pairs where this track is the vocal on top">
               <span className="sw" />As vocal <span className="mono n">{scopeTrack.mash?.as_vocal ?? ""}</span>
+              {scopeTrack.mash?.best_pct_vocal != null && (
+                <span className="mono n faint" title="Best pair on this side, as a library percentile">
+                  · {Math.round(scopeTrack.mash.best_pct_vocal * 100)}</span>)}
             </button>
             <button className={`bed${role === "instrumental" ? " on" : ""}`}
               aria-pressed={role === "instrumental"} onClick={() => onRole("instrumental")}
               title="Pairs where this track is the bed underneath">
               <span className="sw" />As bed <span className="mono n">{scopeTrack.mash?.as_bed ?? ""}</span>
+              {scopeTrack.mash?.best_pct_bed != null && (
+                <span className="mono n faint" title="Best pair on this side, as a library percentile">
+                  · {Math.round(scopeTrack.mash.best_pct_bed * 100)}</span>)}
             </button>
           </div>
         )}
@@ -325,7 +361,7 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
           </select>
           <button className={`pd-exportbtn${exportOpen ? " on" : ""}`}
             onClick={() => setExportOpen((o) => !o)}
-            title="Export the top pairs under these filters: CSV, cue sheet, rekordbox XML or FL session folders">
+            title="Export the top pairs under these filters: CSV, cue sheet, rekordbox, Serato, Traktor or FL session folders">
             Export ▾
           </button>
         </div>
@@ -344,7 +380,9 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
               <span className="muted">as a file</span>
               {[["csv", "CSV", "One row per pair: both sides, sections, landing key and tempo, bed transpose, harmony, note"],
                 ["cue", "cue sheet", "A timed running order you can read or paste into a tracklist"],
-                ["rekordbox", "rekordbox", "rekordbox XML: each vocal's acapella and each bed, with a beat grid and a hot cue at the paired section"]]
+                ["rekordbox", "rekordbox", "rekordbox XML: each vocal's acapella and each bed, with a beat grid and a hot cue at the paired section"],
+                ["serato", "Serato", "A Serato crate of the same files, in order — put it in _Serato_/Subcrates"],
+                ["traktor", "Traktor", "A Traktor collection (.nml) with tempo, key and a hot cue at each paired section"]]
                 .map(([fmt, label, why]) => (
                   <button key={fmt} className="ui-btn" title={why} disabled={!rows.length || perVocal}
                     onClick={() => api.exportPairs(rows.slice(0, exportN), fmt, "pairs")
@@ -603,9 +641,19 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
                 after the last re-score. A wrong BPM (×2/÷2 in the Library) is the
                 usual cause — fix it, then re-score.
               </span>
+              {forceTargets && (
+                <button className="ui-btn" onClick={forceScore} disabled={forcing}
+                  title="Score these two outside the tempo and key gates — the result says what it would take">
+                  {forcing ? "Scoring…" : `Score ${forceTargets[0].title} + ${forceTargets[1].title} anyway`}
+                </button>
+              )}
             </div>
           )}
-          {empty && (nServer > 0 || filters.search) && !TWO_TRACK.test(filters.search) && (
+          {empty && keepersOnly && (
+            <div className="pd-msg"><b>No keepers yet.</b>
+              <span>Rate a pair 4–5★ (or press 4 or 5 on it) to keep it here.</span></div>
+          )}
+          {empty && !keepersOnly && (nServer > 0 || filters.search) && !TWO_TRACK.test(filters.search) && (
             <div className="pd-msg"><b>No pairs match these filters.</b>
               <span>Loosen a filter, or reset them.</span></div>
           )}

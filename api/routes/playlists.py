@@ -36,6 +36,22 @@ class IngestRequest(BaseModel):
     group_name: Optional[str] = None
 
 
+def _nothing_for(source: str) -> str:
+    """Why a reachable site returned nothing for a link, as far as we can tell
+    without guessing: a missing yt-dlp is checked, not presumed."""
+    import shutil
+    from ingest.errors import site_name
+    try:
+        import yt_dlp  # noqa: F401
+        have = True
+    except ImportError:
+        have = shutil.which("yt-dlp") is not None
+    if not have:
+        return "yt-dlp is not installed on the server — see readme “First run”."
+    return (f"{site_name(source)} returned nothing for that link — it may be private, "
+            "removed or mistyped. Open it in a browser to check, or try another link.")
+
+
 @router.post("/preview")
 def preview(req: PreviewRequest) -> dict:
     url = (req.url or "").strip()
@@ -49,10 +65,18 @@ def preview(req: PreviewRequest) -> dict:
             detail="Unrecognised link. Paste a SoundCloud or YouTube track or playlist URL.",
         )
 
+    # Offline (or the site down) is the common failure, and yt-dlp's retries
+    # took ~15 s to say nothing useful: ask the site first, in ≤4 s.
+    from ingest.errors import network_message, reachable, site_name
+    if not reachable(source):
+        raise HTTPException(status_code=503, detail=network_message(site_name(source)))
+
     is_single = kind == "track"
     if is_single:
         track = fetch_single(url)
-        tracks = [dict(track, hydrated=True)] if track else []
+        if not track:
+            raise HTTPException(status_code=404, detail=_nothing_for(source))
+        tracks = [dict(track, hydrated=True)]
         if track and track.get("source_url"):
             preview_hydrator.cache_put(track["source_url"], track)
         return {"is_single": True, "source": source, "count": len(tracks),
@@ -65,6 +89,8 @@ def preview(req: PreviewRequest) -> dict:
     # in the background and the frontend polls GET /preview/{id} to merge them.
     flat = fetch_playlist_flat_meta(url)
     tracks = flat["tracks"]
+    if not tracks:
+        raise HTTPException(status_code=404, detail=_nothing_for(source))
     preview_id = preview_hydrator.start(tracks) if tracks else None
     session = preview_hydrator.get(preview_id) if preview_id else None
     rows = session["tracks"] if session else []

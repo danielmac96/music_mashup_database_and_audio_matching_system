@@ -244,6 +244,14 @@ export const VERDICT_REASONS = [
 
 /** The reasons worth offering for a star: praise for 4–5, faults for 1–2,
  * both for a 3. None without a rating — a reason explains a rating. */
+// The keys that tag a reason on the pair just rated (the dock's WHY chips, in
+// order): q is the first chip, w the second…
+export const REASON_KEYS = "qwertyu";
+
+// Ratings the term report needs on each side (4–5 stars and 1–2 stars) before
+// it reads a term — matcher/term_report.MIN_PER_CLASS (test-pinned).
+export const TUNING_MIN_PER_CLASS = 10;
+
 export function reasonsFor(rating) {
   if (!rating) return [];
   return VERDICT_REASONS.filter((r) => (r.tone === "good" ? rating >= 3 : rating <= 3));

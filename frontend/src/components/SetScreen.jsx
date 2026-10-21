@@ -322,6 +322,34 @@ function FlowGraph({ items, f, layout, pps, curve, sel, onCurve, onCommit }) {
   );
 }
 
+// What each rule a move or candidate breaks reads as (matcher/setflow).
+const VIOLATION_TEXT = { key: "key", bpm: "tempo", repeat: "record repeats" };
+
+// Studio lays a set on two A/B deck rows, many clips each, decoding only the
+// clips near the playhead — so a whole set opens (82 lanes for a 41-pair set
+// before decks, 2026-10-15). The cap only bounds a runaway set.
+export const STUDIO_CHAIN_MAX = 64;
+
+// How long a slot plays, in bars at its landing tempo — the set's clock, the
+// cue sheet and the energy curve all run on it (setflow.DEFAULT_PLAY_BARS).
+const PLAY_BARS = [16, 32, 64];
+function PlayLength({ item, land, onSave }) {
+  const bars = item.play_bars || null;
+  const shown = land?.play_bars || bars;
+  return (
+    <div className="ss-moverow" title="How long this mashup plays in the set — the vocal section is what is layered, not how long it stays on">
+      <span className="caps">Plays</span>
+      <div className="d-seg">
+        {PLAY_BARS.map((n) => (
+          <button key={n} className={shown === n ? "on" : ""}
+            onClick={() => onSave({ play_bars: n === 32 && !bars ? null : n })}>{n} bars</button>
+        ))}
+      </div>
+      {land?.secs ? <span className="mono muted small">{mmss(land.secs)}</span> : null}
+    </div>
+  );
+}
+
 // What could come next: good pairs that are also an easy move from where the
 // set lands now (GET /api/sets/{id}/next → matcher/setflow.next_candidates).
 function NextUp({ setId, version, onAdd, onPlay, playingKey }) {
@@ -336,13 +364,20 @@ function NextUp({ setId, version, onAdd, onPlay, playingKey }) {
   return (
     <div className="ss-sec">
       <span className="caps">What comes next</span>
-      <span className="muted small">Good on their own and an easy move from the last landing.</span>
+      <span className="muted small">
+        {rows.some((c) => !c.next_relaxed)
+          ? "Good on their own and an easy move from the last landing (±1 key step, ±4% tempo)."
+          : "Nothing fits every rule from here — the closest, with what each breaks."}</span>
       {rows.map((c) => (
         <div key={keyOf(c)} className="set-next-row ss-cand">
           <PairLines item={c} />
           <div className="ss-why">
             <span className={`ss-chip ${c.next_grade === "smooth" ? "ok" : c.next_grade === "jump" ? "warn" : ""}`}>{c.next_why}</span>
             <span className="ss-chip mono">{Math.round((c.score_percentile ?? 0) * 100)}%</span>
+            {c.next_relaxed && (
+              <span className="ss-chip warn" title="Outside the set's fit rule">
+                ⚠ {(c.next_violations || []).map((v) => VIOLATION_TEXT[v] || v).join(" · ")}</span>
+            )}
             <span className="grow" />
             <button className="ui-btn" aria-label="Loop" onClick={() => onPlay(c)}>{playingKey === keyOf(c) ? "◍" : "▶"}</button>
             <button className="ui-btn" onClick={() => onAdd(c)}>+ add</button>
@@ -423,6 +458,10 @@ function GapFill({ setId, position, version, onFill, onPlay, playingKey }) {
                   E {c.energy.toFixed(2)}/{c.energy_target.toFixed(2)}</span>
               )}
               <span className="ss-chip mono">{Math.round((c.score_percentile ?? 0) * 100)}%</span>
+            {c.next_relaxed && (
+              <span className="ss-chip warn" title="Outside the set's fit rule">
+                ⚠ {(c.next_violations || []).map((v) => VIOLATION_TEXT[v] || v).join(" · ")}</span>
+            )}
               <span className="grow" />
               <button className="ui-btn" aria-label="Loop" onClick={() => onPlay(c)}>{playingKey === keyOf(c) ? "◍" : "▶"}</button>
               <button className="btn-primary" onClick={() => onFill(c)}>Fill</button>
@@ -669,6 +708,24 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
     try { apply(await api.setItemTransition(data.id, item.item_id, move)); }
     catch (e) { toast(`Could not change the move: ${e.message}`); }
   };
+  // Every pair in Studio, each at its own landing tempo (the curve's point, or
+  // the vocal's), from the selected slot on — at most STUDIO_CHAIN_MAX at once.
+  const openChain = () => {
+    const from = Math.max(0, selIdx);
+    const pairs = items.map((it, k) => ({ it, k }))
+      .filter(({ it, k }) => (it.kind || "pair") === "pair" && k >= from)
+      .map(({ it, k }) => ({ ...it, set_bpm: it.set_bpm ?? f.landings[k]?.bpm ?? null,
+                             // The move into this slot overlaps the previous one.
+                             overlap_secs: k > from ? (f.transitions[k - 1]?.overlap_secs ?? 0) : 0 }));
+    const all = items.filter((it) => (it.kind || "pair") === "pair").length;
+    const chain = pairs.slice(0, STUDIO_CHAIN_MAX);
+    if (!chain.length) return;
+    if (chain.length < all) {
+      toast(`Opening ${chain.length} of ${all} mashups — Studio arranges up to ${STUDIO_CHAIN_MAX} at a time; `
+        + "select a later slot to open from there");
+    }
+    onOpenChain(chain);
+  };
   const editSlot = async (item, patch) => {
     try { apply(await api.updateSetItem(data.id, item.item_id, patch)); }
     catch (e) { toast(e.message); }
@@ -714,10 +771,11 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
       catch (e) { toast(`FL export: ${e.message}`); }
       return;
     }
-    if (format === "rekordbox") {
+    const usesBase = ["rekordbox", "serato", "traktor"].includes(format);
+    if (usesBase) {
       try { localStorage.setItem(BASE_KEY, base); } catch { /* ignore */ }
     }
-    window.location.href = api.setExportUrl(data.id, format, format === "rekordbox" ? base : "");
+    window.location.href = api.setExportUrl(data.id, format, usesBase ? base : "");
   };
 
   const del = async () => {
@@ -829,6 +887,7 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
                 {selItem.energy != null ? ` · energy ${selItem.energy.toFixed(2)}` : ""}
                 {selItem.stale ? " · stale (no longer scored)" : ""}
               </span>
+              <PlayLength item={selItem} land={land} onSave={(patch) => editSlot(selItem, patch)} />
               <div className="set-recipe"><RecipeStrip recipe={selItem.recipe} compact /></div>
               <PairNote item={selItem} onNote={saveNote} />
               <FitRows rows={fits} />
@@ -843,7 +902,7 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
           {kind === "track" && (
             <>
               <span className="ss-ttl">{selItem.title} · {selItem.artist}</span>
-              <span className="mono muted small">{selItem.camelot || "—"} · {selItem.bpm ? selItem.bpm.toFixed(1) : "—"} BPM · plays whole
+              <span className="mono muted small">{selItem.camelot || "—"} · {selItem.bpm ? selItem.bpm.toFixed(1) : "—"} BPM · {selItem.play_bars ? `plays ${selItem.play_bars} bars` : "plays whole"}
                 {selItem.energy != null ? ` · energy ${selItem.energy.toFixed(2)}` : ""}</span>
               <FitRows rows={fits} />
               <div className="ss-acts">
@@ -935,7 +994,9 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
                 <button key={i} className={`ss-warn ${t.fit}`} onClick={() => setSel({ kind: "trans", i })}>
                   <span>⚠</span>
                   <span className="t">{i + 1}→{i + 2}: {t.key_ok === false ? `key jumps ${t.key_steps} steps (${t.from_key}→${t.to_key})` : ""}
-                    {t.key_ok === false && t.bpm_ok === false ? " · " : ""}{t.bpm_ok === false ? `tempo ${pct(t.tempo_pct)}` : ""}</span>
+                    {t.key_ok === false && t.bpm_ok === false ? " · " : ""}{t.bpm_ok === false ? `tempo ${pct(t.tempo_pct)}` : ""}
+                    {(t.key_ok === false || t.bpm_ok === false) && t.violations?.includes("repeat") ? " · " : ""}
+                    {t.violations?.includes("repeat") ? "a record comes back too soon" : ""}</span>
                 </button>
               ))}
           </div>
@@ -994,6 +1055,8 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
                       placeholder="audio folder as rekordbox sees it (Docker: the host’s ./data/audio)"
                       title="Leave blank when rekordbox runs on the machine the library is on" />
                   </div>
+                  <button onClick={() => exportAs("serato")}><b>Serato crate</b><span>The same files in order — drop into _Serato_/Subcrates</span></button>
+                  <button onClick={() => exportAs("traktor")}><b>Traktor NML</b><span>A playlist with tempo, key and hot cues — Import Collection</span></button>
                   <button onClick={() => exportAs("fl")}><b>FL Studio sessions</b><span>One session folder per pair, aligned like Studio</span></button>
                   <button onClick={() => exportAs("csv")}><b>CSV</b><span>Every slot with its key, tempo, move and note</span></button>
                 </div>
@@ -1024,7 +1087,7 @@ export function SetScreen({ sets, player, onOpenStudio, onOpenChain, onRailSlot,
           <button className="ui-btn" onClick={autoOrder} disabled={items.length < 3}
             title="Re-order to keep each move small, from the first slot; breaks and gaps keep their places">⇅ Auto-order</button>
           <button className="ui-btn" disabled={!items.some((it) => (it.kind || "pair") === "pair")}
-            onClick={() => onOpenChain(items.filter((it) => (it.kind || "pair") === "pair"))}
+            onClick={openChain}
             title="Every pair on one Studio timeline, back to back, each at its point on the tempo curve">◫ Studio</button>
         </div>
 

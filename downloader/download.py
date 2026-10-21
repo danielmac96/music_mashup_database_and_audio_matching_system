@@ -61,26 +61,9 @@ def _extract_ytdlp_errors(output: str) -> list[str]:
     return [ln.strip() for ln in output.splitlines() if ln.strip().startswith("ERROR")]
 
 
-# (regex, kind, user-facing message) — first match on the joined lowercased
-# ERROR lines wins, so order encodes priority. {ver} = installed yt-dlp version.
-_ERROR_CLASSES: tuple[tuple[str, str, str], ...] = (
-    (r"drm.protected", "drm",
-     "SoundCloud serves this track DRM-protected — it cannot be downloaded directly."),
-    (r"go\+|premium|subscribers", "premium",
-     "This track is for SoundCloud Go+ subscribers only."),
-    (r"not available in your country|geo.?restrict", "geo",
-     "This track is geo-blocked in your region."),
-    (r"private|sign in|log ?in|authentication", "private",
-     "This track is private or requires a SoundCloud login."),
-    (r"unable to download json metadata.{0,80}404", "outdated",
-     "SoundCloud rejected the request (HTTP 404). The track may have been removed, "
-     "or yt-dlp {ver} is outdated — use the Update yt-dlp button on the Import tab."),
-    (r"http error 404|not found|no longer available|has been removed", "removed",
-     "Track not found — it may have been removed from SoundCloud."),
-    (r"getaddrinfo|timed out|connection|temporary failure|unable to download webpage",
-     "network",
-     "Network error while downloading — check your connection and retry."),
-)
+# The classes are the shared vocabulary in ingest/errors.py — the preview,
+# Discover and the Mixes scrape describe a failure in the same words.
+from ingest.errors import ERROR_CLASSES as _ERROR_CLASSES  # noqa: E402
 
 # Failure kinds where SoundCloud has the track but won't serve it — a
 # title/artist YouTube search is a legitimate way to get the same song.

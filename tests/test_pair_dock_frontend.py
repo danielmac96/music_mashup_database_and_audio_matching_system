@@ -114,15 +114,15 @@ def test_the_card_draws_the_four_weighted_terms():
 
 
 def test_every_meter_explains_itself():
-    """The expanded card's meters (VOI / HARM / RHY / ENGY) each carry their
-    meaning and their value on hover; the section terms keep their plain names
-    and explanations in pairModel."""
+    """The expanded card's meters (Vocal / Harmony / Rhythm / Energy — spelled
+    out since phase 5) each carry their meaning and their value on hover; the
+    section terms keep their plain names and explanations in pairModel."""
     terms = MODEL[MODEL.index("export const SCORE_TERMS"):]
     terms = terms[:terms.index("];")]
     assert terms.count("what:") == terms.count("key:") == terms.count("name:") == 4
     meters = CARD[CARD.index("function metersOf("):]
     meters = meters[:meters.index("\n}")]
-    for name in ('"VOI"', '"HARM"', '"RHY"', '"ENGY"'):
+    for name in ('"Vocal"', '"Harmony"', '"Rhythm"', '"Energy"'):
         assert name in meters, name
     assert 'title={`${tip}: ${v == null ? "not measured"' in CARD
 

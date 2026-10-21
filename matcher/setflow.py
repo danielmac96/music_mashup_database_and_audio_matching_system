@@ -33,6 +33,16 @@ WORKABLE = (2.0, 6.0)
 # The fit rule the set screen draws its transition dots with, and that gap
 # suggestions must meet on both sides.
 FIT_BPM_PCT = 4.0
+# How long a mashup slot plays, in bars of the landing tempo, unless the slot
+# says otherwise (set_items.play_bars): the vocal section is what is layered,
+# not how long the mashup stays on. Counting only the section made a 41-pair
+# set read 13½ minutes (2026-10-15 simulation).
+DEFAULT_PLAY_BARS = 32
+# A record that comes back within this many slots is flagged — except the
+# slot right after it, which is a bed or vocal swap, a move in its own right.
+REPEAT_WINDOW = 3
+# Below this many fitting candidates, What comes next adds the closest others.
+NEXT_MIN_FITS = 4
 
 PLAYABLE = ("pair", "track")
 
@@ -103,7 +113,7 @@ def landing(item: Dict) -> Dict:
     if kind in ("break", "gap"):
         secs = item.get("duration_secs")
         return {"bpm": None, "camelot": None, "secs": float(secs) if secs else 0.0,
-                "bed_shift": None}
+                "vocal_secs": None, "play_bars": None, "bed_shift": None}
     if kind == "track":
         own = item.get("bpm")
         bpm = item.get("set_bpm") or own
@@ -111,8 +121,11 @@ def landing(item: Dict) -> Dict:
         if dur and item.get("set_bpm") and own:
             from matcher.match import effective_bpm
             dur = dur * effective_bpm(float(bpm), float(own)) / float(bpm)
+        if item.get("play_bars") and bpm:
+            dur = int(item["play_bars"]) * 240.0 / float(bpm)
         return {"bpm": float(bpm) if bpm else None, "camelot": item.get("camelot") or None,
-                "secs": float(dur) if dur else None, "bed_shift": None}
+                "secs": float(dur) if dur else None, "vocal_secs": None,
+                "play_bars": item.get("play_bars"), "bed_shift": None}
     bpm = item.get("set_bpm") or item.get("target_bpm") or item.get("vocal_bpm")
     start, end = item.get("vocal_section_start"), item.get("vocal_section_end")
     dur = (end - start) if start is not None and end is not None and end > start else None
@@ -121,9 +134,12 @@ def landing(item: Dict) -> Dict:
     if dur and item.get("set_bpm") and item.get("vocal_bpm"):
         from matcher.match import effective_bpm
         dur = dur * effective_bpm(float(bpm), float(item["vocal_bpm"])) / float(bpm)
+    bars = int(item.get("play_bars") or DEFAULT_PLAY_BARS)
+    plays = bars * 240.0 / float(bpm) if bpm else dur
     return {"bpm": float(bpm) if bpm else None,
             "camelot": item.get("vocal_camelot") or None,
-            "secs": dur, "bed_shift": bed_shift(item)}
+            "secs": plays, "vocal_secs": dur, "play_bars": bars if bpm else None,
+            "bed_shift": bed_shift(item)}
 
 
 def _tempo_change(a: Optional[float], b: Optional[float]) -> Optional[float]:
@@ -137,6 +153,26 @@ def _tempo_change(a: Optional[float], b: Optional[float]) -> Optional[float]:
         if best is None or abs(pct) < abs(best):
             best = pct
     return round(best, 1)
+
+
+def records(item: Dict) -> set:
+    """The songs a slot plays: both sides of a pair, a track's song."""
+    if kind_of(item) == "track":
+        return {item.get("song_id")} - {None}
+    if kind_of(item) == "pair":
+        return {item.get("vocal_song_id"), item.get("inst_song_id")} - {None}
+    return set()
+
+
+def repeats(earlier: Sequence[Dict], item: Dict) -> set:
+    """Songs in `item` that already played within REPEAT_WINDOW playable slots
+    of it, not counting the slot right before (a swap). `earlier` is the set
+    up to `item`, in order."""
+    play = [x for x in earlier if playable(x)][-REPEAT_WINDOW:]
+    if len(play) < 2:
+        return set()
+    back = set().union(*(records(x) for x in play[:-1]))
+    return records(item) & back
 
 
 def transition(a: Dict, b: Dict) -> Dict:
@@ -221,13 +257,22 @@ def flow(items: Sequence[Dict], tempo_plan: Optional[Dict] = None) -> Dict:
                           "move": None, "overlap_secs": 0.0})
             continue
         t = transition(a, b)
+        again = repeats(items[:k + 1], b)
+        if again:
+            # The same record back within a few slots: legal, but the crowd
+            # hears it. A warning, one notch worse than the move's own fit.
+            t["violations"] = t["violations"] + ["repeat"]
+            t["repeated_song_ids"] = sorted(again)
+            t["fit"] = {"ok": "warn", "warn": "bad", "unknown": "warn"}.get(t["fit"], t["fit"])
         t["move"] = _move(b.get("transition"), suggest_move(a, b, t))
         bpm = lands[k + 1]["bpm"]
         overlap = (t["move"]["bars"] * 4 * 60.0 / bpm
                    if bpm and t["move"]["bars"] else 0.0)
-        # Never more than half of either mashup: an 8-bar blend out of an
-        # 8-bar section would otherwise swallow it whole.
-        shorter = min([x for x in (lands[k]["secs"], lands[k + 1]["secs"]) if x] or [0.0])
+        # Never more than half of either vocal section: an 8-bar blend out of
+        # an 8-bar section would otherwise swallow it whole.
+        shorter = min([x for x in (lands[k].get("vocal_secs") or lands[k]["secs"],
+                                   lands[k + 1].get("vocal_secs") or lands[k + 1]["secs"]) if x]
+                      or [0.0])
         t["overlap_secs"] = round(min(overlap, shorter / 2.0), 2)
         trans.append(t)
     t, starts = 0.0, []
@@ -323,6 +368,13 @@ def next_candidates(items: Sequence[Dict], pool: Sequence[Dict],
             tempo = max(tempo, abs(nxt_bpm / effective_bpm(nxt_bpm, float(cand["vocal_bpm"])) - 1) * 100)
         move = suggest_move(last, cand, t)
         shared = move["type"] in ("bed_swap", "vocal_swap")
+        broken = list(t["violations"])
+        if t["key_ok"] is None:
+            broken.append("key")
+        if tempo > FIT_BPM_PCT:
+            broken = [v for v in broken if v != "bpm"] + ["bpm"]
+        if repeats(items, cand):
+            broken.append("repeat")
         rank = (float(c.get("score_percentile") or 0.0) - 0.06 * steps - 0.02 * tempo
                 + (0.05 if shared else 0.0))
         why = [f"{t['from_key'] or '?'} → {t['to_key'] or '?'}"
@@ -331,10 +383,19 @@ def next_candidates(items: Sequence[Dict], pool: Sequence[Dict],
         if shared:
             why.insert(0, TRANSITIONS[move["type"]]["label"])
         cand.update({"next_rank": round(rank, 4), "next_grade": t["grade"],
-                     "next_move": move["type"], "next_why": " · ".join(why)})
+                     "next_move": move["type"], "next_why": " · ".join(why),
+                     "next_violations": sorted(set(broken)), "next_relaxed": bool(broken)})
         out.append(cand)
-    out.sort(key=lambda r: -r["next_rank"])
-    return out[:max(1, limit)]
+    # Only moves that keep the set's own fit rule (±1 step, ±4% after the fold,
+    # no record back too soon) — "an easy move" must be one. When too few do,
+    # the closest others follow, marked relaxed with what they break.
+    fits = sorted((c for c in out if not c["next_relaxed"]), key=lambda r: -r["next_rank"])
+    rest = sorted((c for c in out if c["next_relaxed"]),
+                  key=lambda r: (len(r["next_violations"]), -r["next_rank"]))
+    limit = max(1, limit)
+    if len(fits) >= min(limit, NEXT_MIN_FITS):
+        return fits[:limit]
+    return (fits + rest)[:max(limit, NEXT_MIN_FITS)][:limit]
 
 
 # ── energy curve and gap suggestions ─────────────────────────────────────────
@@ -403,6 +464,8 @@ def gap_candidates(items: Sequence[Dict], index: int, pool: Sequence[Dict],
                 broken.add("key")
             if tr["bpm_ok"] is None:
                 broken.add("bpm")
+        if repeats(items[:index], cand):
+            broken.add("repeat")
         e = energy_of.get(c.get("inst_song_id"))
         dist = abs(e - target) if (e is not None and target is not None) else (
             0.5 if target is not None else 0.0)

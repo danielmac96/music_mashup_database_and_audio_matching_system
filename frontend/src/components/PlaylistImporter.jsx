@@ -90,7 +90,7 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
         setHydration({ done: false, hydrated_count: 0, count: cleaned.length });
       }
       if (cleaned.length === 0) {
-        setError("No tracks returned. Check the URL and that yt-dlp is installed.");
+        setError("That link returned no tracks — it may be private, removed or mistyped.");
       }
     } catch (err) {
       setError(err.message);

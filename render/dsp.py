@@ -27,7 +27,7 @@ ProgressCb = Optional[Callable[[Optional[int], str], None]]
 
 RENDER_SR = 44100
 MAX_RENDER_SECS = 900.0   # 15 min safety cap so a runaway render can't fill the disk
-MAX_CLIPS = 16
+MAX_CLIPS = 128     # a whole set on A/B decks is many trimmed clips; MAX_RENDER_SECS bounds the render
 
 # Playable stems. drums/bass/other exist only when the track was separated in
 # four-stem mode (Phase D); resolve_stem_path returns None otherwise, and the
@@ -135,15 +135,70 @@ def load_segment(path: Path, sr: int = RENDER_SR, *,
     return y
 
 
+def stretch_engine() -> str:
+    """Which engine conforms clips: `rubberband` (ffmpeg's filter, when the
+    build has it) or `librosa` (the phase vocoder). MASHUP_STRETCH=librosa or
+    =rubberband forces one; the default, `auto`, prefers Rubber Band — its
+    transients and pads survive a stretch the phase vocoder smears, so a
+    render sounds closer to Studio's SoundTouch playback (2026-10-15)."""
+    import os
+    want = os.environ.get("MASHUP_STRETCH", "auto").strip().lower()
+    if want == "librosa":
+        return "librosa"
+    if want in ("auto", "rubberband") and _rubberband_available():
+        return "rubberband"
+    return "librosa"
+
+
+_RB_CACHE: dict = {}
+
+
+def _rubberband_available() -> bool:
+    if "ok" not in _RB_CACHE:
+        import subprocess
+        try:
+            out = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+                                 capture_output=True, text=True, timeout=20).stdout
+            _RB_CACHE["ok"] = " rubberband " in out
+        except Exception:  # noqa: BLE001 — no ffmpeg is "not available"
+            _RB_CACHE["ok"] = False
+    return _RB_CACHE["ok"]
+
+
+def _rubberband(y, sr: int, rate: float, semitones: int):
+    """Stretch by `rate` (playback speed) and shift by `semitones` in one
+    ffmpeg rubberband pass, mono float32 through pipes."""
+    import subprocess
+    np, _librosa, _sf = require_audio_stack()
+    af = (f"rubberband=tempo={rate:.6f}:pitch={2.0 ** (semitones / 12.0):.6f}"
+          ":pitchq=quality:transients=mixed")
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
+           "-f", "f32le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
+           "-af", af, "-f", "f32le", "-ar", str(sr), "-ac", "1", "pipe:1"]
+    res = subprocess.run(cmd, input=np.asarray(y, dtype="float32").tobytes(),
+                         capture_output=True, timeout=900)
+    if res.returncode != 0 or not res.stdout:
+        raise RuntimeError(res.stderr.decode("utf-8", "replace")[:300] or "rubberband failed")
+    return np.frombuffer(res.stdout, dtype="float32").copy()
+
+
 def conform(y, sr: int, rate: float, semitones: int,
             on_progress: ProgressCb = None, label: str = ""):
     """Time-stretch then pitch-shift, decoupled. Returns the new samples.
 
     Both operations are skipped when they would be identity, so a clip that
     needs neither is returned untouched rather than round-tripped through a
-    phase vocoder for nothing.
+    phase vocoder for nothing. Rubber Band does both in one pass when
+    stretch_engine() picks it; a failure there falls back to the vocoder.
     """
     _np, librosa, _sf = require_audio_stack()
+    if (abs(rate - 1.0) > 1e-3 or semitones) and stretch_engine() == "rubberband":
+        if on_progress:
+            on_progress(None, f"{label}Rubber Band ×{rate:.3f}, {semitones:+d} st…")
+        try:
+            return _rubberband(y, sr, rate, semitones)
+        except Exception:  # noqa: BLE001
+            log.warning("rubberband failed; using the phase vocoder", exc_info=True)
     if abs(rate - 1.0) > 1e-3:
         if on_progress:
             on_progress(None, f"{label}time-stretching ×{rate:.3f}…")
@@ -168,6 +223,107 @@ def apply_filters(y, sr: int, hp_hz: float = 0.0, lp_hz: float = 0.0):
     if lp_hz and lp_hz > 0:
         y = sosfilt(butter(2, min(lp_hz, nyq * 0.99) / nyq, "lowpass", output="sos"), y)
     return y.astype("float32")
+
+
+# ── Studio's lane EQ and duck, the same maths as the browser ─────────────────
+# Three bands per lane (dB, 0 = flat): a low shelf, a peaking mid and a high
+# shelf, at the frequencies Studio's Web Audio biquads use (MashupEngine
+# EQ_BANDS — pinned equal by a test). The coefficients are the Web Audio
+# spec's own (the Audio EQ Cookbook with S = 1 for the shelves and Q in linear
+# units for the peak), so a render is the filter the user heard, not a
+# lookalike.
+EQ_BANDS = {"low": 250.0, "mid": 1000.0, "high": 4000.0}
+EQ_MID_Q = 0.7
+EQ_RANGE_DB = (-24.0, 12.0)
+
+
+def _clamp_db(v) -> float:
+    try:
+        v = float(v or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(EQ_RANGE_DB[0], min(EQ_RANGE_DB[1], v))
+
+
+def eq_biquad(kind: str, f0: float, gain_db: float, sr: int, q: float = EQ_MID_Q):
+    """(b, a) of one Web Audio BiquadFilterNode: `lowshelf`, `peaking` or
+    `highshelf`, normalised so a[0] = 1."""
+    import math
+    A = 10.0 ** (gain_db / 40.0)
+    w0 = 2.0 * math.pi * min(f0, sr / 2.0 * 0.99) / sr
+    cw, sw = math.cos(w0), math.sin(w0)
+    if kind == "peaking":
+        alpha = sw / (2.0 * q)
+        b = [1 + alpha * A, -2 * cw, 1 - alpha * A]
+        a = [1 + alpha / A, -2 * cw, 1 - alpha / A]
+    else:
+        two_sqrt_a_alpha = 2.0 * math.sqrt(A) * (sw / 2.0 * math.sqrt(2.0))   # S = 1
+        if kind == "lowshelf":
+            b = [A * ((A + 1) - (A - 1) * cw + two_sqrt_a_alpha),
+                 2 * A * ((A - 1) - (A + 1) * cw),
+                 A * ((A + 1) - (A - 1) * cw - two_sqrt_a_alpha)]
+            a = [(A + 1) + (A - 1) * cw + two_sqrt_a_alpha,
+                 -2 * ((A - 1) + (A + 1) * cw),
+                 (A + 1) + (A - 1) * cw - two_sqrt_a_alpha]
+        elif kind == "highshelf":
+            b = [A * ((A + 1) + (A - 1) * cw + two_sqrt_a_alpha),
+                 -2 * A * ((A - 1) + (A + 1) * cw),
+                 A * ((A + 1) + (A - 1) * cw - two_sqrt_a_alpha)]
+            a = [(A + 1) - (A - 1) * cw + two_sqrt_a_alpha,
+                 2 * ((A - 1) - (A + 1) * cw),
+                 (A + 1) - (A - 1) * cw - two_sqrt_a_alpha]
+        else:
+            raise ValueError(kind)
+    return [x / a[0] for x in b], [x / a[0] for x in a]
+
+
+def apply_eq(y, sr: int, low_db: float = 0.0, mid_db: float = 0.0, high_db: float = 0.0):
+    """The lane's three-band EQ; flat bands are skipped (a 0 dB band is the
+    identity in the browser too)."""
+    from scipy.signal import lfilter
+    bands = (("lowshelf", EQ_BANDS["low"], _clamp_db(low_db)),
+             ("peaking", EQ_BANDS["mid"], _clamp_db(mid_db)),
+             ("highshelf", EQ_BANDS["high"], _clamp_db(high_db)))
+    for kind, f0, g in bands:
+        if g:
+            b, a = eq_biquad(kind, f0, g, sr)
+            y = lfilter(b, a, y)
+    return y.astype("float32") if hasattr(y, "astype") else y
+
+
+# Duck: a lane turned down while the vocals sing — the sidechain a producer
+# puts on a bed first. The key is every vocals-stem clip summed as heard; its
+# envelope is |key| through a 2nd-order Butterworth low-pass at
+# DUCK_SMOOTH_HZ; the lane's gain is 1 − depth × min(1, env / DUCK_FULL),
+# depth = 1 − 10^(−duck_db / 20). The browser builds the same graph
+# (MashupEngine._keyBus), so the render ducks where Studio ducked.
+DUCK_SMOOTH_HZ = 8.0
+DUCK_FULL = 0.05          # envelope level that counts as "singing" — full depth
+DUCK_MAX_DB = 18.0
+
+
+def duck_depth(duck_db) -> float:
+    try:
+        d = max(0.0, min(DUCK_MAX_DB, float(duck_db or 0.0)))
+    except (TypeError, ValueError):
+        return 0.0
+    return 1.0 - 10.0 ** (-d / 20.0)
+
+
+def duck_envelope(key, sr: int):
+    """The smoothed |key|, as the browser's abs shaper + low-pass makes it."""
+    import numpy as np
+    from scipy.signal import butter, sosfilt
+    k = np.clip(np.abs(np.asarray(key, dtype="float64")), 0.0, 1.0)
+    sos = butter(2, DUCK_SMOOTH_HZ / (sr / 2.0), "lowpass", output="sos")
+    return sosfilt(sos, k)
+
+
+def duck_gain(env, duck_db):
+    """Per-sample gain for a ducked lane, from the key's envelope."""
+    import numpy as np
+    depth = duck_depth(duck_db)
+    return (1.0 - depth * np.clip(np.asarray(env) / DUCK_FULL, 0.0, 1.0)).astype("float32")
 
 
 def apply_fades(y, sr: int, fade_in: float = 0.0, fade_out: float = 0.0):

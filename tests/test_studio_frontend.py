@@ -33,7 +33,8 @@ def test_a_trimmed_or_extended_clip_renders_as_it_plays():
 def test_render_menu_has_mixdown_stems_and_session():
     for item in ("<b>WAV mixdown</b>", "<b>Stems per lane</b>", "<b>FL session</b>"):
         assert item in STUDIO, item
-    assert "api.startMixdown([clipFor(l)])" in STUDIO
+    # One lane per render, plus the vocals as key_only when the lane ducks (Phase 7).
+    assert "api.startMixdown([clipFor(l), ...keys])" in STUDIO
 
 
 def test_edges_trim_or_extend_and_alt_moves_freely():

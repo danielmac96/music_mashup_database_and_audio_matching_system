@@ -49,6 +49,18 @@ _ROTATIONS = (np.arange(N_PITCH_CLASSES)[None, :]
               - np.arange(N_PITCH_CLASSES)[:, None]) % N_PITCH_CLASSES
 
 
+# How much harmonic fit (0-1) a transpose has to buy before it is worth
+# making: the shift chosen maximises fit − TRANSPOSE_PRICE × the effort cost
+# of that transpose (0 within ±1 st, 1 at ±6 — matcher/effort.transpose_cost).
+# At 0.4 a five-semitone move must gain 0.32 of fit over leaving the bed alone.
+TRANSPOSE_PRICE = 0.4
+
+
+def _transpose_costs() -> np.ndarray:
+    from matcher.effort import transpose_cost
+    return np.array([transpose_cost(_fold(k)) for k in range(N_PITCH_CLASSES)])
+
+
 def _vec(chroma: Optional[Sequence[float]]) -> Optional[np.ndarray]:
     """A finite, L2-normalised 12-vector, or None when unusable."""
     if chroma is None:
@@ -92,20 +104,24 @@ def harmonic_fit(vocal_chroma: Optional[Sequence[float]],
     # b[_ROTATIONS] is np.roll(b, k): one gather instead of twelve rolls, which
     # was most of the cost of a re-score's harmony pass.
     scores = b[_ROTATIONS] @ v
-    best = int(np.argmax(scores))
-    peak = float(scores[best])
-
-    ordered = np.sort(scores)[::-1]
-    runner_up = float(ordered[1]) if len(ordered) > 1 else 0.0
-    # Both mapped from [-1, 1] onto [0, 1] before the ratio, so an anti-
-    # correlated runner-up does not produce a negative confidence.
-    peak01 = (peak + 1.0) / 2.0
-    runner01 = (runner_up + 1.0) / 2.0
-    confidence = float(np.clip(1.0 - (runner01 / peak01) if peak01 > 1e-9 else 0.0,
+    # Mapped from [-1, 1] onto [0, 1], so an anti-correlated runner-up does
+    # not produce a negative confidence.
+    fit01 = (scores + 1.0) / 2.0
+    # A transpose is not free: a phase-vocoded bed five semitones off sounds
+    # it, and a vocal one Camelot step from its bed (A minor over E minor)
+    # already works untransposed. The chosen shift is the best fit NET of what
+    # moving the bed that far costs (_TRANSPOSE_COST); the reported fit is the
+    # plain fit at that shift.
+    net = fit01 - TRANSPOSE_PRICE * _TRANSPOSE_COST
+    best = int(np.argmax(net))
+    ordered = np.sort(net)[::-1]
+    peak_net = float(ordered[0])
+    runner_net = float(ordered[1]) if len(ordered) > 1 else 0.0
+    confidence = float(np.clip(1.0 - (runner_net / peak_net) if peak_net > 1e-9 else 0.0,
                                0.0, 1.0))
 
     return {
-        "fit": float(np.clip(peak01, 0.0, 1.0)),
+        "fit": float(np.clip(fit01[best], 0.0, 1.0)),
         "shift": _fold(best),
         "confidence": confidence,
         "known": True,
@@ -187,3 +203,6 @@ def section_harmony(vocal_section: Optional[dict],
         "advice": clash["advice"],
         "is_clash": fit["known"] and score < CLASH_THRESHOLD,
     }
+
+
+_TRANSPOSE_COST = _transpose_costs()

@@ -5,10 +5,22 @@ import { useEffect } from "react";
 // learn what a "bed" is or how to read a pair card short of reading the readme.
 // Opened from the rail's ? button or the ? key; Esc closes.
 
+// What shows when Help opens: one screen — the loop in five lines, and the
+// Segments way in as a sixth. Everything
+// else folds below — 975 words up front read as a manual (2026-10-15).
+const QUICK = [
+  ["Import", "＋ Import in the Library: paste a SoundCloud or YouTube track or set."],
+  ["Wait", "Each track downloads, splits into vocal and instrumental, and is analysed. The rail shows progress."],
+  ["Score", "↻ Re-score in the pair dock pairs every vocal section with every instrumental section."],
+  ["Listen", "Click a track, then space on a pair in the dock. Rate 1–5; q w e r tag why."],
+  ["Build", "Double-click a pair to open it in Studio, conformed and lined up. Render ▾ a WAV or an FL session; + Set adds it to your mix."],
+  ["Or mix parts", "Segments: pick a vocal section and the beds that fit it are listed. Pick one and it loops in the mini studio below."],
+];
+
 const STEPS = [
   ["Get tracks in", "Library → ＋ Import: paste a SoundCloud or YouTube link (a track or a whole set), or dig in Discover and import your shortlist. Each track downloads, splits into a vocal and an instrumental stem, and is analysed — tempo, key, sections. The Queue (or the rail's pipeline readout) shows where each one is."],
   ["Score the library", "The dock's ↻ Re-score (or ⚙ → Score library). Every vocal section is tried over every instrumental section; the best pairings land in the pair dock on the right of the Library."],
-  ["Audition pairs", "In the dock, ↑↓ moves, space loops the pair (the vocal's section over the bed's), 1–5 rates it and moves on. Select a library row to see the pairs for that track — As vocal or As bed."],
+  ["Audition pairs", "In the dock, ↑↓ moves, space loops the pair (the vocal's section over the bed's), 1–5 rates it and moves on, and q w e r… tag why on the pair you just rated. Select a library row to see the pairs for that track — it opens on the side holding its best pair."],
   ["Keep the good ones", "★ Keepers lists what you rated 4–5. + Set (or a) puts a pair into the active set — the running order of your mix."],
   ["Mix and match parts", "Segments: every section of every song, vocals beside beds. Pick a chorus acapella and the beds narrow to the sections that fit it — scored live, so pairs Score library left out still show. Pick one and it loops in the mini studio at the bottom: transpose, tempo, nudge, levels, high-pass, then Open in Studio."],
   ["Build it", "⏎ expands a card; Open in Studio lays the pair out conformed and lined up. Nudge, transpose, trim or extend, fade, high-pass the bed, add a second vocal from ＋ Add, then Render ▾ a WAV, stems or an FL Studio session."],
@@ -22,7 +34,7 @@ const GLOSSARY = [
   ["98.6% (the big number)", "That percentile: the pair beats 98.6% of the pairs scored in this library."],
   ["→ 8A · bed +2 st", "Where the mashup lands (the vocal's key) and the bed's transpose to get there; same key, relative and ±1 step need none."],
   ["Δ +1.5% · ½×", "How far the bed is stretched to the vocal's tempo, and whether it plays at half or double time."],
-  ["VOI · HARM · RHY · ENGY", "The expanded card's meters: real singing in the vocal section, the measured harmonic fit, rhythm agreement and energy match. Hatched means unmeasured — Score library fills it."],
+  ["Scores ▸ Vocal · Harmony · Rhythm · Energy", "The expanded card's folded meters: real singing in the vocal section, the measured harmonic fit, rhythm agreement and energy match. Hatched means unmeasured — Score library fills it."],
   ["♪ 92% at bed +2 st", "The measured harmony: the two sections' notes compared at every transposition. ? means another shift fits almost as well."],
   ["DO / WATCH", "The recipe: what building the pair takes (stretch, transpose, nudge, loop, level, high-pass), and what the numbers cannot promise."],
   ["Effort: Free / Light / Heavy", "How much stretching, transposing and grid uncertainty building the pair costs."],
@@ -42,7 +54,7 @@ const KEYS = [
   ["Discover", "⏎ search (or paste a link) · ↓ into the results · ↑↓ move · x shortlist · ⏎ preview a track, open a set or artist · / back to the search"],
   ["Mixes › Match", "click a vocal, then the bed it went over · esc cancel the pick · ctrl/⌘+Z undo the last move"],
   ["Sets", "←/→ select a slot · alt+←/→ move it · t preview the transition · g insert a gap after · del remove (Undo on the toast) · esc deselect · flow graph: drag an energy point, shift-click adds, double-click removes"],
-  ["Pair dock", "↑↓ move · ←→ step through the two songs' other section pairings (the ‹ ● ○ › dots) · space loop · 1–5 rate and move on (again to clear) · ⏎ expand the card · double-click open in Studio · V/B solo vocal/bed · h hide · a add to set · c compare the two tracks in Analysis"],
+  ["Pair dock", "↑↓ move · ←→ step through the two songs' other section pairings (the ‹ ● ○ › dots) · space loop · 1–5 rate and move on (again to clear) · q–u tag why (8 s after a rating) · ⏎ expand the card · double-click open in Studio · V/B solo vocal/bed · h hide · a add to set · c compare the two tracks in Analysis"],
   ["Studio", "space play · ←/→ nudge the selected lane a beat (shift: a bar) · m mute · s solo · ⏎ next pair · del remove the lane · L loop · [ ] timing options · 1–6 jump · ctrl/⌘+Z undo · shift+ctrl/⌘+Z redo · drag a clip (alt: off the grid) · drag an edge to trim or extend · alt+click a beat line sets bar 1"],
   ["Everywhere", "⌘K / ctrl+K command palette (↑↓ move · ⏎ open · esc close) · / focus search · space play/pause the player bar · esc back one layer · ? this help"],
   ["Player bar", "click or drag the strip to seek · ←/→ nudge 5 s (shift 15 s) · Home to the start"],
@@ -63,17 +75,27 @@ export function HelpPanel({ onClose }) {
           <button className="head-btn" onClick={onClose}>esc</button>
         </div>
         <h3>Your first mashup</h3>
-        <ol className="help-steps">
-          {STEPS.map(([t, d]) => <li key={t}><b>{t}.</b> {d}</li>)}
+        <ol className="help-steps help-quick">
+          {QUICK.map(([t, d]) => <li key={t}><b>{t}.</b> {d}</li>)}
         </ol>
-        <h3>Reading a pair</h3>
-        <dl className="help-glossary">
-          {GLOSSARY.map(([t, d]) => [<dt key={`${t}t`}>{t}</dt>, <dd key={`${t}d`}>{d}</dd>])}
-        </dl>
-        <h3>Keys</h3>
-        <dl className="help-glossary">
-          {KEYS.map(([t, d]) => [<dt key={`${t}t`}>{t}</dt>, <dd key={`${t}d`} className="mono">{d}</dd>])}
-        </dl>
+        <details className="help-more">
+          <summary><h3>The whole walkthrough</h3></summary>
+          <ol className="help-steps">
+            {STEPS.map(([t, d]) => <li key={t}><b>{t}.</b> {d}</li>)}
+          </ol>
+        </details>
+        <details className="help-more">
+          <summary><h3>Reading a pair</h3></summary>
+          <dl className="help-glossary">
+            {GLOSSARY.map(([t, d]) => [<dt key={`${t}t`}>{t}</dt>, <dd key={`${t}d`}>{d}</dd>])}
+          </dl>
+        </details>
+        <details className="help-more">
+          <summary><h3>Keys</h3></summary>
+          <dl className="help-glossary">
+            {KEYS.map(([t, d]) => [<dt key={`${t}t`}>{t}</dt>, <dd key={`${t}d`} className="mono">{d}</dd>])}
+          </dl>
+        </details>
       </div>
     </div>
   );

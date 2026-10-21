@@ -409,6 +409,8 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
     (analysis/registry.py) cached by the audio's content hash: a stem whose
     bytes, group versions and parameters are unchanged is re-projected from the
     cache without being decoded. The row written is the same either way."""
+    from analysis.threads import cap_analysis_threads
+    cap_analysis_threads()          # analysis/threads.py: workers × threads ≤ cores
     from analysis.analyze import analyze_file
     from analysis.cache import StepCache, cached, content_hash
     from analysis.project import (core_from_essentia, essentia_core_complete,

@@ -12,11 +12,12 @@ Combo types scored:
 """
 import heapq
 import itertools
+import threading
 import math
 import logging
 import numpy as np
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Iterable
 
 # database.models never imports matcher, so this is safe at module scope — and
 # it has to be, so the library-stats cache can read features without threading a
@@ -914,9 +915,48 @@ def _record_harmony_threshold(db) -> None:
                                       "quantile": HARMONY_UNSURE_QUANTILE}, db_path=db)
 
 
+PROVISIONAL_SCORER = "provisional"
+# One scoring run at a time: a track's incremental run (after its quick tier
+# and again after its stems) must not interleave with a library re-score.
+_SCORE_LOCK = threading.RLock()
+
+
+def _provisional_stand_ins(full: list, vocals: list, inst: list):
+    """A track with a full-mix analysis and no stem rows yet (the quick tier
+    ran, Demucs has not) stands its mix in for both stems, flagged, so it
+    pairs minutes after download instead of after separation. Its rows are
+    written with the provisional scorer and replaced when the stems land."""
+    stemmed = {f["song_id"] for f in vocals} | {f["song_id"] for f in inst}
+    v_add, i_add = [], []
+    for f in full:
+        if f["song_id"] in stemmed:
+            continue
+        base = {**f, "provisional": True, "stem_quality": None}
+        v_add.append({**base, "stem_type": "vocals"})
+        i_add.append({**base, "stem_type": "instrumental"})
+    return v_add, i_add
+
+
+def score_song_pairs(song_id: int, db_path=None, progress=None) -> dict:
+    """Score one track against the library, both roles, and replace its
+    vocal-over-instrumental rows — what the pipeline calls after the quick
+    tier (provisional pairs) and after the final analysis (real ones)."""
+    return score_all_pairs(db_path=db_path, song_ids=[song_id], progress=progress)
+
+
 def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                     key_min_score: Optional[float] = None,
-                    scorer: str = "auto", progress=None) -> dict:
+                    scorer: str = "auto", progress=None,
+                    song_ids: Optional[Iterable[int]] = None) -> dict:
+    with _SCORE_LOCK:
+        return _score_all_pairs(db_path, bpm_max_diff, key_min_score, scorer,
+                                progress, song_ids)
+
+
+def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
+                     key_min_score: Optional[float] = None,
+                     scorer: str = "auto", progress=None,
+                     song_ids: Optional[Iterable[int]] = None) -> dict:
     """
     Score every unique cross-song pair that passes the pre-filter.
     Handles two combo types:
@@ -943,6 +983,12 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
 
     The candidates table is cleared first so the result reflects exactly the
     current features and thresholds — no stale pairs from a looser prior run.
+
+    song_ids: incremental mode. Only pairs with one of these tracks on either
+    side are scored, and only their vocal-over-instrumental rows (forced rows
+    aside) are replaced; the rest of the table, the instrumental pass and
+    `last_score` are left alone, so the dock still says when a full re-score
+    is due.
 
     Returns { 'vocal_over_instrumental': [...], 'instrumental_over_instrumental': [...] }
     Each list is sorted by total score descending.
@@ -1001,12 +1047,20 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     active_scorer = "model" if use_model else "heuristic"
     model_version = bundle.get("version") if use_model else None
 
-    clear_candidates(db_path=db)
+    only = {int(x) for x in song_ids} if song_ids is not None else None
+    if only is None:
+        clear_candidates(db_path=db)
+    else:
+        from database.models import delete_song_candidates
+        delete_song_candidates(only, keep_scorers=(FORCED_SCORER,), db_path=db)
 
     vocals      = get_all_features(stem_type="vocals",        db_path=db)
     inst        = get_all_features(stem_type="instrumental",  db_path=db)
     full        = get_all_features(stem_type="full",          db_path=db)
     full_by_song = {f["song_id"]: f for f in full}
+    v_add, i_add = _provisional_stand_ins(full, vocals, inst)
+    vocals += v_add
+    inst += i_add
 
     # Sections feed two things: the model's pair features, and the winning
     # section pair stored on every vocal-over-instrumental row (T3.3). Read once
@@ -1022,7 +1076,7 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     # energy are relative measures, and recomputing them per pair would re-read
     # every features row for every candidate. Refreshed here so a re-analysis
     # since the last run is picked up.
-    lib_stats = get_library_stats(db_path=db, refresh=True)
+    lib_stats = get_library_stats(db_path=db, refresh=only is None)
 
     # Tempo compatibility is scored off the full-mix BPM (vocal-stem and even
     # instrumental-stem tempo tracking can drift octave/onset-detection errors
@@ -1034,6 +1088,10 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     code_index, key_table, shift_table, shift_known = _camelot_index([vocals, inst])
     v_block = _prepare_block(vocals, code_index, lib_stats)
     i_block = _prepare_block(inst, code_index, lib_stats)
+    if only is not None:
+        def _part(feats, inside):
+            return [f for f in feats if (f["song_id"] in only) == inside]
+        v_in, v_out, i_in = _part(vocals, True), _part(vocals, False), _part(inst, True)
 
     results = {
         "vocal_over_instrumental":        [],
@@ -1138,6 +1196,9 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             # One row per section pair (E.3): "chorus over drop" and "verse over
             # breakdown" are different ideas about the same two records.
             section_pairs = _section_pairs(top, bed) if with_sections else []
+            pair_scorer = (PROVISIONAL_SCORER
+                           if top.get("provisional") or bed.get("provisional")
+                           else row_scorer)
             for sp in (section_pairs or [None]):
                 s = dict(scores)
                 if sp is not None:
@@ -1153,7 +1214,7 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                 # final ranking has always resolved ties.
                 item = (total, next(seq),
                         candidate_row(top, bed, s, combo_type,
-                                      row_scorer, row_version, sp),
+                                      pair_scorer, row_version, sp),
                         _build_row(top, bed, s, sp))
                 if len(heap) < max_rows:
                     heapq.heappush(heap, item)
@@ -1172,10 +1233,22 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     # bpm_max_diff from the caller always wins.
     model_bpm_gate = (max(bpm_max, BPM_MAX_DIFF_MODEL)
                       if use_model and bpm_max_diff is None else None)
-    voi = _run(v_block, i_block,
-               key_gate=None if use_model else key_min, upper_triangle=False,
-               bpm_gate=model_bpm_gate, weights=VOCAL_WEIGHTS,
-               on_block=_report(0, 30, "Scoring vocal over instrumental"))
+    if only is None:
+        voi = _run(v_block, i_block,
+                   key_gate=None if use_model else key_min, upper_triangle=False,
+                   bpm_gate=model_bpm_gate, weights=VOCAL_WEIGHTS,
+                   on_block=_report(0, 30, "Scoring vocal over instrumental"))
+    else:
+        # This track on top of everything, then everything else on top of it.
+        voi = []
+        for tops, beds in ((v_in, inst), (v_out, i_in)):
+            if tops and beds:
+                voi += _run(_prepare_block(tops, code_index, lib_stats),
+                            _prepare_block(beds, code_index, lib_stats),
+                            key_gate=None if use_model else key_min,
+                            upper_triangle=False, bpm_gate=model_bpm_gate,
+                            weights=VOCAL_WEIGHTS,
+                            on_block=_report(0, 30, "Scoring this track"))
     if use_model:
         _apply_model_scores(voi, bundle, _sections, lib_stats,
                             _report(30, 10, "Applying the learned model"),
@@ -1196,10 +1269,11 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     # Reuse vocal/inst columns: vocal_* = the "top" layer, inst_* = the "bed".
     # No section pair: the top layer here is an instrumental, and the vocal-side
     # filter (vocal_presence ≥ 0.25) would be asking the wrong question of it.
-    _emit(_run(i_block, i_block, key_gate=key_min, upper_triangle=True,
-               weights=MATCH_WEIGHTS,
-               on_block=_report(85, 5, "Scoring instrumental over instrumental")),
-          "instrumental_over_instrumental", "heuristic", None, MATCH_WEIGHTS)
+    if only is None:
+        _emit(_run(i_block, i_block, key_gate=key_min, upper_triangle=True,
+                   weights=MATCH_WEIGHTS,
+                   on_block=_report(85, 5, "Scoring instrumental over instrumental")),
+              "instrumental_over_instrumental", "heuristic", None, MATCH_WEIGHTS)
 
     # Drain the heaps in ranked order. Sorting on (-total, seq) rather than
     # total alone keeps ties in emission order, which is how this function has
@@ -1224,11 +1298,86 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
              + f"  |  scorer={active_scorer}"
              + (f" ({model_version})" if model_version else "")
              + f"  filter: bpm_max_diff={bpm_max} key_min_score={key_min}")
-    from database.models import set_pref
-    set_pref("last_score", {"started_at": run_started, "scorer": active_scorer},
-             db_path=db)
-    _record_harmony_threshold(db)
+    if only is None:
+        from database.models import set_pref
+        set_pref("last_score", {"started_at": run_started, "scorer": active_scorer},
+                 db_path=db)
+        _record_harmony_threshold(db)
     return {**results, "_scorer": active_scorer, "_model_version": model_version}
+
+
+FORCED_SCORER = "forced"
+
+
+def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict]:
+    """Score one vocal-over-bed pair the library run left out — outside the
+    tempo or key gate, two cuts of one record — on demand ("Score this pair
+    anyway"). The same functions as score_all_pairs: composite_score, the
+    section search, measured harmony, the section fit. Rows are stored with
+    scorer='forced' so the card can say the gates would have dropped it, and
+    the next Score library run clears them like any other row.
+
+    Returns the stored rows best-first; [] when either side has no analysed
+    stem (nothing to score)."""
+    from config import current_scoring_settings, current_section_weights
+    from matcher.patterns import current_patterns
+    from database.models import bulk_upsert_candidates, candidate_row, get_sections
+    from matcher.sections import top_section_pairs, usable_sections
+
+    # Resolved per call, never the DB_PATH bound when this module was imported
+    # (readme §7: workers call without a path).
+    import database.models as _models
+    db = db_path if db_path is not None else _models.DB_PATH
+    cfg = current_scoring_settings()
+    weights = cfg["match_weights_vocal"]
+    effort_weight = cfg["effort_weight"]
+    full_by_song = {f["song_id"]: f for f in get_all_features(stem_type="full", db_path=db)
+                    if f["song_id"] in (vocal_song_id, inst_song_id)}
+    top = next((f for f in get_all_features(stem_type="vocals", db_path=db)
+                if f["song_id"] == vocal_song_id), None)
+    bed = next((f for f in get_all_features(stem_type="instrumental", db_path=db)
+                if f["song_id"] == inst_song_id), None)
+    if top is None or bed is None:
+        return []
+    top, bed = _with_full_bpm(top, full_by_song), _with_full_bpm(bed, full_by_song)
+    stats = get_library_stats(db_path=db)
+    base = composite_score(top, bed, weights=weights, stats=stats,
+                           effort_weight=effort_weight,
+                           combo_type="vocal_over_instrumental")
+    cache: Dict[int, list] = {}
+
+    def sections_of(song_id):
+        if song_id not in cache:
+            cache[song_id] = get_sections(song_id, db_path=db)
+        return cache[song_id]
+
+    v_use = usable_sections(sections_of(vocal_song_id), True)
+    i_use = usable_sections(sections_of(inst_song_id), False)
+    stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
+    pairs = (top_section_pairs(v_use, i_use, stretch, prefiltered=True, bpm=top.get("bpm"),
+                               limit=cfg["max_section_pairs"],
+                               weights=current_section_weights(), patterns=current_patterns())
+             if v_use and i_use else [])
+    rows, built = [], []
+    for sp in (pairs or [None]):
+        sc = dict(base)
+        if sp is not None:
+            _apply_measured_harmony(top, bed, sc, sp, sections_of, weights, effort_weight)
+            _apply_section_fit(sc, sp, effort_weight, weights, cfg["section_weight"])
+        rows.append(candidate_row(top, bed, sc, "vocal_over_instrumental",
+                                  FORCED_SCORER, None, sp))
+        built.append(_build_row(top, bed, sc, sp))
+    from database.models import get_conn
+    conn = get_conn(db)
+    try:
+        # A re-force replaces the pair's forced rows rather than piling them up.
+        conn.execute("DELETE FROM mashup_candidates WHERE scorer=? AND vocal_song_id=? "
+                     "AND inst_song_id=?", (FORCED_SCORER, vocal_song_id, inst_song_id))
+        conn.commit()
+    finally:
+        conn.close()
+    bulk_upsert_candidates(rows, db_path=db)
+    return sorted(built, key=lambda r: -(r.get("total") or 0))
 
 
 def _build_row(feat_a: dict, feat_b: dict, scores: dict,

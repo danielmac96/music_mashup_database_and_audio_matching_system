@@ -5,7 +5,7 @@ patience) who runs a goal-weighted list of tasks in Chromium. Every task
 drives the real UI and ends in DOM / network probes. Output: one JSON line
 per persona in results.jsonl.
 """
-import argparse, asyncio, json, os, random, time, urllib.request
+import argparse, asyncio, json, os, random, re, time, urllib.request
 from pathlib import Path
 from playwright.async_api import async_playwright
 
@@ -28,6 +28,17 @@ def api(path):
         return json.loads(r.read())
 
 TRACKS = api("/api/tracks")["tracks"]
+
+
+def compatible(code):
+    """The key and what mixes with it: ±1 hour and the relative (theme.js
+    compatibleKeys)."""
+    m = re.match(r"^(\d{1,2})([AB])$", code or "")
+    if not m:
+        return {code}
+    n, l = int(m.group(1)), m.group(2)
+    w = lambda x: ((x - 1) % 12) + 1
+    return {f"{n}{l}", f"{w(n + 1)}{l}", f"{w(n - 1)}{l}", f"{n}{'B' if l == 'A' else 'A'}"}
 for _t in TRACKS:
     _f = (_t.get("features") or {}).get("full") or {}
     _t["bpm"] = _f.get("bpm"); _t["camelot"] = _f.get("camelot")
@@ -37,7 +48,7 @@ ARCHETYPES = {
   "club_dj":           dict(daws=["rekordbox","Serato","Traktor"], tasks=["pick_track","audition","set_build","set_view","export_cue","search_parse","palette"]),
   "wedding_dj":        dict(daws=["Serato","rekordbox"], tasks=["search_parse","pick_track","audition","keepers","set_build","set_view","export_cue"]),
   "bedroom_beginner":  dict(daws=["GarageBand","FL Studio"], tasks=["first_look","help","pick_track","audition","expand","studio","import_link"]),
-  "ableton_live_pro":  dict(daws=["Ableton Live"], tasks=["pick_track","expand","segments","studio","studio_play","studio_edit","studio_render","detail"]),
+  "ableton_live_pro":  dict(daws=["Ableton Live"], tasks=["pick_track","expand","segments","studio","studio_play","studio_edit","studio_mix","studio_render","detail"]),
   "crate_digger":      dict(daws=["rekordbox","Ableton Live"], tasks=["discover","import_link","palette","search_parse","detail","queue"]),
   "analyst":           dict(daws=["Logic Pro","Ableton Live"], tasks=["analysis","compare","detail","rescore","tuning","pick_track","expand"]),
   "mix_archaeologist": dict(daws=["FL Studio","rekordbox"], tasks=["mix_paste","pick_track","ab_search","rate","queue"]),
@@ -82,6 +93,7 @@ async def scope_to_track(pg, rng):
     await rows.first.wait_for(timeout=8000)
     n = await rows.count()
     idx = rng.randrange(min(n, 18))
+    title = (await rows.nth(idx).locator(".tt-title").inner_text()).strip()
     t0 = time.time()
     await rows.nth(idx).locator(".tt-c").nth(2).click()
     await pg.wait_for_timeout(200)
@@ -91,7 +103,7 @@ async def scope_to_track(pg, rng):
         pass
     await pg.wait_for_timeout(700)
     ms = int((time.time() - t0) * 1000)
-    return idx, ms
+    return idx, ms, title
 
 # ── tasks ─────────────────────────────────────────────────────────────────────
 async def t_layout(pg, P, rng, st):
@@ -116,9 +128,13 @@ async def t_first_look(pg, P, rng, st):
     txt = await pg.evaluate("document.body.innerText")
     cues = [w for w in ["New here", "How it works", "Import", "Score library"] if w in txt]
     notes = []
-    if "Score library" not in txt: notes.append("no visible 'how do I get pairs' cue on first screen (only the ? New here pill)")
+    steps = await pg.locator(".first-steps").count()
+    nxt = await pg.locator(".first-steps li.next").all_inner_texts()
+    if not steps and "Score library" not in txt:
+        notes.append("no visible 'how do I get pairs' cue on first screen (only the ? New here pill)")
     has_empty_hint = await pg.locator(".pd-msg").count()
-    return dict(ok=True, notes=notes, data=dict(cues=cues, dock_msgs=has_empty_hint))
+    return dict(ok=True, notes=notes, data=dict(cues=cues, dock_msgs=has_empty_hint,
+                first_steps=bool(steps), next_step=(nxt or [""])[0][:120]))
 
 async def t_help(pg, P, rng, st):
     t0 = time.time()
@@ -135,17 +151,29 @@ async def t_help(pg, P, rng, st):
 
 async def t_pick_track(pg, P, rng, st):
     await library(pg)
-    idx, ms = await scope_to_track(pg, rng)
+    idx, ms, title = await scope_to_track(pg, rng)
     cards = await pg.locator(".pair-card").count()
     scope = await pg.locator(".pd-scopetext").inner_text() if await pg.locator(".pd-scopetext").count() else ""
     head = await pg.locator(".pd-head, .pd-top").first.inner_text()
     tiers = await pg.locator(".pd-tier").all_inner_texts()
     pct = await pg.locator(".pair-card").first.inner_text() if cards else ""
     notes = []
+    # Does the dock open on the side the table's Best pair number is from?
+    # The top card's percentile should be that number (both are percentiles).
+    t = next((x for x in TRACKS if x["title"] == title), None)
+    table_best = round(100 * t["mash"]["best_pct"], 1) if t and (t.get("mash") or {}).get("best_pct") is not None else None
+    # The best card's percentile, not the first card's: tier grouping puts a
+    # Strong card above a Good one with a higher percentile (an unsure
+    # transpose drops a tier), so the first card need not be the best.
+    pcts = await pg.locator(".pair-card .pc-pct").all_inner_texts()
+    vals = [float(x.strip().rstrip("%")) for x in pcts if x.strip().rstrip("%").replace(".", "", 1).isdigit()]
+    card_best = max(vals) if vals else None
+    side_match = None if table_best is None or card_best is None else abs(table_best - card_best) <= 1.0
+    if side_match is False: notes.append(f"table Best pair {table_best:.0f} but the dock opened on a side whose top pair is {card_best:.0f}")
     if cards == 0: notes.append("selected track shows no pairs")
     if ms > P["patience_ms"]: notes.append(f"dock took {ms} ms to scope")
     tiers_c = [t.replace("\n", " ") for t in tiers]
-    return dict(ok=cards > 0, ms=ms, notes=notes, data=dict(row=idx, cards=cards, scope=scope[:80], tiers=tiers_c, first=pct[:160]))
+    return dict(ok=cards > 0, ms=ms, notes=notes, data=dict(row=idx, side_match=side_match, table_best=table_best, card_best=card_best, cards=cards, scope=scope[:80], tiers=tiers_c, first=pct[:160]))
 
 async def t_audition(pg, P, rng, st):
     await first_card(pg)
@@ -166,6 +194,7 @@ async def t_audition(pg, P, rng, st):
     return dict(ok=started is not None, ms=started, notes=notes, data=dict(transport=(tr or {}).get("txt")))
 
 async def t_expand(pg, P, rng, st):
+    await library(pg)
     c = await first_card(pg)
     await c.locator(".pc-name").first.click()
     await pg.wait_for_timeout(600)
@@ -177,17 +206,24 @@ async def t_expand(pg, P, rng, st):
     do = await ex.locator(".pcx-do").all_inner_texts()
     vp = P["viewport"][1]
     notes = []
-    if box and box["height"] > vp * 0.6: notes.append(f"expanded card is {int(box['height'])}px tall — {int(100*box['height']/vp)}% of the window")
+    if box and box["height"] > vp * 0.4: notes.append(f"expanded card is {int(box['height'])}px tall — {int(100*box['height']/vp)}% of the window")
     jargon = [w for w in ["VOI", "HARM", "RHY", "ENGY", "scope_rank", "percentile", "Camelot estimate", "LBL", "DUR"] if w in txt]
     if len(jargon) >= 3: notes.append(f"dense abbreviations: {jargon}")
     has_watch = "WATCH" in txt
     return dict(ok=True, notes=notes, data=dict(height=int(box["height"]) if box else None, do=do, watch=has_watch, words=len(txt.split()), jargon=jargon))
 
 async def t_rate(pg, P, rng, st):
-    c = await first_card(pg)
-    stars = c.locator("button", has_text="☆")
-    if await stars.count() < 4:
-        stars = c.locator("button", has_text="★")
+    await first_card(pg)
+    # An unrated card: personas share one database, and clicking the star a
+    # card already has clears it (by design) — that is not a failed rating.
+    cards = pg.locator(".pair-card")
+    c = None
+    for i in range(min(await cards.count(), 30)):
+        if not await cards.nth(i).locator(".stars.interactive button.on").count():
+            c = cards.nth(i); break
+    if c is None:
+        return dict(ok=True, notes=[], data=dict(skipped="every visible pair already rated"))
+    stars = c.locator(".stars.interactive button")
     posts = []
     pg.on("response", lambda r: posts.append(r.status) if "/feedback" in r.url and r.request.method in ("POST","PUT") else None)
     n = rng.choice([1, 2, 4, 5])
@@ -242,7 +278,8 @@ async def t_keepers(pg, P, rng, st):
     n = await pg.locator(".pair-card").count()
     msg = await pg.locator(".pd-msg").all_inner_texts()
     await pg.locator(".pd-keepers").click()
-    return dict(ok=True, notes=[] if n else [f"Keepers empty: {msg[:1]}"], data=dict(cards=n))
+    await pg.wait_for_timeout(1200)     # let the list reload before the next task acts on it
+    return dict(ok=True, notes=[] if n else [f"Keepers empty: {msg[:1]}"], data=dict(cards=n, msg=msg[:1]))
 
 async def t_ab_search(pg, P, rng, st):
     await library(pg)
@@ -253,16 +290,42 @@ async def t_ab_search(pg, P, rng, st):
     await pg.wait_for_timeout(1500)
     n = await pg.locator(".pair-card").count()
     msg = " ".join(await pg.locator(".pd-msg").all_inner_texts())
+    forced = None
+    if not n:
+        btn = pg.locator(".pd-msg button", has_text="anyway")
+        if await btn.count():
+            await btn.first.click()
+            await pg.wait_for_timeout(3000)
+            n = await pg.locator(".pair-card").count()
+            forced = n
     await box.fill(""); await box.press("Enter")
-    notes = [] if n else [f"A + B found nothing: '{msg[:120]}'"]
-    return dict(ok=True, notes=notes, data=dict(found=n, a=a["bpm"] if "bpm" in a else None, why=msg[:160]))
+    notes = []
+    if not n:
+        notes.append(f"A + B found nothing{'' if forced is None else ' even after Score anyway'}: '{msg[:120]}'")
+    return dict(ok=n > 0, notes=notes, data=dict(found=n, forced=forced, why=msg[:160]))
+
+async def _dblclick_why(pg, loc):
+    """Double-click, and when it cannot, say what Playwright and the DOM saw:
+    which element sits on top of the card's name, and the actionability log."""
+    try:
+        await loc.dblclick(timeout=8000)
+        return None
+    except Exception as e:  # noqa: BLE001
+        log = [l.strip() for l in str(e).splitlines() if l.strip()][-4:]
+        over = await loc.evaluate("""el => { const r = el.getBoundingClientRect();
+            const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+            return {box: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)],
+                    on_top: top ? (top.className || top.tagName) + '' : null,
+                    connected: el.isConnected}; }""")
+        return f"dblclick blocked: {over} | {' / '.join(log)[:300]}"
 
 async def t_studio(pg, P, rng, st):
     await library(pg)
     c = await first_card(pg)
     dbl_ok = True
+    why = None
     if await pg.locator(".pair-card.expanded").count():
-        await pg.locator(".pair-card.expanded .pc-name").first.dblclick()
+        why = await _dblclick_why(pg, pg.locator(".pair-card.expanded .pc-name").first)
         await pg.wait_for_timeout(1200)
         dbl_ok = await pg.locator(".studio-screen").count() > 0
     t0 = time.time()
@@ -270,7 +333,15 @@ async def t_studio(pg, P, rng, st):
         if await pg.locator(".pair-card.expanded").count():
             await pg.locator(".pair-card.expanded").first.locator("button", has_text="Open in Studio").click()
         else:
-            await pg.locator(".pair-card .pc-name").first.dblclick()
+            why = await _dblclick_why(pg, pg.locator(".pair-card .pc-name").first) or why
+            if why and not await pg.locator(".studio-screen").count():
+                # Keep going the keyboard way, so one blocked click does not
+                # cost every later Studio task.
+                await pg.locator(".pair-card").first.click()
+                await pg.keyboard.press("Enter")
+                await pg.wait_for_timeout(600)
+                if await pg.locator(".pair-card.expanded").count():
+                    await pg.locator(".pair-card.expanded").first.locator("button", has_text="Open in Studio").click()
     await pg.locator(".studio-screen").wait_for(timeout=8000)
     ready = None
     for _ in range(60):
@@ -283,6 +354,7 @@ async def t_studio(pg, P, rng, st):
     lanes = await pg.locator(".lh-title").all_inner_texts()
     pills = await pg.locator(".timing-pills button, .timing-pills .tp-n").count()
     notes = [] if dbl_ok else ["double-click on an expanded card collapsed it instead of opening Studio"]
+    if why: notes.append(why)
     if ready is None: notes.append("Studio lanes never drew")
     elif ready > P["patience_ms"]: notes.append(f"Studio took {ready} ms to draw its lanes")
     if errs: notes.append(f"Studio errors: {errs[:2]}")
@@ -315,20 +387,30 @@ async def t_studio_edit(pg, P, rng, st):
     await pg.wait_for_timeout(300)
     chips2 = await pg.locator(".align-chip").all_inner_texts()
     panel = await pg.locator(".st-group, .studio-body").first.inner_text() if await pg.locator(".st-group, .studio-body").count() else ""
-    has_eq = any(w in panel for w in ["EQ", "Reverb", "Delay", "Compress", "Sidechain"])
+    has_eq = await pg.locator('.sp-card input[aria-label="Duck"]').count() > 0 or \
+        any(w in panel for w in ["EQ", "Reverb", "Delay", "Compress", "Sidechain"])
     notes = []
     if not has_eq: notes.append("no per-lane EQ / reverb / delay / sidechain — only HP/LP cut and fades")
     notes.append("no automation lanes, no warp markers, single clip per lane")
     return dict(ok=True, notes=notes, data=dict(after_nudge=chips1, after_undo=chips2))
 
+async def _render_settled(pg, secs=60):
+    """Wait out a mixdown still rendering from an earlier task."""
+    for _ in range(secs * 2):
+        busy = await pg.locator(".studio-screen .badge.running, .studio-screen .badge.queued").count()
+        if not busy: return
+        await pg.wait_for_timeout(500)
+
 async def t_studio_render(pg, P, rng, st):
     await ensure_studio(pg, P, rng, st)
+    await _render_settled(pg)
+    old = set(await pg.evaluate("() => [...document.querySelectorAll('a[href*=\"mixdown\"], a[download]')].map(a=>a.href)"))
     await pg.locator("button", has_text="Render ▾").click()
     t0 = time.time()
     await pg.locator("button", has_text="WAV mixdown").click()
     link = None
     for _ in range(120):
-        hrefs = await pg.evaluate("() => [...document.querySelectorAll('a[href*=\"mixdown\"], a[download]')].map(a=>a.href)")
+        hrefs = [h for h in await pg.evaluate("() => [...document.querySelectorAll('a[href*=\"mixdown\"], a[download]')].map(a=>a.href)") if h not in old]
         toasts = await pg.evaluate("() => [...document.querySelectorAll('.toast, [class*=toast]')].map(t=>t.innerText).join(' | ')")
         if hrefs: link = hrefs[0]; break
         if "fail" in toasts.lower(): break
@@ -336,14 +418,23 @@ async def t_studio_render(pg, P, rng, st):
     ms = int((time.time()-t0)*1000)
     notes = [] if link else [f"no mixdown link after {ms} ms ({toasts[:120]})"]
     if link and ms > 15000: notes.append(f"mixdown took {ms} ms")
-    return dict(ok=bool(link), ms=ms, notes=notes, data=dict(link=link))
+    await pg.wait_for_timeout(300)
+    body = await pg.evaluate("() => document.body.innerText")
+    import re as _re
+    lufs = _re.search(r"(-?\d+\.\d) LUFS", body)
+    if link and not lufs: notes.append("no LUFS readout after the render")
+    hear = await pg.locator("button", has_text="hear export").count()
+    if link and not hear: notes.append("no hear-export button")
+    return dict(ok=bool(link), ms=ms, notes=notes, data=dict(link=link, lufs=float(lufs.group(1)) if lufs else None, hear=bool(hear)))
 
 async def t_fl_session(pg, P, rng, st):
     await ensure_studio(pg, P, rng, st)
     await pg.locator("button", has_text="Render ▾").click()
     t0 = time.time()
+    await _render_settled(pg)
     try:
-        async with pg.expect_download(timeout=90000) as dl:
+        async with pg.expect_download(timeout=90000,
+                                      predicate=lambda d: d.suggested_filename.endswith(".zip")) as dl:
             await pg.locator("button", has_text="FL session").first.click()
         d = await dl.value
         ms = int((time.time()-t0)*1000)
@@ -355,6 +446,85 @@ async def t_fl_session(pg, P, rng, st):
         return dict(ok=True, ms=ms, notes=notes, data=dict(files=names[:12]))
     except Exception as e:
         return dict(ok=False, ms=int((time.time()-t0)*1000), notes=[f"FL session failed: {str(e)[:100]}"])
+
+async def _knob_val(card, label):
+    k = card.locator(".knob", has=card.page.locator(".knob-label", has_text=label)).first
+    return (await k.locator(".knob-value").inner_text()).strip()
+
+async def _set_knob(pg, card, label, value):
+    rng_input = card.locator(f'input[type=range][aria-label="{label}"]').first
+    await rng_input.evaluate("""(el, v) => {
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        set.call(el, String(v)); el.dispatchEvent(new Event('input', { bubbles: true }));
+    }""", value)
+
+async def t_studio_mix(pg, P, rng, st):
+    """Phase 7: EQ and duck on the bed, kept by undo and snapshots, sent to the render."""
+    await ensure_studio(pg, P, rng, st)
+    cards = pg.locator(".sp-card")
+    if await cards.count() < 2:
+        return dict(ok=False, notes=["fewer than two lane cards"])
+    bed = None
+    for i in range(await cards.count()):
+        c = cards.nth(i)
+        if await c.locator('input[aria-label="Duck"]:not([disabled])').count():
+            bed = c; break
+    if bed is None:
+        return dict(ok=False, notes=["no lane offers Duck"])
+    notes = []
+    vocal_locked = await pg.locator('.sp-card input[aria-label="Duck"][disabled]').count() > 0
+    if not vocal_locked: notes.append("the vocal lane can be ducked")
+    await bed.click(position={"x": 5, "y": 5})
+    await _set_knob(pg, bed, "Duck", 6)
+    await _set_knob(pg, bed, "Low", -6)
+    await pg.wait_for_timeout(1500)
+    duck, low = await _knob_val(bed, "Duck"), await _knob_val(bed, "Low")
+    if "6" not in duck or "−6" not in low.replace("-", "−"): notes.append(f"knobs did not take: duck={duck} low={low}")
+    # Snapshot, change, load: the snapshot brings EQ and duck back.
+    await pg.locator("button", has_text="Save snapshot").click()
+    await pg.wait_for_timeout(400)
+    await _set_knob(pg, bed, "Duck", 12)
+    await pg.wait_for_timeout(1500)
+    await pg.locator("button", has_text="Snapshots").click()
+    await pg.locator(".snap-load").first.click()
+    await pg.wait_for_timeout(1500)
+    cards = pg.locator(".sp-card")
+    bed2 = None
+    for i in range(await cards.count()):
+        c = cards.nth(i)
+        if await c.locator('input[aria-label="Duck"]:not([disabled])').count():
+            bed2 = c; break
+    snap_duck = await _knob_val(bed2, "Duck") if bed2 else None
+    snap_low = await _knob_val(bed2, "Low") if bed2 else None
+    if snap_duck is None or "−6" not in snap_duck: notes.append(f"snapshot did not restore duck ({snap_duck})")
+    if snap_low is None or "6" not in snap_low: notes.append(f"snapshot did not restore EQ ({snap_low})")
+    # Undo takes the last change back.
+    await _set_knob(pg, bed2, "Duck", 0)
+    await pg.wait_for_timeout(1500)
+    await pg.evaluate("() => document.activeElement && document.activeElement.blur()")
+    await pg.keyboard.press("Control+z")
+    await pg.wait_for_timeout(800)
+    undo_duck = await _knob_val(pg.locator(".sp-card", has=pg.locator('input[aria-label="Duck"]:not([disabled])')).first, "Duck")
+    if "6" not in undo_duck: notes.append(f"undo did not bring the duck back ({undo_duck})")
+    # The render carries them.
+    sent = {}
+    def grab(req):
+        if req.url.endswith("/api/studio/mixdown") and req.method == "POST":
+            try: sent.update(json.loads(req.post_data or "{}"))
+            except Exception: pass
+    pg.on("request", grab)
+    await pg.locator("button", has_text="Render ▾").click()
+    await pg.locator("button", has_text="WAV mixdown").click()
+    await pg.wait_for_timeout(1500)
+    await _render_settled(pg)
+    clips = sent.get("clips") or []
+    ducked = [c for c in clips if c.get("duck_db")]
+    eqd = [c for c in clips if c.get("eq_low")]
+    if not ducked: notes.append("the mixdown request carried no duck_db")
+    if not eqd: notes.append("the mixdown request carried no EQ")
+    await pg.keyboard.press("Escape")
+    return dict(ok=not notes, notes=notes, data=dict(duck=duck, low=low, snap=[snap_duck, snap_low],
+                                                     undo=undo_duck, clips=len(clips), vocal_locked=vocal_locked))
 
 async def t_set_build(pg, P, rng, st):
     await library(pg)
@@ -382,8 +552,33 @@ async def t_set_view(pg, P, rng, st):
     empty = await pg.locator(".ss-empty").all_inner_texts()
     notes = []
     if slots == 0: notes.append(f"set empty: {empty[:1]}")
-    rough = [f for f in fits if "!" in f]
-    return dict(ok=slots > 0, notes=notes, data=dict(slots=slots, fits=fits[:12], head=head[:200]))
+    # The set as the API sees it: its clock, its repeats, its suggestions.
+    sets = api("/api/sets").get("sets", [])
+    sid = max((x for x in sets), key=lambda x: x.get("updated_at") or "", default={}).get("id")
+    clock = repeats_seen = repeats_flagged = relaxed_bad = None
+    if sid:
+        d = api(f"/api/sets/{sid}")
+        items = [i for i in d.get("items", []) if (i.get("kind") or "pair") == "pair"]
+        f = d.get("flow") or {}
+        clock = round((f.get("total_secs") or 0) / max(1, len(items)), 1)
+        repeats_seen = repeats_flagged = 0
+        for k in range(2, len(items)):
+            back = {items[k - 2].get("vocal_song_id"), items[k - 2].get("inst_song_id")}
+            if {items[k].get("vocal_song_id"), items[k].get("inst_song_id")} & back:
+                repeats_seen += 1
+                t = (f.get("transitions") or [])[k - 1] if len(f.get("transitions") or []) >= k else {}
+                repeats_flagged += "repeat" in (t.get("violations") or [])
+        nxt = api(f"/api/sets/{sid}/next?limit=6").get("candidates", [])
+        relaxed_bad = sum(1 for c in nxt if not c.get("next_relaxed")
+                          and re.search(r"(\d+(?:\.\d+)?)% tempo", c.get("next_why") or "")
+                          and float(re.search(r"(\d+(?:\.\d+)?)% tempo", c["next_why"]).group(1)) > 4.0)
+        if clock is not None and clock < 40: notes.append(f"set clock only {clock}s per mashup")
+        if repeats_seen and repeats_flagged < repeats_seen:
+            notes.append(f"{repeats_seen - repeats_flagged} repeated records not flagged")
+        if relaxed_bad: notes.append(f"{relaxed_bad} 'easy' next moves outside ±4% tempo")
+    return dict(ok=slots > 0, notes=notes, data=dict(slots=slots, fits=fits[:12], head=head[:200],
+                secs_per_mashup=clock, repeats_seen=repeats_seen, repeats_flagged=repeats_flagged,
+                next_outside_rule=relaxed_bad))
 
 async def t_set_autoorder(pg, P, rng, st):
     await go(pg, "Sets")
@@ -394,19 +589,29 @@ async def t_set_autoorder(pg, P, rng, st):
     return dict(ok=True, data=dict(fits=fits[:12]))
 
 async def t_set_studio(pg, P, rng, st):
+    """Phase 8: a set opens on two A/B deck rows, however many pairs it has."""
     await go(pg, "Sets")
     b = pg.locator(".ss-toolbar button, .ss-head button", has_text="◫ Studio")
     if not await b.count(): return dict(ok=False, notes=["no Studio button on Sets"])
+    slots = await pg.locator(".ss-dot").count() + 1
     t0 = time.time()
     await b.first.click()
     try:
         await pg.locator(".studio-screen").wait_for(timeout=8000)
-        lanes = 0
+        rows = 0
         for _ in range(40):
-            lanes = await pg.locator(".lh-title").count()
-            if lanes: break
+            rows = await pg.locator(".studio-lanehead").count()
+            if rows: break
             await pg.wait_for_timeout(250)
-        return dict(ok=lanes > 0, ms=int((time.time()-t0)*1000), notes=[] if lanes else ["set opened Studio with no lanes"], data=dict(lanes=lanes))
+        await pg.wait_for_timeout(2500)
+        rows = await pg.locator(".studio-lanehead").count()
+        decks = await pg.locator(".studio-lanehead.deckhead").count()
+        loaded = await pg.locator(".deckhead .lh-meta[title*='decoded']").all_inner_texts()
+        notes = [] if rows else ["set opened Studio with no lanes"]
+        if decks and rows > 2: notes.append(f"{rows} rows for a decked set")
+        if not decks and rows > 2: notes.append(f"set opened as {rows} lanes, not A/B decks")
+        return dict(ok=rows > 0 and not notes, ms=int((time.time()-t0)*1000), notes=notes,
+                    data=dict(rows=rows, decks=decks, slots=slots, loaded=loaded))
     except Exception as e:
         return dict(ok=False, notes=[f"set → Studio failed {str(e)[:80]}"])
 
@@ -422,7 +627,8 @@ async def t_export_cue(pg, P, rng, st):
         d = await dl.value
         p = OUT / f"cue_{P['id']}.txt"; await d.save_as(p)
         head = p.read_text(errors="ignore")[:300]
-        return dict(ok=True, ms=int((time.time()-t0)*1000), data=dict(menu=items, head=head))
+        notes = [f"no {w} export in the menu" for w in ("Serato", "Traktor") if not any(w in i for i in items)]
+        return dict(ok=True, ms=int((time.time()-t0)*1000), notes=notes, data=dict(menu=items, head=head))
     except Exception as e:
         await pg.keyboard.press("Escape")
         return dict(ok=False, notes=[f"cue export: {str(e)[:80]}"], data=dict(menu=items))
@@ -431,7 +637,10 @@ async def t_search_parse(pg, P, rng, st):
     await library(pg)
     t = rng.choice([x for x in TRACKS if x.get("camelot")] or TRACKS)
     lo = int(t["bpm"]) - 3; hi = int(t["bpm"]) + 3
-    q = f"{t['camelot']} {lo}-{hi}"
+    # Half the personas type the harmonic form, "8A~" (the key and its mixable
+    # neighbours); the rest the strict one.
+    loose = rng.random() < 0.5
+    q = f"{t['camelot']}{'~' if loose else ''} {lo}-{hi}"
     box = pg.get_by_label("Search the library").first
     await box.fill(q)
     await pg.wait_for_timeout(500)
@@ -440,13 +649,15 @@ async def t_search_parse(pg, P, rng, st):
     await pg.wait_for_timeout(700)
     rows = await pg.locator(".tt-row").count()
     head = await pg.locator("h1, .screen-title").first.inner_text() if await pg.locator("h1, .screen-title").count() else ""
-    truth = sum(1 for x in TRACKS if x.get("camelot") == t["camelot"] and x.get("bpm") and lo <= x["bpm"] <= hi)
+    want = compatible(t["camelot"]) if loose else {t["camelot"]}
+    truth = sum(1 for x in TRACKS if x.get("camelot") in want and x.get("bpm") and lo <= x["bpm"] <= hi)
     # clear
     cl = pg.locator("button", has_text="Clear all")
     if await cl.count(): await cl.first.click()
-    notes = [] if rows >= truth else [f"search '{q}' showed {rows} rows, {truth} match"]
-    if rows == 1 and truth == 1: notes.append("strict key filter: only the seed track — 'compatible keys' is a separate chip")
-    return dict(ok=rows >= truth, notes=notes, data=dict(q=q, rows=rows, truth=truth))
+    notes = [] if rows == truth else [f"search '{q}' showed {rows} rows, {truth} match"]
+    if not loose and rows == 1 and truth == 1:
+        notes.append("strict key filter: only the seed track (8A~ would add the neighbours)")
+    return dict(ok=rows == truth, notes=notes, data=dict(q=q, loose=loose, rows=rows, truth=truth))
 
 async def t_palette(pg, P, rng, st):
     t = rng.choice(TRACKS)
@@ -557,7 +768,9 @@ async def t_discover(pg, P, rng, st):
     rows = await pg.evaluate("() => document.querySelectorAll('.disc-body [class*=row]').length")
     ms = int((time.time()-t0)*1000)
     notes = []
-    if err: notes.append(f"Discover error shown: {err[0][:140]}")
+    if err and re.search(r"urlopen|Traceback|Errno|<.*error", err[0]):
+        notes.append(f"Discover shows raw exception text: {err[0][:140]}")
+    elif err: notes.append(f"Discover error shown: {err[0][:140]}")
     elif not rows: notes.append("Discover search returned nothing and said nothing")
     return dict(ok=bool(rows), ms=ms, notes=notes, data=dict(rows=rows))
 
@@ -567,11 +780,13 @@ async def t_import_link(pg, P, rng, st):
     inp = pg.locator("input[placeholder*='soundcloud.com/artist']")
     if not await inp.count(): return dict(ok=False, notes=["paste bar did not open"])
     await inp.fill("https://soundcloud.com/some-artist/some-track")
+    # Snapshot BEFORE asking: an answer that comes back at once (the
+    # reachability check) must not land in the "before" text.
+    before = await pg.evaluate("document.body.innerText")
     t0 = time.time()
     pv = pg.locator("button", has_text="Preview")
     if await pv.count(): await pv.first.click()
     else: await inp.press("Enter")
-    before = await pg.evaluate("document.body.innerText")
     waited = 0
     while waited < 30000:
         await pg.wait_for_timeout(1000); waited += 1000

@@ -44,8 +44,9 @@ def test_on_a_curve_every_mashup_lands_on_it():
     # own tempos jump around.
     assert f["grades"]["smooth"] == 2
     # A vocal stretched to land is shorter or longer in time: 32 s at 118
-    # played at 122 lasts 32 × 118/122.
-    assert f["landings"][0]["secs"] == pytest.approx(32 * 118 / 122)
+    # played at 122 lasts 32 × 118/122; the slot plays 32 bars at 122.
+    assert f["landings"][0]["vocal_secs"] == pytest.approx(32 * 118 / 122)
+    assert f["landings"][0]["secs"] == pytest.approx(32 * 240 / 122)
     # Without the curve the old landings come back.
     assert [l["bpm"] for l in flow(items, {})["landings"]] == [118, 131, 126]
 
@@ -97,11 +98,12 @@ def test_a_chosen_move_wins_and_remembers_the_suggestion():
 
 def test_overlap_shortens_the_running_time_but_never_swallows_a_mashup():
     from matcher.setflow import flow
-    # 8 bars at 120 BPM = 16 s; both sections 32 s → full 16 s overlap.
+    # 8 bars at 120 BPM = 16 s; both sections 32 s → full 16 s overlap. Each
+    # slot plays 32 bars (64 s), so the second comes in at 64 − 16.
     f = flow([_item(1, 120, "8A"), _item(2, 120, "8A")])
     assert f["transitions"][0]["overlap_secs"] == 16.0
-    assert f["starts"] == [0.0, 16.0] and f["total_secs"] == 48.0
-    # A 10 s section caps the overlap at 5 s.
+    assert f["starts"] == [0.0, 48.0] and f["total_secs"] == 112.0
+    # A 10 s vocal section caps the overlap at 5 s, however long the slot plays.
     f = flow([_item(1, 120, "8A", end=10.0), _item(2, 120, "8A")])
     assert f["transitions"][0]["overlap_secs"] == 5.0
 

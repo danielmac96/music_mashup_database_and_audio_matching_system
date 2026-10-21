@@ -177,9 +177,22 @@ def effort_penalty(top: dict, bed: dict, stretch: Optional[float],
     return float(np.clip(total, 0.0, 1.0)), parts
 
 
-def effort_label(total: float) -> str:
+# A transpose or stretch this large is Heavy whatever the weighted total says:
+# pitch is 30% of effort, so a tritone on its own summed to "Light" (the
+# 2026-10-15 simulation: −5 / +6 st beds labelled Light, +4 st labelled Free).
+HEAVY_SHIFT_ST = 4
+HEAVY_STRETCH_PCT = 8.0
+
+
+def effort_label(total: float, semitones: Optional[int] = None,
+                 stretch_pct: Optional[float] = None) -> str:
     """The three buckets the UI shows. Chosen so 'Free' means a pair that needs
-    no meaningful stretch, no transpose and has a trustworthy grid."""
+    no meaningful stretch, no transpose and has a trustworthy grid; any one
+    move a producer would call heavy (HEAVY_SHIFT_ST, HEAVY_STRETCH_PCT) makes
+    the pair Heavy on its own."""
+    if (semitones is not None and abs(semitones) >= HEAVY_SHIFT_ST) or \
+            (stretch_pct is not None and abs(stretch_pct) >= HEAVY_STRETCH_PCT):
+        return "Heavy"
     if total <= 0.20:
         return "Free"
     if total <= 0.50:

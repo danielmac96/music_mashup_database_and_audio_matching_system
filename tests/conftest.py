@@ -13,3 +13,8 @@ import pytest
 def _pin_librosa_analyzer(monkeypatch):
     monkeypatch.setenv("MASHUP_ANALYZER", "librosa")
     monkeypatch.setenv("MASHUP_ESSENTIA_MODEL_FETCH", "0")
+    # The preview's reachability check (ingest/errors.reachable) stays offline.
+    monkeypatch.setenv("MASHUP_REACH_CHECK", "0")
+    # Renders keep the phase vocoder under test (exact, ffmpeg-independent);
+    # tests/test_phase6_export.py opts into Rubber Band.
+    monkeypatch.setenv("MASHUP_STRETCH", "librosa")

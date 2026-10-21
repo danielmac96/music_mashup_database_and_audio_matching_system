@@ -107,6 +107,8 @@ class ItemBody(BaseModel):
 class ItemEditBody(BaseModel):
     label: Optional[str] = Field(default=None, max_length=120)
     duration_secs: Optional[float] = Field(default=None, ge=1, le=3600)
+    # Bars a pair or track plays for; null resets to setflow.DEFAULT_PLAY_BARS.
+    play_bars: Optional[int] = Field(default=None, ge=4, le=256)
 
 
 class ReorderBody(BaseModel):
@@ -166,7 +168,8 @@ def add_item(set_id: int, body: ItemBody) -> dict:
 
 @router.patch("/{set_id}/items/{item_id}")
 def edit_item(set_id: int, item_id: int, body: ItemEditBody) -> dict:
-    """A break's label and length (5–240 s in the UI), a gap's length."""
+    """A break's label and length (5–240 s in the UI), a gap's length, how
+    many bars a pair or track plays."""
     kw = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
     if not update_set_item(set_id, item_id, **kw):
         raise HTTPException(status_code=404, detail="item not in this set")
@@ -294,9 +297,10 @@ def suggested_order(set_id: int, start: Optional[int] = None) -> dict:
 
 @router.get("/{set_id}/export")
 def export(set_id: int, background: BackgroundTasks,
-           format: str = Query("csv", pattern="^(csv|cue|rekordbox|fl)$"),
+           format: str = Query("csv", pattern="^(csv|cue|rekordbox|serato|traktor|fl)$"),
            base: Optional[str] = None):
-    """csv · a timed cue sheet · a rekordbox playlist XML · fl: one FL session
+    """csv · a timed cue sheet · a rekordbox playlist XML · a Serato crate ·
+    a Traktor NML · fl: one FL session
     folder per pair, zipped (a job — the reply is {job_id, archive_url}, the
     same as POST /api/mashups/session/batch). `base` (rekordbox only) is the
     library folder as rekordbox will see it — the audio root on the host when
@@ -329,7 +333,9 @@ def fl_sessions(items: list, background: BackgroundTasks) -> dict:
 
 
 def export_response(items: list, format: str, name: str, base: Optional[str] = None):
-    from render.exports import cue_sheet, library_resolver, pairs_csv, rekordbox_xml
+    from fastapi.responses import Response
+    from render.exports import (cue_sheet, library_resolver, pairs_csv, rekordbox_xml,
+                                serato_crate, traktor_nml)
     stem = _UNSAFE.sub("_", name).strip("_ ") or "pairs"
 
     def attach(body: str, ext: str, media: str, extra: Optional[dict] = None):
@@ -341,6 +347,15 @@ def export_response(items: list, format: str, name: str, base: Optional[str] = N
         return attach(pairs_csv(items), "csv", "text/csv")
     if format == "cue":
         return attach(cue_sheet(items, name), "txt", "text/plain")
+    if format == "serato":
+        out = serato_crate(items, library_resolver(), base=base, root=str(config.AUDIO_DIR))
+        return Response(out["data"], media_type="application/octet-stream", headers={
+            "Content-Disposition": f'attachment; filename="{stem}.crate"',
+            "X-Skipped-Tracks": str(out["skipped"])})
+    if format == "traktor":
+        out = traktor_nml(items, name, library_resolver(), base=base, root=str(config.AUDIO_DIR))
+        return attach(out["xml"], "nml", "application/xml",
+                      {"X-Skipped-Tracks": str(out["skipped"])})
     out = rekordbox_xml(items, name, library_resolver(), base=base,
                         root=str(config.AUDIO_DIR))
     return attach(out["xml"], "xml", "application/xml",

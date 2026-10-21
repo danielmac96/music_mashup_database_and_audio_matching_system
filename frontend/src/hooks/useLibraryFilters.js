@@ -131,8 +131,14 @@ export function parseQuery(q, genreNames = []) {
     const tk = tokens[i];
     const lo = tk.toLowerCase();
     let m;
-    if ((m = /^(\d{1,2})([ab])$/i.exec(tk)) && +m[1] >= 1 && +m[1] <= 12) {
-      (p.keys = p.keys || []).push(`${+m[1]}${m[2].toUpperCase()}`); continue;
+    if ((m = /^(\d{1,2})([ab])(~?)$/i.exec(tk)) && +m[1] >= 1 && +m[1] <= 12) {
+      const code = `${+m[1]}${m[2].toUpperCase()}`;
+      // "8A~": the key and what mixes with it — ±1 hour and the relative
+      // (theme.compatibleKeys). A DJ typing a key usually means "mixable with".
+      const add = m[3] ? compatibleKeys(code) : [code];
+      p.keys = [...(p.keys || []), ...add];
+      if (m[3]) (p.keyNeighbours = p.keyNeighbours || []).push(code);
+      continue;
     }
     if ((m = /^(\d{2,3})[-–](\d{2,3})$/.exec(tk)) && +m[1] >= 50 && +m[2] <= 200) {
       p.bpm = [Math.min(+m[1], +m[2]), Math.max(+m[1], +m[2])]; continue;
@@ -182,7 +188,9 @@ export function pinQuery(f, genreNames = []) {
 export function describeParsed(q, genreNames = []) {
   const { parsed } = parseQuery(q, genreNames);
   const out = [];
-  if (parsed.keys) out.push(`Key ${parsed.keys.join(", ")}`);
+  if (parsed.keyNeighbours) {
+    out.push(`Mixes with ${parsed.keyNeighbours.join(", ")} (${parsed.keys.join(", ")})`);
+  } else if (parsed.keys) out.push(`Key ${parsed.keys.join(", ")}`);
   if (parsed.bpm) out.push(`${parsed.bpm[0]}–${parsed.bpm[1]} BPM`);
   (parsed.genres || []).forEach((g) => out.push(g));
   if (parsed.year) out.push(yearLabel(parsed.year));

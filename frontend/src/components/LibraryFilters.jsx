@@ -219,7 +219,7 @@ export function LibraryFilters({ filters, patch, setFilters, reset, onPin, facet
         <div className="fsearch">
           <span className="glyph">⌕</span>
           <input ref={searchRef} data-search="library" value={f.q}
-            aria-label="Search the library" placeholder="Search, or type 8A 124-128 house 2015+ vox"
+            aria-label="Search the library" placeholder="Search, or type 8A~ 124-128 house 2015+ vox"
             onChange={(e) => patch({ q: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === "Enter") { e.preventDefault(); onPin(); }

@@ -19,6 +19,15 @@ def run(job_id: str, bpm_max_diff: Optional[float] = None,
     # than leaving the badge at 0% until it finishes.
     on_progress = jobs.progress_updater(job_id)
     try:
+        # A labeller fix reaches an analysed library here, from the stored
+        # measurements, before the run that ranks on the labels.
+        from database.models import relabel_sections
+        relabelled = relabel_sections()
+        if relabelled:
+            log.info("relabelled sections on %d tracks", relabelled)
+    except Exception:  # noqa: BLE001 — stale labels are not worth failing a run
+        log.exception("relabel_sections failed")
+    try:
         results = score_all_pairs(bpm_max_diff=bpm_max_diff,
                                   key_min_score=key_min_score, scorer=scorer,
                                   progress=on_progress)

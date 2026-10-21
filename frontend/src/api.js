@@ -39,6 +39,9 @@ async function jsonFetch(url, options = {}) {
   return res.json();
 }
 
+// The file each export format downloads as (render/exports.py writes them).
+const EXPORT_EXT = { rekordbox: "xml", cue: "txt", csv: "csv", serato: "crate", traktor: "nml" };
+
 export const api = {
   previewPlaylist: (url) =>
     jsonFetch("/api/playlists/preview", {
@@ -358,6 +361,14 @@ export const api = {
   // deliberately not training data.
   getHidden: () => jsonFetch("/api/mashups/hidden"),
 
+  // Score two named songs the library run left unpaired, both ways round
+  // (POST /api/mashups/score-pair); rows come back as listing rows.
+  scorePairAnyway: (vocalSongId, instSongId) =>
+    jsonFetch("/api/mashups/score-pair", {
+      method: "POST",
+      body: JSON.stringify({ vocal_song_id: vocalSongId, inst_song_id: instSongId, both_ways: true }),
+    }),
+
   hidePair: (vocalSongId, instSongId) =>
     jsonFetch("/api/mashups/hidden", {
       method: "POST",
@@ -380,10 +391,12 @@ export const api = {
   // ── Studio (DAW tab) ───────────────────────────────────────────────────────
   // Render the arrangement server-side (decoupled stretch/pitch per clip) to a
   // WAV. clips: [{ song_id, stem, offset_sec, rate, semitones, gain }]
-  startMixdown: (clips) =>
+  // Rendered and mastered server-side: to `loudnessTarget` LUFS when given
+  // (null = only the −1 dBTP ceiling — stems per lane keep their own level).
+  startMixdown: (clips, loudnessTarget = null) =>
     jsonFetch("/api/studio/mixdown", {
       method: "POST",
-      body: JSON.stringify({ clips }),
+      body: JSON.stringify({ clips, loudness_target: loudnessTarget }),
     }),
 
   mixdownAudioUrl: (token) => `/api/studio/mixdown/${token}/audio`,
@@ -825,5 +838,5 @@ export const api = {
         vocal_song_id: c.vocal_song_id, inst_song_id: c.inst_song_id,
         vocal_section: c.vocal_section_idx ?? null, inst_section: c.inst_section_idx ?? null,
       })),
-    }, `${name}.${format === "rekordbox" ? "xml" : format === "cue" ? "txt" : "csv"}`),
+    }, `${name}.${EXPORT_EXT[format] || "csv"}`),
 };

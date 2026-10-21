@@ -86,6 +86,13 @@ function Toast() {
   );
 }
 
+// The role a track's best pairing is in: "instrumental" when its best pair as
+// the bed beats its best as the vocal, else "vocal" (also when unscored).
+export function strongerRole(t) {
+  const v = t?.mash?.best_pct_vocal, b = t?.mash?.best_pct_bed;
+  return b != null && (v == null || b > v) ? "instrumental" : "vocal";
+}
+
 export default function App() {
   const [route, setRouteState] = useState(initialRoute);
   const rail = useRailCollapsed();
@@ -268,6 +275,8 @@ export default function App() {
       semitoneShift: c.semitone_shift ?? 0, recipe: c.recipe ?? null,
       // On a set's tempo curve, each mashup lands at its own point on it.
       targetBpm: c.set_bpm ?? null,
+      // How far it comes in before the previous mashup ends (the move's bars).
+      overlapSecs: c.overlap_secs ?? 0,
       scoredOption: scoredOptionOf(c),
     })),
   });
@@ -374,7 +383,14 @@ export default function App() {
   // clear it, sending the dock back to "Best in library" while the search still
   // showed that one row (68 of 100 simulated users hit it). Clearing is the ✕
   // on the dock's scope line, or Esc on the Library.
-  const selectTrack = (id) => setSelectedTrackId(id);
+  // Selecting a track opens the dock on its stronger side — the side whose
+  // best pair is the Library's Best pair number — so "100" in the table never
+  // opens onto a list of long shots (mash.best_pct_vocal / best_pct_bed).
+  const selectTrack = (id) => {
+    setSelectedTrackId(id);
+    const t = library.tracks.find((x) => x.id === id);
+    if (t) setDockRole(strongerRole(t));
+  };
   const clearSelection = () => setSelectedTrackId(null);
 
   useEffect(() => {
@@ -433,6 +449,7 @@ export default function App() {
         settingsOpen={settingsOpen}
         onOpenSettings={() => setSettingsOpen((v) => !v)}
         judged={ratings.count}
+        tuning={ratings.tuning}
         onHelp={openHelp} helpSeen={helpSeen}
         status={headerStatus?.text ? (
           // The screen's status readout lives in the rail, not floating over
@@ -485,6 +502,7 @@ export default function App() {
                   onOpenQueue={openQueue}
                   presets={presets}
                   applyPreset={libraryPreset}
+                  onHelp={openHelp}
                 />
               </div>
               {route === "track" && (
@@ -519,7 +537,7 @@ export default function App() {
               scopeTrack={selectedTrack} onClearScope={route === "track" ? null : clearSelection}
               onCompare={compareInAnalysis} durationOf={durationOf}
               freshness={freshness}
-              role={dockRole} onRole={setDockRole} />
+              role={dockRole} onRole={setDockRole} tracks={library.tracks} />
           </div>
         )}
         {/* Mounted from the first visit on and hidden when not on show, so
