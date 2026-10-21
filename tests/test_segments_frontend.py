@@ -279,6 +279,16 @@ console.log(JSON.stringify({{
     assert out["midi"] == ["C4", "A4", None]
 
 
+def test_the_dock_role_is_translated_for_segments():
+    """The dock's roles are vocal / instrumental, Segments' vocal / bed. ⌘K
+    from a dock on As bed handed over "instrumental" and the screen crashed
+    reading segs.instrumental (the 2026-10-21 merge simulation)."""
+    assert 'role: dockRole === "instrumental" ? "bed" : "vocal"' in APP
+    screen = FILES["SegmentsScreen.jsx"]
+    assert 'seed.role === "instrumental" ? "bed" : seed.role' in screen
+    assert "if (!segs[role]) return;" in screen
+
+
 def test_ways_in_from_track_detail_and_the_palette():
     table = _read("components/SectionTable.jsx")
     assert 'onMatch(s, "vocal")' in table and 'onMatch(s, "bed")' in table
@@ -287,4 +297,31 @@ def test_ways_in_from_track_detail_and_the_palette():
     assert "onOpenSegments={openSegments}" in APP and "seed={segmentsSeed}" in APP
     assert 'key: "a:segments"' in APP
     screen = FILES["SegmentsScreen.jsx"]
-    assert "seeded.current === seed.at" in screen and "setLead(seed.role)" in screen
+    assert "seeded.current === seed.at" in screen and "setLead(role)" in screen
+
+
+def test_the_mini_studio_declares_every_hook_before_its_early_return():
+    """React error #310: a hook below `if (!pair) return …` changes the hook
+    count the moment a pair is armed, and the whole screen goes blank."""
+    band = FILES["MiniStudio.jsx"]
+    body = band[band.index("export function MiniStudio"):]
+    early = body.index("\n  if (!pair) {")
+    assert not re.search(r"\buse(Effect|State|Ref|Memo|Callback|MiniStudio)\(", body[early:])
+
+
+def test_segments_survives_a_trip_to_studio():
+    assert "segmentsVisited &&" in APP and 'active={route === "segments"}' in APP
+    assert ".seg-host.away { display: none; }" in CSS
+    screen = FILES["SegmentsScreen.jsx"]
+    # Hidden, it owns no keys and reports no status.
+    assert screen.count("if (!active) return") + screen.count("|| !active) return") >= 4
+    assert "if (active) onRailSlot" in screen
+    assert "if (!active && ms.playing) ms.pause()" in FILES["MiniStudio.jsx"]
+
+
+def test_no_component_is_declared_inside_a_render():
+    """A component declared in a render is a new type every render; the loop
+    position re-renders the band ~60×/s and its buttons were remounted mid-click."""
+    band = FILES["MiniStudio.jsx"]
+    assert "const Step = (" not in band
+    assert not re.search(r"\n  const [A-Z]\w* = \(\{", band)

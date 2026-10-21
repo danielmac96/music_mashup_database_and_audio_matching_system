@@ -17,7 +17,7 @@ const dB = (g) => (g > 0 ? `${(20 * Math.log10(g)).toFixed(1)} dB` : "−∞");
 const RENDER_POLL_MS = 1000;
 
 export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOpenStudio,
-                             onNext, onPrev }) {
+                             onNext, onPrev, active = true }) {
   const ms = useMiniStudio(pair);
   const s = ms.settings;
   const [note, setNote] = useState("");
@@ -35,6 +35,7 @@ export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOp
   // Space, when no table or field has the keyboard (a table's space loops its
   // own row on the player bar): the band with a pair armed, else the bar.
   useEffect(() => {
+    if (!active) return undefined;
     const onKey = (e) => {
       const el = e.target;
       if (e.code !== "Space" || (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
@@ -53,6 +54,11 @@ export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOp
   }); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => () => clearInterval(pollRef.current), []);
+
+  // Off screen (Studio, another tab) the band falls silent: two engines on
+  // the speakers is the bug usePlayer exists to prevent.
+  useEffect(() => { if (!active && ms.playing) ms.pause(); },
+    [active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!pair) {
     const anchor = lead && sel[lead];
@@ -130,9 +136,6 @@ export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOp
 
   const progress = ms.loopLen > 0 ? Math.min(1, ms.position / ms.loopLen) : 0;
   const rating = ratings.ratingOf(pair);
-  const Step = ({ label, title, onClick, disabled }) => (
-    <button className="ui-btn seg-step" title={title} onClick={onClick} disabled={disabled}>{label}</button>
-  );
 
   return (
     <section className="seg-band" aria-label="Mini studio">
@@ -160,8 +163,8 @@ export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOp
       <div className="seg-band-mix">
         <div className="seg-transport">
           <button className="btn-primary seg-playbtn" onClick={() => (ms.playing ? ms.pause() : play())}
-            disabled={ms.loading || !!ms.error} title="Play / pause the loop (space)">
-            {ms.loading ? "…" : ms.playing ? "❚❚" : "▶"}
+            disabled={!!ms.error} title="Play / pause the loop (space)">
+            {ms.playing ? (ms.loading ? "…" : "❚❚") : "▶"}
           </button>
           <div className="seg-loopbar" role="slider" aria-label="Loop position"
             aria-valuemin={0} aria-valuemax={Math.round(ms.loopLen)} aria-valuenow={Math.round(ms.position)}
@@ -235,8 +238,11 @@ export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOp
       <div className="seg-band-act">
         <div className="seg-band-row">
           <StarRating value={rating} size={15} onRate={(n) => ratings.rate(pair, n)} />
-          <Step label="◂" title="Previous match ([)" onClick={onPrev} />
-          <Step label="▸" title="Next match (])" onClick={onNext} />
+          {/* Inline, never a component declared in this render: one of those
+              is a new type every frame the loop position moves, so the
+              buttons were remounted ~60×/s and clicks fell between them. */}
+          <button className="ui-btn seg-step" title="Previous match ([)" onClick={onPrev}>◂</button>
+          <button className="ui-btn seg-step" title="Next match (])" onClick={onNext}>▸</button>
         </div>
         <input className="seg-note" placeholder="note — “opener”, “use the 2nd chorus”"
           value={note} onChange={(e) => setNote(e.target.value)}
