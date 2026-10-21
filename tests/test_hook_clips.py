@@ -292,3 +292,42 @@ def test_a_missing_stem_is_still_a_clean_error(tmp_path, monkeypatch):
                              status="analysed")
     with pytest.raises(hook_worker.HookRenderError):
         hook_worker.render_hook(sid, "vocals", start=1.0, end=5.0)
+
+
+def test_concurrent_renders_of_one_clip_all_succeed(tmp_path, monkeypatch):
+    """The dock preloads the next rows' clips and the Segments mini studio
+    asks for the same windows, so one clip is often requested twice at once.
+    Both renders wrote the same `.part` file: one published a clip still being
+    written (served truncated), the other found its .part renamed away (404).
+    Now one renders, the rest wait and get the finished file."""
+    import threading
+    config, models, hook_worker = _setup(tmp_path, monkeypatch)
+    sid = _seed(tmp_path, models)
+    window = (10.0, 50.0)
+    real_write = sf.SoundFile.write
+
+    def slow_write(self, data):   # widen the window the race needs
+        real_write(self, data)
+        threading.Event().wait(0.01)
+    monkeypatch.setattr(sf.SoundFile, "write", slow_write)
+
+    barrier = threading.Barrier(6)
+    results, errors = [], []
+
+    def go():
+        barrier.wait()
+        try:
+            results.append(hook_worker.render_hook(sid, "vocals", start=window[0], end=window[1]))
+        except Exception as exc:  # noqa: BLE001 — the assertion reports it
+            errors.append(exc)
+
+    threads = [threading.Thread(target=go) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, errors
+    assert len(set(results)) == 1
+    data, sr = sf.read(results[0])
+    assert len(data) == int(window[1] * sr) - int(window[0] * sr)
+    assert not list(Path(results[0]).parent.glob("*.part"))
