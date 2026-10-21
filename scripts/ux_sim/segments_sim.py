@@ -79,20 +79,39 @@ async def open_segments(pg):
     await pg.locator(VROWS).first.wait_for(timeout=15000)
 
 
+async def _wait_ranked(pg):
+    for _ in range(60):
+        if not await pg.locator(".seg-scope.match .faint", has_text="ranking").count():
+            return
+        await pg.wait_for_timeout(100)
+
+
+async def partner_rows(pg):
+    """The table holding the matches: the beds while a vocal leads, the vocals
+    while a bed leads (after ⇄, a deep link or ⌘K from the dock's As bed)."""
+    return pg.locator(VROWS if await pg.locator(".seg-pane.vocal .seg-scope.match").count()
+                      else BROWS)
+
+
 async def ensure_match(pg, P, rng, st):
-    """A vocal leads and its beds are listed; returns (ms, n_matches)."""
-    if await pg.locator(".seg-pane.bed .seg-scope.match").count() and await pg.locator(BROWS).count():
-        return 0, await pg.locator(BROWS).count()
+    """A segment leads and its matches are listed; returns (ms, n_matches)."""
+    if await pg.locator(".seg-scope.match").count():
+        await _wait_ranked(pg)
+        found = await (await partner_rows(pg)).count()
+        if found:
+            return 0, found
+        # A lead with nothing to match: start over from a vocal.
+        for _ in range(2):
+            await pg.keyboard.press("Escape")
+            await pg.wait_for_timeout(150)
     rows = pg.locator(VROWS)
+    await rows.first.wait_for(timeout=8000)
     n = await rows.count()
     for _ in range(5):
         t0 = time.time()
         await rows.nth(rng.randrange(min(n, 14))).click()
         await pg.locator(".seg-pane.bed .seg-scope.match").wait_for(timeout=8000)
-        for _ in range(60):
-            if not await pg.locator(".seg-scope.match .faint", has_text="ranking").count():
-                break
-            await pg.wait_for_timeout(100)
+        await _wait_ranked(pg)
         ms = int((time.time() - t0) * 1000)
         found = await pg.locator(BROWS).count()
         st["match_ms"].append(ms)
@@ -108,7 +127,7 @@ async def ensure_armed(pg, P, rng, st):
     ms, found = await ensure_match(pg, P, rng, st)
     if not found:
         return False
-    await pg.locator(BROWS).nth(rng.randrange(min(found, 6))).click()
+    await (await partner_rows(pg)).nth(rng.randrange(min(found, 6))).click()
     await pg.locator(".seg-band .seg-knobs").wait_for(timeout=8000)
     return True
 
@@ -386,7 +405,8 @@ async def t_tweak(pg, P, rng, st):
 async def t_step(pg, P, rng, st):
     if not await ensure_armed(pg, P, rng, st):
         return dict(ok=False, notes=["could not arm a pair"])
-    n = await pg.locator(BROWS).count()
+    partner = await partner_rows(pg)
+    n = await partner.count()
     a = await band_pair(pg)
     if P["keyboard"]:
         await pg.locator(".seg-band").click(position={"x": 4, "y": 4})
@@ -398,7 +418,7 @@ async def t_step(pg, P, rng, st):
     notes = []
     if a == b and n > 1:
         notes.append("next match did not change the armed pair")
-    sel = await pg.locator(f"{BROWS}.selected").count()
+    sel = await pg.locator(".seg-scope.match").locator("xpath=ancestor::section").locator(".seg-row.selected").count()
     if not sel:
         notes.append("the stepped-to bed is not highlighted in its table")
     return dict(ok=a != b or n <= 1, notes=notes, data=dict(matches=n))
@@ -556,21 +576,32 @@ async def t_deeplink(pg, P, rng, st):
 async def t_palette(pg, P, rng, st):
     await pg.locator(".rail-item", has_text="Library").first.click()
     await pg.locator(".tt-row").nth(rng.randrange(8)).click()
+    # Half the time from the dock's As bed side: "Find vocals for …", which
+    # once handed Segments a role it did not know.
+    as_bed = rng.random() < 0.5
+    if as_bed:
+        await pg.get_by_role("button", name=re.compile("As bed")).first.click()
+        await pg.wait_for_timeout(300)
     await pg.keyboard.press("Control+k")
     await pg.keyboard.type("find")
     await pg.wait_for_timeout(300)
     txt = await pg.locator(".palette, [role=dialog]").first.inner_text()
-    if "Find beds for" not in txt and "Find vocals for" not in txt:
+    want = "Find vocals for" if as_bed else "Find beds for"
+    if want not in txt:
         await pg.keyboard.press("Escape")
         await open_segments(pg)
-        return dict(ok=False, notes=["⌘K offers no Find beds for the selected track"])
+        return dict(ok=False, notes=[f"⌘K offers no '{want}' for the selected track"])
     await pg.keyboard.press("Enter")
     try:
         await pg.locator(".seg-scope.lead").wait_for(timeout=8000)
         ok = True
     except Exception:
         ok = False
-    return dict(ok=ok, notes=[] if ok else ["⌘K Find beds did not open Segments on a section"])
+    led = await pg.locator(".seg-pane.bed .seg-scope.lead").count() if ok else 0
+    if ok and as_bed and not led:
+        return dict(ok=False, notes=["⌘K Find vocals did not lead with a bed"])
+    return dict(ok=ok, notes=[] if ok else [f"⌘K {want} did not open Segments on a section"],
+                data=dict(as_bed=as_bed))
 
 
 async def t_kbd_flow(pg, P, rng, st):
