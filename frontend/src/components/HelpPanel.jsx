@@ -5,7 +5,8 @@ import { useEffect } from "react";
 // learn what a "bed" is or how to read a pair card short of reading the readme.
 // Opened from the rail's ? button or the ? key; Esc closes.
 
-// What shows when Help opens: one screen, the loop in five lines. Everything
+// What shows when Help opens: one screen — the loop in five lines, and the
+// Segments way in as a sixth. Everything
 // else folds below — 975 words up front read as a manual (2026-10-15).
 const QUICK = [
   ["Import", "＋ Import in the Library: paste a SoundCloud or YouTube track or set."],
@@ -13,6 +14,7 @@ const QUICK = [
   ["Score", "↻ Re-score in the pair dock pairs every vocal section with every instrumental section."],
   ["Listen", "Click a track, then space on a pair in the dock. Rate 1–5; q w e r tag why."],
   ["Build", "Double-click a pair to open it in Studio, conformed and lined up. Render ▾ a WAV or an FL session; + Set adds it to your mix."],
+  ["Or mix parts", "Segments: pick a vocal section and the beds that fit it are listed. Pick one and it loops in the mini studio below."],
 ];
 
 const STEPS = [

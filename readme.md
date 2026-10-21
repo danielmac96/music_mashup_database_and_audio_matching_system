@@ -313,7 +313,7 @@ say which terms agree with your ears — and a **pipeline readout**
 the library's `error_*` tracks) opens the Queue. **⌘K** (ctrl+K) opens a command
 palette — Go to · Actions · Saved views · Tracks (from two characters) · Pairs (the
 dock's) — `/` focuses the search on screen, space plays/pauses the player bar, esc
-steps back one layer. **?** (or the `?` key) opens *How it works*: a five-line quick start
+steps back one layer. **?** (or the `?` key) opens *How it works*: a five-line quick start (plus one line on Segments)
 (≤ 250 words on screen), with the whole walkthrough, what every number on a
 pair card means, and each screen's keys folded below it; a *New here* pill
 shows until it has been opened once. In a dev build (`npm run dev`),
