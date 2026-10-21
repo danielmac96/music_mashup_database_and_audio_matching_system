@@ -13,6 +13,9 @@ the request path on a cache miss, so it has to stay cheap.
 from __future__ import annotations
 
 import logging
+import os
+import threading
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -37,6 +40,22 @@ _BLOCK_FRAMES = 1 << 16
 # "Failed to load because no supported source was found". The blocks are read as
 # float32 anyway, so anything compressed is simply written as PCM_16.
 _WAV_SUBTYPES = ("PCM_16", "PCM_24", "PCM_32", "PCM_U8", "FLOAT", "DOUBLE")
+
+
+# One render per clip at a time. The dock preloads the next rows' clips and the
+# Segments mini studio loads the same windows, so two requests for one clip
+# arrive together; both used to write the same `<clip>.part`, truncating each
+# other — one served a file still growing ("Response content longer than
+# Content-Length"), the other found its .part already renamed away and
+# answered 404. A second request now waits for the first and serves its file.
+# A fixed pool, keyed by the clip's path: bounded however many clips are cut,
+# and two different clips rarely share a lock (when they do, one waits a few
+# milliseconds for the other's seek-and-copy).
+_RENDER_LOCKS = tuple(threading.Lock() for _ in range(64))
+
+
+def _render_lock(path: Path) -> threading.Lock:
+    return _RENDER_LOCKS[hash(str(path)) % len(_RENDER_LOCKS)]
 
 
 class HookRenderError(RuntimeError):
@@ -97,7 +116,16 @@ def render_hook(song_id: int, stem: str = "vocals", force: bool = False,
     out = hook_clip_path(song_id, stem, (start, end) if windowed else None)
     if out.exists() and not force:
         return str(out)
+    with _render_lock(out):
+        # Rendered while this request waited for the lock.
+        if out.exists() and not force:
+            return str(out)
+        return _render(sf, song_id, stem, out, windowed, start, end)
 
+
+def _render(sf, song_id: int, stem: str, out: Path, windowed: bool,
+            start: Optional[float], end: Optional[float]) -> str:
+    """The cut itself, under render_hook's per-clip lock."""
     if not windowed:
         feat = get_features_for_song(song_id, stem)
         if not feat or feat.get("hook_start") is None or feat.get("hook_end") is None:
@@ -115,7 +143,9 @@ def render_hook(song_id: int, stem: str = "vocals", force: bool = False,
         raise HookRenderError(f"stem '{stem}' audio is missing for song {song_id}")
 
     HOOKS_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(".part")
+    # Unique per render, so even an unlocked writer (another process) cannot
+    # share it; the rename onto `out` is atomic.
+    tmp = out.with_name(f"{out.stem}.{os.getpid()}.{uuid.uuid4().hex[:8]}.part")
     try:
         with sf.SoundFile(str(src)) as f:
             sr = f.samplerate

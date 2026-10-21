@@ -1094,7 +1094,11 @@ most confident chorus with real singing for a vocal, the drop (else chorus) for
 a bed — trimmed at the track's tempo and snapped to a downbeat; falls back to
 the loudest window. `hook_worker` pre-cuts clips with a soundfile seek-and-copy
 (no DSP) so a keypress sounds in well under a second; section windows cache by
-millisecond span. Compressed sources are written as `PCM_16` WAV.
+millisecond span. Compressed sources are written as `PCM_16` WAV. One render per
+clip at a time (a fixed pool of locks keyed by the clip's path, a unique temp
+name, an atomic rename): the dock's preloads and the Segments mini studio ask
+for the same window together, and two renders sharing one `.part` file served a
+truncated clip to one and a 404 to the other.
 
 ### 5.6 Near-duplicate uploads
 
