@@ -338,6 +338,27 @@ def list_best_bed_per_vocal(limit: int = 50, per_vocal: int = 1,
     return {"count": len(rows), "candidates": _with_playback_terms(rows)}
 
 
+@router.get("/pairings")
+def list_pairings(vocal_song_id: int, inst_song_id: int,
+                  combo_type: str = "vocal_over_instrumental") -> dict:
+    """Every stored section pairing of one (vocal, bed) song pair, best score
+    first — what the dock's card steps through (‹ ● ○ ○ ›). The listing shows
+    one card per song pair (max_per_song_pair=1); these are the rest of it.
+
+    The same enriched query and the same playback terms as the listing, so each
+    option's transpose, recipe, tier and compat are the ones its own card would
+    print (§7). Hidden pairs still answer: the card is already on screen."""
+    if combo_type not in _COMBO_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"combo_type must be one of {sorted(_COMBO_TYPES)}")
+    rows = get_candidates_enriched(
+        combo_type=combo_type, pairs=[(vocal_song_id, inst_song_id)],
+        max_per_song=0, max_per_song_pair=0, include_hidden=True, limit=50)
+    rows = _with_reasons(_with_playback_terms(rows))
+    return {"count": len(rows), "candidates": rows}
+
+
 def _enrich_like_listing(rows: list) -> list:
     """The listing's joined columns (genre, year, plays, key confidence, the
     live section labels, the section's line) on by-vocal rows, through the one

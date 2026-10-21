@@ -30,6 +30,7 @@ from api.routes import mixes as mix_routes  # noqa: E402
 from api.routes import models as model_routes  # noqa: E402
 from api.routes import playlists as playlist_routes  # noqa: E402
 from api.routes import prefs as prefs_routes  # noqa: E402
+from api.routes import segments as segment_routes  # noqa: E402
 from api.routes import sets as set_routes  # noqa: E402
 from api.routes import settings as settings_routes  # noqa: E402
 from api.routes import studio as studio_routes  # noqa: E402
@@ -72,6 +73,7 @@ app.include_router(studio_routes.router, prefix="/api/studio", tags=["studio"])
 app.include_router(discovery_routes.router, prefix="/api/discovery", tags=["discovery"])
 app.include_router(crate_routes.router, prefix="/api/crates", tags=["crates"])
 app.include_router(set_routes.router, prefix="/api/sets", tags=["sets"])
+app.include_router(segment_routes.router, prefix="/api/segments", tags=["segments"])
 app.include_router(prefs_routes.router, prefix="/api/prefs", tags=["prefs"])
 
 

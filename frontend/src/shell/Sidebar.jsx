@@ -15,6 +15,7 @@ import { api } from "../api";
 
 const NAV = [
   ["library", "Library", "▤"],
+  ["segments", "Segments", "▥"],
   ["queue", "Queue", "⧗"],
   ["analysis", "Analysis", "◔"],
   ["discovery", "Discover", "⌕"],

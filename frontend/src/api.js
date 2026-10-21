@@ -249,6 +249,21 @@ export const api = {
 
   audioUrl: (id, stemType) => `/api/tracks/${id}/audio/${stemType}`,
 
+  // ── Segments (the section-level playground) ────────────────────────────────
+  // Every offered section on one side, packed (song fields once per song —
+  // components/segments/segmentModel.unpackSegments reads it).
+  getSegments: (role) => jsonFetch(`/api/segments?role=${role}`),
+  // One section, played as `role`, scored live against every section on the
+  // other side. `signal` cancels a request a newer selection has replaced.
+  getSegmentMatches: (segmentId, role, { limit = 200, maxStretch = null,
+                                        maxShift = null, tier = "" } = {}, signal) => {
+    const p = new URLSearchParams({ role, limit: String(limit) });
+    if (maxStretch != null) p.set("max_stretch", String(maxStretch));
+    if (maxShift != null) p.set("max_shift", String(maxShift));
+    if (tier) p.set("tier", tier);
+    return jsonFetch(`/api/segments/${segmentId}/matches?${p}`, { signal });
+  },
+
   getSections: (id) => jsonFetch(`/api/tracks/${id}/sections`),
 
   getWaveform: (id, stem) => jsonFetch(`/api/tracks/${id}/waveform?stem=${stem}`),
@@ -311,6 +326,12 @@ export const api = {
     if (instLabel) params.set("inst_label", instLabel);
     return jsonFetch(`/api/mashups?${params}`);
   },
+
+  // Every stored section pairing of one song pair, best first — what a dock
+  // card's ‹ ● ○ ○ › steps through. Enriched exactly like a listed row.
+  getPairings: (vocalSongId, instSongId, comboType = "vocal_over_instrumental") =>
+    jsonFetch(`/api/mashups/pairings?vocal_song_id=${vocalSongId}`
+      + `&inst_song_id=${instSongId}&combo_type=${encodeURIComponent(comboType)}`),
 
   // Which genre / era / BPM / energy values the scored pairs actually contain,
   // so the dock's filter menus only offer what will match something.

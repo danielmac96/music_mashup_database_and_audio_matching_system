@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
 import { onNextForSet } from "../dockModes";
-import { keyOf, REASON_KEYS, reasonsFor, SCORE_TERMS } from "../components/pairs/pairModel";
+import { keyOf, pairKey, REASON_KEYS, reasonsFor, SCORE_TERMS } from "../components/pairs/pairModel";
 import { TIERS } from "../theme";
 
 // The pair dock: what it shows, where the cursor is, and what the keyboard does.
@@ -99,9 +99,11 @@ function sidePasses(c, side, s) {
   return true;
 }
 
+// `hiddenKeys` holds song-pair keys (pairKey): hiding is per song pair, and a
+// card may be showing any of its section pairings when it is hidden.
 export function applyLoadedFilters(rows, df, hiddenKeys) {
   return rows.filter((c) => {
-    if (!df.showHidden && hiddenKeys.has(keyOf(c))) return false;
+    if (!df.showHidden && hiddenKeys.has(pairKey(c))) return false;
     const d = c.compat?.bpm?.delta_pct;
     if (df.maxDelta != null && (d == null || Math.abs(d) > df.maxDelta)) return false;
     if (!df.allowShift && c.semitone_shift) return false;
@@ -122,7 +124,16 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [cursor, setCursor] = useState(0);
-  const [expanded, setExpanded] = useState(null);       // a pair key, or null
+  const [expanded, setExpanded] = useState(null);       // a pairKey, or null
+  // Section pairings per card. The list shows one row per song pair; a card
+  // steps through every stored pairing of those two songs (‹ ● ○ ○ ›).
+  // `options` is the fetched pairings (best score first) per pairKey,
+  // `optIdx` the one on screen. Both are reset whenever the list refetches.
+  const [options, setOptions] = useState({});
+  const [optIdx, setOptIdx] = useState({});
+  // A pair whose pairings failed to load is not retried on every render (the
+  // focus effect would toast forever); a refetch of the list clears it.
+  const failedOpts = useRef(new Set());
   const [filters, setFiltersState] = useState(DOCK_FILTERS);
   const [df, setDfState] = useState(LOADED_FILTERS);
   const [tierOn, setTierOn] = useState([]);
@@ -188,6 +199,9 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
         setHasMore(!perVocal && !nextFor && got.length >= LIMIT);
         setCursor(0);
         setExpanded(null);
+        setOptions({});
+        setOptIdx({});
+        failedOpts.current.clear();
       })
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -269,16 +283,80 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     return out;
   }, [filtered, tierOn, grouped]);
 
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
-  const current = visible[Math.min(cursor, visible.length - 1)] || null;
+  // What the cards SHOW: each listed row swapped for the section pairing its
+  // stepper is on. Filters, tier chips and grouping above run on the listed
+  // rows, so stepping never moves a card; everything below — the keys, ▶,
+  // stars, hide, Studio, + Set — acts on the pairing on screen.
+  const display = useMemo(() => visible.map((c) => {
+    const k = pairKey(c);
+    const i = optIdx[k];
+    return i != null && options[k]?.[i] ? options[k][i] : c;
+  }), [visible, options, optIdx]);
+
+  const listedTier = useMemo(
+    () => new Map(visible.map((c) => [pairKey(c), c.confidence_tier])), [visible]);
+
+  const visibleRef = useRef(display);
+  visibleRef.current = display;
+  const current = display[Math.min(cursor, display.length - 1)] || null;
 
   // Warm the next rows' clips so stepping down the list is instant rather than
   // a decode you can hear waiting for.
   useEffect(() => {
-    if (visible.length) audio.prefetch(visible.slice(cursor, cursor + 3));
+    if (display.length) audio.prefetch(display.slice(cursor, cursor + 3));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cursor, visible]);
+  }, [cursor, display]);
+
+  // Keepers already list every judged pairing as its own card; a stepper there
+  // would show the same pairing twice.
+  const stepsOn = filters.rated !== "rated" && filters.rated !== "loved";
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const loadingOpts = useRef(new Set());
+  const loadOptions = useCallback(async (c) => {
+    const k = pairKey(c);
+    if (optionsRef.current[k]) return optionsRef.current[k];
+    if (loadingOpts.current.has(k) || failedOpts.current.has(k)) return null;
+    loadingOpts.current.add(k);
+    try {
+      const d = await api.getPairings(c.vocal_song_id, c.inst_song_id,
+        c.combo_type || "vocal_over_instrumental");
+      const got = d.candidates || [];
+      if (!got.length) { failedOpts.current.add(k); return null; }
+      setOptions((m) => ({ ...m, [k]: got }));
+      // Start on the pairing the list showed (not always the best: a section-
+      // term order lists by that term).
+      const at = got.findIndex((o) => keyOf(o) === keyOf(c));
+      setOptIdx((m) => (k in m ? m : { ...m, [k]: Math.max(0, at) }));
+      audio.prefetch(got);
+      return got;
+    } catch (e) {
+      failedOpts.current.add(k);
+      toast(`Could not load the other pairings: ${e.message}`);
+      return null;
+    } finally {
+      loadingOpts.current.delete(k);
+    }
+  }, [audio]);
+
+  // The focused card's pairings are fetched as soon as it is focused, so its
+  // dots are exact and its ‹ › answer at once.
+  useEffect(() => {
+    if (stepsOn && current && current.pairing_count > 1) loadOptions(current);
+  }, [current, stepsOn, loadOptions]);
+
+  // Where a card's stepper is: { index, count } (count 1 = no stepper).
+  // Before its pairings are loaded, the listed row's own rank stands in.
+  const optionOf = useCallback((c) => {
+    if (!stepsOn || !c) return { index: 0, count: 1 };
+    const opts = options[pairKey(c)];
+    if (opts) {
+      const at = opts.findIndex((o) => keyOf(o) === keyOf(c));
+      return { index: Math.max(0, at), count: opts.length };
+    }
+    const n = c.pairing_count || 1;
+    return { index: Math.min(n - 1, Math.max(0, (c.pairing_rank || 1) - 1)), count: n };
+  }, [options, stepsOn]);
 
   const play = useCallback((candidate) => {
     if (!candidate) return;
@@ -290,6 +368,25 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       subtitle: `over ${candidate.inst_title}`,
     });
   }, [player]);
+
+  // Step a card to another of its section pairings: by `delta`, or to index
+  // `to`. If that pair is looping, the loop follows to the new pairing, so
+  // ‹ › auditions each option in turn.
+  const armedRef = useRef(armedKey);
+  armedRef.current = armedKey;
+  const stepOption = useCallback(async (c, delta, to = null) => {
+    if (!c || !stepsOn || !(c.pairing_count > 1)) return;
+    const opts = await loadOptions(c);
+    if (!opts) return;
+    const k = pairKey(c);
+    const from = Math.max(0, opts.findIndex((o) => keyOf(o) === keyOf(c)));
+    const next = to != null ? Math.max(0, Math.min(opts.length - 1, to))
+      : Math.max(0, Math.min(opts.length - 1, from + delta));
+    if (next === from) return;
+    const wasLooping = armedRef.current === keyOf(c) && audio.playing;
+    setOptIdx((m) => ({ ...m, [k]: next }));
+    if (wasLooping) play(opts[next]);
+  }, [stepsOn, loadOptions, audio, play]);
 
   // After a 1–5 verdict, step to the next pair and keep looping if a loop was
   // playing — judging a list is one keypress per pair. On unless switched off
@@ -321,7 +418,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
 
   const toggleExpand = useCallback((candidate) => {
     if (!candidate) return;
-    const k = keyOf(candidate);
+    const k = pairKey(candidate);
     setExpanded((e) => (e === k ? null : k));
   }, []);
 
@@ -337,7 +434,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     if (at < 0 || at >= list.length - 1) return;
     const wasLooping = armedKey === keyOf(candidate) && audio.playing;
     setCursor(at + 1);
-    if (expanded === keyOf(candidate)) setExpanded(keyOf(list[at + 1]));
+    if (expanded === pairKey(candidate)) setExpanded(pairKey(list[at + 1]));
     if (wasLooping) play(list[at + 1]);
   }, [ratings, autoAdvance, armedKey, audio, play, expanded, noteRated]);
 
@@ -345,13 +442,13 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   // and never becomes training data. The card goes at once, and the toast's
   // Undo (or "Show hidden") brings it back.
   const unhide = useCallback(async (candidate) => {
-    const k = keyOf(candidate);
+    const k = pairKey(candidate);
     setHiddenKeys((s) => { const n = new Set(s); n.delete(k); return n; });
     try { await api.unhidePair(candidate.vocal_song_id, candidate.inst_song_id); } catch { /* shown again anyway */ }
   }, []);
   const hide = useCallback(async (candidate) => {
     if (!candidate) return;
-    const k = keyOf(candidate);
+    const k = pairKey(candidate);
     setHiddenKeys((s) => new Set(s).add(k));
     if (expanded === k) setExpanded(null);
     try {
@@ -386,6 +483,11 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
 
       if (e.key === "ArrowDown" || e.key === "j") { e.preventDefault(); move(1); return; }
       if (e.key === "ArrowUp" || e.key === "k") { e.preventDefault(); move(-1); return; }
+      // ← → step the focused card through its section pairings.
+      if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        if (!row || !(row.pairing_count > 1)) return;
+        e.preventDefault(); stepOption(row, e.key === "ArrowRight" ? 1 : -1); return;
+      }
       if (e.key === " ") { if (!space) return; e.preventDefault(); play(row); return; }
       if (e.key === "Enter") { e.preventDefault(); toggleExpand(row); return; }
       if ((e.key === "c" || e.key === "C") && row && onCompare) {
@@ -423,20 +525,24 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [cursor, move, play, toggleExpand, hide, audio, onAddToSet, onCompare, rateAndAdvance,
-      lastRated, ratings]);
+      lastRated, ratings, stepOption]);
 
   return {
-    order, setOrder, rows: visible, loaded: rows.length, filteredCount: filtered.length,
+    // The tier header a card sits under is its LISTED row's: a stepped card
+    // keeps its place even when the pairing on screen is another tier.
+    groupTierOf: (c) => listedTier.get(pairKey(c)) ?? c.confidence_tier,
+    order, setOrder, rows: display, loaded: rows.length, filteredCount: filtered.length,
     loading, error,
     filters, setFilters, resetFilters, perVocal, hasMore, loadMore, loadingMore,
     exportBatch,
     df, setDf, setSide, resetLoaded, tierOn, toggleTier, tierCounts, grouped,
     hiddenCount: hiddenKeys.size,
-    isHidden: (c) => hiddenKeys.has(keyOf(c)),
+    isHidden: (c) => hiddenKeys.has(pairKey(c)),
     cursor, setCursor, current, armedKey, expanded, setExpanded, toggleExpand,
     lastRated, noteRated,
     play, move, openStudio, hide, unhide, rateAndAdvance, bindKeys, audio,
     reload, autoAdvance, setAutoAdvance,
+    optionOf, stepOption,
     nextFor, clearNextFor,
   };
 }

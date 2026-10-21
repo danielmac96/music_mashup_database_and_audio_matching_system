@@ -25,7 +25,7 @@ export function midiName(m) {
 const TREND = { increasing: "↗", decreasing: "↘", stable: "→" };
 
 export function SectionTable({ sections, pairsBySection, playingIndex, onPlay,
-                              onSaveLine = null }) {
+                              onSaveLine = null, onMatch = null }) {
   const [open, setOpen] = useState(null);
   // The provenance line: a section that fell back to the track BPM was not
   // measured, and the ranked list is only as good as that measurement.
@@ -106,6 +106,16 @@ export function SectionTable({ sections, pairsBySection, playingIndex, onPlay,
                   CLASS {s.section_class || "unknown"}
                 </span>
                 <span title="Scored pairs that use this section">PAIRS {pairsBySection[s.section_index] || 0}</span>
+                {onMatch && !s.provisional && (
+                  <span className="sectab-match">
+                    {sings(s) && (
+                      <button onClick={(e) => { e.stopPropagation(); onMatch(s, "vocal"); }}
+                        title="Segments: every bed section, ranked against this one as the vocal">Find beds ▸</button>
+                    )}
+                    <button onClick={(e) => { e.stopPropagation(); onMatch(s, "bed"); }}
+                      title="Segments: every vocal section, ranked against this one as the bed">Find vocals ▸</button>
+                  </span>
+                )}
                 {onSaveLine && (s.line || sings(s))
                   ? <SectionLine section={s} onSave={onSaveLine} />
                   : <span className="sectab-noline">No lyric line for this section</span>}

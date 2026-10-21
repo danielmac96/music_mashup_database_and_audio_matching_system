@@ -4,7 +4,7 @@ import { JobBadge } from "./JobBadge";
 import {
   DOCK_FILTERS, ORDERS, activeFilterCount, loadedFilterCount, sideCount,
 } from "../hooks/usePairDock";
-import { keyOf } from "./pairs/pairModel";
+import { keyOf, pairKey } from "./pairs/pairModel";
 import { TIERS, camelotColor } from "../theme";
 import { api } from "../api";
 import { toast } from "../toast";
@@ -24,7 +24,7 @@ const DOCK_MIN = 320;
 const DOCK_MAX = 640;
 const DOCK_DEFAULT = 400;
 
-const KEYS = "↑↓ move · space loop · 1–5 rate · q–u why · ⏎ expand · V/B solo · h hide · a +set · c compare";
+const KEYS = "↑↓ move · ←→ pairing · space loop · 1–5 rate · q–u why · ⏎ expand · V/B solo · h hide · a +set · c compare";
 
 // Values offered by the library-wide menus. Bands, not free ranges, because
 // they are what the server accepts (database/models.py ERA_BANDS etc.).
@@ -227,11 +227,12 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
   const items = [];
   let lastTier;
   rows.forEach((c, i) => {
-    if (grouped && c.confidence_tier !== lastTier) {
-      lastTier = c.confidence_tier;
-      const t = TIERS.find((x) => x.id === c.confidence_tier);
+    const groupTier = dock.groupTierOf(c);
+    if (grouped && groupTier !== lastTier) {
+      lastTier = groupTier;
+      const t = TIERS.find((x) => x.id === groupTier);
       items.push(
-        <div key={`h-${c.confidence_tier}`} className="pd-tierhead mono"
+        <div key={`h-${groupTier}`} className="pd-tierhead mono"
           style={{ color: t?.color || "var(--muted)" }}>
           <span className="glyph">{t?.glyph || "▯▯▯▯"}</span>{t?.label || "Unranked"}
           <span className="muted">{t ? tierCounts[t.id] : ""}</span>
@@ -240,15 +241,20 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
       );
     }
     const k = keyOf(c);
+    // Keyed by the SONG pair: stepping through its pairings swaps the card's
+    // contents without remounting it (an open card stays open).
+    const opt = dock.optionOf(c);
     items.push(
-      <PairCard key={k} candidate={c}
+      <PairCard key={pairKey(c)} candidate={c}
+        optionIndex={opt.index} optionCount={opt.count}
+        onStep={(delta, to) => { setCursor(i); dock.stepOption(c, delta, to); }}
         rating={ratings.ratingOf(c)}
         onRate={(n) => { setCursor(i); ratings.rate(c, n); dock.noteRated?.(c, n); }}
         justRated={dock.lastRated?.key === k}
         reasons={ratings.reasonsOf ? ratings.reasonsOf(c) : []}
         onReason={ratings.toggleReason ? (r) => ratings.toggleReason(c, r) : null}
         focused={i === cursor}
-        expanded={expanded === k}
+        expanded={expanded === pairKey(c)}
         playing={armedKey === k && audio.playing}
         hidden={dock.isHidden(c)}
         onSelect={() => setCursor(i)}
