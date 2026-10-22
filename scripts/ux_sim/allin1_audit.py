@@ -199,7 +199,8 @@ for sid, (m, _) in songs.items():
             idx_bad.append((sid, r["section_index"]))
         if r["label"] != ALLIN1_LABEL[t["label"]]:
             lab_bad.append((sid, m["i"], t["label"], r["engine_label"], r["label"]))
-        if abs(r["start_sec"] - t["start"]) > 0.25 or abs(r["end_sec"] - t["end"]) > 0.25:
+        last = t is truth[-1]       # allin1's trailing 'end' silence folds into the outro
+        if abs(r["start_sec"] - t["start"]) > 0.25 or (not last and abs(r["end_sec"] - t["end"]) > 0.25):
             span_bad.append((sid, t["label"], (t["start"], t["end"]), (r["start_sec"], r["end_sec"])))
 total_secs = sum(len(m["sections"]) for m, _ in songs.values())
 (find("allin1 section count", "high", "section count differs from allin1's segments", n_bad, len(n_bad), len(songs)) if n_bad else ok("allin1 section count"))
@@ -231,6 +232,32 @@ for grid in ("allin1", "essentia"):
              pick_bad, len(pick_bad), tot)
     if extra:
         find(f"phrases ({grid} grid)", "low", f"{extra} more phrases stored than sung", count=extra, total=tot)
+
+# 3b. whose bar 1 is wrong: the Essentia (here librosa) grid's against the truth
+ess_off, a1_off = [], []
+for sid, (m, _) in songs.items():
+    beat = 60.0 / m["bpm"]
+    secs = conn.execute("SELECT downbeats_json FROM sections WHERE song_id=? AND downbeats_json IS NOT NULL "
+                        "ORDER BY section_index LIMIT 3", (sid,)).fetchall()
+    dbs = [x for r in secs for x in json.loads(r[0] or "[]")]
+    truth = m["downbeats"]
+    if dbs:
+        errs = [min(abs(d - t) for t in truth) for d in dbs]
+        med = sorted(errs)[len(errs) // 2]
+        if med > beat / 2:
+            ess_off.append((sid, m["i"], round(med * 1000)))
+    a = conn.execute("SELECT downbeats FROM allin1_analysis WHERE song_id=?", (sid,)).fetchone()
+    if a:
+        ad = f32(a[0])
+        errs = [min(abs(d - t) for t in truth) for d in ad[:16]]
+        if errs and sorted(errs)[len(errs) // 2] > beat / 2:
+            a1_off.append((sid, m["i"]))
+ok("bar 1 vs truth", f"Essentia grid off on {len(ess_off)}/{len(songs)}, allin1 off on {len(a1_off)}/{len(songs)} "
+   f"(simulated off-phase {len(OFF)})")
+if len(ess_off) > len(songs) // 4:
+    find("Essentia bar 1", "info", "the Essentia-mode grid puts bar 1 off the true downbeat on many tracks "
+         "(this is what the Engines report's 'a beat or more off' measures, not allin1)",
+         ess_off, len(ess_off), len(songs))
 
 # 4. candidates
 rows = [dict(r) for r in conn.execute("SELECT * FROM mashup_candidates WHERE combo_type='vocal_over_instrumental'")]
@@ -272,7 +299,7 @@ ok("pairs per track", f"off-phase {offp}; in-phase median {sorted(inp)[len(inp)/
 last = conn.execute("SELECT value FROM app_prefs WHERE key='last_score'").fetchone()
 gate = (json.loads(last[0]) if last else {}).get("timing")
 ok("gate summary", json.dumps(gate))
-if gate and gate.get("dropped", 0) == 0:
+if gate and not (gate.get("gated") or gate.get("dropped")):
     find("timing gate", "medium", "the gate dropped nothing although the library holds 3/4 and drifting tracks",
          examples=[gate])
 
@@ -344,7 +371,7 @@ else:
         find("segments matches", "high", "live matches failed or broke the gate", bad_m, len(bad_m))
 if cands:
     c = cands[0]
-    st, plan = api(f"/api/mashups/plan?vocal_song_id={c['vocal_song_id']}&inst_song_id={c['inst_song_id']}"
+    st, plan = api(f"/api/mashups/plan?vocal_id={c['vocal_song_id']}&inst_id={c['inst_song_id']}"
                    f"&vocal_section={c['vocal_section_idx']}&inst_section={c['inst_section_idx']}")
     if st != 200:
         find("plan", "high", f"plan for the top allin1 pair answered {st}", [str(plan)[:200]])

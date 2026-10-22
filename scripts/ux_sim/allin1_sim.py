@@ -26,16 +26,29 @@ def _rows():
     return ROWS
 
 
+async def _close(pg):
+    x = pg.locator(".drawer-x")
+    if await x.count():
+        await x.first.click()
+        await pg.wait_for_timeout(300)
+
+
 async def _drawer(pg):
+    await _close(pg)
     await pg.locator(".rail-btn", has_text="⚙").click()
     await pg.wait_for_timeout(700)
 
 
+def _tpanel(pg):
+    return pg.locator(".ml-panel", has_text="Scoring & tuning")
+
+
 async def _tuning(pg):
+    """Open Settings and unfold 'Scoring & tuning' (the switches are inside)."""
     await _drawer(pg)
-    t = pg.locator("button, summary", has_text="Tuning")
-    if await t.count():
-        await t.first.click()
+    show = _tpanel(pg).locator(".ml-head button.mini-btn")
+    if await show.count() and (await show.first.inner_text()).strip() == "show":
+        await show.first.click()
         await pg.wait_for_timeout(600)
 
 
@@ -156,13 +169,13 @@ async def t_switch_engine(pg, P, rng, st):
         target = "essentia" if before == "allin1" else "allin1"
         fresh0 = api("/api/mashups/freshness")
         await _tuning(pg)
-        btn = pg.locator("button.mini-btn", has_text=target)
+        btn = _tpanel(pg).locator("button.mini-btn", has_text=target)
         if not await btn.count():
             return dict(ok=False, notes=["no Section engine switch in Tuning"])
         await btn.first.click()
         await pg.wait_for_timeout(300)
         warn = await pg.locator("text=An engine change needs only a re-score").count()
-        await pg.locator("button", has_text="Save").last.click()
+        await _tpanel(pg).get_by_role("button", name="Save", exact=True).click()
         await pg.wait_for_timeout(1200)
         body = await pg.evaluate("() => document.body.innerText")
         after = api("/api/settings").get("segmentation_engine", {}).get("value")
@@ -172,7 +185,7 @@ async def t_switch_engine(pg, P, rng, st):
         if not fresh1.get("changed_tracks") and not fresh1.get("never_scored"):
             notes.append("after switching the engine the dock still says the pairs are current "
                          f"(freshness {json.dumps(fresh1)[:120]})")
-        await pg.keyboard.press("Escape")
+        await _close(pg)
         await library(pg)
         strip = await pg.locator(".pd-fresh, .pd-stale, [class*=stale]").count()
         # Re-score from the drawer, wait for the job, check the listing's engine.
@@ -189,7 +202,7 @@ async def t_switch_engine(pg, P, rng, st):
                 done = m[0]["status"]; break
             await pg.wait_for_timeout(500)
         score_ms = int((time.time() - t0) * 1000)
-        await pg.keyboard.press("Escape")
+        await _close(pg)
         engines = {r.get("engine") for r in api("/api/mashups?limit=50")["candidates"]}
         want = {"allin1", "essentia_fallback"} if target == "allin1" else {"essentia"}
         if done not in ("done", "completed"):
@@ -198,10 +211,10 @@ async def t_switch_engine(pg, P, rng, st):
             notes.append(f"after re-scoring under {target} the dock lists {engines}")
         # And back, so the library ends as it started.
         await _tuning(pg)
-        await pg.locator("button.mini-btn", has_text=before).first.click()
-        await pg.locator("button", has_text="Save").last.click()
+        await _tpanel(pg).locator("button.mini-btn", has_text=before).first.click()
+        await _tpanel(pg).get_by_role("button", name="Save", exact=True).click()
         await pg.wait_for_timeout(800)
-        await pg.keyboard.press("Escape")
+        await _close(pg)
         await _drawer(pg)
         await pg.locator("button", has_text="Score library").first.click()
         for _ in range(360):
@@ -209,7 +222,7 @@ async def t_switch_engine(pg, P, rng, st):
             if not [j for j in js if j.get("kind") == "match" and j.get("status") in ("queued", "running")]:
                 break
             await pg.wait_for_timeout(500)
-        await pg.keyboard.press("Escape")
+        await _close(pg)
         global ROWS
         ROWS = None
         return dict(ok=after == target and done in ("done", "completed") and engines <= want, ms=score_ms,
@@ -221,10 +234,7 @@ async def t_bulk_allin1(pg, P, rng, st):
     """Settings › Bulk reprocess: what does it offer for allin1 on a library
     allin1 has already analysed?"""
     await _drawer(pg)
-    b = pg.locator("button, summary", has_text="Bulk reprocess")
-    if await b.count():
-        await b.first.click(); await pg.wait_for_timeout(800)
-    body = await pg.evaluate("() => document.body.innerText")
+    body = await pg.locator(".settings-drawer").inner_text()
     stale = api("/api/tracks/staleness")
     notes = []
     import re
@@ -237,7 +247,7 @@ async def t_bulk_allin1(pg, P, rng, st):
         notes.append(f"⟳ allin1 {m.group(1)} but the API counts {missing}")
     if sw:
         notes.append(f"Bulk offers ⇄ Switch {sw.group(1)} on a library that never changed pipeline")
-    await pg.keyboard.press("Escape")
+    await _close(pg)
     return dict(ok=True, notes=notes, data=dict(allin1=m.group(1) if m else None, switch=sw.group(1) if sw else None,
                                                 stale=stale if isinstance(stale, dict) else None))
 
@@ -246,17 +256,19 @@ async def t_pipeline_look(pg, P, rng, st):
     """Tuning › Separation pipeline: a cautious admin reads it, clicks unified
     to see the warning, and backs out without saving."""
     await _tuning(pg)
-    btn = pg.locator("button.mini-btn", has_text="unified 4-stem")
+    btn = _tpanel(pg).locator("button.mini-btn", has_text="unified 4-stem")
     if not await btn.count():
         return dict(ok=False, notes=["no Separation pipeline switch in Tuning"])
     title = await btn.first.get_attribute("title")
     await btn.first.click()
     await pg.wait_for_timeout(300)
     warn = await pg.locator("text=A pipeline change swaps every track").count()
-    await pg.locator("button.mini-btn", has_text="legacy").first.click()
-    await pg.keyboard.press("Escape")
+    await _tpanel(pg).locator("button.mini-btn", has_text="legacy").first.click()
+    await pg.keyboard.press("Escape")       # the ✕ says "Close (esc)"
     await pg.wait_for_timeout(400)
     notes = []
+    if await pg.locator(".settings-drawer").count():
+        notes.append("Escape does not close the Settings drawer although its ✕ says 'Close (esc)'")
     if not warn:
         notes.append("clicking unified 4-stem shows no warning before Save")
     s = api("/api/settings").get("separation_pipeline", {}).get("value")
@@ -450,7 +462,19 @@ async def t_rate_allin1(pg, P, rng, st):
     return dict(ok=r.get("ok"), notes=notes, data=r.get("data"))
 
 
-NEW = {k[2:]: v for k, v in globals().items() if k.startswith("t_")}
+def _guarded(fn):
+    async def run(pg, P, rng, st):
+        try:
+            return await fn(pg, P, rng, st)
+        finally:
+            try:
+                await _close(pg)
+            except Exception:  # noqa: BLE001
+                pass
+    return run
+
+
+NEW = {k[2:]: _guarded(v) for k, v in globals().items() if k.startswith("t_")}
 H.TASKS.update(NEW)
 H.ARCHETYPES.clear()
 H.ARCHETYPES.update({
