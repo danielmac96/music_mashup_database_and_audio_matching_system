@@ -927,4 +927,5 @@ async def main():
         await asyncio.gather(*(one(P) for P in personas))
         f.close(); await browser.close()
 
-asyncio.run(main())
+if __name__ == "__main__":   # allin1_sim.py imports the helpers
+    asyncio.run(main())
