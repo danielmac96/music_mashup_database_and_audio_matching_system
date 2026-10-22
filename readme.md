@@ -2519,6 +2519,16 @@ python scripts/ux_sim/run.py /tmp/uxsim --fresh            # synthesise 40 track
 python scripts/ux_sim/run.py /tmp/uxsim --tasks rate,studio --archetypes mashup_producer --n 20
 ```
 
+`--allin1` runs the allin1 simulation instead: `synth.py --pickups` (vocal
+entries from −1 beat to +80 ms, a few 3/4 and drifting tracks, every beat,
+downbeat and phrase start as ground truth), allin1 simulated at its one seam
+from that truth (`allin1_fake.py`, a share of tracks read a beat late), the
+unified 4-stem files pre-placed so a pipeline switch needs no Demucs,
+`allin1_audit.py` (the data against the truth and §7's invariants, the
+pipeline round trip and the down-migration on a copy) and `allin1_sim.py`
+(personas on the Engines tab, the switches, Bulk, the Queue, phrase-placed
+pairs in the dock, Segments, Studio and the FL export).
+
 `synth.py` writes each track's mix, vocal and instrumental stems and a
 `meta.json` with the ground truth (tempo, key, every section's label and
 span); `seed.py` runs the real analysis, structure and Score library on them in
@@ -2960,6 +2970,30 @@ driven by the 100-persona browser simulation (§9) against a synthesised
        beat, pickups within 50 ms).
     5. Rate pairs from both engines in Analysis › Engines; the report then
        says which one your ears prefer.
+    **Persona simulation (2026-10-22, `run.py --allin1`, 50 personas, 40
+    synthetic tracks, allin1 simulated):** 347/365 tasks, no console or API
+    errors; the audit's data checks, the gate, the namespaces, the pipeline
+    round trip and the down-migration all held. Open, most important first:
+    1. The pickup and the phrase placement never reach the ear — the dock
+       loop, Studio and the mini studio start the vocal at its section, and
+       Studio's FL export always sends the section trims, so `session.py`
+       skips the placement (`placement: null`, the pickup cut).
+    2. A scoped dock lists instrumental-over-instrumental rows (no sections,
+       no gate, stamped `essentia_fallback`) above the vocal pairs, so the
+       Library's Best pair and the dock disagree.
+    3. A track whose allin1 bar 1 is a beat late pairs as freely as any; the
+       downbeat confidence is stored but not used.
+    4. Score library commits an empty `mashup_candidates` before refilling it,
+       so every dock reads empty while it runs.
+    5. Switching the engine does not mark the pairs stale.
+    6. Ratings in Analysis › Engines get no WHY chips (so no "timing off"),
+       and the report does not refresh after one.
+    7. Ratings of live (unstored) pairs carry no `pipeline`.
+    8. The report's "a beat or more off" is half a beat, and reads as allin1's
+       fault when the Essentia grid is the one off.
+    Then: no engine / phrase / pickup shown on Track detail, Studio, the card
+    or Help; no cost on the pipeline switch; an allin1 intro can start at the
+    first beat instead of 0 s.
     Deferred: the full-resolution embedding research sample (~75 MB a track);
     a GPU path beyond `allin1_device = cuda` (CPU-only image); passing audio
     between Demucs, allin1 and Essentia in memory (each still reads its own

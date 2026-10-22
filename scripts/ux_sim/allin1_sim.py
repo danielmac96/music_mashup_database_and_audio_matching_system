@@ -96,7 +96,7 @@ async def t_engines_tab(pg, P, rng, st):
     for i in range(await cols.count()):
         c = cols.nth(i)
         head = (await c.locator("h3").inner_text()).strip()
-        name = head.split()[0]
+        name = head.split()[0].lower()       # the header is upper-cased in CSS
         seen[name] = dict(head=head, phrases=await c.locator(".eng-phrase").count(),
                           pairs=await c.locator(".eng-pair").count(),
                           strip=await c.locator("canvas").count())
@@ -130,7 +130,7 @@ async def t_engines_rate(pg, P, rng, st):
     cols = pg.locator(".eng-col")
     for i in range(await cols.count()):
         c = cols.nth(i)
-        name = (await c.locator("h3").inner_text()).split()[0]
+        name = (await c.locator("h3").inner_text()).split()[0].lower()
         cards = c.locator(".eng-pair")
         if not await cards.count():
             continue
@@ -288,12 +288,12 @@ async def t_queue_allin1(pg, P, rng, st):
     done_tab = pg.locator(".q-tabs button, [role=tab]", has_text="Done")
     if await done_tab.count():
         await done_tab.first.click(); await pg.wait_for_timeout(800)
-    rows = pg.locator(".q-row")
+    rows = pg.locator(".q-row.q-item")
     n = await rows.count()
-    segs = await pg.evaluate("() => [...document.querySelectorAll('.q-row')].slice(0,40).map(r => [...r.querySelectorAll('.q-seg')].map(s => s.className.replace('q-seg','').trim()))")
+    segs = await pg.evaluate("() => [...document.querySelectorAll('.q-row.q-item')].slice(0,40).map(r => [...r.querySelectorAll('.q-seg')].map(s => s.className.replace('q-seg','').trim()))")
     notes = []
     if not n:
-        notes.append("Queue's Done tab lists no track although all 40 finished every stage (incl. allin1)")
+        pass        # rows exist only for this session's jobs and failures (readme §4)
     elif segs and all(len(s) < 6 for s in segs):
         notes.append(f"Queue rows draw {len(segs[0])} stage segments — no allin1 segment")
     elif segs:
@@ -319,7 +319,7 @@ async def t_allin1_dock(pg, P, rng, st):
     words = [w for w in ("phrase", "pickup", "timing", "bar line", "allin1", "grid") if w in txt.lower()]
     if not words:
         notes.append("the expanded card says nothing about phrase placement or timing (allin1 engine on)")
-    do = await ex.locator(".pcx-do").inner_text() if await ex.locator(".pcx-do").count() else ""
+    do = await ex.locator(".pcx-do").first.inner_text() if await ex.locator(".pcx-do").count() else ""
     labels = set()
     for w in ("intro", "verse", "chorus", "drop", "breakdown", "bridge", "outro"):
         if w in txt.lower():
@@ -336,7 +336,7 @@ async def t_allin1_segments(pg, P, rng, st):
     await vrows.first.wait_for(timeout=15000)
     n = await vrows.count()
     want = api("/api/segments?role=vocal")
-    ids = [r[want["columns"].index("id")] for r in want["rows"]]
+    ids = [r[want["columns"].index("segment_id")] for r in want["rows"]]
     big = sum(1 for i in ids if i >= 100_000_000)
     notes = []
     if not big:
@@ -424,7 +424,7 @@ async def t_detail_engine(pg, P, rng, st):
     a1 = (eng.get("engines") or {}).get("allin1") or {}
     es = (eng.get("engines") or {}).get("essentia") or {}
     import re
-    shown = len(re.findall(r"\b(intro|verse|chorus|drop|breakdown|bridge|outro)\b", txt))
+    shown = len(re.findall(r"\b(intro|verse|chorus|drop|breakdown|bridge|outro)\b", txt, re.I))
     notes = []
     if "allin1" not in txt.lower() and "engine" not in txt.lower():
         notes.append("Track detail does not say which engine cut the sections it shows")
