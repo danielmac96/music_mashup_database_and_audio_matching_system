@@ -212,7 +212,8 @@ def conform_stem(song_id: int, stem: str, *, start_sec: Optional[float],
                  end_sec: Optional[float], rate: float, semitones: int,
                  feat: Optional[dict] = None, sr: int = RENDER_SR,
                  on_progress: ProgressCb = None, label: str = "",
-                 db_path=None):
+                 db_path=None, anchor: Optional[float] = None,
+                 lead_out: float = 0.0):
     """One stem, trimmed to its section, conformed, and grid-aligned.
 
     Returns (samples, info) or (None, reason). `info` carries the alignment that
@@ -222,6 +223,12 @@ def conform_stem(song_id: int, stem: str, *, start_sec: Optional[float],
     phrase snapping puts boundaries on the 8-bar grid, but a section that could
     not be snapped still starts mid-phrase, and a stem that begins three beats
     into a bar is exactly the nudging this export exists to remove.
+
+    ``anchor`` (the allin1 engine's phrase placement, matcher/phrase_align)
+    replaces that first downbeat with the bar line the pair hangs off — the
+    vocal's phrase downbeat, the bed's landing — and ``lead_out`` keeps that
+    many seconds (as played) before it: the vocal's pickup, so bar 1 then sits
+    at ``lead_out`` in both files.
     """
     if stem not in STEM_TYPES:
         return None, f"unknown stem '{stem}'"
@@ -231,7 +238,11 @@ def conform_stem(song_id: int, stem: str, *, start_sec: Optional[float],
                       "separate/download it first")
 
     align = None
-    if start_sec is not None and end_sec is not None and end_sec > start_sec:
+    if anchor is not None and end_sec is not None and end_sec > anchor:
+        align = float(anchor)
+        read_start = max(0.0, align - max(0.0, lead_out) * max(rate, 1e-6))
+        read_end = end_sec
+    elif start_sec is not None and end_sec is not None and end_sec > start_sec:
         align = first_downbeat_in(feat or {}, start_sec, end_sec)
         read_start = align if align is not None else start_sec
         read_end = end_sec
@@ -248,6 +259,8 @@ def conform_stem(song_id: int, stem: str, *, start_sec: Optional[float],
         "section_start": read_start,
         "section_end": read_end,
         "snapped_to_downbeat": align is not None,
+        "anchor": anchor,
+        "lead_secs": round(lead_out, 4) if anchor is not None else 0.0,
         "rate": rate,
         "semitones": semitones,
         "duration_secs": round(len(y) / sr, 3),
@@ -495,12 +508,29 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     i_feat = (models.get_features_for_song(inst_song_id, "instrumental", db_path=fdb)
               or models.get_features_for_song(inst_song_id, "full", db_path=fdb) or {})
 
+    # The allin1 engine: hang both stems off the pair's phrase placement (the
+    # vocal's phrase downbeat on the bed's landing), keeping the pickup. A
+    # trim set in Studio is the user's and wins.
+    placement = _phrase_placement(fdb, vocal_song_id, inst_song_id, pairing, rate_inst)
+    v_anchor = b_anchor = None
+    lead = 0.0
+    if placement and placement.get("bed_landing_sec") is not None \
+            and placement.get("timing_ok") != 0:
+        lead = max(0.0, -(placement.get("vocal_pickup_ms") or 0.0) / 1000.0)
+        if "clip_start" not in v_lane:
+            v_anchor = placement.get("alignment_downbeat")
+        if "clip_start" not in b_lane:
+            b_anchor = placement.get("bed_landing_sec")
+        if v_anchor is None or b_anchor is None:
+            v_anchor = b_anchor = None
+            lead = 0.0
+
     _tick(20, "Conforming the vocal…")
     v_y, v_info = conform_stem(vocal_song_id, "vocals",
                                start_sec=v_start, end_sec=v_end,
                                rate=rate_vocal, semitones=semis_vocal, feat=v_feat,
                                on_progress=on_progress, label="Vocal: ",
-                               db_path=db_path)
+                               db_path=db_path, anchor=v_anchor, lead_out=lead)
     if v_y is None:
         _tick(None, f"Vocal: {v_info}")
         return None
@@ -511,7 +541,7 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
                                start_sec=i_start, end_sec=i_end,
                                rate=rate_inst, semitones=semis_inst, feat=i_feat,
                                on_progress=on_progress, label="Bed: ",
-                               db_path=db_path)
+                               db_path=db_path, anchor=b_anchor, lead_out=lead)
     if i_y is None:
         _tick(None, f"Instrumental: {i_info}")
         return None
@@ -527,7 +557,8 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
                                    start_sec=i_start, end_sec=i_end,
                                    rate=rate_inst, semitones=semis_inst,
                                    feat=i_feat, on_progress=on_progress,
-                                   label=f"{name.title()}: ", db_path=db_path)
+                                   label=f"{name.title()}: ", db_path=db_path,
+                                   anchor=b_anchor, lead_out=lead)
         if c_y is not None:
             components[name] = (_nudge(c_y, b_lane.get("offset_ms", 0.0)), c_info)
 
@@ -540,6 +571,10 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     components = {k: (np.pad(c, (0, length - len(c))), info)
                   for k, (c, info) in components.items()}
     click = render_click(length / RENDER_SR, target_bpm)
+    if lead and v_anchor is not None:
+        # Bar 1 sits after the pickup: the click's first downbeat goes there.
+        click = np.concatenate([np.zeros(int(round(lead * RENDER_SR)), dtype=click.dtype),
+                                click])
     click = np.pad(click, (0, max(0, length - len(click))))[:length]
 
     # Verify what was actually rendered, not what the estimates promised.
@@ -574,6 +609,10 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
         "inst": {**i_side, "conformed": i_info},
         "bed_stems": {n: info for n, (_y, info) in components.items()},
         "lock_offset_ms": None if lock_ms is None else round(lock_ms, 1),
+        # Where bar 1 is in every file: 0 unless the allin1 placement kept a
+        # pickup before it. `placement` is that placement, when it was used.
+        "bar1_at_sec": round(lead, 4) if v_anchor is not None else 0.0,
+        "placement": placement if v_anchor is not None else None,
         "vocal_section_idx": (pairing or {}).get("vocal_section_idx"),
         "inst_section_idx": (pairing or {}).get("inst_section_idx"),
         # Studio's lane state as it was applied (null: the plan's values).
@@ -596,14 +635,51 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
         ],
     }, indent=2), encoding="utf-8")
 
-    (out / "README.txt").write_text(
-        _readme(plan, v_info, i_info, target_bpm, sorted(components), lock_ms,
-                lanes=lane),
-        encoding="utf-8")
+    readme = _readme(plan, v_info, i_info, target_bpm, sorted(components), lock_ms,
+                     lanes=lane)
+    if v_anchor is not None:
+        readme += ("\n" + "=" * 68 + "\nPHRASE PLACEMENT (allin1)\n" + "=" * 68 + "\n"
+                   f"The vocal's phrase downbeat ({v_anchor:.2f} s in its track) is on the\n"
+                   f"bed's bar line at {b_anchor:.2f} s"
+                   + (f"; its {lead * 1000:.0f} ms pickup is kept, so bar 1\n"
+                      f"is at {lead:.3f} s in every file — place them at 0:00 and set\n"
+                      f"the song start marker there.\n" if lead else ".\n")
+                   + f"Downbeat error across the overlap: mean "
+                   f"{placement.get('timing_err_mean_ms')} ms, worst "
+                   f"{placement.get('timing_err_max_ms')} ms.\n")
+    (out / "README.txt").write_text(readme, encoding="utf-8")
 
     _tick(100, f"Session ready: {out.name}")
     log.info("FL session exported: %s", out)
     return out
+
+
+def _phrase_placement(db, vocal_song_id: int, inst_song_id: int,
+                      pairing: Optional[dict], rate: float) -> Optional[dict]:
+    """The allin1 engine's placement of the exported section pair
+    (matcher/phrase_align.place), or None in essentia mode / without one."""
+    if not pairing:
+        return None
+    try:
+        from database import models
+        from matcher.match import run_engine, timing_for
+        from matcher.sections import place_pair
+        engine, base = run_engine(db)
+        if base is None:
+            return None
+
+        def _sec(song_id, idx, start):
+            secs = models.get_sections(song_id, db_path=db, engine=engine)
+            return next((s for s in secs if (idx is not None and s.get("section_index") == idx)
+                         or (idx is None and s.get("start_sec") == start)), None)
+        v = _sec(vocal_song_id, pairing.get("vocal_section_idx"), pairing.get("vocal_start"))
+        i = _sec(inst_song_id, pairing.get("inst_section_idx"), pairing.get("inst_start"))
+        if not v or not i:
+            return None
+        return place_pair(v, i, rate, timing_for(base, vocal_song_id, db))
+    except Exception:  # noqa: BLE001 — the export falls back to the first downbeat
+        log.warning("phrase placement for the export failed", exc_info=True)
+        return None
 
 
 def _readme(plan: dict, v_info: dict, i_info: dict,

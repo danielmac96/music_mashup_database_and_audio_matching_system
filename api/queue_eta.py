@@ -22,23 +22,25 @@ log = logging.getLogger(__name__)
 # rows api/workers/stages._timed writes). ".cached" / ".reused" runs are left
 # out: they are what an unchanged file costs, not what the next new track will.
 POOL_GROUPS = {"download": ("download",), "quick": ("quick",), "stems": ("stems",),
-               "analysis": ("analysis", "structure")}
+               "analysis": ("analysis", "structure"), "allin1": ("allin1",)}
 # The groups one stage RECORD covers while it runs. Structure is its own record
 # on the analysis pool.
 RECORD_GROUPS = {"download": ("download",), "quick": ("quick",), "stems": ("stems",),
-                 "analysis": ("analysis",), "structure": ("structure",)}
+                 "analysis": ("analysis",), "structure": ("structure",),
+                 "allin1": ("allin1",)}
 POOL_OF = {"download": "download", "quick": "quick", "stems": "stems",
-           "analysis": "analysis", "structure": "analysis"}
+           "analysis": "analysis", "structure": "analysis", "allin1": "allin1"}
 
 _DOING = {"download": "Downloading", "quick": "Quick analysis",
           "stems": "Separating vocals", "analysis": "Analysing",
-          "structure": "Finding sections"}
+          "structure": "Finding sections", "allin1": "Finding downbeats (allin1)"}
 _WAITING_FOR = {"download": "download", "quick": "quick analysis",
-                "stems": "stems", "analysis": "analysis", "structure": "sections"}
+                "stems": "stems", "analysis": "analysis", "structure": "sections",
+                "allin1": "allin1"}
 _FAILED = {"download": "downloading", "quick": "in quick analysis",
            "stems": "separating stems", "analysis": "analysing",
-           "structure": "finding sections"}
-_STAGE_ORDER = ("download", "quick", "stems", "analysis", "structure")
+           "structure": "finding sections", "allin1": "finding downbeats (allin1)"}
+_STAGE_ORDER = ("download", "quick", "stems", "analysis", "structure", "allin1")
 
 
 def _parse(ts: Optional[str]) -> Optional[datetime]:

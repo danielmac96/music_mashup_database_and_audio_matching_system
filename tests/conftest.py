@@ -18,3 +18,8 @@ def _pin_librosa_analyzer(monkeypatch):
     # Renders keep the phase vocoder under test (exact, ffmpeg-independent);
     # tests/test_phase6_export.py opts into Rubber Band.
     monkeypatch.setenv("MASHUP_STRETCH", "librosa")
+    # The essentia engine and the legacy pipeline unless a test opts in: a
+    # developer's settings.json with allin1 on must not change what the suite
+    # scores (readme §5.5).
+    monkeypatch.setenv("MASHUP_SEGMENTATION_ENGINE", "essentia")
+    monkeypatch.setenv("MASHUP_SEPARATION_PIPELINE", "legacy_2stem")

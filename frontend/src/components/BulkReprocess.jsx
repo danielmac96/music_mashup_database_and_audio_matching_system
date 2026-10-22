@@ -50,7 +50,13 @@ export function BulkReprocess({ onQueued }) {
   const needsSeparate = stale.missing_four_stems || 0;
   const suspect = stale.suspect_audio || 0;
   const noMeta = stale.missing_metadata || 0;
-  if (!needsAnalysis && !needsSeparate && !suspect && !noMeta) return null;
+  // allin1 (readme §5.5): owed in the allin1 engine; offered either way so
+  // the Engines comparison can have both analyses.
+  const noAllin1 = stale.missing_allin1 || 0;
+  const allin1On = stale.segmentation_engine === "allin1";
+  const wrongPipeline = stale.wrong_pipeline || 0;
+  if (!needsAnalysis && !needsSeparate && !suspect && !noMeta && !noAllin1
+      && !wrongPipeline) return null;
 
   const run = async (action, scope) => {
     setBusy(true);
@@ -123,6 +129,53 @@ export function BulkReprocess({ onQueued }) {
                 ⟳ Re-download {suspect}
               </button>
             </div>
+          )}
+        </div>
+      )}
+
+      {wrongPipeline > 0 && (
+        <div className="bulk-bar">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>
+              {wrongPipeline} track{wrongPipeline === 1 ? " is" : "s are"} not on
+              the {stale.separation_pipeline} pipeline yet
+            </div>
+            <div className="faint" style={{ fontSize: 11, lineHeight: 1.45 }}>
+              Tracks whose stems for it already exist are swapped in place — no
+              separation, no analysis, nothing deleted. The rest are queued for
+              separation. Switching back later is the same swap.
+            </div>
+          </div>
+          {badge("switch_pipeline") || (
+            <button className="btn" disabled={busy || !!job}
+              title="Swap each track's stems, features and sections to the configured pipeline, queueing only those never separated that way"
+              onClick={() => run("switch_pipeline", "stale")}>
+              ⇄ Switch {wrongPipeline}
+            </button>
+          )}
+        </div>
+      )}
+
+      {noAllin1 > 0 && (
+        <div className="bulk-bar">
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 600 }}>
+              {noAllin1} track{noAllin1 === 1 ? " has" : "s have"} no allin1 analysis
+            </div>
+            <div className="faint" style={{ fontSize: 11, lineHeight: 1.45 }}>
+              {allin1On
+                ? "The allin1 engine is on: until a track has run, its pairs use its Essentia sections (marked essentia_fallback). "
+                : "Only needed for the allin1 engine, or to compare the two engines in Analysis › Engines. "}
+              allin1 finds downbeats and labelled sections — about a minute or
+              more a track on CPU, in the background, never beside Demucs.
+            </div>
+          </div>
+          {badge("allin1") || (
+            <button className="btn" disabled={busy || !!job}
+              title="Queue allin1 for every analysed track without a current allin1 analysis"
+              onClick={() => run("allin1", "stale")}>
+              ⟳ allin1 {noAllin1}
+            </button>
           )}
         </div>
       )}

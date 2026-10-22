@@ -18,6 +18,9 @@ export const STAGES = [
   ["stems", "Stems"],
   ["analysis", "Analyse"],
   ["structure", "Structure"],
+  // allin1 (readme §5.5): downbeats and labelled sections, after the analysis.
+  // Only owed in the allin1 engine or after a backfill — "off" otherwise.
+  ["allin1", "allin1"],
 ];
 
 const ACTIVE = new Set(["queued", "running"]);
@@ -74,6 +77,7 @@ const DONE_ON_TRACK = {
   // (no quick_state) is taken on its BPM.
   analysis: (t) => t.status === "analysed" || (isAnalysed(t) && !t.quick_state),
   structure: (t) => (t.section_count || 0) > 0,
+  allin1: (t) => t.allin1_state === "done" || t.allin1_state === "skipped",
 };
 
 // A single-stage job has no timeline of its own; it IS one stage.
@@ -113,7 +117,12 @@ function resolveCell(key, track, rec, job, positions, pending) {
   if (ERROR_STAGE[track.status] === key) {
     return { state: "failed", error: track.last_error, earlier: true };
   }
+  if (key === "allin1" && track.allin1_state === "failed") {
+    // Non-fatal: the track kept its Essentia sections.
+    return { state: "failed", error: track.allin1_error, earlier: true };
+  }
   if (DONE_ON_TRACK[key](track)) return { state: "done", earlier: true };
+  if (key === "allin1" && !track.allin1_state) return { state: "off" };
   return { state: pending ? "pending" : "todo" };
 }
 

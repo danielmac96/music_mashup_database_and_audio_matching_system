@@ -230,8 +230,18 @@ def top_section_pairs(vocal_sections: List[Dict], inst_sections: List[Dict],
                       bpm: Optional[float] = None,
                       limit: int = 3,
                       weights: Optional[Dict[str, float]] = None,
-                      patterns: Optional[List[Dict]] = None) -> List[Dict]:
+                      patterns: Optional[List[Dict]] = None,
+                      timing: Optional[Dict] = None) -> List[Dict]:
     """The best `limit` (vocal section x bed section) pairs, best first (E.3).
+
+    ``timing`` (the allin1 engine; None otherwise, and then nothing below
+    changes): {"tol_ms", "weight", "ratios", "vocal_phrases", "stats",
+    "engine", "engine_version", "pipeline"}. Each vocal section's best few bed
+    sections are placed by phrase (matcher/phrase_align.place); one whose
+    downbeats drift past ``tol_ms`` is dropped — the timing gate — and the
+    rest compete on the section fit blended with the timing score. A vocal
+    section with no bed section that holds is not emitted; ``stats["gated"]``
+    counts them.
 
     The candidate row is the section pair now, not the song pair: "chorus over
     drop" and "verse over breakdown" are different ideas about the same two
@@ -255,6 +265,10 @@ def top_section_pairs(vocal_sections: List[Dict], inst_sections: List[Dict],
         from matcher.patterns import current_patterns
         patterns = current_patterns()
 
+    if timing is not None:
+        return _timed_section_pairs(v_use, i_use, stretch, bpm, limit, weights,
+                                    patterns, timing)
+
     scored = []
     for vi, v in enumerate(v_use):
         best, best_score = None, -1.0
@@ -270,12 +284,69 @@ def top_section_pairs(vocal_sections: List[Dict], inst_sections: List[Dict],
             for sc, (v, i, vi, ii) in scored[:max(1, limit)]]
 
 
+# How many of a vocal section's best bed sections (by section fit) are placed
+# and timed. Placement is cheap but not free, and the section fit already ranks
+# the musically plausible ones first.
+TIMED_CANDIDATES = 4
+
+
+def timed_fit(score: float, placement: Dict, weight: float) -> float:
+    """The section fit with the timing score blended in. An unjudged pair (no
+    grid) takes a neutral 0.5 — unknown is not bad."""
+    st = placement.get("score_timing")
+    st = 0.5 if st is None else float(st)
+    return (1.0 - weight) * score + weight * st
+
+
+def place_pair(v: Dict, i: Dict, stretch: float, timing: Dict) -> Dict:
+    from matcher.phrase_align import place
+    return place(v, i, stretch, phrases=timing.get("vocal_phrases"),
+                 tol_ms=timing.get("tol_ms", 25.0),
+                 ratios=timing.get("ratios", (0.25, 0.5, 1.0, 2.0, 4.0)))
+
+
+def _timed_section_pairs(v_use, i_use, stretch, bpm, limit, weights, patterns,
+                         timing: Dict) -> List[Dict]:
+    w = float(timing.get("weight", 0.3))
+    stats = timing.setdefault("stats", {})
+    scored = []
+    for vi, v in enumerate(v_use):
+        ranked = sorted(((score_section_pair(v, i, stretch, bpm, weights, patterns), ii, i)
+                         for ii, i in enumerate(i_use)), key=lambda t: -t[0])
+        best = None
+        tried = 0
+        for sc, ii, i in ranked[:TIMED_CANDIDATES]:
+            placement = place_pair(v, i, stretch, timing)
+            tried += 1
+            if placement.get("timing_ok") == 0:
+                continue                         # the timing gate
+            fit = timed_fit(sc, placement, w)
+            if best is None or fit > best[0]:
+                best = (fit, (v, i, vi, ii, placement))
+        if best is None:
+            stats["gated"] = stats.get("gated", 0) + 1
+            continue
+        stats["passed"] = stats.get("passed", 0) + 1
+        scored.append(best)
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [_pair_row(v, i, vi, ii, sc, stretch, bpm, patterns=patterns,
+                      placement=placement, timing=timing)
+            for sc, (v, i, vi, ii, placement) in scored[:max(1, limit)]]
+
+
 def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
               stretch: float, bpm: Optional[float],
               semitones: Optional[int] = None,
-              patterns: Optional[List[Dict]] = None) -> Dict:
+              patterns: Optional[List[Dict]] = None,
+              placement: Optional[Dict] = None,
+              timing: Optional[Dict] = None) -> Dict:
     """The stored shape of one section pair. Shared by both entry points so a
-    row means the same thing however it was chosen."""
+    row means the same thing however it was chosen.
+
+    ``placement`` (matcher/phrase_align.place, allin1 engine) replaces the
+    first-downbeat alignment: the offset hangs the pair off the vocal's phrase
+    and the bed's landing, and the timing fields and the engine provenance
+    are carried onto the row."""
     pf = phrase_fit(
         float(v.get("end_sec") or 0) - float(v.get("start_sec") or 0),
         (float(i.get("end_sec") or 0) - float(i.get("start_sec") or 0))
@@ -293,11 +364,25 @@ def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
     # so it costs no audio and runs for every candidate rather than only for the
     # ones that reach export.
     aligned = align(v, i, stretch, semitones, target_bpm=bpm)
+    extra: Dict = {}
+    if placement is not None:
+        aligned["alignment_downbeat"] = placement.get("alignment_downbeat")
+        aligned["alignment_offset"] = placement.get("alignment_offset")
+        extra = {k: placement.get(k) for k in (
+            "score_timing", "timing_ok", "timing_err_mean_ms", "timing_err_max_ms",
+            "vocal_phrase_start", "vocal_pickup_ms", "bed_landing_sec")}
+    if timing is not None:
+        from database.models import section_namespace
+        own = section_namespace(_index_of(v, vi)) == "allin1" \
+            and section_namespace(_index_of(i, ii)) == "allin1"
+        extra["engine"] = "allin1" if own else "essentia_fallback"
+        extra["engine_version"] = timing.get("engine_version") if own else None
     row_bars = {"section_bars_vocal": pf.get("vocal_bars"),
                 "section_loop_repeats": pf.get("repeats")}
     return {
         **parts,
         **aligned,
+        **extra,
         "reason": describe(v, i, row_bars, aligned, bpm, bpm),
         "vocal_section_idx": _index_of(v, vi),
         "inst_section_idx": _index_of(i, ii),

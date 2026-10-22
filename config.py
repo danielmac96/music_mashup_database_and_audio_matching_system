@@ -168,6 +168,17 @@ def settings_provenance() -> dict:
             "source": "env" if os.environ.get("MASHUP_ESSENTIA_RHYTHM") else "settings"},
         "analysis_cache": {"value": current_analysis_cache(),
                            "source": "env" if os.environ.get("MASHUP_ANALYSIS_CACHE") else "settings"},
+        "separation_pipeline": {
+            "value": current_separation_pipeline(),
+            "source": "env" if os.environ.get("MASHUP_SEPARATION_PIPELINE") else "settings"},
+        "segmentation_engine": {
+            "value": current_segmentation_engine(),
+            "source": "env" if os.environ.get("MASHUP_SEGMENTATION_ENGINE") else "settings"},
+        "allin1_device": {"value": current_allin1_device(),
+                          "source": "env" if os.environ.get("MASHUP_ALLIN1_DEVICE") else "settings"},
+        "keep_analysis_stems": {
+            "value": current_keep_analysis_stems(),
+            "source": "env" if os.environ.get("MASHUP_KEEP_ANALYSIS_STEMS") else "settings"},
         # Scoring knobs. `source` is "env" only when pinned by an environment
         # variable, in which case the UI must show the control as locked rather
         # than letting the user save a value that will be ignored.
@@ -351,6 +362,56 @@ def current_essentia_rhythm_method() -> str:
     return _live_choice("MASHUP_ESSENTIA_RHYTHM", "essentia_rhythm_method",
                         ESSENTIA_RHYTHM_METHODS, "degara")
 
+
+# ── Separation pipeline and segmentation engine (allin1, readme §5.5) ─────────
+# Two independent switches, both re-read live.
+#   separation_pipeline  legacy_2stem — the stems the app has always made
+#                                       (stem_separator / stem_mode decide how).
+#                        unified_4stem — one htdemucs 4-source pass whose stems
+#                                       feed allin1 AND are summed into the
+#                                       playback vocal/instrumental. Written to
+#                                       AUDIO_DIR/unified, never over legacy files.
+#   segmentation_engine  essentia — sections cut on the Essentia beat grid.
+#                        allin1   — allin1's downbeats and labelled sections,
+#                                   phrase placement and the timing gate.
+# Flipping either back is a row swap or a re-score, never a re-analysis
+# (models.activate_pipeline; readme §2 "Rollback").
+SEPARATION_PIPELINES = ("legacy_2stem", "unified_4stem")
+SEGMENTATION_ENGINES = ("essentia", "allin1")
+UNIFIED_DIR = AUDIO_DIR / "unified"
+ALLIN1_MODEL = "harmonix-all"         # the 8-fold ensemble allin1 ships
+ALLIN1_DEVICES = ("cpu", "cuda")
+
+
+def current_separation_pipeline() -> str:
+    return _live_choice("MASHUP_SEPARATION_PIPELINE", "separation_pipeline",
+                        SEPARATION_PIPELINES, "legacy_2stem")
+
+
+def current_segmentation_engine() -> str:
+    return _live_choice("MASHUP_SEGMENTATION_ENGINE", "segmentation_engine",
+                        SEGMENTATION_ENGINES, "essentia")
+
+
+def current_allin1_device() -> str:
+    """cpu unless set. The Docker image ships CPU torch; cuda falls back to cpu
+    in analysis/allin1_runner when torch sees no GPU."""
+    return _live_choice("MASHUP_ALLIN1_DEVICE", "allin1_device", ALLIN1_DEVICES, "cpu")
+
+
+def current_keep_analysis_stems() -> bool:
+    """Keep the unified pipeline's drums/bass/other after analysis (default) —
+    what lets allin1 re-run without separating again. Off deletes them once
+    allin1 has stored its result; the playback stems are never deleted."""
+    raw = os.environ.get("MASHUP_KEEP_ANALYSIS_STEMS")
+    if raw is None:
+        raw = _load_settings().get("keep_analysis_stems")
+    if raw is None or str(raw).strip() == "":
+        return True
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "off", "no")
+
 # ── Structure detection (sections: intro/verse/chorus/drop/…) ─────────────────
 SECTION_MIN_LEN_SECS  = 12.0   # minimum section length
 SECTION_MAX_COUNT     = 14     # cap on sections per track
@@ -512,6 +573,10 @@ ENRICH_WORKERS   = _resolve_int("MASHUP_ENRICH_WORKERS", "enrich_workers", 5)
 # in sequence on 4 cores, measured), so a process pool would buy little and
 # cost the shared decode cache.
 QUICK_WORKERS    = _resolve_int("MASHUP_QUICK_WORKERS", "quick_workers", 2)
+# allin1 (beats, downbeats, labelled sections): one torch model held per worker,
+# and it shares the stems gate so it never runs beside Demucs (both want every
+# core on CPU).
+ALLIN1_WORKERS   = _resolve_int("MASHUP_ALLIN1_WORKERS", "allin1_workers", 1)
 # Threads a Demucs / MDX run may use. Left alone, torch takes every core and the
 # quick tier stalls behind it; one core is kept back for it by default.
 DEMUCS_THREADS   = _resolve_int("MASHUP_DEMUCS_THREADS", "demucs_threads",
@@ -613,6 +678,28 @@ MAX_SECTION_PAIRS_PER_SONG_PAIR = 3
 # a worse one.
 MAX_CANDIDATE_ROWS = 200_000
 
+# ── Phrase placement and the timing gate (allin1 engine, readme §5.7) ─────────
+# After the bed is conformed to the vocal and placed so the vocal's phrase
+# downbeat sits on the bed's landing downbeat, every later downbeat in the
+# overlap must stay within TIMING_TOL_MS of its partner, or the pair is dropped
+# (a hard gate, like BPM). TIMING_WEIGHT blends the timing score into the
+# section fit in allin1 mode only; essentia mode is unchanged.
+TIMING_TOL_MS = 25.0
+TIMING_WEIGHT = 0.30
+# Allowed vocal-bars : bed-bars ratios. 1 = 16 over 16; 2 = the bed's 16 under
+# an 8-bar vocal repeated; 0.5 = an 8-bar bed looped under 16 bars of vocal.
+TIMING_PHRASE_RATIOS = (0.25, 0.5, 1.0, 2.0, 4.0)
+# Phrase detection on the vocal stem: a sung onset after at least this much
+# quiet (or one beat, whichever is longer) starts a phrase; an onset more than
+# PHRASE_PICKUP_MAX_BEATS from its nearest downbeat is not a phrase start.
+PHRASE_GAP_SECS = 0.6
+PHRASE_MIN_SUNG_SECS = 0.4
+PHRASE_PICKUP_MAX_BEATS = 2.0
+# allin1 resource limits: longer tracks (DJ sets) are skipped with a reason,
+# and a run whose resident memory would pass the budget refuses rather than OOM.
+ALLIN1_MAX_SECS = 900.0
+ALLIN1_MEM_BUDGET_MB = 6000
+
 
 # ── Live-read scoring knobs (Settings UI) ─────────────────────────────────────
 # The constants above bind at import. score_all_pairs re-imports them per call,
@@ -633,8 +720,14 @@ _TUNABLE_FLOATS = {
     "bpm_max_diff":      ("MASHUP_BPM_MAX_DIFF", "BPM_MAX_DIFF", 1.0, 60.0),
     "key_min_score":     ("MASHUP_KEY_MIN_SCORE", "KEY_MIN_SCORE", 0.0, 1.0),
     "bpm_max_diff_model": ("MASHUP_BPM_MAX_DIFF_MODEL", "BPM_MAX_DIFF_MODEL", 1.0, 60.0),
+    "timing_tol_ms":     ("MASHUP_TIMING_TOL_MS", "TIMING_TOL_MS", 5.0, 250.0),
+    "timing_weight":     ("MASHUP_TIMING_WEIGHT", "TIMING_WEIGHT", 0.0, 1.0),
+    "phrase_gap_secs":   ("MASHUP_PHRASE_GAP_SECS", "PHRASE_GAP_SECS", 0.1, 4.0),
+    "allin1_max_secs":   ("MASHUP_ALLIN1_MAX_SECS", "ALLIN1_MAX_SECS", 30.0, 7200.0),
 }
 _TUNABLE_INTS = {
+    "allin1_mem_budget_mb": ("MASHUP_ALLIN1_MEM_BUDGET_MB", "ALLIN1_MEM_BUDGET_MB",
+                             500, 256_000),
     "max_section_pairs": ("MASHUP_MAX_SECTION_PAIRS",
                           "MAX_SECTION_PAIRS_PER_SONG_PAIR", 1, 8),
     "max_candidate_rows": ("MASHUP_MAX_CANDIDATE_ROWS",

@@ -114,6 +114,26 @@ def _key_voters() -> list:
     return list(KEY_PROFILES)
 
 
+def _allin1_params() -> dict:
+    """allin1's version, model and pooling: an upgrade or a different
+    ensemble recomputes rather than mixing grids from two models."""
+    from config import ALLIN1_MODEL
+    try:
+        from analysis.allin1_runner import POOLING, version
+        ver, pooling = version(), POOLING
+    except Exception:  # noqa: BLE001
+        ver, pooling = None, None
+    return {"allin1": ver, "model": ALLIN1_MODEL, "pooling": pooling}
+
+
+def _phrase_params() -> dict:
+    from config import (HOP_LENGTH, PHRASE_MIN_SUNG_SECS,
+                        PHRASE_PICKUP_MAX_BEATS, SAMPLE_RATE, current_float)
+    return {"sr": SAMPLE_RATE, "hop": HOP_LENGTH,
+            "gap": current_float("phrase_gap_secs"), "min_sung": PHRASE_MIN_SUNG_SECS,
+            "pickup_max_beats": PHRASE_PICKUP_MAX_BEATS}
+
+
 _GROUPS = (
     # v2: BPM fitted through the beats, not librosa's tempogram bin.
     FeatureGroup("librosa.tempo", 2, "librosa", 1, _analysis_params(),
@@ -168,6 +188,17 @@ _GROUPS = (
     FeatureGroup("essentia.structure", 4, "essentia", 1, _structure_params,
                  "sections on the Essentia beat grid (the librosa segmenter fed "
                  "essentia.rhythm's beats and phase)"),
+    # ── allin1 (analysis/allin1_runner.py, readme §5.5) ───────────────────────
+    FeatureGroup("allin1.analysis", 1, "allin1", 2, _allin1_params,
+                 "full mix + the 4 Demucs sources: beats, downbeats, beat-in-bar, "
+                 "BPM, labelled segments, activation and embedding summaries"),
+    FeatureGroup("allin1.structure", 1, "allin1", 2,
+                 lambda: {**_structure_params(), **_allin1_params()},
+                 "sections on allin1's segments and downbeats, measured by the "
+                 "same per-section code as the Essentia cut"),
+    FeatureGroup("vocal.phrases", 1, "librosa", 2, _phrase_params,
+                 "vocal stem: sung phrase starts snapped to a downbeat, with the "
+                 "signed pickup, grouped into 4/8/16-bar phrases"),
 )
 
 GROUPS: Dict[str, FeatureGroup] = {g.name: g for g in _GROUPS}
