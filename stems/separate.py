@@ -26,9 +26,25 @@ from pathlib import Path
 from config import (
     BASS_DIR, DATA_DIR, DEMUCS_MODEL, DEMUCS_SOURCES, DRUMS_DIR,
     INSTRUMENTALS_DIR, INSTRUMENTAL_SOURCES, MDX_MODEL, OTHER_DIR, STEM_FORMAT,
-    VOCALS_DIR, current_stem_mode, current_stem_separator,
+    UNIFIED_DIR, VOCALS_DIR, current_stem_mode, current_stem_separator,
     sanitize_filename_chars,
 )
+
+# The unified pipeline (config.SEPARATION_PIPELINES): one htdemucs 4-source pass
+# whose sources feed allin1 and sum into the playback stems. Its own tree, so a
+# legacy stem file is never overwritten — switching back is a row swap
+# (database/alignment.activate_pipeline), not a re-separation.
+UNIFIED_TAG_SUFFIX = ":unified"
+
+
+def unified_dirs() -> Dict[str, Path]:
+    return {"vocals": UNIFIED_DIR / "vocals", "instrumental": UNIFIED_DIR / "instrumentals",
+            "drums": UNIFIED_DIR / "drums", "bass": UNIFIED_DIR / "bass",
+            "other": UNIFIED_DIR / "other"}
+
+
+def unified_tag() -> str:
+    return f"demucs:{DEMUCS_MODEL}:4{UNIFIED_TAG_SUFFIX}"
 
 # Where each Demucs source is written.
 _SOURCE_DIRS = {
@@ -79,7 +95,13 @@ def separate(song_id: int, title: str, audio_path: Path,
              on_progress: ProgressCb = None,
              separator: Optional[str] = None,
              force: bool = False,
-             mode: Optional[str] = None) -> Optional[Dict]:
+             mode: Optional[str] = None,
+             unified: bool = False) -> Optional[Dict]:
+    """``unified`` — the unified pipeline: htdemucs, four sources, written to
+    UNIFIED_DIR, tagged unified_tag(). The separator and mode settings then do
+    not apply (allin1 is trained on htdemucs's four sources)."""
+    if unified:
+        separator, mode = "demucs", "four"
     separator = separator or current_stem_separator()
     safe_title  = sanitize_filename_chars(title)[:40]
     safe_artist = sanitize_filename_chars(artist)[:30]
@@ -102,7 +124,8 @@ def separate(song_id: int, title: str, audio_path: Path,
 
     wanted = (["vocals", "instrumental"] if mode == "two"
               else ["vocals", "instrumental", "drums", "bass", "other"])
-    dirs = {"instrumental": INSTRUMENTALS_DIR, **_SOURCE_DIRS}
+    dirs = unified_dirs() if unified else {"instrumental": INSTRUMENTALS_DIR,
+                                           **_SOURCE_DIRS}
 
     if not force:
         have = {k: _existing(dirs[k], k) for k in wanted}
@@ -116,8 +139,8 @@ def separate(song_id: int, title: str, audio_path: Path,
     for d in set(dirs.values()):
         d.mkdir(parents=True, exist_ok=True)
 
-    vocals_path       = _p(VOCALS_DIR, "vocals")
-    instrumental_path = _p(INSTRUMENTALS_DIR, "instrumental")
+    vocals_path       = _p(dirs["vocals"], "vocals")
+    instrumental_path = _p(dirs["instrumental"], "instrumental")
 
     tmp_dir = Path(tempfile.gettempdir()) / f"mashup_tmp_{song_id:04d}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -126,11 +149,12 @@ def separate(song_id: int, title: str, audio_path: Path,
         result = _run_mdx(audio_path, tmp_dir, vocals_path, instrumental_path, on_progress)
     elif mode == "four":
         result = _run_demucs_four(audio_path, tmp_dir,
-                                  {k: _p(dirs[k], k) for k in wanted}, on_progress)
+                                  {k: _p(dirs[k], k) for k in wanted}, on_progress,
+                                  subtype="PCM_24" if unified else None)
     else:
         result = _run_demucs(audio_path, tmp_dir, vocals_path, instrumental_path, on_progress)
     if result is not None:
-        result["separator"] = separator_tag(separator, mode)
+        result["separator"] = unified_tag() if unified else separator_tag(separator, mode)
     return result
 
 
@@ -254,7 +278,8 @@ def _run_mdx(audio_path: Path, tmp_dir: Path,
 
 def _run_demucs_four(audio_path: Path, tmp_dir: Path,
                      out_paths: Dict[str, Path],
-                     on_progress: ProgressCb = None) -> Optional[Dict]:
+                     on_progress: ProgressCb = None,
+                     subtype: Optional[str] = None) -> Optional[Dict]:
     """Full four-source Demucs: drums / bass / other / vocals.
 
     Also writes `instrumental` as the sum of drums+bass+other, so every existing
@@ -319,7 +344,7 @@ def _run_demucs_four(audio_path: Path, tmp_dir: Path,
         # Transcode each source to the configured format.
         for src in DEMUCS_SOURCES:
             data, sr = sf.read(str(raw[src]))
-            sf.write(str(out_paths[src]), data, sr)
+            sf.write(str(out_paths[src]), data, sr, subtype=subtype)
             out[src] = out_paths[src]
 
         # instrumental = drums + bass + other, summed at the source sample rate.
@@ -332,10 +357,12 @@ def _run_demucs_four(audio_path: Path, tmp_dir: Path,
         for src in INSTRUMENTAL_SOURCES:
             data, sr = sf.read(str(raw[src]))
             mix = data if mix is None else mix + data
+        # Clip protection only: scaled down when (and only when) the sum would
+        # clip, never normalised or limited otherwise.
         peak = float(np.max(np.abs(mix))) if mix is not None else 0.0
         if peak > 1.0:
             mix = mix / peak
-        sf.write(str(out_paths["instrumental"]), mix, sr)
+        sf.write(str(out_paths["instrumental"]), mix, sr, subtype=subtype)
         out["instrumental"] = out_paths["instrumental"]
     except Exception:  # noqa: BLE001
         log.exception("failed writing four-stem output")

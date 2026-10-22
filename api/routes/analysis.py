@@ -95,7 +95,24 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
         "agreement": _agreement([r for r in rows
                                  if not stem_type or r["stem_type"] == stem_type]),
         "groups": describe(),
+        # The segmentation engine and separation pipeline (readme §5.5): what
+        # is on, and whether allin1 can run here at all.
+        "segmentation": _segmentation_status(),
     }
+
+
+def _segmentation_status() -> dict:
+    import config
+    from analysis import allin1_runner
+    why = allin1_runner.missing()
+    return {"engine": config.current_segmentation_engine(),
+            "pipeline": config.current_separation_pipeline(),
+            "allin1": {"available": why is None, "missing": why,
+                       "version": allin1_runner.version(),
+                       "device": config.current_allin1_device()},
+            # allin1 mode with allin1 unable to run: tracks keep their
+            # Essentia sections, rows say essentia_fallback.
+            "blocked": config.current_segmentation_engine() == "allin1" and why is not None}
 
 
 # ── Embeddings ───────────────────────────────────────────────────────────────
@@ -188,3 +205,25 @@ def save_attribute_visibility(req: VisibilityRequest) -> dict:
            "detail": list(dict.fromkeys(req.detail))}
     set_pref("attribute_visibility", vis)
     return vis
+
+
+# ── The segmentation engines side by side (readme §4 Analysis › Engines) ──────
+
+@router.get("/engines/{song_id}")
+def engines(song_id: int, limit: int = 10) -> dict:
+    """One track under both segmentation engines: sections, bar lines, vocal
+    phrases and the pairs each would build from its best vocal section
+    (matcher/engine_compare.engines_view), plus how far the two grids agree."""
+    from matcher.engine_compare import engines_view
+    out = engines_view(song_id, limit=max(1, min(int(limit), 50)))
+    if out is None:
+        raise HTTPException(status_code=404, detail="track not found")
+    return out
+
+
+@router.get("/engine-report")
+def engine_report() -> dict:
+    """Library-wide evidence for choosing an engine: downbeat agreement, the
+    timing gate's pass share and error spread, and ratings per engine."""
+    from matcher.engine_compare import engine_report as _report
+    return _report()

@@ -405,13 +405,79 @@ def _section_bands(band_frames: Optional[np.ndarray], start: float, end: float,
     return [round(float(v / total), 6) for v in per_band]
 
 
+# allin1's section vocabulary (allin1.config.HARMONIX_LABELS) → the app's
+# (matcher/patterns.py). 'inst' and 'solo' are decided by measurement: an
+# instrumental section loud enough to be the track's peak is the drop, else a
+# breakdown — the same rule label_segments applies to a voiceless section.
+_ALLIN1_FIXED = {"intro": "intro", "outro": "outro", "verse": "verse",
+                 "chorus": "chorus", "bridge": "bridge", "break": "breakdown"}
+
+
+def _fixed_ranges(segments: list, beat_times) -> Optional[list]:
+    """allin1 segments → [(first beat index, last beat index, label)].
+
+    allin1 frames the track with 'start' / 'end' segments over the silence at
+    either end; they are folded into their neighbour rather than kept as
+    sections. Each boundary is moved to the nearest beat — allin1 already put
+    it on a downbeat, so this only absorbs rounding."""
+    segs = [list(s[:3]) for s in segments if float(s[1]) > float(s[0])]
+    if not segs or len(beat_times) < 2:
+        return None
+    while len(segs) > 1 and segs[0][2] == "start":
+        segs[1][0] = segs[0][0]
+        segs.pop(0)
+    while len(segs) > 1 and segs[-1][2] == "end":
+        segs[-2][1] = segs[-1][1]
+        segs.pop()
+    bt = np.asarray(beat_times, dtype=float)
+    out = []
+    for start, end, label in segs:
+        a = int(np.argmin(np.abs(bt - float(start))))
+        b = int(np.argmin(np.abs(bt - float(end))))
+        if b <= a:
+            continue
+        if out and a < out[-1][1]:
+            a = out[-1][1]
+        if b > a:
+            out.append((a, b, str(label)))
+    if not out:
+        return None
+    # The first section starts with the track, as the Essentia cut does.
+    out[0] = (0, out[0][1], out[0][2])
+    out[-1] = (out[-1][0], len(bt) - 1, out[-1][2])
+    return out
+
+
+def allin1_label(engine_label: str, energy: Optional[float],
+                 vocal_presence: Optional[float], median_energy: float) -> str:
+    if engine_label in _ALLIN1_FIXED:
+        return _ALLIN1_FIXED[engine_label]
+    if engine_label in ("start", "end"):
+        return "intro" if engine_label == "start" else "outro"
+    # inst / solo: what a listener calls it depends on how loud it is.
+    e = energy if energy is not None else 0.0
+    if vocal_presence is not None and vocal_presence >= 0.4 and engine_label == "solo":
+        return "bridge"
+    return "drop" if (e >= 0.7 or (e >= median_energy and e >= 0.45)) else "breakdown"
+
+
+def allin1_labels(segs: List[dict], engine_labels: List[str]) -> None:
+    energies = [s.get("energy") for s in segs if s.get("energy") is not None]
+    median = float(np.median(energies)) if energies else 0.0
+    for s, lab in zip(segs, engine_labels):
+        s["engine_label"] = lab
+        s["label"] = allin1_label(lab, s.get("energy"), s.get("vocal_presence"), median)
+        s["confidence"] = 0.8
+
+
 def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
                     inst_path: Optional[Path] = None,
                     bass_path: Optional[Path] = None,
                     on_progress: ProgressCb = None,
                     timings: Optional[dict] = None,
                     grid: Optional[dict] = None,
-                    melody: Optional[dict] = None) -> List[dict]:
+                    melody: Optional[dict] = None,
+                    fixed_segments: Optional[list] = None) -> List[dict]:
     """Analyse the full mix (and the stems when available) and return an
     ordered list of section dicts: start_sec, end_sec, label, energy,
     vocal_presence, repetition, confidence. Returns [] on failure.
@@ -440,6 +506,13 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     ``melody`` — {"step": secs, "f0": [Hz, 0 = unvoiced]} — the vocal stem's
     pitch curve (essentia.melody). Each section then carries ``f0``, the sung
     range and centre inside it (analysis/vocals.f0_summary).
+
+    ``fixed_segments`` — [[start, end, allin1 label], ...] — the allin1 engine:
+    the boundaries are allin1's (already on its downbeats), so the novelty
+    search and the phrase snap are skipped; ``grid["downbeats"]`` (allin1's)
+    are each section's bar lines instead of every 4th beat; labels are mapped
+    from allin1's vocabulary (allin1_label). Every per-section measurement is
+    the same code as the Essentia cut, so the two engines' sections compare.
 
     With the stems present each section also carries, measured on them:
     ``vocal_activity`` (share of frames with a voice, analysis/vocals.py) and
@@ -580,8 +653,9 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     min_beats = max(8, int(round(SECTION_MIN_LEN_SECS / max(beat_dur, 1e-3))))
 
     _phase("boundaries", "Finding section boundaries…")
-    bounds = _novelty_boundaries(X, min_beats=min_beats,
-                                 max_sections=SECTION_MAX_COUNT)
+    fixed = _fixed_ranges(fixed_segments, beat_times) if fixed_segments else None
+    bounds = [] if fixed is not None else _novelty_boundaries(
+        X, min_beats=min_beats, max_sections=SECTION_MAX_COUNT)
 
     # Snap to the 8-bar phrase grid, measured from this track's own downbeat.
     # The phase is recomputed here rather than read from `features`: analysis
@@ -595,19 +669,23 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         phase = int(grid["beat_phase"]) % BEATS_PER_BAR
     else:
         phase = _pick_beat_phase(onset_env, beats)
-    bounds, snapped = snap_boundaries_to_phrases(
-        bounds, phase, len(beat_times), min_beats)
+    if fixed is None:
+        bounds, snapped = snap_boundaries_to_phrases(
+            bounds, phase, len(beat_times), min_beats)
 
     # Beat-index boundaries → [start, end) segments in seconds. Each section
     # inherits the alignment of the boundary that starts it; the first starts at
     # the top of the track, which is not a detected boundary to doubt.
     edges = [0] + bounds + [len(beat_times) - 1]
-    aligned = [True] + snapped
+    aligned = [True] + (snapped if fixed is None else [])
     seg_ranges = []
-    for idx, (a, b) in enumerate(zip(edges[:-1], edges[1:])):
-        if b <= a:
-            continue
-        seg_ranges.append((a, b, aligned[idx]))
+    if fixed is not None:
+        seg_ranges = [(a, b, True) for a, b, _l in fixed]
+    else:
+        for idx, (a, b) in enumerate(zip(edges[:-1], edges[1:])):
+            if b <= a:
+                continue
+            seg_ranges.append((a, b, aligned[idx]))
     if not seg_ranges:
         _phase(None)
         return []
@@ -686,8 +764,17 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         bar_count = round(beat_count / BEATS_PER_BAR, 3) if beat_count else 0.0
         # Bar lines, on the track's phase so a section's downbeats agree with
         # every other consumer of beat_phase (render/session.py, hooks.py).
-        downbeats = [round(float(t), 4) for i, t in enumerate(seg_beats)
-                     if (a + i) % BEATS_PER_BAR == phase]
+        if grid and grid.get("downbeats"):
+            # The model's own bar lines (allin1): no 4/4 assumption, no phase.
+            lo = float(seg_beats[0]) - 1e-3 if len(seg_beats) else start_t
+            hi = float(seg_beats[-1]) if len(seg_beats) else end_t
+            downbeats = [round(float(t), 4) for t in grid["downbeats"]
+                         if lo <= float(t) < hi]
+            if downbeats:
+                bar_count = float(len(downbeats))
+        else:
+            downbeats = [round(float(t), 4) for i, t in enumerate(seg_beats)
+                         if (a + i) % BEATS_PER_BAR == phase]
 
         seg_curve = rms_b[a:b]
         energy_abs = float(seg_curve.mean()) if len(seg_curve) else None
@@ -746,8 +833,11 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     for i, s in enumerate(segs):
         s["repetition"] = int((sim[i] >= SECTION_SIM_THRESHOLD).sum())
 
-    label_segments(segs, has_vocals=vocal_rms is not None)
-    apply_phrase_alignment(segs)
+    if fixed is not None:
+        allin1_labels(segs, [lab for _a, _b, lab in fixed])
+    else:
+        label_segments(segs, has_vocals=vocal_rms is not None)
+        apply_phrase_alignment(segs)
     _phase(None)
 
     log.info("  → " + ", ".join(

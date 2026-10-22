@@ -52,6 +52,14 @@ ACTIONS = {
     # onto rows whose audio and analysis are already fine. `status` is unused
     # and deliberately blank — see _backfill_metadata.
     "metadata": {"status": "", "label": "refreshing metadata"},
+    # allin1 backfill (readme §5.5): rewinds nothing — it marks the track
+    # allin1_state='queued' and the pipeline routes it to the allin1 stage.
+    # Resumable for free: what is left is re-derived from the database.
+    "allin1": {"status": "", "label": "allin1 analysis"},
+    # Make every track live on the configured separation pipeline: a row swap
+    # where that pipeline's stems already exist (no audio work), a
+    # re-separation queued where they never did.
+    "switch_pipeline": {"status": "", "label": "switching separation pipeline"},
 }
 
 
@@ -74,6 +82,14 @@ def run(job_id: str, action: str, song_ids: list[int]) -> None:
 
     if action == "metadata":
         _backfill_metadata(job_id, song_ids)
+        return
+
+    if action == "allin1":
+        _queue_allin1(job_id, spec, song_ids)
+        return
+
+    if action == "switch_pipeline":
+        switch_pipeline(job_id, song_ids)
         return
 
     # Imported here, not at module scope: get_conn's default db_path binds at
@@ -111,6 +127,87 @@ def _done(job_id: str, action: str, spec: dict, queued: int, failed: int,
                     f"{spec['label']}"
                     + (f" · {failed} could not be queued" if failed else "")),
     })
+
+
+# ── allin1 and the separation pipeline (readme §5.5, §2 "Rollback") ──────────
+
+_ALLIN1_STALE_SQL = """s.status='analysed' AND (
+        COALESCE(s.allin1_state, '') IN ('', 'failed', 'queued')
+     OR NOT EXISTS (SELECT 1 FROM allin1_analysis a WHERE a.song_id = s.id
+                    AND a.pipeline = COALESCE(s.separation_pipeline, 'legacy_2stem')))
+     AND COALESCE(s.allin1_state, '') != 'skipped'"""
+
+
+def _queue_allin1(job_id: str, spec: dict, song_ids: list[int]) -> None:
+    from database.alignment import set_allin1_state
+    queued, failed = 0, 0
+    for n, song_id in enumerate(song_ids, start=1):
+        try:
+            set_allin1_state(song_id, "queued")
+            queue_runner.enqueue_song(song_id, priority=PRIORITY_BACKFILL)
+            queued += 1
+        except Exception:  # noqa: BLE001
+            log.exception("bulk allin1 failed to queue song %s", song_id)
+            failed += 1
+        if n % 10 == 0 or n == len(song_ids):
+            jobs.update(job_id, progress=int(100 * n / len(song_ids)),
+                        message=f"Queued {n}/{len(song_ids)} for allin1…")
+    _done(job_id, "allin1", spec, queued, failed)
+
+
+def switch_pipeline(job_id: str, song_ids: list[int]) -> dict:
+    """Activate the configured separation pipeline for each track. Swapped
+    tracks need nothing else (their pairs go stale; Score library refreshes
+    them); the rest are rewound to 'downloaded' and queued for separation.
+    One failing track never stops the batch, and a failed swap leaves the
+    track exactly as it was (activate_pipeline is one transaction)."""
+    from config import current_separation_pipeline
+    from database.alignment import activate_pipeline
+    from database.models import update_song_status
+    target = current_separation_pipeline()
+    counts = {"swapped": 0, "queued": 0, "already": 0, "failed": 0}
+    for n, song_id in enumerate(song_ids, start=1):
+        try:
+            outcome = activate_pipeline(song_id, target)
+            if outcome == "needs_processing":
+                update_song_status(song_id, "downloaded")
+                queue_runner.enqueue_song(song_id, priority=PRIORITY_BACKFILL)
+                counts["queued"] += 1
+            else:
+                counts[outcome] += 1
+        except Exception:  # noqa: BLE001
+            log.exception("pipeline switch failed for song %s", song_id)
+            counts["failed"] += 1
+        if n % 10 == 0 or n == len(song_ids):
+            jobs.update(job_id, progress=int(100 * n / len(song_ids)),
+                        message=f"Switched {n}/{len(song_ids)} to {target}…")
+    jobs.done(job_id, {
+        "action": "switch_pipeline", "pipeline": target, **counts,
+        "summary": (f"{counts['swapped']} swapped to {target} with no reprocessing"
+                    + (f" · {counts['queued']} queued for separation"
+                       if counts["queued"] else "")
+                    + (f" · {counts['failed']} failed" if counts["failed"] else "")),
+    })
+    return counts
+
+
+def _engine_now() -> str:
+    from config import current_segmentation_engine
+    return current_segmentation_engine()
+
+
+def _pipeline_mismatch_ids(db_path=None) -> list[int]:
+    from config import current_separation_pipeline
+    from database.models import get_conn
+    conn = get_conn(db_path) if db_path else get_conn()
+    try:
+        rows = conn.execute(
+            """SELECT id FROM songs WHERE status IN ('downloaded','stemmed','analysed')
+                 AND COALESCE(separation_pipeline, 'legacy_2stem') != ?
+               ORDER BY id""", (current_separation_pipeline(),)).fetchall()
+        return [r[0] for r in rows]
+    finally:
+        conn.close()
 
 
 # ── Suspect audio ─────────────────────────────────────────────────────────────
@@ -503,7 +600,18 @@ def staleness(db_path=None) -> dict:
         # succeeded — that is exactly why it is invisible otherwise.
         missing_metadata = conn.execute(
             "SELECT COUNT(*) FROM songs WHERE metadata_partial=1").fetchone()[0]
+        missing_allin1 = conn.execute(
+            f"SELECT COUNT(*) FROM songs s WHERE {_ALLIN1_STALE_SQL}").fetchone()[0]
+        from config import current_separation_pipeline
+        wrong_pipeline = conn.execute(
+            """SELECT COUNT(*) FROM songs WHERE status IN ('downloaded','stemmed','analysed')
+                 AND COALESCE(separation_pipeline, 'legacy_2stem') != ?""",
+            (current_separation_pipeline(),)).fetchone()[0]
         return {
+            "missing_allin1": missing_allin1,
+            "wrong_pipeline": wrong_pipeline,
+            "separation_pipeline": current_separation_pipeline(),
+            "segmentation_engine": _engine_now(),
             "total_analysed": total,
             "needs_analysis": needs_analysis,
             "missing_band_energy": no_bands,
@@ -532,9 +640,15 @@ def stale_song_ids(action: str, db_path=None) -> list[int]:
     if action == "metadata":
         from database.models import partial_metadata_song_ids
         return partial_metadata_song_ids(db_path)
+    if action == "switch_pipeline":
+        return _pipeline_mismatch_ids(db_path)
     from database.models import get_conn
     conn = get_conn(db_path) if db_path else get_conn()
     try:
+        if action == "allin1":
+            rows = conn.execute(f"SELECT s.id FROM songs s WHERE {_ALLIN1_STALE_SQL} "
+                                "ORDER BY s.id").fetchall()
+            return [r[0] for r in rows]
         if action == "separate":
             from config import current_stem_mode
             if current_stem_mode() != "four":
@@ -566,9 +680,15 @@ def all_song_ids(action: str, db_path=None) -> list[int]:
         # round trip that changes nothing, so "all" means every partial row.
         from database.models import partial_metadata_song_ids
         return partial_metadata_song_ids(db_path)
+    if action == "switch_pipeline":
+        return _pipeline_mismatch_ids(db_path)
     from database.models import get_conn
     conn = get_conn(db_path) if db_path else get_conn()
     try:
+        if action == "allin1":
+            rows = conn.execute("SELECT id FROM songs WHERE status='analysed' "
+                                "ORDER BY id").fetchall()
+            return [r[0] for r in rows]
         # 'process' re-downloads, so it is the only one that makes sense for a
         # track with no audio yet.
         where = ("status='analysed'" if action == "analyze"

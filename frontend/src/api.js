@@ -196,6 +196,13 @@ export const api = {
   // cache coverage and librosa ↔ Essentia agreement.
   getAnalysisStatus: () => jsonFetch("/api/analysis/status"),
 
+  // One track under both segmentation engines (Analysis › Engines): sections,
+  // bar lines, vocal phrases and each engine's pairs, ranked live.
+  getEngines: (songId, limit = 10) =>
+    jsonFetch(`/api/analysis/engines/${songId}?limit=${limit}`),
+  // Library-wide: downbeat agreement, the timing gate, ratings per engine.
+  getEngineReport: () => jsonFetch("/api/analysis/engine-report"),
+
   // Whether ffmpeg/ffprobe/yt-dlp/demucs/librosa are available on the server.
   getDeps: () => jsonFetch("/api/health/deps"),
 

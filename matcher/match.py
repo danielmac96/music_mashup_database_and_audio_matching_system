@@ -1026,6 +1026,10 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     PATTERNS_RUN = current_patterns()
 
     db = db_path or DB_PATH
+    # The segmentation engine, once per run (readme §5.7): which sections pairs
+    # are cut from and — for allin1 — phrase placement and the timing gate.
+    ENGINE, TIMING_BASE = run_engine(db, cfg)
+    pipelines = song_pipelines(db)
     # When this run started reading inputs, in SQLite's datetime('now') form so
     # songs.pairs_input_at compares as text. Stored only on success: a failed
     # run must not make stale pairs look fresh.
@@ -1069,7 +1073,7 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
 
     def _sections(song_id):
         if song_id not in _sections_cache:
-            _sections_cache[song_id] = get_sections(song_id, db_path=db)
+            _sections_cache[song_id] = get_sections(song_id, db_path=db, engine=ENGINE)
         return _sections_cache[song_id]
 
     # Read the library's normalisation constants ONCE for this run — timbre and
@@ -1167,7 +1171,8 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                                 bpm=top.get("bpm"),
                                 limit=MAX_SECTION_PAIRS_PER_SONG_PAIR,
                                 weights=SECTION_WEIGHTS_RUN,
-                                patterns=PATTERNS_RUN)
+                                patterns=PATTERNS_RUN,
+                                timing=timing_for(TIMING_BASE, top["song_id"], db))
         _section_pair_cache[key] = out
         return out
 
@@ -1199,8 +1204,15 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             pair_scorer = (PROVISIONAL_SCORER
                            if top.get("provisional") or bed.get("provisional")
                            else row_scorer)
+            if with_sections and TIMING_BASE is not None and not section_pairs \
+                    and _usable(top["song_id"], True) and _usable(bed["song_id"], False):
+                # Every section pairing failed the timing gate: the song pair is
+                # dropped, not stored section-less (that would hide the verdict).
+                continue
             for sp in (section_pairs or [None]):
                 s = dict(scores)
+                s["engine"] = ENGINE if TIMING_BASE is None else "essentia_fallback"
+                s["pipeline"] = pair_pipeline(pipelines, top["song_id"], bed["song_id"])
                 if sp is not None:
                     _apply_measured_harmony(top, bed, s, sp, _sections,
                                             weights, EFFORT_WEIGHT)
@@ -1298,12 +1310,71 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
              + f"  |  scorer={active_scorer}"
              + (f" ({model_version})" if model_version else "")
              + f"  filter: bpm_max_diff={bpm_max} key_min_score={key_min}")
+    if TIMING_BASE is not None:
+        st = TIMING_BASE["stats"]
+        log.info("  timing gate (%s ms): %d vocal sections placed, %d dropped as drifting",
+                 TIMING_BASE["tol_ms"], st.get("passed", 0), st.get("gated", 0))
     if only is None:
         from database.models import set_pref
-        set_pref("last_score", {"started_at": run_started, "scorer": active_scorer},
+        set_pref("last_score", {"started_at": run_started, "scorer": active_scorer,
+                                "engine": ENGINE,
+                                "timing": (TIMING_BASE or {}).get("stats")},
                  db_path=db)
         _record_harmony_threshold(db)
-    return {**results, "_scorer": active_scorer, "_model_version": model_version}
+    return {**results, "_scorer": active_scorer, "_model_version": model_version,
+            "_engine": ENGINE,
+            "_timing": (TIMING_BASE or {}).get("stats")}
+
+
+# ── The segmentation engine (readme §5.7) ─────────────────────────────────────
+
+def run_engine(db, cfg: Optional[dict] = None, engine: Optional[str] = None):
+    """(engine, timing context or None) for one scoring run. In essentia mode
+    the context is None and the section search is exactly what it was."""
+    from config import TIMING_PHRASE_RATIOS, current_float, current_segmentation_engine
+    engine = engine or current_segmentation_engine()
+    if engine != "allin1":
+        return engine, None
+    try:
+        from analysis.allin1_runner import version
+        ver = version()
+    except Exception:  # noqa: BLE001
+        ver = None
+    return engine, {
+        "tol_ms": current_float("timing_tol_ms"),
+        "weight": current_float("timing_weight"),
+        "ratios": TIMING_PHRASE_RATIOS,
+        "engine_version": ver,
+        "stats": {},
+        "_phrases": {},
+    }
+
+
+def timing_for(base: Optional[dict], vocal_song_id: int, db) -> Optional[dict]:
+    """The timing context for one vocal song: the run's, plus that song's
+    phrases (memoised in the run's context)."""
+    if base is None:
+        return None
+    cache = base["_phrases"]
+    if vocal_song_id not in cache:
+        from database.alignment import get_vocal_phrases
+        cache[vocal_song_id] = get_vocal_phrases(vocal_song_id, db_path=db)
+    return {**base, "vocal_phrases": cache[vocal_song_id]}
+
+
+def song_pipelines(db) -> Dict[int, str]:
+    from database.models import get_conn
+    conn = get_conn(db)
+    try:
+        return {r[0]: r[1] or "legacy_2stem" for r in conn.execute(
+            "SELECT id, separation_pipeline FROM songs")}
+    finally:
+        conn.close()
+
+
+def pair_pipeline(pipelines: Dict[int, str], a: int, b: int) -> str:
+    pa, pb = pipelines.get(a, "legacy_2stem"), pipelines.get(b, "legacy_2stem")
+    return pa if pa == pb else f"{pa}+{pb}"
 
 
 FORCED_SCORER = "forced"
@@ -1346,9 +1417,11 @@ def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict
                            combo_type="vocal_over_instrumental")
     cache: Dict[int, list] = {}
 
+    engine, timing = run_engine(db, cfg)
+
     def sections_of(song_id):
         if song_id not in cache:
-            cache[song_id] = get_sections(song_id, db_path=db)
+            cache[song_id] = get_sections(song_id, db_path=db, engine=engine)
         return cache[song_id]
 
     v_use = usable_sections(sections_of(vocal_song_id), True)
@@ -1356,11 +1429,15 @@ def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict
     stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
     pairs = (top_section_pairs(v_use, i_use, stretch, prefiltered=True, bpm=top.get("bpm"),
                                limit=cfg["max_section_pairs"],
-                               weights=current_section_weights(), patterns=current_patterns())
+                               weights=current_section_weights(), patterns=current_patterns(),
+                               timing=timing_for(timing, vocal_song_id, db))
              if v_use and i_use else [])
     rows, built = [], []
+    pipelines = song_pipelines(db)
     for sp in (pairs or [None]):
         sc = dict(base)
+        sc["engine"] = engine if timing is None else "essentia_fallback"
+        sc["pipeline"] = pair_pipeline(pipelines, vocal_song_id, inst_song_id)
         if sp is not None:
             _apply_measured_harmony(top, bed, sc, sp, sections_of, weights, effort_weight)
             _apply_section_fit(sc, sp, effort_weight, weights, cfg["section_weight"])

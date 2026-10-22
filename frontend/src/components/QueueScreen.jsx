@@ -29,26 +29,27 @@ const PHASE_COLOR = {
 };
 const POOLS = [
   ["download", "Download"], ["quick", "Quick analysis"], ["stems", "Stems"],
-  ["analysis", "Analyse + structure"],
+  ["analysis", "Analyse + structure"], ["allin1", "allin1"],
 ];
 const STAGE_LABEL = Object.fromEntries(STAGES);
 const FAILED_AT = {
   download: "downloading", quick: "in quick analysis", stems: "separating stems",
-  analysis: "analysing", structure: "finding sections",
+  analysis: "analysing", structure: "finding sections", allin1: "finding downbeats (allin1)",
 };
 // Which analysis_runs groups make up each stage's and each pool's work
 // (api/workers/stages.py _timed). ".cached" / ".reused" runs are left out:
 // they are what an unchanged file costs, not what the next new track will.
 const STAGE_TIMING = {
   download: ["download"], quick: ["quick"], stems: ["stems"],
-  analysis: ["analysis"], structure: ["structure"],
+  analysis: ["analysis"], structure: ["structure"], allin1: ["allin1"],
 };
 const POOL_TIMING = {
   download: ["download"], quick: ["quick"], stems: ["stems"], analysis: ["analysis", "structure"],
+  allin1: ["allin1"],
 };
 // Seconds per stage before this library has any timings of its own — only to
 // size the Timeline's segments, never shown as an estimate.
-const TYPICAL_SECS = { download: 14, quick: 9, stems: 96, analysis: 38, structure: 14 };
+const TYPICAL_SECS = { download: 14, quick: 9, stems: 96, analysis: 38, structure: 14, allin1: 90 };
 
 const ROW_H = 44;
 const OVERSCAN = 8;
@@ -395,7 +396,8 @@ function QueueRow({ r, now, stageSecs, selected, retrying, onSelect, onOpen, onR
             : c.state === "waiting" ? `${label}: ${c.position ? `#${c.position} in line` : "waiting"}`
               : c.state === "failed" ? `${label}: failed — ${c.error || "no reason recorded"}`
                 : c.state === "done" || c.state === "skipped" ? `${label}: done${c.earlier ? " (before this server session)" : ""}`
-                  : `${label}: not yet`;
+                  : c.state === "off" ? `${label}: not needed (the essentia engine is on)`
+                    : `${label}: not yet`;
           return (
             <span key={key} className={`q-seg ${c.state}`} title={tip}
               style={{ flex: Math.sqrt((stageSecs[key] || 10) * lenFactor) }}>
@@ -457,7 +459,8 @@ function Inspector({ r, now, retrying, onClose, onOpen, onRetry }) {
             : c.state === "running" ? (c.message || "running")
               : c.state === "waiting" ? (c.position ? `#${c.position} in line` : "waiting")
                 : c.state === "done" ? (c.manual ? "done · run by hand" : c.earlier ? "done before this session" : "done")
-                  : c.state === "skipped" ? "already current" : "not yet";
+                  : c.state === "skipped" ? "already current"
+                    : c.state === "off" ? "not needed — the essentia engine is on" : "not yet";
           return (
             <div key={key} className="q-istage">
               <span className="g" style={{ color: GLYPH_COLOR[c.state] }}>{GLYPH[c.state] || "·"}</span>

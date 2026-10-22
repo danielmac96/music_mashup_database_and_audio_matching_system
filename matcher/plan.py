@@ -289,9 +289,15 @@ def build_mashup_plan(vocal_song_id: int, inst_song_id: int,
     # candidates table, and relaxing it here would mean re-ranking by hand.
     from matcher.sections import top_section_pairs
 
+    # In the allin1 engine the options are phrase-placed and timing-gated
+    # exactly as the stored rows are (matcher/sections._timed_section_pairs),
+    # so the bed offset Studio suggests is the one the row was scored on.
+    from matcher.match import run_engine, timing_for
+    _engine, timing_base = run_engine(db)
     section_options = top_section_pairs(
         v_sections, i_sections, stretch or 1.0, bpm=v_bpm or None,
         limit=SECTION_OPTION_LIMIT,
+        timing=timing_for(timing_base, vocal_song_id, db),
     )
 
     # Each timing option carries its own measured harmony: the best transpose

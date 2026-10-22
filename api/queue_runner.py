@@ -31,8 +31,8 @@ import queue
 import threading
 from typing import Optional
 
-from config import (ANALYSIS_WORKERS, DOWNLOAD_WORKERS, PRIORITY_INGEST,
-                    QUICK_WORKERS, STEM_WORKERS)
+from config import (ALLIN1_WORKERS, ANALYSIS_WORKERS, DOWNLOAD_WORKERS,
+                    PRIORITY_INGEST, QUICK_WORKERS, STEM_WORKERS)
 
 from api import jobs
 
@@ -45,12 +45,14 @@ _QUEUES: dict[str, "queue.PriorityQueue[tuple[int, int, str, int]]"] = {
     "quick": queue.PriorityQueue(),
     "stems": queue.PriorityQueue(),
     "analysis": queue.PriorityQueue(),
+    "allin1": queue.PriorityQueue(),
 }
 _STAGE_WORKERS = {
     "download": DOWNLOAD_WORKERS,
     "quick": QUICK_WORKERS,
     "stems": STEM_WORKERS,
     "analysis": ANALYSIS_WORKERS,
+    "allin1": ALLIN1_WORKERS,
 }
 _SEQ = itertools.count()
 _STARTED = False

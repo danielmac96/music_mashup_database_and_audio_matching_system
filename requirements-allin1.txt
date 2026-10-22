@@ -1,0 +1,32 @@
+# Mashup Engine — allin1, the downbeat + labelled-section engine (readme §5.5).
+#
+# Installed on top of requirements.txt, never instead of it, and in this order
+# (the Dockerfile does it): allin1's own metadata lists bare numpy / librosa /
+# demucs, which a resolver would happily "upgrade" past this repo's pins, so it
+# goes in with --no-deps and its real runtime needs are listed here instead.
+#
+#   pip install -r requirements-allin1.txt
+#   pip install allin1==1.1.0 --no-deps
+#   pip install natten==0.17.3 --no-build-isolation      # compiles, ~1-2 min
+#
+# Verified 2026-10-22 (Python 3.12, torch 2.5.1, numpy 1.26.4, scipy 1.12.0):
+#   * allin1 1.1.0 calls natten.functional.natten1dqkrpb / natten1dav, which
+#     natten removed after 0.17.x. 0.17.5 imports torch.cuda's device query at
+#     import time and fails on any machine without an NVIDIA driver; 0.17.3
+#     does not. No CPU wheel was reachable (shi-labs.com), so it is built from
+#     the PyPI sdist against the installed torch — hence --no-build-isolation
+#     (and build-essential + cmake, already in the image).
+#   * madmom's last PyPI release (0.16.1) does not import on Python >= 3.10;
+#     the git main branch does. Its own scipy requirement would upgrade scipy
+#     to 1.17, which the pin below holds back.
+#   * The model weights (8 × ~20 MB, 'harmonix-all') download from HuggingFace
+#     (taejunkim/allinone) on first use into the HuggingFace cache.
+madmom @ git+https://github.com/CPJKU/madmom@main
+hydra-core>=1.3
+omegaconf>=2.3
+huggingface_hub>=0.20
+matplotlib>=3.7
+numpy==1.26.4
+scipy==1.12.0
+cmake>=3.20
+ninja

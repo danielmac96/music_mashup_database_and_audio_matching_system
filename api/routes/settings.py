@@ -180,6 +180,15 @@ class SaveSettingsRequest(BaseModel):
     essentia_key_profile: Optional[str] = None
     essentia_rhythm_method: Optional[str] = None
     analysis_cache: Optional[bool] = None
+    # allin1 and the unified pipeline (readme §2, §5.5). All live-read.
+    separation_pipeline: Optional[str] = None    # legacy_2stem | unified_4stem
+    segmentation_engine: Optional[str] = None    # essentia | allin1
+    allin1_device: Optional[str] = None          # cpu | cuda
+    keep_analysis_stems: Optional[bool] = None
+    timing_tol_ms: Optional[float] = None
+    timing_weight: Optional[float] = None
+    phrase_gap_secs: Optional[float] = None
+    allin1_max_secs: Optional[float] = None
 
 
 def _checked_weights(raw: dict, keys, name: str) -> dict:
@@ -254,6 +263,25 @@ def save_settings(req: SaveSettingsRequest) -> dict:
                 raise HTTPException(status_code=400,
                                     detail=f"{name} must be one of {', '.join(allowed)}")
             new[name] = value
+    for name, allowed in (("separation_pipeline", config.SEPARATION_PIPELINES),
+                          ("segmentation_engine", config.SEGMENTATION_ENGINES),
+                          ("allin1_device", config.ALLIN1_DEVICES)):
+        value = getattr(req, name)
+        if value is not None:
+            if value not in allowed:
+                raise HTTPException(status_code=400,
+                                    detail=f"{name} must be one of {', '.join(allowed)}")
+            new[name] = value
+    if req.segmentation_engine == "allin1":
+        from analysis.allin1_runner import missing
+        why = missing()
+        if why:
+            raise HTTPException(
+                status_code=400,
+                detail=f"allin1 cannot run here — {why} Keep the essentia engine, "
+                       "or use the Docker image.")
+    if req.keep_analysis_stems is not None:
+        new["keep_analysis_stems"] = True if req.keep_analysis_stems else "off"
     if req.analyzer in ("shadow", "essentia"):
         from analysis.essentia_groups import available
         if not available():
@@ -267,7 +295,9 @@ def save_settings(req: SaveSettingsRequest) -> dict:
         new["analysis_cache"] = True if req.analysis_cache else "off"
 
     for name in ("effort_weight", "section_weight", "stem_quality_min",
-                 "bpm_max_diff", "key_min_score", "bpm_max_diff_model"):
+                 "bpm_max_diff", "key_min_score", "bpm_max_diff_model",
+                 "timing_tol_ms", "timing_weight", "phrase_gap_secs",
+                 "allin1_max_secs"):
         value = getattr(req, name)
         if value is not None:
             lo, hi = config._TUNABLE_FLOATS[name][2:]
@@ -306,6 +336,22 @@ def save_settings(req: SaveSettingsRequest) -> dict:
 
     path = config.save_settings(new)
 
+    # A new separation pipeline is applied at once: every track whose stems
+    # for it already exist is swapped (no audio work), the rest are queued.
+    pipeline_job = None
+    if "separation_pipeline" in new:
+        import threading
+        from api import jobs
+        from api.workers import bulk_worker
+        ids = bulk_worker.stale_song_ids("switch_pipeline")
+        if ids:
+            pipeline_job = jobs.new_job(
+                kind="bulk", message=f"Switching {len(ids)} tracks to "
+                                     f"{new['separation_pipeline']}")
+            threading.Thread(target=bulk_worker.run,
+                             args=(pipeline_job, "switch_pipeline", ids),
+                             name="pipeline-switch", daemon=True).start()
+
     # Best-effort: create the newly chosen library folders right away so the
     # wizard's "done" state is real even before the restart.
     if "audio_root" in new:
@@ -326,5 +372,6 @@ def save_settings(req: SaveSettingsRequest) -> dict:
         "restart_required": any(
             k in new for k in ("audio_root", "db_path", "pipeline_workers")),
         "saved_keys": sorted(new),
+        "pipeline_job": pipeline_job,
         "settings": _provenance_live(),
     }

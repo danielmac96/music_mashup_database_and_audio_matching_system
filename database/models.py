@@ -511,6 +511,8 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
             _migrate_sets_columns(conn)
             _migrate_set_items_kinds(conn)
             _migrate_pair_feedback_key(conn)
+            from database import alignment
+            alignment.migrate(conn)       # allin1 / phrases / pipelines (readme §6)
             conn.commit()
         except BaseException:
             conn.rollback()
@@ -2132,8 +2134,27 @@ def section_index_map(old: List[Dict], new: List[Dict],
     return out
 
 
+# Section indexes are one namespace per segmentation engine: the Essentia cut
+# numbers its sections from 0, allin1's (database/alignment.py) from this base.
+# pair_feedback, pair_notes, set_items and mashup_candidates all key a pair on
+# its section indexes, so disjoint ranges keep a judgement of an Essentia
+# "chorus over drop" from ever naming an allin1 section, with no key change to
+# any of those tables.
+ALLIN1_SECTION_BASE = 1000
+# The same for a section's row id where the Segments screen uses it as the
+# segment's id: sections_allin1 rows are numbered from here, so a segment id
+# names one table's row without asking which.
+ALLIN1_SEGMENT_ID_BASE = 100_000_000
+
+
+def section_namespace(index: Optional[int]) -> str:
+    return "allin1" if index is not None and int(index) >= ALLIN1_SECTION_BASE \
+        else "essentia"
+
+
 def remap_feedback_sections(conn: sqlite3.Connection, song_id: int,
-                            old: List[Dict], new: List[Dict]) -> Dict[str, int]:
+                            old: List[Dict], new: List[Dict],
+                            namespace: str = "essentia") -> Dict[str, int]:
     """Carry every pair_feedback row that names one of this song's sections onto
     the re-cut structure, inside the caller's transaction.
 
@@ -2144,7 +2165,11 @@ def remap_feedback_sections(conn: sqlite3.Connection, song_id: int,
     rows would make two rows share one key (two old sections collapsing into
     one new one), nothing is moved and every affected row is flagged instead.
     Raises RuntimeError on a row-count change, which the caller's rollback
-    turns into "nothing happened"."""
+    turns into "nothing happened".
+
+    Only the sides whose index is in ``namespace`` (section_namespace) are
+    this structure's: the other engine's indexes are left exactly as they are.
+    """
     old_by_idx = {int(o["section_index"]): o for o in old}
     new_by_idx = {int(n["section_index"]): n for n in new}
     identical = (set(old_by_idx) == set(new_by_idx) and all(
@@ -2173,10 +2198,12 @@ def remap_feedback_sections(conn: sqlite3.Connection, song_id: int,
             continue
         vs, is_ = r["vocal_section"], r["inst_section"]
         ok = True
-        if r["vocal_song_id"] == song_id and vs is not None:
+        if (r["vocal_song_id"] == song_id and vs is not None
+                and section_namespace(vs) == namespace):
             vs = mapping.get(int(vs))
             ok = ok and vs is not None
-        if r["inst_song_id"] == song_id and is_ is not None:
+        if (r["inst_song_id"] == song_id and is_ is not None
+                and section_namespace(is_) == namespace):
             is_ = mapping.get(int(is_))
             ok = ok and is_ is not None
         if ok:
@@ -2217,6 +2244,42 @@ def remap_feedback_sections(conn: sqlite3.Connection, song_id: int,
             "kept": len(plan) - flagged - (len(moving) if not collision else 0)}
 
 
+# The columns a section row is written with, after (song_id, section_index),
+# and their values in that order. Shared by replace_sections and the allin1
+# sections table (database/alignment.py), so the two engines' rows can never
+# disagree about how a measurement is stored.
+SECTION_INSERT_COLUMNS = (
+    "start_sec", "end_sec", "label", "energy", "vocal_presence", "repetition",
+    "confidence", "chroma_json", "bass_chroma_json", "chroma_vocal_json",
+    "chroma_bed_json", "key", "mode", "camelot", "key_confidence",
+    "bpm", "bpm_source", "bpm_confidence",
+    "energy_absolute", "energy_slope", "energy_trend",
+    "beat_times_json", "downbeats_json", "beat_count", "bar_count",
+    "beats_per_bar", "phrase_length_bars", "section_class", "provisional",
+    "vocal_activity", "band_energy_vocal_json", "band_energy_bed_json", "f0_json",
+)
+
+
+def section_values(s: Dict) -> tuple:
+    def _j(key):
+        return json.dumps(s[key]) if s.get(key) else None
+    return (
+        float(s["start_sec"]), float(s["end_sec"]), s.get("label", ""),
+        s.get("energy"), s.get("vocal_presence"),
+        int(s.get("repetition", 1)), s.get("confidence"),
+        _j("chroma"), _j("bass_chroma"), _j("chroma_vocal"), _j("chroma_bed"),
+        s.get("key"), s.get("mode"), s.get("camelot"), s.get("key_confidence"),
+        s.get("bpm"), s.get("bpm_source"), s.get("bpm_confidence"),
+        s.get("energy_absolute"), s.get("energy_slope"), s.get("energy_trend"),
+        _j("beat_times"), _j("downbeats"),
+        s.get("beat_count"), s.get("bar_count"),
+        s.get("beats_per_bar"), s.get("phrase_length_bars"),
+        s.get("section_class"), 1 if s.get("provisional") else 0,
+        s.get("vocal_activity"),
+        _j("band_energy_vocal"), _j("band_energy_bed"), _j("f0"),
+    )
+
+
 def replace_sections(song_id: int, sections: List[Dict],
                      db_path: Path = DB_PATH) -> None:
     """Replace all structure sections for a song with a fresh analysis result,
@@ -2231,48 +2294,9 @@ def replace_sections(song_id: int, sections: List[Dict],
         (song_id,)).fetchall()]
     conn.execute("DELETE FROM sections WHERE song_id=?", (song_id,))
     conn.executemany(
-        """INSERT INTO sections
-               (song_id, section_index, start_sec, end_sec, label,
-                energy, vocal_presence, repetition, confidence,
-                chroma_json, bass_chroma_json,
-                chroma_vocal_json, chroma_bed_json, key, mode, camelot,
-                key_confidence,
-                bpm, bpm_source, bpm_confidence,
-                energy_absolute, energy_slope, energy_trend,
-                beat_times_json, downbeats_json, beat_count, bar_count,
-                beats_per_bar, phrase_length_bars, section_class, provisional,
-                vocal_activity, band_energy_vocal_json, band_energy_bed_json,
-                f0_json)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-                   ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        [
-            (
-                song_id, idx,
-                float(s["start_sec"]), float(s["end_sec"]),
-                s.get("label", ""),
-                s.get("energy"), s.get("vocal_presence"),
-                int(s.get("repetition", 1)), s.get("confidence"),
-                json.dumps(s["chroma"]) if s.get("chroma") else None,
-                json.dumps(s["bass_chroma"]) if s.get("bass_chroma") else None,
-                json.dumps(s["chroma_vocal"]) if s.get("chroma_vocal") else None,
-                json.dumps(s["chroma_bed"]) if s.get("chroma_bed") else None,
-                s.get("key"), s.get("mode"), s.get("camelot"),
-                s.get("key_confidence"),
-                s.get("bpm"), s.get("bpm_source"), s.get("bpm_confidence"),
-                s.get("energy_absolute"), s.get("energy_slope"),
-                s.get("energy_trend"),
-                json.dumps(s["beat_times"]) if s.get("beat_times") else None,
-                json.dumps(s["downbeats"]) if s.get("downbeats") else None,
-                s.get("beat_count"), s.get("bar_count"),
-                s.get("beats_per_bar"), s.get("phrase_length_bars"),
-                s.get("section_class"), 1 if s.get("provisional") else 0,
-                s.get("vocal_activity"),
-                json.dumps(s["band_energy_vocal"]) if s.get("band_energy_vocal") else None,
-                json.dumps(s["band_energy_bed"]) if s.get("band_energy_bed") else None,
-                json.dumps(s["f0"]) if s.get("f0") else None,
-            )
-            for idx, s in enumerate(sections)
-        ],
+        f"INSERT INTO sections (song_id, section_index, {', '.join(SECTION_INSERT_COLUMNS)}) "
+        f"VALUES (?,?,{','.join('?' * len(SECTION_INSERT_COLUMNS))})",
+        [(song_id, idx, *section_values(s)) for idx, s in enumerate(sections)],
     )
     new = [{"section_index": idx, "start_sec": float(s["start_sec"]),
             "end_sec": float(s["end_sec"])} for idx, s in enumerate(sections)]
@@ -2333,7 +2357,23 @@ def relabel_sections(db_path: Path = DB_PATH) -> int:
     return changed
 
 
-def get_sections(song_id: int, db_path: Path = DB_PATH) -> List[Dict]:
+def _engine(engine: Optional[str]) -> str:
+    if engine:
+        return engine
+    from config import current_segmentation_engine
+    return current_segmentation_engine()
+
+
+def get_sections(song_id: int, db_path: Path = DB_PATH,
+                 engine: Optional[str] = None) -> List[Dict]:
+    """A song's sections under the segmentation engine (the configured one when
+    not named). In allin1 mode a track allin1 has not cut — or could not —
+    keeps its Essentia sections: the per-track fallback (readme §5.5)."""
+    if _engine(engine) == "allin1":
+        from database.alignment import get_allin1_sections
+        a1 = get_allin1_sections(song_id, db_path=db_path)
+        if a1:
+            return a1
     conn = get_conn(db_path)
     rows = conn.execute(
         "SELECT * FROM sections WHERE song_id=? ORDER BY section_index",
@@ -2366,8 +2406,14 @@ def _decode_section(row) -> Dict:
     return d
 
 
-def sections_for_songs(song_ids, db_path: Path = DB_PATH) -> Dict[int, List[Dict]]:
+def sections_for_songs(song_ids, db_path: Path = DB_PATH,
+                       engine: Optional[str] = None) -> Dict[int, List[Dict]]:
     """get_sections for many songs in one query: {song_id: [section, ...]}."""
+    if _engine(engine) == "allin1":
+        from database.alignment import allin1_sections_for_songs
+        out = sections_for_songs(song_ids, db_path, engine="essentia")
+        out.update(allin1_sections_for_songs(out.keys(), db_path=db_path))
+        return out
     ids = sorted({int(i) for i in song_ids if i is not None})
     out: Dict[int, List[Dict]] = {i: [] for i in ids}
     if not ids:
@@ -2429,10 +2475,14 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_effort, effort_stretch, effort_pitch,
        effort_tempo_fold, effort_grid, effort_key_certainty,
        harmonic_shift, harmonic_confidence, bass_clash,
+       score_timing, timing_ok, timing_err_mean_ms, timing_err_max_ms,
+       vocal_phrase_start, vocal_pickup_ms, bed_landing_sec,
+       engine, engine_version, pipeline,
        scored_at
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,
+             ?,?,?,?,?,?,?,?,?,?,datetime('now'))
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -2474,6 +2524,16 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        harmonic_shift=excluded.harmonic_shift,
        harmonic_confidence=excluded.harmonic_confidence,
        bass_clash=excluded.bass_clash,
+       score_timing=excluded.score_timing,
+       timing_ok=excluded.timing_ok,
+       timing_err_mean_ms=excluded.timing_err_mean_ms,
+       timing_err_max_ms=excluded.timing_err_max_ms,
+       vocal_phrase_start=excluded.vocal_phrase_start,
+       vocal_pickup_ms=excluded.vocal_pickup_ms,
+       bed_landing_sec=excluded.bed_landing_sec,
+       engine=excluded.engine,
+       engine_version=excluded.engine_version,
+       pipeline=excluded.pipeline,
        score_bpm=excluded.score_bpm,
        score_key=excluded.score_key,
        score_energy=excluded.score_energy,
@@ -2510,6 +2570,16 @@ SECTION_PAIR_COLUMNS = (
     "score_room_section", "score_coverage", "score_energy_match",
     "alignment_downbeat", "alignment_offset", "target_bpm",
     "tempo_adjustment", "pitch_adjustment", "reason",
+)
+
+
+# Phrase placement and provenance (allin1 engine, readme §5.7). From the section
+# pair when it carries them (matcher/phrase_align.place, top_section_pairs),
+# else from the scores — so a section-less row still records its engine.
+TIMING_COLUMNS = (
+    "score_timing", "timing_ok", "timing_err_mean_ms", "timing_err_max_ms",
+    "vocal_phrase_start", "vocal_pickup_ms", "bed_landing_sec",
+    "engine", "engine_version", "pipeline",
 )
 
 
@@ -2561,6 +2631,8 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
         *(sp.get(col) for col in SECTION_PAIR_COLUMNS),
         *(scores.get(col) for col in EFFORT_COLUMNS),
         *(scores.get(col) for col in HARMONY_COLUMNS),
+        *(sp.get(col) if sp.get(col) is not None else scores.get(col)
+          for col in TIMING_COLUMNS),
     )
 
 
@@ -2683,15 +2755,21 @@ def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int,
     if verdict not in VERDICTS:
         raise ValueError("a verdict or a rating is required")
     conn = get_conn(db_path)
+    engine, pipeline, snapshot = _judged_provenance(
+        conn, vocal_song_id, inst_song_id, vocal_section, inst_section)
+    if features is None:
+        features = snapshot
     conn.execute(
         """INSERT INTO pair_feedback
                (vocal_song_id, inst_song_id, vocal_section, inst_section,
-                verdict, rating, features_json)
-           VALUES (?,?,?,?,?,?,?)
+                verdict, rating, features_json, engine, pipeline)
+           VALUES (?,?,?,?,?,?,?,?,?)
            ON CONFLICT(vocal_song_id, inst_song_id,
                        COALESCE(vocal_section, -1), COALESCE(inst_section, -1))
            DO UPDATE SET
                verdict=excluded.verdict,
+               engine=COALESCE(excluded.engine, pair_feedback.engine),
+               pipeline=COALESCE(excluded.pipeline, pair_feedback.pipeline),
                -- Same rule as features_json: a correction that carries no star
                -- (the ✓/~/✗ path in Discover) must not wipe one already given.
                rating=COALESCE(excluded.rating, pair_feedback.rating),
@@ -2700,10 +2778,42 @@ def upsert_pair_feedback(vocal_song_id: int, inst_song_id: int,
                features_json=COALESCE(excluded.features_json, pair_feedback.features_json),
                created_at=datetime('now')""",
         (vocal_song_id, inst_song_id, vocal_section, inst_section, verdict,
-         rating, json.dumps(features, ensure_ascii=False) if features else None),
+         rating, json.dumps(features, ensure_ascii=False) if features else None,
+         engine, pipeline),
     )
     conn.commit()
     conn.close()
+
+
+# What a judgement's snapshot keeps of the stored row it rated: the scores and
+# the timing terms (readme §5.7), so ratings can later tune the timing weight
+# and the engines can be compared on the pairs people actually rated.
+_JUDGED_SNAPSHOT = ("score_total", "score_section", "score_timing", "timing_ok",
+                    "timing_err_mean_ms", "timing_err_max_ms", "vocal_pickup_ms",
+                    "alignment_offset", "harmonic_confidence", "score_effort")
+
+
+def _judged_provenance(conn, vocal_song_id, inst_song_id, vocal_section, inst_section):
+    """(engine, pipeline, snapshot) for the pair being judged: off the stored
+    candidate row when there is one, else from the section's namespace and
+    the configured engine — so every rating records which engine chose it."""
+    try:
+        r = conn.execute(
+            f"""SELECT engine, pipeline, {', '.join(_JUDGED_SNAPSHOT)}
+                  FROM mashup_candidates
+                 WHERE vocal_song_id=? AND inst_song_id=?
+                   AND COALESCE(vocal_section_idx, -1) = COALESCE(?, -1)
+                   AND COALESCE(inst_section_idx, -1) = COALESCE(?, -1)
+                 ORDER BY score_total DESC LIMIT 1""",
+            (vocal_song_id, inst_song_id, vocal_section, inst_section)).fetchone()
+    except sqlite3.OperationalError:
+        r = None
+    if r is not None and r["engine"]:
+        snap = {k: r[k] for k in _JUDGED_SNAPSHOT if r[k] is not None}
+        return r["engine"], r["pipeline"], (snap or None)
+    engine = (section_namespace(vocal_section) if vocal_section is not None
+              else _engine(None))
+    return engine, None, None
 
 
 # Why a pair got its star — picked on the card after rating. `good` reasons are
@@ -3055,6 +3165,10 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                     (SELECT vocal_presence FROM sections
                       WHERE song_id = mc.vocal_song_id
                         AND section_index = mc.vocal_section_idx),
+                    -- An allin1 pairing names a section in that table (§7).
+                    (SELECT vocal_presence FROM sections_allin1
+                      WHERE song_id = mc.vocal_song_id
+                        AND section_index = mc.vocal_section_idx LIMIT 1),
                     (SELECT MAX(vocal_presence) FROM sections
                       WHERE song_id = mc.vocal_song_id)
                 ) >= {VOCAL_FORWARD_MIN}""")
@@ -3154,13 +3268,18 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                    -- Labels for the winning section pair (T3.3). Joined rather
                    -- than stored: the row already pins the times the preview
                    -- plays, and the label is only there to read.
-                   (SELECT label FROM sections
+                   -- An allin1 pairing's indexes name sections_allin1 rows
+                   -- (§7), which this join cannot see: the label stored on
+                   -- the row at scoring time stands in.
+                   COALESCE((SELECT label FROM sections
                      WHERE song_id = mc.vocal_song_id
-                       AND section_index = mc.vocal_section_idx)
+                       AND section_index = mc.vocal_section_idx),
+                     mc.vocal_section_label)
                        AS vocal_section_label,
-                   (SELECT label FROM sections
+                   COALESCE((SELECT label FROM sections
                      WHERE song_id = mc.inst_song_id
-                       AND section_index = mc.inst_section_idx)
+                       AND section_index = mc.inst_section_idx),
+                     mc.inst_section_label)
                        AS inst_section_label,
                    -- Joined live rather than frozen onto the candidate row, so a
                    -- re-analysis updates the ⚠ flag without needing a re-score.
@@ -4000,20 +4119,23 @@ def record_analysis_run(grp: str, ms: float, song_id: Optional[int] = None,
                         analyzer: Optional[str] = None,
                         tier: Optional[int] = None,
                         content_hash: Optional[str] = None,
+                        peak_mb: Optional[float] = None,
                         db_path: Optional[Path] = None) -> None:
     """Append one timing row. Never raises: timings are diagnostics, and a
-    locked or missing database must not fail the stage being timed."""
+    locked or missing database must not fail the stage being timed.
+    ``peak_mb`` — the process's resident-memory peak during the unit, where it
+    was measured (allin1)."""
     try:
         conn = get_conn(db_path) if db_path else get_conn()
         try:
             conn.execute(
                 """INSERT INTO analysis_runs
                    (song_id, stem_type, grp, tier, analyzer, ms, audio_secs, ok,
-                    error, content_hash)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    error, content_hash, peak_mb)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (song_id, stem_type, grp, tier, analyzer, float(ms),
                  audio_secs, 1 if ok else 0,
-                 (error or None) and str(error)[:500], content_hash))
+                 (error or None) and str(error)[:500], content_hash, peak_mb))
             conn.commit()
         finally:
             conn.close()
@@ -4370,9 +4492,11 @@ def set_pair_note(vocal_song_id: int, inst_song_id: int,
         if (note or "").strip():
             conn.execute(
                 "INSERT INTO pair_notes(vocal_song_id, inst_song_id, vocal_section,"
-                " inst_section, note) VALUES (?,?,?,?,?)",
+                " inst_section, note, engine) VALUES (?,?,?,?,?,?)",
                 (vocal_song_id, inst_song_id, vocal_section, inst_section,
-                 note.strip()))
+                 note.strip(),
+                 section_namespace(vocal_section) if vocal_section is not None
+                 else _engine(None)))
         conn.commit()
     finally:
         conn.close()
@@ -4755,7 +4879,29 @@ def section_lines_for(song_id: int, sections: List[Dict],
 SEGMENT_ROLES = ("vocal", "bed")
 
 
-def list_segments(role: str, db_path: Path = DB_PATH) -> List[Dict]:
+# The section columns list_segments reads, for the allin1 engine's union of the
+# two tables (a track allin1 has not cut keeps its Essentia sections).
+_SEGMENT_SECTION_COLS = (
+    "song_id", "section_index", "label", "start_sec", "end_sec", "energy",
+    "energy_absolute", "energy_trend", "vocal_presence", "vocal_activity",
+    "section_class", "bar_count", "phrase_length_bars", "bpm", "bpm_source",
+    "camelot", "f0_json", "confidence", "provisional")
+
+
+def _segment_source(engine: Optional[str]) -> str:
+    if _engine(engine) != "allin1":
+        return "sections"
+    cols = ", ".join(_SEGMENT_SECTION_COLS)
+    a1 = ("SELECT a.id + %d AS id, %s FROM sections_allin1 a JOIN songs sp "
+          "ON sp.id = a.song_id WHERE a.pipeline = COALESCE(sp.separation_pipeline, "
+          "'legacy_2stem')") % (ALLIN1_SEGMENT_ID_BASE,
+                                ", ".join(f"a.{c}" for c in _SEGMENT_SECTION_COLS))
+    return (f"(SELECT id, {cols} FROM sections WHERE song_id NOT IN "
+            f"(SELECT song_id FROM ({a1})) UNION ALL {a1})")
+
+
+def list_segments(role: str, db_path: Path = DB_PATH,
+                  engine: Optional[str] = None) -> List[Dict]:
     """Every section worth offering on one side of a mashup, one row each —
     the Segments screen's two tables (GET /api/segments).
 
@@ -4790,7 +4936,7 @@ def list_segments(role: str, db_path: Path = DB_PATH) -> List[Dict]:
                        ff.bpm, ff.bpm_confidence, ff.camelot, ff.key, ff.mode,
                        ff.key_confidence, ff.tags_json, ff.lufs,
                        sf.residual_vocal_ratio, st.quality AS stem_quality
-                FROM sections x
+                FROM {_segment_source(engine)} x
                 JOIN songs s ON s.id = x.song_id
                 JOIN features sf ON sf.song_id = x.song_id AND sf.stem_type = ?
                 LEFT JOIN features ff ON ff.song_id = x.song_id AND ff.stem_type = 'full'
@@ -4853,14 +4999,19 @@ def list_segments(role: str, db_path: Path = DB_PATH) -> List[Dict]:
 
 
 def get_segment(segment_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
-    """One section by its row id, decoded like get_sections, or None."""
+    """One section by its row id, decoded like get_sections, or None. An id
+    from ALLIN1_SEGMENT_ID_BASE up names an allin1 section."""
+    a1 = int(segment_id) >= ALLIN1_SEGMENT_ID_BASE
     conn = get_conn(db_path)
     try:
-        r = conn.execute("SELECT song_id, section_index FROM sections WHERE id=?",
-                         (int(segment_id),)).fetchone()
+        r = conn.execute(
+            "SELECT song_id, section_index FROM sections_allin1 WHERE id=?"
+            if a1 else "SELECT song_id, section_index FROM sections WHERE id=?",
+            (int(segment_id) - (ALLIN1_SEGMENT_ID_BASE if a1 else 0),)).fetchone()
     finally:
         conn.close()
     if r is None:
         return None
-    return next((s for s in get_sections(r["song_id"], db_path=db_path)
+    return next((s for s in get_sections(r["song_id"], db_path=db_path,
+                                         engine="allin1" if a1 else "essentia")
                  if s["section_index"] == r["section_index"]), None)

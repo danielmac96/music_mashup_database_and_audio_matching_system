@@ -60,6 +60,16 @@ const GATE_KNOBS = [
     help: "The wider tempo gate used when a trained model is scoring. The gate exists to bound " +
       "the matrix, not to express taste the model is supposed to learn.",
   },
+  {
+    key: "timing_tol_ms", label: "Timing gate (ms)", min: 5, max: 250, step: 5,
+    help: "allin1 engine: after the vocal's phrase is placed on the bed's bar line, every later " +
+      "bar line in the overlap must stay within this many ms, or the pair is dropped as drifting.",
+  },
+  {
+    key: "timing_weight", label: "Timing fit", min: 0, max: 1, step: 0.05,
+    help: "allin1 engine: how much of the section fit is how tightly the two grids hold. " +
+      "Pairs that fail the gate are dropped whatever this is.",
+  },
 ];
 
 const WEIGHTS = [
@@ -355,6 +365,46 @@ export function TuningPanel() {
             <div className="faint" style={{ fontSize: 11, color: "var(--star)" }}>
               Four-stem applies to tracks separated from now on. Existing tracks
               keep two stems until you re-separate them in Library.
+            </div>
+          )}
+
+          <h4 style={{ margin: "14px 0 2px", fontSize: 12 }}>Pipeline and sections</h4>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0" }}>
+            <span style={{ flex: 1, fontSize: 12 }}>Separation pipeline</span>
+            {[["legacy_2stem", "legacy"], ["unified_4stem", "unified 4-stem"]].map(([v, label]) => (
+              <button key={v} className="mini-btn"
+                disabled={busy || settings.separation_pipeline?.source === "env"}
+                style={(draft.separation_pipeline ?? settings.separation_pipeline?.value) === v
+                  ? { borderColor: "var(--link)" } : undefined}
+                title={v === "unified_4stem"
+                  ? "One htdemucs 4-source pass feeds allin1 and is summed into the playback stems. Written beside the legacy stems, never over them."
+                  : "The stems the app has always made (separator and stem count above)."}
+                onClick={() => setKnob("separation_pipeline", v)}>
+                {label}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "4px 0" }}>
+            <span style={{ flex: 1, fontSize: 12 }}>Section engine</span>
+            {["essentia", "allin1"].map((v) => (
+              <button key={v} className="mini-btn"
+                disabled={busy || settings.segmentation_engine?.source === "env"}
+                style={(draft.segmentation_engine ?? settings.segmentation_engine?.value) === v
+                  ? { borderColor: "var(--link)" } : undefined}
+                title={v === "allin1"
+                  ? "allin1's downbeats and labelled sections; vocals placed by phrase and pairs that drift dropped (the timing gate). Re-score after switching."
+                  : "Sections cut on the Essentia beat grid."}
+                onClick={() => setKnob("segmentation_engine", v)}>
+                {v}
+              </button>
+            ))}
+          </div>
+          {((draft.separation_pipeline && draft.separation_pipeline !== settings.separation_pipeline?.value)
+            || (draft.segmentation_engine && draft.segmentation_engine !== settings.segmentation_engine?.value)) && (
+            <div className="faint" style={{ fontSize: 11, color: "var(--star)" }}>
+              A pipeline change swaps every track whose stems for it exist and
+              queues the rest. An engine change needs only a re-score — nothing
+              is re-analysed, and switching back is the same.
             </div>
           )}
 

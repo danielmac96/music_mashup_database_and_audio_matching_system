@@ -81,6 +81,23 @@ but not analyse: every analysis there fails with "needs Docker or WSL2", and
 the Library's missing-dependency banner names Essentia. Use Docker (or WSL2)
 for anything that imports or reprocesses tracks.
 
+**allin1** (`requirements-allin1.txt`, baked into the Docker image; §5.5) is
+the downbeat and labelled-section engine. It installs in three steps, in this
+order, because its own metadata would move the pins: the requirements file
+(madmom from git — the PyPI release does not import on Python ≥ 3.10 — with
+scipy held at 1.12), `allin1==1.1.0 --no-deps`, then `natten==0.17.3
+--no-build-isolation`, compiled against the installed torch (~1–2 min; no CPU
+wheel was reachable). natten must be 0.17.x — allin1 1.1.0 calls
+`natten1dqkrpb`/`natten1dav`, gone after it — and not 0.17.5, which queries
+the CUDA device at import and fails on any machine without an NVIDIA driver.
+Verified 2026-10-22 on Python 3.12 / torch 2.5.1 / numpy 1.26.4: everything up
+to the model runs (the demix skip and the spectrogram front end on our stems).
+The model weights (`harmonix-all`, 8 folds) download from HuggingFace on first
+use into `HF_HOME` (`/data/huggingface` in Docker); the sandbox this was built
+in could not reach HuggingFace, so **allin1's own inference is not yet run on
+real audio** (§9 item 12). Without allin1 the app works exactly as before; the
+`allin1` engine is refused by the settings API with the reason.
+
 **After every `git pull`, rebuild the frontend** (`cd frontend && npm run build`).
 `frontend/dist/` is gitignored, so a pull updates the source and not the bundle.
 The server detects this and injects a "Stale UI" banner; `GET /api/health`
@@ -129,6 +146,12 @@ Resolution order: **environment variable > `settings.json` > default**.
 | Analyser | `MASHUP_ANALYZER` | `analyzer` | `essentia` (`librosa` / `shadow` = librosa core ± Essentia extras, for tests and comparison only; §5.4) |
 | Essentia model downloads | `MASHUP_ESSENTIA_MODEL_FETCH` | — | on (`0` never downloads; the test suite sets it) |
 | Essentia key profile / rhythm method | `MASHUP_ESSENTIA_KEY_PROFILE` / `MASHUP_ESSENTIA_RHYTHM` | `essentia_key_profile` / `essentia_rhythm_method` | `edma` / `degara` |
+| Separation pipeline | `MASHUP_SEPARATION_PIPELINE` | `separation_pipeline` | `legacy_2stem` (`unified_4stem` = one htdemucs 4-source pass for allin1 and playback; §5.3) |
+| Segmentation engine | `MASHUP_SEGMENTATION_ENGINE` | `segmentation_engine` | `essentia` (`allin1` = allin1 sections, phrase placement, the timing gate; §5.5, §5.7) |
+| allin1 device / workers | `MASHUP_ALLIN1_DEVICE` / `MASHUP_ALLIN1_WORKERS` | `allin1_device` / `allin1_workers` | `cpu` / `1` |
+| allin1 limits | `MASHUP_ALLIN1_MAX_SECS` / `MASHUP_ALLIN1_MEM_BUDGET_MB` | `allin1_max_secs` / `allin1_mem_budget_mb` | `900` (longer is skipped) / `6000` |
+| Keep the unified drums/bass/other | `MASHUP_KEEP_ANALYSIS_STEMS` | `keep_analysis_stems` | on (off deletes them after allin1 stored its result) |
+| Timing gate / weight / phrase gap | `MASHUP_TIMING_TOL_MS` / `MASHUP_TIMING_WEIGHT` / `MASHUP_PHRASE_GAP_SECS` | `timing_tol_ms` / `timing_weight` / `phrase_gap_secs` | `25` ms / `0.30` / `0.6` s |
 | Firecrawl key (Mixes tab) | `FIRECRAWL_API_KEY` | `firecrawl_api_key` | — |
 | SoundCloud app (dormant OAuth) | `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET` | `soundcloud_client_id` / `…_secret` | — |
 | Scoring knobs | `MASHUP_EFFORT_WEIGHT`, `MASHUP_BPM_MAX_DIFF`, `MASHUP_KEY_MIN_SCORE`, `MASHUP_SECTION_WEIGHT`, `MASHUP_STEM_QUALITY_MIN`, … | `effort_weight`, `match_weights`, `section_weights`, … | `config.py` (see §5.7) |
@@ -145,6 +168,18 @@ librosa substitute.
 `config.save_settings` ignores empty values, so anything that must be
 *unsettable* (the connected SoundCloud profile, saved profiles) lives in the
 `app_prefs` table instead.
+The separation pipeline, the segmentation engine and the timing knobs are
+re-read live; asking for the `allin1` engine where allin1 does not import is
+refused by the API with the reason (`GET /api/analysis/status` →
+`segmentation`).
+
+**Rollback.** Both switches go back with no reprocessing and no data loss:
+
+| To undo | Do | What happens |
+|---|---|---|
+| The allin1 engine | Settings › Tuning › Section engine › essentia, then **Score library** | Pairs are re-cut from the Essentia sections, which allin1 never touched. Its sections, phrases and analysis stay stored for the next switch or the Engines comparison. |
+| The unified pipeline | Settings › Tuning › Separation pipeline › legacy | Saving starts a `switch_pipeline` job (also in Bulk reprocess): each track's legacy stems / features / sections rows come back from `pipeline_parked` in one transaction and the unified ones are parked (§7). No Demucs, no analysis, no file deleted. A track that was never separated the legacy way is queued for it. Then **Score library**. |
+| The schema | Switch back to legacy first, then `python -m database.downgrade alignment` with the server stopped | Drops the five tables and the columns `database/alignment.py` added, nothing else. Refuses while a track is live on the unified pipeline, or a judgement names an allin1 section. The next start migrates up again. |
 
 **Secrets never go in committed files.** Copy `.env.example` to `.env` and fill
 in `FIRECRAWL_API_KEY` / `SOUNDCLOUD_CLIENT_ID` / `SOUNDCLOUD_CLIENT_SECRET`.
@@ -174,6 +209,7 @@ browser reads `GET /api/settings`.
                                    └──────────► POST /api/playlists/ingest ◄───────────────┘
  2. PROCESS     per track, on bounded priority queues:
                 download → quick (mix: BPM, key, provisional sections) → stems → analyse → structure (+ hooks)
+                → allin1 (when the allin1 engine is on: downbeats, labelled sections, vocal phrases)
  3. SCORE       dock "↻ Re-score" (or ⚙ Score library) → every vocal × bed section pair → mashup_candidates
  4. JUDGE       pair dock: loop the moment, rate 1–5 (again to clear), compare, note, hide, exclude
                 Segments: any vocal section × any bed section, scored live → mini studio loop
@@ -283,6 +319,13 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
   results without decoding anything (`analysis.cached` in the timings), a
   re-separated stem recomputes, and bumping one group's version recomputes that
   group only.
+- **allin1 is a sixth, optional stage** (§5.5): after the analysis, when the
+  allin1 engine is on or a Bulk reprocess asked for it (`songs.allin1_state =
+  'queued'`). Its own pool (`ALLIN1_WORKERS`, 1) that also takes the stems
+  gate, so it never runs beside Demucs. The Essentia sections and the pairs on
+  them land first; allin1 refines them after. Non-fatal: a failure leaves
+  `allin1_state = 'failed'` with the reason and the track on its Essentia
+  sections (rows say `essentia_fallback`).
 - **Essentia is the analyser.** `config.current_analyzer()` is `essentia`:
   Essentia fills every stem's `features` row — the core columns, the extras
   (LUFS, true peak, tuning, chords, danceability…) and, on the full mix, the
@@ -556,6 +599,9 @@ downloading or in the quick tier gets its first (provisional) pairs —
 `/api/jobs/queue` `next_playable_secs`, from each job's `playable_eta_secs`
 (`api/queue_eta.py`: what is left of its download plus a typical quick tier).
 
+- **Six stages**: download · quick · stems · analyse · structure · **allin1**.
+  The allin1 segment reads *off* (a thin outline) when the essentia engine is
+  on and nothing asked for it, so a library never shows an eternal "todo".
 - **Header**: the counts, the tabs **Active · Waiting · Failed · Done · All**
   (with counts), and **⟳ Retry all failed (n)**.
 - **Pool cards**: download, quick analysis, stems and analyse + structure —
@@ -605,6 +651,18 @@ here recomputes anything — it is for deciding which attributes are worth
 keeping. A histogram piled into one bar is an attribute that does not tell
 tracks apart (on this library: dissonance, and — suspiciously — `tonal`, whose
 median says nearly every track is atonal; §9).
+
+**Engines** (`components/EngineCompare.jsx`) puts the two segmentation engines
+side by side. On top, for the library (`GET /api/analysis/engine-report`): how
+many tracks allin1 has analysed, how often its bar lines sit within 70 ms of
+the Essentia grid's (and how often a beat or more off — the bar-1 disagreement
+§9's benchmark found), the last scoring run's timing gate (placed / dropped),
+and the ratings each engine's pairs got (mean stars, loved, rejected, tagged
+*timing off*). Pick a track (`GET /api/analysis/engines/{id}`): each engine's
+structure strip — sections and bar lines over the same waveforms — its vocal
+phrases with their pickups, and the pairs it builds from the track's best
+vocal section, scored live under that engine (no setting changes), each with
+▶, Studio and stars. Rate both columns and the report compares them.
 
 **Compare two tracks** puts any two analysed tracks side by side over every
 catalogued attribute, plus tempo, key, sung share, partners and best pair; a
@@ -926,6 +984,12 @@ weights, effort weight, gates, separator, stem mode, and *What your ratings
 say* — the term report, §5.7), **Train from imported mixes** (build dataset → train →
 activate), and a read-only **database browser**.
 
+**Pipeline and sections** (in Tuning): the separation pipeline (legacy /
+unified 4-stem) and the section engine (essentia / allin1), plus the
+**Timing gate (ms)** and **Timing fit** knobs. Bulk reprocess offers
+**⇄ Switch N** while tracks are not live on the configured pipeline, and
+**⟳ allin1 N** for tracks with no current allin1 analysis.
+
 **⟳ Refresh metadata N** appears when tracks are missing genre, year and play
 count. SoundCloud throttles per-track metadata fetches, and a large import (a
 200-track mix especially) can have most of them time out — the audio, stems and
@@ -1031,7 +1095,21 @@ downloaded file with ffprobe and replaces a stale preview, then reprocesses.
   (~2–4× faster on CPU, two stems only). **Four-stem** Demucs writes
   drums/bass/other/vocals **plus a summed instrumental**, so every consumer
   still has a two-stem view. Each `stems` row carries a provenance tag
-  (`demucs:htdemucs:four`, `mdx:<model>`), and switching mode re-separates.
+  (`demucs:htdemucs:4`, `demucs:htdemucs:2`, `mdx:<model>`), and switching
+  mode re-separates.
+- **The unified pipeline** (`separation_pipeline = unified_4stem`,
+  `stems/separate.separate(unified=True)`): one htdemucs 4-source pass — the
+  model allin1 is trained on — written to `AUDIO_DIR/unified/…`, never over a
+  legacy file, tagged `demucs:htdemucs:4:unified`. The vocal stem is Demucs's
+  vocals; the instrumental is drums + bass + other summed in float at the
+  source rate, written PCM_24, scaled only if the sum would clip. The four
+  sources are kept (FLAC) for allin1 unless `keep_analysis_stems` is off.
+  Essentia analyses the summed playback stems exactly as before. Before a
+  pipeline writes over a track whose live rows are the other pipeline's,
+  `do_stems` parks them (`database/alignment.park_live`). **Before switching
+  a library over, run `scripts/stem_null_test.py`** (§8): it is expected to
+  null against the 2-stem `no_vocals` (Demucs sums the same sources), and it
+  stops you if it does not.
 - **Stem quality** (`analysis/quality.py`), measured after structure is known:
   *bleed* (correlation between a stem and its complement), *HF loss* (top end
   lost relative to the full mix — the classic MDX smear), *noise floor* (RMS
@@ -1169,6 +1247,46 @@ and the dataset builder drops its section indexes (`_feedback_pairs`). A
 row-count change raises, and the sections roll back with the judgements.
 Changing a track's source URL (new audio) flags every judgement that names one
 of its sections the same way.
+
+**allin1** (`analysis/allin1_runner.py`, `stages.do_allin1`). One neural pass
+over the four Demucs sources gives beats, downbeats, beat-in-bar and labelled
+segments (`intro / verse / chorus / bridge / inst / solo / break / outro`,
+boundaries on downbeats). allin1 cannot read two stems; it normally separates
+its own four. Here the kept sources are written as 16-bit WAV into the exact
+folder its `demix()` checks (`<demix_dir>/htdemucs/<track stem>/`, verified
+against allin1 1.1.0), so it never separates again; in the legacy pipeline,
+with no four sources, it does (timed as `allin1.demix`). The model is loaded
+once per worker and kept. What is stored (`allin1_analysis`, per song and
+pipeline; a few KB): beats, downbeats, beat positions and BPM (float32),
+segments, the downbeat activation at each downbeat plus the track's mean and
+minimum (float16), each segment's boundary activation and label probability.
+The embeddings are averaged over the 8 models, then over each bar, per stem:
+`(bars, 4, 24)` float16 (~25 KB for 4 minutes) in `allin1_embeddings`, which
+no ordinary query reads. The 100-fps arrays are dropped as soon as the
+summary exists; visualisations are never stored. Cached as `allin1.analysis`
+over the mix and the four sources, versioned by the allin1 version, model and
+pooling. Its sections are then measured by **the same per-section code as the
+Essentia cut** (`detect_sections(fixed_segments=…)`: no novelty search, no
+phrase snap, allin1's own downbeats as each section's bar lines) and stored in
+`sections_allin1` with indexes from `ALLIN1_SECTION_BASE` (1000; §7). Labels
+map to the app's: break → breakdown, inst/solo → drop when loud (the
+voiceless-section rule), the rest as named; `start`/`end` silence folds into
+its neighbour. One retry, then `failed`; a track longer than `allin1_max_secs`
+is `skipped`; a run whose estimated memory would pass `allin1_mem_budget_mb`
+is refused with the reason (peaks are recorded in `analysis_runs.peak_mb`).
+
+**Vocal phrases** (`analysis/phrases.py`, stored in `vocal_phrases` per grid).
+On the vocal stem's frame RMS (the envelope `vocal_activity` thresholds), a
+phrase starts where singing follows at least `phrase_gap_secs` (or a beat,
+whichever is longer) of quiet and lasts `PHRASE_MIN_SUNG_SECS`; the Essentia
+melody, where measured, confirms it is pitched voice. Each start snaps to its
+nearest downbeat and keeps the signed **pickup** (onset − downbeat: negative
+is an anacrusis, positive a late entry; more than two beats off is not a
+phrase start), and runs to its next gap, rounded to 1/2/4/8/16/32 bars.
+Computed on the Essentia cut's bar lines after structure, and on allin1's in
+the allin1 stage; cached as `vocal.phrases`. On a synthetic set with pickups
+from −1 beat to +80 ms, every start lands within a beat and 50 ms
+(`tests/test_vocal_phrases.py`); real tracks are for `scripts/check_phrases.py`.
 
 **Hooks** (`analysis/hooks.py`): per role, the **16 bars** worth previewing — the
 most confident chorus with real singing for a vocal, the drop (else chorus) for
@@ -1337,6 +1455,29 @@ section's first downbeat is the anchor; `alignment_offset` is how far to move
 the bed (after stretching) so its downbeat lands under it — `None` when either
 side has no grid. Also stored: target BPM (the vocal's), tempo and pitch
 adjustments, and a one-line `reason`.
+
+**Phrase placement and the timing gate** (`matcher/phrase_align.py`, the
+allin1 engine only). A pair is hung off the vocal section's first sung phrase
+(its downbeat; its pickup kept by starting the vocal at the onset) and a bed
+downbeat — the bed section's first, else one 8 or 16 bars in, the earliest
+that holds. The bed is conformed to the vocal as everywhere else, so its bar
+lines are scaled by 1/stretch; then every vocal bar line in the overlap is
+matched to the nearest bed bar line and the mean and worst errors kept. A
+worst error over `timing_tol_ms` (25) — drift, a meter mismatch — or a phrase
+ratio outside `TIMING_PHRASE_RATIOS` fails the **timing gate**: the section
+pairing is dropped like a pair outside the BPM gate, the next-best bed section
+(of the vocal section's best four by section fit) is tried, and a song pair
+with none left is not stored at all (`last_score.timing` counts placed and
+dropped). Passing pairings blend `score_timing` (how tight, × the phrase fit)
+into the section fit at `timing_weight` (0.30). `alignment_offset` keeps its
+meaning, so the recipe's nudge, Studio, the mini studio and the plan's lane
+suggestions place the pair by phrase with no change of their own. Rows store
+`score_timing`, `timing_ok`, `timing_err_mean_ms` / `_max_ms`,
+`vocal_phrase_start`, `vocal_pickup_ms`, `bed_landing_sec` — NULL in essentia
+mode — and every row its `engine` (`essentia` / `allin1` /
+`essentia_fallback`: a side allin1 has not cut, still timed on the Essentia
+grid), `engine_version` and `pipeline`. Segments' live ranking applies the
+same placement and gate. Switching the engine needs only a re-score.
 
 **Plan** (`matcher/plan.py`): target BPM, stretch factor, semitone shift, key
 relation, ranked section pairings and `section_options` (the same
@@ -1569,6 +1710,12 @@ caches responses, and opens a breaker after repeated failures.
   mixed: Studio's stems-per-lane sends the vocals that way with a ducked lane.
 - **Candidate preview**: two clips from a candidate row's section spans, tempo,
   transpose and offset.
+- **FL session in the allin1 engine**: the stems are trimmed at the pair's
+  phrase placement instead of each track's first downbeat — the vocal at its
+  phrase downbeat, the bed at its landing — with the vocal's pickup kept
+  before bar 1 in every file (`session.json` `bar1_at_sec`, `placement`; a
+  README section says so). A trim set in Studio still wins. Essentia mode is
+  unchanged.
 - **FL session** (`render/session.py`), one folder per pair, e.g.
   `01_128_8A_vocal_over_bed/`: each stem trimmed from its section's first
   downbeat, conformed, and padded so **bar 1 is at 0:00**; the bed's
@@ -1802,6 +1949,20 @@ read the endpoint (extra keys on pair rows, jobs and mixes are ignored).
 
 ---
 
+- **Engines** (`matcher/engine_compare.py`, `tests/test_engine_dual_mode.py`).
+  `GET /api/analysis/engines/{id}?limit=10` → `{song_id, title, artist,
+  pipeline, allin1: {state, error, bpm, conf_mean, conf_min, demixed_by,
+  version}, engines: {essentia|allin1: {available, sections, downbeats,
+  phrases, seed_section, pairs}}, agreement}`; `pairs` are rank_partners rows
+  under that engine with the playback terms. `GET /api/analysis/engine-report`
+  → `{tracks_with_allin1, allin1_states, pipelines, downbeat_agreement:
+  {tracks, median_ms, within_share, off_phase_share}, candidates: [{engine,
+  rows, timing_ok, mean_err_ms, worst_err_ms, mean_score_timing}],
+  timing_gate, last_engine, error_histogram, ratings: [{engine, rated,
+  mean_stars, loved, rejected, tagged_timing_off}]}`. `GET
+  /api/analysis/status` adds `segmentation: {engine, pipeline, allin1:
+  {available, missing, version, device}, blocked}`.
+
 ## 6. Repo map and data model
 
 | Path | Role |
@@ -1815,11 +1976,12 @@ read the endpoint (extra keys on pair rows, jobs and mixes are ignored).
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `soundcloud_oauth.py` (dormant), `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py`, `fit_hints.py` (tempo/key/role an upload prints), `errors.py` (the failed-fetch vocabulary + reachability check) |
 | `downloader/download.py` | SoundCloud-first download, YouTube fallback, error classes, re-verify |
 | `stems/separate.py` | Demucs / MDX-Net, two or four stems |
-| `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`; `essentia_groups.py` (the Essentia analyser), `ml_models.py` (the EffNet models: catalogue, download, predictors), `project.py` (payloads → `features` columns); `decode.py` (one decode per file + per-signal memo; ffprobe/FFmpeg decode for Essentia), `frames.py` (the shared transforms), `registry.py` (feature groups + versions), `cache.py` (content hash → cached group results); `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure) |
-| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py`, `setflow.py` (set transitions, §5.12), `recipe.py` (the bed's transpose, one definition — §7), `segment_match.py` (one section against the other side, live — §5.13) |
+| `analysis/` | `analyze.py`, `structure.py`, `quality.py`, `hooks.py`; `essentia_groups.py` (the Essentia analyser), `ml_models.py` (the EffNet models: catalogue, download, predictors), `project.py` (payloads → `features` columns); `decode.py` (one decode per file + per-signal memo; ffprobe/FFmpeg decode for Essentia), `frames.py` (the shared transforms), `registry.py` (feature groups + versions), `cache.py` (content hash → cached group results); `compare.py` (when two analyses agree: BPM folds, key relations, boundary F-measure); `allin1_runner.py` (allin1: availability, the demix hand-over, summaries, memory), `phrases.py` (vocal phrase starts and pickups) |
+| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `effort.py`, `plan.py`, `dedup.py`, `features.py`, `model_scorer.py`, `setflow.py` (set transitions, §5.12), `recipe.py` (the bed's transpose, one definition — §7), `segment_match.py` (one section against the other side, live — §5.13), `phrase_align.py` (phrase placement and the timing gate — §5.7), `engine_compare.py` (the two engines side by side — §5.13) |
 | `render/` | `dsp.py`, `master.py` (loudness, true peak, limiter), `mixdown.py`, `session.py`, `exports.py` (CSV, cue sheet, rekordbox XML, Serato crate, Traktor NML) |
 | `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens incl. `QueueScreen`, `AnalysisScreen`, `segments/` — the Segments screen, its tables, filters, model and mini studio — + `pairs/pairModel.js`); `hooks/` (`usePlayer`, `useHookAudition`, `useScWidget`, `useQueue`, filters, library, ratings, groups, `useSets`, `usePairNotes`, `useSegments`, `useMiniStudio`, plan, polling); `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `sources.js`, `attributes.js` (attribute formatting + `attr:` columns); `public/soundtouch-processor.js` |
-| `scripts/` | `bench_analyzers.py` — librosa vs Essentia timing + agreement on library tracks (§8) |
+| `scripts/` | `bench_analyzers.py` — librosa vs Essentia timing + agreement on library tracks (§8); `stem_null_test.py`, `bench_pipelines.py`, `check_phrases.py`, `align_debug.py` — the allin1 measurements (§8) |
+| `database/alignment.py`, `database/downgrade.py` | allin1 / phrases / pipeline storage and its one migration; the down-migration (§2 Rollback) |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS |
 
 **Tables.** `songs` (metadata, status, `last_error`, `variant_cluster`,
@@ -1854,7 +2016,12 @@ rebuilds an older table, counting the copy before the swap)
 data) · `section_lines` (a vocal section's lyric cue, anchored to a time in
 the song) · `embeddings` (`song_id`, `kind='effnet'`, `dim`, `vector` float32
 BLOB, `content_hash` of the full mix it describes, `updated_at` — derived,
-refillable; §5.13).
+refillable; §5.13) · `allin1_analysis`, `allin1_embeddings`, `sections_allin1`,
+`vocal_phrases`, `pipeline_parked` (`database/alignment.py`, §5.5, §7; with
+`songs.separation_pipeline` / `allin1_state` / `allin1_at` / `allin1_error`,
+`analysis_runs.peak_mb`, `pair_feedback.engine` / `pipeline`,
+`pair_notes.engine` and the timing and provenance columns of
+`mashup_candidates` — all removed by `database/downgrade.py`).
 `app_prefs` keys: `soundcloud_profile`, `soundcloud_saved_profiles`, `attribute_visibility`,
 `last_score`, `harmony_unsure_below`, `library_view`, `filter_presets`.
 Existing databases migrate on start.
@@ -1864,6 +2031,37 @@ Existing databases migrate on start.
 ## 7. Load-bearing decisions — read before changing code
 
 ### Data and scoring
+
+- **Two separation pipelines, one set of live rows.** `stems`, `features` and
+  `sections` always hold the pipeline in `songs.separation_pipeline` (NULL is
+  legacy), so none of the ~50 queries that read them knows there are two. The
+  other pipeline's rows wait as JSON in `pipeline_parked`;
+  `alignment.activate_pipeline` is the only way they swap — one transaction,
+  row ids kept (all three tables are AUTOINCREMENT, so an id is never reused),
+  judgements carried by `remap_feedback_sections` and the `pair_feedback`
+  count checked. A writer that replaces a track's stems under another
+  pipeline must `park_live` first, as `do_stems` does, or the old pipeline's
+  rows are gone.
+- **Section indexes are a namespace per engine.** Essentia's sections are
+  numbered from 0, allin1's (`sections_allin1`) from `ALLIN1_SECTION_BASE`
+  (1000); allin1 rows' segment ids from `ALLIN1_SEGMENT_ID_BASE`. That is
+  what keeps `pair_feedback`, `pair_notes`, `set_items` and
+  `mashup_candidates` keyed exactly as before with two engines: a judgement
+  of an Essentia "chorus over drop" can never name an allin1 section.
+  `remap_feedback_sections(namespace=…)` re-points only its own engine's
+  sides. `get_sections` / `sections_for_songs` / `list_segments` are the
+  engine-aware readers — in allin1 mode a track without allin1 sections reads
+  its Essentia ones.
+- **Ratings record their engine.** `upsert_pair_feedback` stamps `engine` and
+  `pipeline` from the stored row it judges (else from the section's
+  namespace) and, when the caller passes no snapshot, keeps the row's scores
+  and timing terms in `features_json` — the evidence for tuning the timing
+  weight later. No caller passes either; do not make one.
+- **The timing gate lives in the section search** (`sections._timed_section_pairs`)
+  and is applied by everything that builds pairings — the library run,
+  `score_pair`, the plan's options, Segments, the FL export's placement —
+  through `match.run_engine` / `timing_for`. A new path that builds pairings
+  without it shows allin1 pairs the scorer dropped.
 
 - **A pair is keyed by its four ids, never by `candidate.id`.** `score_all_pairs`
   truncates `mashup_candidates` on every run. `pairModel.js` `keyOf`/`feedbackKey`
@@ -2239,7 +2437,9 @@ Essentia tests in `tests/test_essentia_analyzer.py` skip where it does not
 import, which is the Windows leg (and native Windows). `tests/conftest.py` pins
 `analyzer=librosa` for every test (Essentia-mode tests opt in) and switches
 model downloads off (`MASHUP_ESSENTIA_MODEL_FETCH=0`): an analysis test must
-never fetch 30 MB over the network. It also sets `MASHUP_REACH_CHECK=0`, so the
+never fetch 30 MB over the network. It pins the essentia engine and the legacy
+pipeline too (`MASHUP_SEGMENTATION_ENGINE`, `MASHUP_SEPARATION_PIPELINE`);
+allin1 tests opt in and fake the model, so CI needs no allin1 install. It also sets `MASHUP_REACH_CHECK=0`, so the
 preview's reachability probe never leaves the machine, and `MASHUP_STRETCH=librosa`,
 so renders stay exact and ffmpeg-independent (`tests/test_phase6_export.py`
 opts into Rubber Band). Running the Essentia tests inside the
@@ -2278,6 +2478,38 @@ drop a measure below its floor; a change that improves one raises the floor.
 `expect` is the verdict after the smallest sensible transpose (±1–2 st is
 routine), and section chroma is scale-shaped, as a section's mean chroma is.
 Baseline (2026-10-15): AUC 0.959, rules 0.143, labels 0.882.
+
+**allin1 and the unified pipeline** (not part of the suite — they need Demucs,
+allin1 and their weights, i.e. Docker; each writes under `<data_dir>/bench/`):
+
+```bash
+docker compose exec app python scripts/stem_null_test.py --auto 10   # before switching pipelines
+docker compose exec app python scripts/bench_pipelines.py --auto 5   # time / peak MB / storage, both pipelines
+docker compose exec app python scripts/check_phrases.py --songs 12,40 --truth truth.csv
+docker compose exec app python scripts/align_debug.py 12 40          # click overlay + grid plot of one pair
+```
+
+`stem_null_test.py` runs 2-stem and 4-stem Demucs on copies of N tracks and
+null-tests the instrumentals (residual dBFS, SNR, peak difference, an A/B pair
+and the residual per track); it exits 1 — stop and listen — above −40 dBFS.
+`bench_pipelines.py` runs each pipeline (stems → analysis → structure →
+allin1) in a child process on a scratch library of copied downloads (cache
+off), reports per stage the median seconds and the peak resident MB and per
+track the analysis KB and stem MB, and prints the brief's three criteria as
+PASS / FAIL. `check_phrases.py` lists each track's phrase starts and, with a
+`song_id,onset_sec` CSV of the entries you marked by ear, scores them (target:
+90% within a beat). `align_debug.py` renders the placed pair's bar lines as
+stereo clicks (vocal left, bed right — one click is a grid that holds) over
+the conformed stems, and a PNG of both grids.
+
+In the suite, allin1 is faked at its one seam (`allin1_runner.run`) and its
+summary, storage, caching, routing, retry, limits and failure path are tested
+on real audio otherwise (`test_allin1_stage.py`); the phrase detector and the
+placement on synthetic grids (`test_vocal_phrases.py`, `test_phrase_align.py`);
+the pipeline swap, the feedback namespace and the down-migration round trip
+(`test_pipeline_switch.py`); both engines over one library, the gate, rating
+provenance, Segments and the comparison endpoints (`test_engine_dual_mode.py`);
+the FL session's placement (`test_engine_export.py`).
 
 **Persona UX simulation** (`scripts/ux_sim/`, not part of the suite — it needs
 Playwright, a built frontend and ~1 h for 100 personas):
@@ -2701,6 +2933,37 @@ driven by the 100-persona browser simulation (§9) against a synthesised
     on two scales — re-score or turn the model off before comparing; the bed is
     looped under a longer vocal only when the nudge is ≥ 0; segments are whole
     sections — 8/16-bar phrases (item 5) would make them finer.
+
+12. **allin1 and phrase placement (2026-10-22).** Built (§5.3, §5.5, §5.7,
+    §4 Analysis › Engines, §2 Rollback): the unified 4-stem pipeline beside the
+    legacy one with a row-swap rollback and a down-migration; the allin1 stage
+    (its demix hand-over, compact summaries and per-bar embeddings, one model
+    per worker, retry, length and memory limits, the Essentia fallback);
+    vocal phrase starts with pickups; phrase placement and the timing gate in
+    the scorer, Segments, the plan and the FL export; engine and pipeline on
+    every pair and every rating; the Engines comparison. Decided: the bed is
+    still conformed to the vocal (the brief stretched the vocal; the timing
+    arithmetic is the same either way and `phrase_align.place(conform="vocal")`
+    is the switch if it is ever wanted); Essentia stays authoritative for
+    `features` BPM/key, allin1 for bar lines and sections in its mode; no
+    Essentia step is skipped (the comparison needs both). **Not yet measured —
+    needs Docker with the model weights**, in this order:
+    1. `stem_null_test.py` on ≥ 10 tracks; switch `separation_pipeline` only
+       if it passes and the A/B pairs sound the same.
+    2. `bench_pipelines.py` — record the per-stage table here, and replace
+       `allin1_runner.BASE_MB` / `MB_PER_AUDIO_SEC` with the measured peaks.
+    3. A ~20-track allin1 backfill (Bulk reprocess › ⟳ allin1); then
+       Analysis › Engines: bar-line agreement, gate pass share. 25 ms may be
+       tight for live-drummed records — report the share passing at 25/40/60
+       ms before settling `timing_tol_ms`.
+    4. `check_phrases.py` against ≥ 10 hand-marked tracks (target 90% within a
+       beat, pickups within 50 ms).
+    5. Rate pairs from both engines in Analysis › Engines; the report then
+       says which one your ears prefer.
+    Deferred: the full-resolution embedding research sample (~75 MB a track);
+    a GPU path beyond `allin1_device = cuda` (CPU-only image); passing audio
+    between Demucs, allin1 and Essentia in memory (each still reads its own
+    files — the demix hand-over decodes four FLACs, ~0.3 s per 30 s here).
 
 Not worth doing: raising `rhythm` or `structure` weights; a `~BPM` column in
 Discover (nothing external is analysed — rows show the tempo an upload prints,

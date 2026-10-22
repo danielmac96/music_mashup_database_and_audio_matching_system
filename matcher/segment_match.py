@@ -42,12 +42,15 @@ def _percent_rank(sorted_totals: List[float], total: float) -> Optional[float]:
     return min(below / (n - 1), 1.0)
 
 
-def _fingerprint(db) -> tuple:
+def _fingerprint(db, engine: Optional[str] = None) -> tuple:
     """Changes whenever anything the ranking reads changes: a scoring input
     (songs.pairs_input_at — every writer bumps it, readme §7), a re-cut or a
     new stem (section ids, feature rows, stem quality), a re-score (the stored
     totals the percentile reads), an exclusion, a dedup pass, or a section's
-    line (which the Segments list shows)."""
+    line (which the Segments list shows) — and, for the allin1 engine, its
+    sections, the vocal phrases, the pipeline each track is live on and the
+    engine itself."""
+    from config import current_segmentation_engine
     from database.models import get_conn
     conn = get_conn(db)
     try:
@@ -63,7 +66,14 @@ def _fingerprint(db) -> tuple:
                          FROM mashup_candidates),
                       (SELECT COUNT(*) || ':' || COALESCE(SUM(LENGTH(text)), 0)
                          || ':' || COALESCE(SUM(anchor_sec), 0)
-                         FROM section_lines)""").fetchone())
+                         FROM section_lines),
+                      (SELECT COUNT(*) || ':' || COALESCE(MAX(id), 0)
+                         FROM sections_allin1),
+                      (SELECT COUNT(*) || ':' || COALESCE(MAX(id), 0)
+                         FROM vocal_phrases),
+                      (SELECT COUNT(*) || ':' || COALESCE(SUM(LENGTH(separation_pipeline)), 0)
+                         FROM songs WHERE separation_pipeline IS NOT NULL)"""
+        ).fetchone()) + (engine or current_segmentation_engine(),)
     finally:
         conn.close()
 
@@ -73,7 +83,7 @@ class _Snapshot:
     once per state of the library (_fingerprint). Reading and decoding every
     feature row and section was most of a call on a 5,000-track library."""
 
-    def __init__(self, db):
+    def __init__(self, db, engine: Optional[str] = None):
         from database import models
         from matcher.match import (
             _camelot_index, _prepare_block, _with_full_bpm, get_library_stats,
@@ -91,7 +101,7 @@ class _Snapshot:
         self.vocal_at = {f["song_id"]: k for k, f in enumerate(self.vocals)}
         self.bed_at = {f["song_id"]: k for k, f in enumerate(self.beds)}
         ids = set(self.vocal_at) | set(self.bed_at)
-        self.sections = models.sections_for_songs(ids, db_path=db)
+        self.sections = models.sections_for_songs(ids, db_path=db, engine=engine)
         self.by_id = {sec["id"]: sec for secs in self.sections.values() for sec in secs}
         conn = models.get_conn(db)
         try:
@@ -114,15 +124,17 @@ class _Snapshot:
             for role in ROLES}
 
 
-_CACHE: Dict[str, tuple] = {}
+_CACHE: Dict[tuple, tuple] = {}
 
 
-def _snapshot(db) -> _Snapshot:
-    key = str(db)
-    fp = _fingerprint(db)
+def _snapshot(db, engine: Optional[str] = None) -> _Snapshot:
+    from config import current_segmentation_engine
+    engine = engine or current_segmentation_engine()
+    key = (str(db), engine)
+    fp = _fingerprint(db, engine)
     hit = _CACHE.get(key)
     if hit is None or hit[0] != fp:
-        hit = (fp, _Snapshot(db))
+        hit = (fp, _Snapshot(db, engine))
         _CACHE[key] = hit
     return hit[1]
 
@@ -139,7 +151,7 @@ def _offered(section: Dict, role: str) -> bool:
 
 
 def rank_partners(segment_id: int, role: str, limit: int = 200,
-                  db_path=None) -> Optional[Dict]:
+                  db_path=None, engine: Optional[str] = None) -> Optional[Dict]:
     """Score the section `segment_id`, played as `role` ("vocal" or "bed"),
     against every offered section on the other side.
 
@@ -167,7 +179,9 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     if role not in ROLES:
         raise ValueError(f"role must be one of {ROLES}")
     db = db_path if db_path is not None else models.DB_PATH
-    snap = _snapshot(db)
+    from config import current_segmentation_engine
+    engine = engine or current_segmentation_engine()
+    snap = _snapshot(db, engine)
     anchor = snap.by_id.get(int(segment_id))
     if anchor is None:
         anchor = models.get_segment(segment_id, db_path=db)
@@ -186,6 +200,12 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     section_weight = cfg["section_weight"]
     section_weights = current_section_weights()
     patterns = current_patterns()
+    # The allin1 engine: phrase placement and the timing gate, exactly as the
+    # library run applies them (matcher/sections._timed_section_pairs).
+    from matcher.match import run_engine, timing_for
+    from matcher.sections import place_pair, timed_fit
+    _engine, timing_base = run_engine(db, cfg, engine=engine)
+    t_weight = float(timing_base["weight"]) if timing_base else 0.0
 
     # The song terms: the scorer's own vectorised pass, one row against the
     # whole other side — gate included (tempo, key, same song, variant, stem
@@ -227,7 +247,9 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
             v_sec, b_sec = (anchor, sec) if role == "vocal" else (sec, anchor)
             fit = score_section_pair(v_sec, b_sec, stretch, top.get("bpm"),
                                      section_weights, patterns)
-            bound = (((1.0 - section_weight) * (rest + w_key) + section_weight * fit)
+            # With timing on, the fit can rise to (1-w)·fit + w (a perfect grid).
+            fit_ub = (1.0 - t_weight) * fit + t_weight if timing_base else fit
+            bound = (((1.0 - section_weight) * (rest + w_key) + section_weight * fit_ub)
                      * (1.0 - effort_weight * effort_floor))
             bounded.append((bound, top, bed, scores, v_sec, b_sec, fit, stretch))
     bounded.sort(key=lambda t: -t[0])
@@ -238,6 +260,13 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     for n, (bound, top, bed, scores, v_sec, b_sec, fit, stretch) in enumerate(bounded):
         if len(best) >= k and bound + 1e-9 < best[0][0]:
             break
+        placement = None
+        if timing_base is not None:
+            placement = place_pair(v_sec, b_sec, stretch,
+                                   timing_for(timing_base, top["song_id"], db))
+            if placement.get("timing_ok") == 0:
+                continue                                  # the timing gate
+            fit = timed_fit(fit, placement, t_weight)
         sp = {"vocal_section_idx": v_sec["section_index"],
               "inst_section_idx": b_sec["section_index"],
               "score_section": round(fit, 4)}
@@ -248,7 +277,7 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
         tie = (-(bed if role == "vocal" else top)["song_id"],
                -(b_sec if role == "vocal" else v_sec)["section_index"])
         entry = (float(s["total"]), tie, n,
-                 (top, bed, v_sec, b_sec, fit, stretch, scores))
+                 (top, bed, v_sec, b_sec, fit, stretch, scores, placement))
         if len(best) < k:
             heapq.heappush(best, entry)
         elif entry[:2] > best[0][:2]:
@@ -261,7 +290,7 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     genres = _genres({x for t, b, *_ in kept
                       for x in (t["song_id"], b["song_id"])}, db)
     rows = []
-    for top, bed, v_sec, b_sec, fit, stretch, scores in kept:
+    for top, bed, v_sec, b_sec, fit, stretch, scores, placement in kept:
         key = (top["song_id"], bed["song_id"], v_sec["section_index"],
                b_sec["section_index"])
         hit = stored.get(key)
@@ -272,8 +301,10 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
             # measured terms — only for the rows returned.
             sp = _pair_row(v_sec, b_sec, v_sec["section_index"],
                            b_sec["section_index"], fit, stretch, top.get("bpm"),
-                           patterns=patterns)
+                           patterns=patterns, placement=placement,
+                           timing=timing_base)
             s = dict(scores)
+            s["engine"] = "essentia" if timing_base is None else "essentia_fallback"
             _apply_measured_harmony(top, bed, s, sp, lambda sid: sections_of(sid, []),
                                     weights, effort_weight)
             _apply_section_fit(s, sp, effort_weight, weights, section_weight)

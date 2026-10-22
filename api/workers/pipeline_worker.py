@@ -44,18 +44,23 @@ _RANK = {
 # download instead of after its separation. "analysis" covers do_analyze + the
 # non-fatal do_structure pass (structure is not status-bearing, so it never gets
 # its own resumable stage).
-STAGES = ("download", "quick", "stems", "analysis")
+# "allin1" (readme §5.5) follows the analysis when the allin1 engine is on, or
+# when a bulk backfill asked for it (songs.allin1_state = 'queued'): beats,
+# downbeats and labelled sections from one neural pass. It is the heaviest stage
+# and is never in the way: the track's Essentia sections and pairs exist before
+# it starts, and its failure leaves the track on them (non-fatal).
+STAGES = ("download", "quick", "stems", "analysis", "allin1")
 
 _STAGE_MIN_RANK = {"download": 1, "stems": 2, "analysis": 3}
 
 # Stages whose failure does not stop the track: the quick tier only ever gets
 # ahead of work the full analysis repeats with the stems.
-NON_FATAL = {"quick"}
+NON_FATAL = {"quick", "allin1"}
 
 
 def _row(song_id: int):
     conn = get_conn()
-    row = conn.execute("SELECT status, quick_state FROM songs WHERE id=?",
+    row = conn.execute("SELECT status, quick_state, allin1_state FROM songs WHERE id=?",
                        (song_id,)).fetchone()
     conn.close()
     return row
@@ -80,7 +85,22 @@ def next_stage(song_id: int) -> Optional[str]:
     for stage in ("stems", "analysis"):
         if rank < _STAGE_MIN_RANK[stage]:
             return stage
+    if _wants_allin1(row):
+        return "allin1"
     return None
+
+
+def _wants_allin1(row) -> bool:
+    """allin1 is owed for the current audio: asked for by a backfill, or the
+    allin1 engine is on and it has not run (done / failed / skipped all count
+    as having run — a failure waits for Retry, a skip for a setting change)."""
+    state = row["allin1_state"] if row else None
+    if state == "queued":
+        return True
+    if state:
+        return False
+    from config import current_segmentation_engine
+    return current_segmentation_engine() == "allin1"
 
 
 def _structure_pass(job_id: str, song_id: int) -> None:
@@ -157,6 +177,15 @@ def _finalize(job_id: str, song_id: int) -> None:
     jobs.done(job_id, {"song_id": song_id, "status": _status(song_id)})
 
 
+def _mark_non_fatal_failure(song_id: int, stage: str, error: str) -> None:
+    if stage == "quick":
+        from database.models import set_quick_state
+        set_quick_state(song_id, "failed")
+    elif stage == "allin1":
+        from database.alignment import set_allin1_state
+        set_allin1_state(song_id, "failed", error)
+
+
 def run_stage(job_id: str, song_id: int, stage: str) -> str:
     """Run ONE stage for a track. Returns:
       * ``"next"``   — stage succeeded, the track needs another stage
@@ -186,6 +215,9 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
         elif stage == "stems":
             stages.do_stems(song_id, jobs.progress_updater(
                 job_id, "stems", stage_key="stems"))
+        elif stage == "allin1":
+            stages.do_allin1(song_id, jobs.progress_updater(
+                job_id, "allin1", stage_key="allin1"))
         else:
             stages.do_analyze(song_id, jobs.progress_updater(
                 job_id, "analyze", stage_key="analysis"))
@@ -194,9 +226,11 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
         if stage in NON_FATAL:
             log.warning("%s stage failed for song %s (non-fatal): %s", stage, song_id, exc)
             # Recorded here too, so next_stage cannot route the track back into
-            # the quick stage however do_quick failed.
-            from database.models import set_quick_state
-            set_quick_state(song_id, "failed")
+            # the same stage however it failed.
+            _mark_non_fatal_failure(song_id, stage, str(exc))
+            if next_stage(song_id) is None:
+                _finalize(job_id, song_id)
+                return "done"
             return "next"
         jobs.fail(job_id, str(exc), exc.traceback_text)
         return "failed"
@@ -206,14 +240,21 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
         # do_quick records its own failure as quick_state; anything that escaped
         # it must still not cost the track its stems.
         log.exception("%s stage crashed for song %s (non-fatal)", stage, song_id)
-        from database.models import set_quick_state
-        set_quick_state(song_id, "failed")
+        _mark_non_fatal_failure(song_id, stage, f"{type(exc).__name__}: {exc}")
         jobs.stage_finish(job_id, stage, "failed", error=f"{type(exc).__name__}: {exc}")
+        if next_stage(song_id) is None:
+            _finalize(job_id, song_id)
+            return "done"
         return "next"
 
     jobs.stage_finish(job_id, stage, "done")
     if stage == "quick":
         _score_track(song_id, "provisional")
+    if stage == "analysis" and next_stage(song_id) == "allin1":
+        # The Essentia sections and the pairs on them land now; allin1 (minutes
+        # on CPU) refines them after, without anything waiting on it.
+        _structure_pass(job_id, song_id)
+        _score_track(song_id, "analysed")
     if next_stage(song_id) is None:
         _finalize(job_id, song_id)
         return "done"

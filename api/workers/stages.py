@@ -26,8 +26,8 @@ import traceback
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
-from config import (ANALYSIS_WORKERS, BEAT_TRIM_SECS, DOWNLOAD_WORKERS,
-                    QUICK_WORKERS, STEM_WORKERS)
+from config import (ALLIN1_WORKERS, ANALYSIS_WORKERS, BEAT_TRIM_SECS,
+                    DOWNLOAD_WORKERS, QUICK_WORKERS, STEM_WORKERS)
 from database.models import (
     get_conn, replace_sections, update_song_duration, update_song_error,
     update_song_status, upsert_features, upsert_stem,
@@ -49,6 +49,7 @@ _STAGE_GATES = {
     "stems": threading.Semaphore(STEM_WORKERS),
     "analysis": threading.Semaphore(ANALYSIS_WORKERS),
     "quick": threading.Semaphore(QUICK_WORKERS),
+    "allin1": threading.Semaphore(ALLIN1_WORKERS),
 }
 
 
@@ -254,6 +255,8 @@ def do_download(song_id: int, on_progress: ProgressCb = None) -> dict:
         # again — a cache hit when the bytes did not change.
         from database.models import set_quick_state
         set_quick_state(song_id, None)
+        from database.alignment import set_allin1_state
+        set_allin1_state(song_id, None)
         if result.duration_secs is not None:
             update_song_duration(song_id, result.duration_secs)
         if result.source_url and result.source_url != row["source_url"]:
@@ -279,8 +282,23 @@ def _audio_secs(path: Path) -> Optional[float]:
 
 
 def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
-    from config import current_stem_mode, current_stem_separator
-    from stems.separate import separate, separator_tag
+    """Separate under the configured pipeline (config.current_separation_pipeline).
+
+    legacy_2stem is what the app always did. unified_4stem runs one htdemucs
+    4-source pass into its own folder (stems/separate.unified_dirs). Before a
+    pipeline other than the live one writes its rows, the live rows are parked
+    (database/alignment.park_live), so the other pipeline's stems, features and
+    sections stay one swap away."""
+    from config import (current_separation_pipeline, current_stem_mode,
+                        current_stem_separator)
+    from database import alignment
+    from stems.separate import separate, separator_tag, unified_tag
+
+    pipeline = current_separation_pipeline()
+    live = alignment.live_pipeline(song_id)
+    if pipeline != live and _stem_paths(song_id).keys() - {"full"}:
+        # Its rows are kept, not overwritten: parked under the old pipeline.
+        alignment.park_live(song_id)
 
     conn = get_conn()
     row = conn.execute(
@@ -305,10 +323,13 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
     # of sources — than what is now configured, re-separate rather than silently
     # reusing the old files. Two-stem output is not wrong, it is just missing
     # three of the four sources the collision features need.
-    requested = current_stem_separator()
-    mode = current_stem_mode()
-    wanted_tag = separator_tag(requested, mode)
+    unified = pipeline == "unified_4stem"
+    requested = "demucs" if unified else current_stem_separator()
+    mode = "four" if unified else current_stem_mode()
+    wanted_tag = unified_tag() if unified else separator_tag(requested, mode)
     prior_tag = existing_tags.get("vocals") or existing_tags.get("instrumental")
+    if pipeline != live:
+        prior_tag = None      # the live rows are the other pipeline's
     force = bool(prior_tag) and str(prior_tag) != wanted_tag
 
     try:
@@ -318,7 +339,7 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
             stems = separate(
                 song_id=row["id"], title=row["title"], audio_path=raw_path,
                 artist=row["artist"] or "", on_progress=on_progress,
-                separator=requested, force=force, mode=mode,
+                separator=requested, force=force, mode=mode, unified=unified,
             )
             tinfo["failed"] = not stems
             if stems and stems.get("separator") is None:
@@ -336,7 +357,17 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
 
     # separator=None means existing files were reused → keep the DB's tag.
     # Untagged reused stems predate the MDX option, so they are Demucs-made.
-    tag = stems.get("separator") or prior_tag or separator_tag("demucs", "two")
+    tag = stems.get("separator") or prior_tag or (
+        wanted_tag if unified else separator_tag("demucs", "two"))
+    if pipeline != live:
+        # The parked pipeline's sources (say drums/bass/other) must not stay
+        # live beside this one's.
+        conn = get_conn()
+        conn.execute("DELETE FROM stems WHERE song_id=? AND stem_type!='full'", (song_id,))
+        conn.commit()
+        conn.close()
+        alignment.set_live_pipeline(song_id, pipeline)
+    alignment.set_allin1_state(song_id, None)       # new stems: allin1 is owed again
     written = {}
     for kind in ("vocals", "instrumental", "drums", "bass", "other"):
         path = stems.get(kind)
@@ -718,6 +749,12 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
     provisional = inputs["vocals"] is None
     sections = [{**sec, "provisional": provisional} for sec in sections]
     replace_sections(song_id, sections)
+    if not provisional:
+        # The vocal's phrase starts on this cut's bar lines (the allin1 stage
+        # stores its own on allin1's): what places a vocal on a bed downbeat.
+        store_phrases(song_id, inputs["vocals"], "essentia",
+                      sorted({t for s in sections for t in (s.get("downbeats") or [])}),
+                      sorted({t for s in sections for t in (s.get("beat_times") or [])}))
     hooks = _persist_hooks(song_id, sections)
     # Cut the clips now so they are warm before the user reaches the ranked list
     # — a cold hook is the difference between an instant preview and a stall.
@@ -727,6 +764,263 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
     with _timed("hooks", song_id):
         clips = warm_hooks(song_id, force=True)
     return {"section_count": len(sections), "hooks": hooks, "clips": clips}
+
+
+# ── Vocal phrases (readme §5.5) ───────────────────────────────────────────────
+
+def store_phrases(song_id: int, vocals_path: Optional[Path], grid_source: str,
+                  downbeats, beats, grid_key: Optional[str] = None) -> int:
+    """Detect the vocal stem's phrase starts on one bar grid and store them for
+    the song's live pipeline. Cached as ``vocal.phrases`` over the vocal stem
+    and the grid; never raises (phrases refine placement, they gate nothing on
+    their own). Returns how many were stored."""
+    try:
+        if not vocals_path or not Path(vocals_path).exists() or not downbeats:
+            return 0
+        import hashlib
+        import json
+
+        from analysis.cache import cached, lookup
+        from analysis.phrases import VERSION, detect_phrases
+        from analysis.registry import GROUPS
+        from config import (HOP_LENGTH, PHRASE_MIN_SUNG_SECS,
+                            PHRASE_PICKUP_MAX_BEATS, SAMPLE_RATE, current_float)
+        from database import alignment
+
+        hashes = _hash_inputs({"vocals": Path(vocals_path)})
+        hashes["grid"] = grid_key or hashlib.blake2b(
+            json.dumps([list(downbeats), list(beats or [])]).encode("utf-8"),
+            digest_size=16).hexdigest()
+        melody = None
+        if hashes.get("vocals") not in (None, "!"):
+            mel = lookup(GROUPS["essentia.melody"], hashes["vocals"])
+            if mel and mel.get("f0"):
+                melody = {"step": mel.get("step"), "f0": mel["f0"]}
+                hashes["melody"] = "1"
+        key = _combo_key(hashes, required=("vocals", "grid"))
+
+        def _compute():
+            from analysis import frames
+            from analysis.decode import load_mono
+            from analysis.vocals import active_frames
+            yv = load_mono(Path(vocals_path), sr=SAMPLE_RATE)
+            active = active_frames(frames.rms(yv, HOP_LENGTH)[0])
+            return {"phrases": detect_phrases(
+                active, HOP_LENGTH / SAMPLE_RATE, downbeats, beats,
+                gap_secs=current_float("phrase_gap_secs"),
+                min_sung_secs=PHRASE_MIN_SUNG_SECS,
+                pickup_max_beats=PHRASE_PICKUP_MAX_BEATS, melody=melody)}
+
+        with _timed("phrases", song_id, analyzer=grid_source) as tinfo:
+            out, hit, _ms = cached("vocal.phrases", key, _compute)
+            if hit:
+                tinfo["grp"] = "phrases.cached"
+        phrases = (out or {}).get("phrases") or []
+        alignment.replace_vocal_phrases(
+            song_id, alignment.live_pipeline(song_id), grid_source, phrases,
+            content_hash=key, version=VERSION)
+        return len(phrases)
+    except Exception:  # noqa: BLE001
+        log.exception("phrase detection failed for song %s (%s grid)", song_id, grid_source)
+        return 0
+
+
+# ── allin1 (readme §5.5) ──────────────────────────────────────────────────────
+
+ALLIN1_RETRIES = 1
+
+
+def do_allin1(song_id: int, on_progress: ProgressCb = None) -> dict:
+    """Beats, downbeats and labelled sections from allin1 for the live
+    pipeline's audio; then the sections measured as the Essentia cut is
+    (sections_allin1) and the vocal phrases on allin1's bar grid.
+
+    Not status-bearing. Records ``songs.allin1_state``: done | skipped (too
+    long — a DJ set) | failed (raises StageError; the pipeline treats it as
+    non-fatal and the track keeps its Essentia sections). One automatic retry
+    before failing. Shares the stems gate, so it never runs beside Demucs."""
+    from analysis import allin1_runner as runner
+    from analysis.cache import cached
+    from config import (DEMUCS_THREADS, current_allin1_device, current_float,
+                        current_int, current_keep_analysis_stems)
+    from database import alignment
+
+    conn = get_conn()
+    row = conn.execute("SELECT id, raw_path, duration_secs FROM songs WHERE id=?",
+                       (song_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise StageError(f"Song {song_id} not found")
+    pipeline = alignment.live_pipeline(song_id)
+    stem_paths = _stem_paths(song_id)
+    full_fp = stem_paths.get("full") or row["raw_path"]
+    if not full_fp or not Path(full_fp).exists():
+        alignment.set_allin1_state(song_id, "failed", "No audio")
+        raise StageError("No audio for allin1. Download it first.")
+    full = Path(full_fp)
+
+    secs = row["duration_secs"] or _audio_secs(full)
+    max_secs = current_float("allin1_max_secs")
+    if secs and secs > max_secs:
+        msg = (f"Skipped: {secs / 60:.0f} min is over allin1_max_secs "
+               f"({max_secs / 60:.0f} min) — a set, not a track?")
+        alignment.set_allin1_state(song_id, "skipped", msg)
+        return {"skipped": msg}
+
+    why = runner.missing()
+    if why:
+        alignment.set_allin1_state(song_id, "failed", why)
+        raise StageError(why)
+
+    def _p(kind):
+        fp = stem_paths.get(kind)
+        return Path(fp) if fp and Path(fp).exists() else None
+
+    sources = {k: _p(k) for k in runner.SOURCES}
+    have4 = all(sources.values())
+    inputs = {"full": full, **(sources if have4 else {})}
+    hashes = _hash_inputs(inputs)
+    hashes["demix"] = "pipeline" if have4 else "allin1"
+    key = _combo_key(hashes, required=("full",))
+    demixed_by = "pipeline" if have4 else "allin1"
+    if on_progress:
+        on_progress(5, "allin1: beats, downbeats, sections…" if have4 else
+                    "allin1: separating its own 4 stems (no 4-stem set here)…")
+
+    timings: dict = {}
+    peak = {"mb": None}
+
+    def _compute():
+        # Refuse rather than OOM the server (Phase 6): checked on a miss only.
+        why_not = runner.over_budget(secs, current_int("allin1_mem_budget_mb"))
+        if why_not:
+            raise MemoryError(why_not)
+        last = None
+        for attempt in range(ALLIN1_RETRIES + 1):
+            try:
+                with runner.PeakRss() as rss:
+                    t0 = time.perf_counter()
+                    result = runner.run(full, sources if have4 else None,
+                                        device=current_allin1_device(),
+                                        timings=timings, threads=DEMUCS_THREADS)
+                    ms = (time.perf_counter() - t0) * 1000.0
+                    summary = runner.summarise(result, content_hash=key,
+                                               demixed_by=demixed_by, ms=ms)
+                    del result
+                peak["mb"] = rss.peak_mb
+                return runner.to_cache(summary)
+            except Exception as exc:  # noqa: BLE001
+                last = exc
+                log.warning("allin1 attempt %d failed for song %s: %s",
+                            attempt + 1, song_id, exc)
+        raise last
+
+    try:
+        with _STAGE_GATES["stems"], _STAGE_GATES["allin1"], \
+                _timed("allin1", song_id, analyzer="allin1") as tinfo:
+            tinfo["audio_secs"] = secs
+            payload, hit, _ms = cached("allin1.analysis", key, _compute)
+            if hit:
+                tinfo["grp"] = "allin1.cached"
+            tinfo["peak_mb"] = peak["mb"]
+    except Exception as exc:  # noqa: BLE001
+        log.exception("allin1 failed for song %s", song_id)
+        msg = f"allin1 error: {type(exc).__name__}: {exc}"
+        alignment.set_allin1_state(song_id, "failed", msg)
+        raise StageError(msg, _tb(exc))
+    finally:
+        _record_steps("allin1", song_id, timings, analyzer="allin1")
+
+    budget = current_int("allin1_mem_budget_mb")
+    if peak["mb"] and peak["mb"] > budget:
+        log.warning("allin1 on song %s peaked at %.0f MB, over the %d MB budget",
+                    song_id, peak["mb"], budget)
+    summary = runner.from_cache(payload)
+    alignment.store_allin1(song_id, pipeline, summary)
+    if on_progress:
+        on_progress(70, "allin1: measuring its sections…")
+
+    n_sections = _allin1_sections(song_id, pipeline, stem_paths, full, summary, key)
+    n_phrases = store_phrases(song_id, _p("vocals"), "allin1", summary["downbeats"],
+                              summary["beats"], grid_key=key)
+
+    if pipeline == "unified_4stem" and not current_keep_analysis_stems():
+        _drop_analysis_sources(song_id, stem_paths)
+
+    alignment.set_allin1_state(song_id, "done")
+    return {"bpm": summary.get("bpm"), "downbeats": len(summary["downbeats"]),
+            "sections": n_sections, "phrases": n_phrases, "cached": hit,
+            "peak_mb": peak["mb"]}
+
+
+def _allin1_sections(song_id: int, pipeline: str, stem_paths: dict, full: Path,
+                     summary: dict, a1_key: Optional[str]) -> int:
+    """allin1's segments measured by detect_sections' per-section code, cached
+    as allin1.structure. 0 (and nothing written) when it finds nothing."""
+    from analysis.cache import cached
+    from analysis.structure import detect_sections
+    from database import alignment
+
+    def _p(kind):
+        fp = stem_paths.get(kind)
+        return Path(fp) if fp and Path(fp).exists() else None
+
+    inputs = {"full": full, "vocals": _p("vocals"), "instrumental": _p("instrumental"),
+              "bass": _p("bass")}
+    hashes = _hash_inputs(inputs)
+    hashes["allin1"] = a1_key
+    key = _combo_key(hashes, required=("full", "allin1"))
+    grid = {"beat_times": summary["beats"], "bpm": summary.get("bpm"),
+            "beat_phase": None, "downbeats": summary["downbeats"]}
+    timings: dict = {}
+    with _timed("structure", song_id, analyzer="allin1") as tinfo:
+        sections, hit, _ms = cached("allin1.structure", key, lambda: detect_sections(
+            inputs["full"], inputs["vocals"], inst_path=inputs["instrumental"],
+            bass_path=inputs["bass"], timings=timings, grid=grid,
+            fixed_segments=summary["segments"]) or None)
+        if hit:
+            tinfo["grp"] = "structure.cached"
+    _record_steps("allin1.structure", song_id, timings, analyzer="allin1")
+    sections = sections or []
+    if not sections:
+        return 0
+    # Each section's grid confidence: allin1's mean downbeat activation inside it.
+    conf = summary.get("downbeat_conf") or []
+    dbs = summary.get("downbeats") or []
+    for sec in sections:
+        vals = [c for t, c in zip(dbs, conf)
+                if sec["start_sec"] - 1e-3 <= t < sec["end_sec"] and c == c]
+        sec["downbeat_conf"] = round(sum(vals) / len(vals), 4) if vals else None
+        sec["provisional"] = inputs["vocals"] is None
+    alignment.replace_allin1_sections(song_id, pipeline, sections)
+    return len(sections)
+
+
+def _drop_analysis_sources(song_id: int, stem_paths: dict) -> None:
+    """keep_analysis_stems = off: delete the unified drums/bass/other once
+    allin1 has stored its result. Only files under the unified tree, and only
+    ones no parked row still names; the playback stems are never touched."""
+    from config import UNIFIED_DIR
+    conn = get_conn()
+    try:
+        parked = {json_path for (json_path,) in conn.execute(
+            "SELECT json_extract(row_json, '$.file_path') FROM pipeline_parked "
+            "WHERE song_id=? AND tbl='stems'", (song_id,)).fetchall()}
+        for kind in ("drums", "bass", "other"):
+            fp = stem_paths.get(kind)
+            if not fp or fp in parked:
+                continue
+            p = Path(fp)
+            try:
+                p.resolve().relative_to(UNIFIED_DIR.resolve())
+            except ValueError:
+                continue
+            p.unlink(missing_ok=True)
+            conn.execute("DELETE FROM stems WHERE song_id=? AND stem_type=?",
+                         (song_id, kind))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # Which stem each hook role previews. The vocal hook is cut from the vocal stem
