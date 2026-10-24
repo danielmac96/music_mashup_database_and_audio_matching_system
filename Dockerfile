@@ -41,12 +41,14 @@ RUN pip install --no-cache-dir -r requirements-essentia.txt \
 
 # allin1 (beats, downbeats, labelled sections — readme §5.5): its own layer.
 # natten is compiled against the torch above (no CPU wheel is published for it),
-# and allin1 goes in dep-less so it cannot move the numpy / torch pins — see
-# requirements-allin1.txt for why each step is the way it is.
+# and allin1 and madmom go in dep-less so they cannot move the numpy / scipy /
+# torch pins — see requirements-allin1.txt for why each step is the way it is.
 COPY requirements-allin1.txt ./
 RUN apt-get update && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -r requirements-allin1.txt \
+    && pip install --no-cache-dir --no-deps \
+        "madmom @ git+https://github.com/CPJKU/madmom@27f032e8947204902c675e5e341a3faf5dc86dae" \
     && pip install --no-cache-dir allin1==1.1.0 --no-deps \
     && pip install --no-cache-dir natten==0.17.3 --no-build-isolation \
     && python -c "import numpy; assert numpy.__version__.startswith('1.'), numpy.__version__" \

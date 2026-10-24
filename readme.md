@@ -82,16 +82,25 @@ the Library's missing-dependency banner names Essentia. Use Docker (or WSL2)
 for anything that imports or reprocesses tracks.
 
 **allin1** (`requirements-allin1.txt`, baked into the Docker image; §5.5) is
-the downbeat and labelled-section engine. It installs in three steps, in this
+the downbeat and labelled-section engine. It installs in four steps, in this
 order, because its own metadata would move the pins: the requirements file
-(madmom from git — the PyPI release does not import on Python ≥ 3.10 — with
-scipy held at 1.12), `allin1==1.1.0 --no-deps`, then `natten==0.17.3
---no-build-isolation`, compiled against the installed torch (~1–2 min; no CPU
-wheel was reachable). natten must be 0.17.x — allin1 1.1.0 calls
-`natten1dqkrpb`/`natten1dav`, gone after it — and not 0.17.5, which queries
+(scipy held at 1.12, plus `mido`), then madmom from git `--no-deps`, pinned to
+a commit rather than `main` — the PyPI release does not import on Python
+≥ 3.10, and that commit declares `scipy>=1.13`, a NumPy 2 floor it does not
+actually use, so left to the resolver it kills the whole install with
+`ResolutionImpossible` against the 1.12 pin before natten is even reached (it
+compiles, imports and tracks downbeats on 1.12; raising scipy instead is the
+wrong fix — `madmom/audio/hpss.py` imports `scipy.ndimage.filters`, which
+scipy removed in 1.15) — then `allin1==1.1.0 --no-deps`, then
+`natten==0.17.3 --no-build-isolation`, compiled against the installed torch
+(~1–2 min; no CPU wheel was reachable). natten must be 0.17.x — allin1 1.1.0
+calls `natten1dqkrpb`/`natten1dav`, gone after it — and not 0.17.5, which queries
 the CUDA device at import and fails on any machine without an NVIDIA driver.
 Verified 2026-10-22 on Python 3.12 / torch 2.5.1 / numpy 1.26.4: everything up
 to the model runs (the demix skip and the spectrogram front end on our stems).
+The Docker image builds and imports clean on Python 3.11 (2026-10-23): numpy
+1.26.4 / scipy 1.12.0 / madmom 0.17.dev0 / natten 0.17.3 / allin1 1.1.0 with
+torch 2.5.1+cpu, pins unmoved.
 The model weights (`harmonix-all`, 8 folds) download from HuggingFace on first
 use into `HF_HOME` (`/data/huggingface` in Docker); the sandbox this was built
 in could not reach HuggingFace, so **allin1's own inference is not yet run on
