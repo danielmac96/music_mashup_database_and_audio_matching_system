@@ -518,14 +518,17 @@ def test_put_get_and_delete(tmp_path):
 
 
 def test_migration_moves_the_json_arrays_without_losing_a_value(tmp_path):
-    """The migration runs on a database holding real rows."""
-    from database import arrays, schema
-    from database.models import get_conn
+    """The migration runs on a database holding real rows in the old shape.
 
-    db = tmp_path / "m.db"
-    conn = get_conn(db)                      # at SCHEMA_VERSION already
+    Built at version 1 deliberately — `get_conn` would apply every migration
+    and drop the two columns, leaving nothing for migration 2 to move.
+    """
+    from database import arrays, schema
+
+    conn = sqlite3.connect(tmp_path / "m.db")
+    conn.row_factory = sqlite3.Row
     try:
-        # Put the database back to version 1 and write a legacy-shaped row.
+        schema._baseline(conn)                  # the pre-ledger shape, nothing more
         conn.execute("PRAGMA user_version = 1")
         beats = [i * 0.5 for i in range(64)]
         env = [i / 360 for i in range(360)]
@@ -544,6 +547,9 @@ def test_migration_moves_the_json_arrays_without_losing_a_value(tmp_path):
         cols = {r[1] for r in conn.execute("PRAGMA table_info(features)")}
         assert "beat_times_json" not in cols
         assert "waveform_rms_json" not in cols
+        # The row itself survived.
+        assert conn.execute("SELECT bpm FROM features WHERE song_id=1").fetchone()[0] \
+            == pytest.approx(124.0)
     finally:
         conn.close()
 
