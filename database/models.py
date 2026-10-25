@@ -498,22 +498,8 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
         # write lock, so every later attempt — including the retry that would fix
         # things — fails with "database is locked" instead of the real error.
         try:
-            conn.executescript(SCHEMA)
-            _migrate_songs_columns(conn)
-            _migrate_features_columns(conn)
-            _migrate_candidates_columns(conn)
-            _migrate_sections_columns(conn)
-            _migrate_candidates_unique_key(conn)
-            _migrate_stems_columns(conn)
-            _migrate_mixtracks_columns(conn)
-            _migrate_mashuppairs_columns(conn)
-            _migrate_crates_columns(conn)
-            _migrate_sets_columns(conn)
-            _migrate_set_items_kinds(conn)
-            _migrate_pair_feedback_key(conn)
-            from database import alignment
-            alignment.migrate(conn)       # allin1 / phrases / pipelines (readme §6)
-            conn.commit()
+            from database import schema
+            schema.apply(conn)            # database/schema.py owns the sequence
         except BaseException:
             conn.rollback()
             conn.close()
