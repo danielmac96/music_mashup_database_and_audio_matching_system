@@ -96,6 +96,8 @@ Also found, and fixed in Phase D:
 - **`pair_feedback` is irreplaceable user input.** Nothing here rewrites `sections` outside `models.replace_sections`.
 - **One separation.** The single Demucs run is the 4-source `htdemucs` pass that allin1 consumes (`separation_pipeline = unified_4stem`); its drums+bass+other are summed to the playback instrumental and allin1 never separates again. The existing 206-track library stays on `legacy_2stem` and is **not** backfilled; the work is validated on a new ~30-track library of user-provided files.
 - **No wasted data.** Any array a measurement produces that a later stage could use is persisted — to an `analysis_frames` sidecar, to `allin1_analysis`, or to a `features`/`sections` column. A measurement computed and dropped is a bug in this plan.
+- **Every migration is idempotent on an already-migrated database** (established while implementing D1). `database/downgrade.py` resets `PRAGMA user_version = 0`, so a rollback replays every migration from 1 — a migration that assumes a fresh database breaks the documented rollback in readme §2.
+- **A migration never calls `executescript`** (established while implementing D1). `schema.apply` runs each migration inside an explicit `BEGIN`/`COMMIT`, and `executescript` COMMITs early, which silently ends that transaction and makes the migration non-atomic. Issue statements one at a time, as `database/alignment.py`'s `migrate` already does — its comment says exactly why.
 
 ---
 
@@ -465,6 +467,7 @@ git commit -m "Put a numbered migration ledger under the schema"
   - `database.arrays.get_many(conn, song_ids, stem_type, names) -> dict[tuple[int, str], list[float]]`.
   - `database.arrays.delete_for(conn, song_id, stem_type=None) -> int`.
   - `database.arrays.NAMES` — `("beat_times", "waveform_rms")` for now; the tuple a reader checks before falling back to a legacy JSON column.
+  - `database.arrays.ensure_schema(conn) -> None` — creates `feature_arrays` and its index on the caller's connection, one statement at a time (never `executescript`; see Global Constraints). Idempotent, because a rollback replays every migration.
   - `database.models.get_all_features(stem_type="full", columns=None, song_ids=None, db_path=DB_PATH, conn=None)` — `columns` restricts the projection to those `features` columns (plus the joined `title`, `artist`, `variant_cluster`, `stem_quality`); `None` keeps today's behaviour minus the arrays.
   - `database.models.FEATURES_SCORING_COLUMNS` — the projection the scorer and dedup use: `("song_id", "stem_type", "bpm", "bpm_confidence", "key", "mode", "camelot", "key_confidence", "loudness_rms", "energy", "mfcc_json", "band_energy_json", "beat_phase", "residual_vocal_ratio", "analyzer")`.
 
@@ -628,19 +631,35 @@ log = logging.getLogger(__name__)
 # reaching for a legacy JSON column.
 NAMES: Tuple[str, ...] = ("beat_times", "waveform_rms")
 
-DDL = """
-CREATE TABLE IF NOT EXISTS feature_arrays (
-    song_id    INTEGER NOT NULL,
-    stem_type  TEXT NOT NULL,
-    name       TEXT NOT NULL,      -- database.arrays.NAMES
-    dtype      TEXT NOT NULL,      -- 'float32' | 'float16'
-    dim        INTEGER NOT NULL,
-    data       BLOB NOT NULL,
-    PRIMARY KEY (song_id, stem_type, name)
-);
-CREATE INDEX IF NOT EXISTS idx_feature_arrays_song
-    ON feature_arrays(song_id, stem_type);
-"""
+# One statement per entry, never an executescript: a migration runs inside
+# schema.apply's explicit BEGIN/COMMIT, and executescript COMMITs early, which
+# would silently make the migration non-atomic (database/alignment.py's migrate
+# carries the same note).
+_DDL_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS feature_arrays (
+        song_id    INTEGER NOT NULL,
+        stem_type  TEXT NOT NULL,
+        name       TEXT NOT NULL,      -- database.arrays.NAMES
+        dtype      TEXT NOT NULL,      -- 'float32' | 'float16'
+        dim        INTEGER NOT NULL,
+        data       BLOB NOT NULL,
+        PRIMARY KEY (song_id, stem_type, name)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_feature_arrays_song
+        ON feature_arrays(song_id, stem_type)
+    """,
+)
+
+
+def ensure_schema(conn: sqlite3.Connection) -> None:
+    """Create the table and its index on the caller's connection, statement by
+    statement. Safe to re-run: a rollback (database/downgrade.py) replays every
+    migration from 1."""
+    for statement in _DDL_STATEMENTS:
+        conn.execute(statement)
 
 
 def pack(values, dtype: str = "float32") -> Optional[bytes]:
@@ -730,7 +749,7 @@ def _feature_arrays(conn: sqlite3.Connection) -> None:
 
     from database import arrays
 
-    conn.executescript(arrays.DDL)
+    arrays.ensure_schema(conn)
     cols = {r[1] for r in conn.execute("PRAGMA table_info(features)")}
     moves = [("beat_times_json", "beat_times"),
              ("waveform_rms_json", "waveform_rms")]
@@ -1086,23 +1105,28 @@ def _slim_candidates(conn: sqlite3.Connection) -> None:
     for col in CANDIDATE_DROPPED_COLUMNS:
         if col in cols:
             conn.execute(f"ALTER TABLE mashup_candidates DROP COLUMN {col}")
-    conn.executescript("""
-    -- the dock scoped to a track, each side
-    CREATE INDEX IF NOT EXISTS idx_candidates_vocal_score
-        ON mashup_candidates(combo_type, vocal_song_id, score_total DESC);
-    CREATE INDEX IF NOT EXISTS idx_candidates_inst_score
-        ON mashup_candidates(combo_type, inst_song_id, score_total DESC);
-    -- the dock library-wide, and every "best in library" order
-    CREATE INDEX IF NOT EXISTS idx_candidates_combo_score
-        ON mashup_candidates(combo_type, score_total DESC);
-    -- the stepper's pairings of two songs, and the per-row pairing_count /
-    -- pairing_rank subqueries the listing runs per row
-    CREATE INDEX IF NOT EXISTS idx_candidates_pair
-        ON mashup_candidates(combo_type, vocal_song_id, inst_song_id,
-                             score_total DESC);
-    DROP INDEX IF EXISTS idx_candidates_type;
-    DROP INDEX IF EXISTS idx_candidates_score;
-    """)
+    # One statement at a time, never executescript: schema.apply runs this
+    # inside an explicit BEGIN/COMMIT and executescript would COMMIT early.
+    for statement in (
+            # the dock scoped to a track, each side
+            "CREATE INDEX IF NOT EXISTS idx_candidates_vocal_score "
+            "ON mashup_candidates(combo_type, vocal_song_id, score_total DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_candidates_inst_score "
+            "ON mashup_candidates(combo_type, inst_song_id, score_total DESC)",
+            # the dock library-wide, and every "best in library" order
+            "CREATE INDEX IF NOT EXISTS idx_candidates_combo_score "
+            "ON mashup_candidates(combo_type, score_total DESC)",
+            # the stepper's pairings of two songs, and the per-row
+            # pairing_count / pairing_rank subqueries the listing runs per row
+            "CREATE INDEX IF NOT EXISTS idx_candidates_pair "
+            "ON mashup_candidates(combo_type, vocal_song_id, inst_song_id, "
+            "score_total DESC)",
+            # superseded: combo_type has two distinct values, and score_total
+            # alone cannot serve a filtered order
+            "DROP INDEX IF EXISTS idx_candidates_type",
+            "DROP INDEX IF EXISTS idx_candidates_score",
+    ):
+        conn.execute(statement)
 ```
 
 ```python
