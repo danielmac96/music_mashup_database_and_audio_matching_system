@@ -2,7 +2,10 @@
 
 The before/after evidence for the store work: byte weight per table and per
 column, the schema version, and for each query the app actually runs hot, its
-plan and its wall time. Read-only; safe against the live database.
+plan and its wall time. It never writes to the database it reports on: the
+connection is opened `mode=ro`. Without --db it imports `config` to find the
+live path, and that import creates the audio and data folders if they are
+missing; the database file is not written either way.
 
     python scripts/db_report.py
     docker compose exec app python scripts/db_report.py --db /data/mashup.db
@@ -15,32 +18,112 @@ import sqlite3
 import sys
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import Callable, Dict, List, NamedTuple, Optional, Tuple
 
 # Run as `python scripts/db_report.py`, sys.path[0] is scripts/, so the
 # `database` and `config` packages at the repo root are not importable without this.
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+COMBO = "vocal_over_instrumental"
+
+
+class Hot(NamedTuple):
+    label: str
+    sql: str
+    # Gets the probe ids chosen by _probe_ids and returns the bound parameters.
+    params: Callable[[Dict[str, int]], tuple]
+    # Why a full SCAN of this query is correct, or "" (the default), in which
+    # case a SCAN is printed as a finding. Give a reason only when it is real.
+    expect_scan: str = ""
+
+
 # The queries whose cost the app pays over and over. Keep this list honest: a
 # query that is not here is a query nobody is watching.
-HOT: Tuple[Tuple[str, str, tuple], ...] = (
-    ("dock, scoped to a track",
-     "SELECT * FROM mashup_candidates WHERE combo_type=? AND vocal_song_id=? "
-     "ORDER BY score_total DESC LIMIT 40", ("vocal_over_instrumental", 1)),
-    ("dock, library-wide",
-     "SELECT * FROM mashup_candidates WHERE combo_type=? "
-     "ORDER BY score_total DESC LIMIT 40", ("vocal_over_instrumental",)),
-    ("pairings of two songs",
-     "SELECT * FROM mashup_candidates WHERE combo_type=? AND vocal_song_id=? "
-     "AND inst_song_id=?", ("vocal_over_instrumental", 1, 2)),
-    ("features, every full mix",
-     "SELECT * FROM features f WHERE f.stem_type='full'", ()),
-    ("sections of one song",
-     "SELECT * FROM sections WHERE song_id=?", (1,)),
-    ("library listing",
-     "SELECT * FROM songs ORDER BY id DESC LIMIT 200", ()),
+HOT: Tuple[Hot, ...] = (
+    Hot("dock, scoped to a track",
+        "SELECT * FROM mashup_candidates WHERE combo_type=? AND vocal_song_id=? "
+        "ORDER BY score_total DESC LIMIT 40",
+        lambda p: (COMBO, p["vocal"])),
+    Hot("dock, library-wide",
+        "SELECT * FROM mashup_candidates WHERE combo_type=? "
+        "ORDER BY score_total DESC LIMIT 40",
+        lambda p: (COMBO,)),
+    Hot("pairings of two songs",
+        "SELECT * FROM mashup_candidates WHERE combo_type=? AND vocal_song_id=? "
+        "AND inst_song_id=?",
+        lambda p: (COMBO, p["vocal"], p["inst"])),
+    Hot("features, every full mix",
+        "SELECT * FROM features f WHERE f.stem_type='full'",
+        lambda p: ()),
+    Hot("sections of one song",
+        "SELECT * FROM sections WHERE song_id=?",
+        lambda p: (p["song"],)),
+    # library listing: "SCAN songs" is correct here, so its SCAN is silenced on
+    # purpose and only here. The plan is a reverse rowid walk: SQLite reads
+    # songs from the top and stops after 200 rows, with no sort and no index
+    # that could help. Without this exception the warning fires on every
+    # database, and readers learn to ignore the glyph the other rows need them
+    # to notice. The wall time is still reported. Keep the exception on this
+    # entry alone, and do not add a global "ignore SCAN" to silence the flag.
+    Hot("library listing",
+        "SELECT * FROM songs ORDER BY id DESC LIMIT 200",
+        lambda p: (),
+        expect_scan="reverse rowid walk that stops after 200 rows; no sort, no useful index"),
 )
+
+
+def _busiest(conn, sql: str, params: tuple) -> Optional[tuple]:
+    try:
+        return conn.execute(sql, params).fetchone()
+    except sqlite3.Error:
+        return None  # a missing table is a fallback, not a crash
+
+
+def _probe_ids(conn) -> Tuple[Dict[str, int], List[str]]:
+    """Pick probe ids that have rows in this database.
+
+    The hot queries are timed on a real id. On a library where song 1 has no
+    candidates, `vocal_song_id=1` returns zero rows in a fraction of a
+    millisecond, which reads as a fast query when it is an empty one. So the
+    vocal with the most candidate rows, its most common partner, and the song
+    with the most sections are chosen from the data. An empty or missing table
+    falls back to the old literals, and the output says so.
+    """
+    probes = {"vocal": 1, "inst": 2, "song": 1}
+    lines: List[str] = []
+
+    top = _busiest(conn,
+                   "SELECT vocal_song_id, count(*) FROM mashup_candidates "
+                   "WHERE combo_type=? GROUP BY vocal_song_id ORDER BY 2 DESC, 1 LIMIT 1",
+                   (COMBO,))
+    if top:
+        probes["vocal"] = top[0]
+        lines.append(f"vocal_song_id={top[0]}  most candidate rows ({top[1]})")
+        partner = _busiest(conn,
+                           "SELECT inst_song_id, count(*) FROM mashup_candidates "
+                           "WHERE combo_type=? AND vocal_song_id=? GROUP BY inst_song_id "
+                           "ORDER BY 2 DESC, 1 LIMIT 1",
+                           (COMBO, top[0]))
+        if partner:
+            probes["inst"] = partner[0]
+            lines.append(f"inst_song_id={partner[0]}  most common partner of that vocal "
+                         f"({partner[1]} rows)")
+        else:
+            lines.append("inst_song_id=2  literal fallback: no partner rows")
+    else:
+        lines.append("vocal_song_id=1, inst_song_id=2  literal fallback: "
+                     "no vocal_over_instrumental rows")
+
+    song = _busiest(conn,
+                    "SELECT song_id, count(*) FROM sections GROUP BY song_id "
+                    "ORDER BY 2 DESC, 1 LIMIT 1", ())
+    if song:
+        probes["song"] = song[0]
+        lines.append(f"song_id={song[0]}  most section rows ({song[1]})")
+    else:
+        lines.append("song_id=1  literal fallback: sections empty or missing")
+    return probes, lines
 
 
 def _columns(conn, table: str) -> List[str]:
@@ -115,22 +198,32 @@ def main(argv=None) -> int:
             print(f"     {c:28s} {b / 1e6:7.2f} MB")
 
     print("\n── hot queries ──")
-    for label, sql, params in HOT:
+    probes, probe_lines = _probe_ids(conn)
+    print("  probe ids, chosen from this database:")
+    for line in probe_lines:
+        print(f"    {line}")
+    for h in HOT:
         try:
-            plan = [r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + sql, params)]
+            params = h.params(probes)
+            plan = [r[3] for r in conn.execute("EXPLAIN QUERY PLAN " + h.sql, params)]
             t0 = time.perf_counter()
-            n = len(conn.execute(sql, params).fetchall())
+            n = len(conn.execute(h.sql, params).fetchall())
             ms = (time.perf_counter() - t0) * 1000.0
         except sqlite3.Error as exc:
-            print(f"  {label}: {exc}")
+            print(f"  {h.label}: {exc}")
             continue
         scan = any(p.startswith("SCAN") for p in plan)
         sort = any("TEMP B-TREE" in p for p in plan)
-        flags = " ".join(x for x in ("SCAN" if scan else "",
+        # A SCAN is a finding unless the entry says why it is correct (see HOT).
+        flags = " ".join(x for x in ("SCAN" if scan and not h.expect_scan else "",
                                      "TEMPSORT" if sort else "") if x)
-        print(f"  {ms:8.1f} ms  n={n:6d}  {label}{('  ⚠ ' + flags) if flags else ''}")
+        print(f"  {ms:8.1f} ms  n={n:6d}  {h.label}{('  ⚠ ' + flags) if flags else ''}")
+        if n == 0:
+            print("             ⚠ 0 rows: this time measured an empty result")
         for p in plan:
             print(f"             {p}")
+        if scan and h.expect_scan:
+            print(f"             SCAN expected: {h.expect_scan}")
     conn.close()
     return 0
 
