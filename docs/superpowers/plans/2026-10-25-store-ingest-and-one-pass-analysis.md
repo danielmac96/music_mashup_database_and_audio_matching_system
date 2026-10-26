@@ -2344,10 +2344,16 @@ TABLES = ("allin1_analysis", "allin1_embeddings", "sections_allin1",
           "vocal_phrases", "pipeline_parked", "analysis_frames")
 ```
 
-Append to `_DDL`, immediately before its closing `"""`:
+**This table is created by a numbered migration, not by `_DDL`.** `alignment.migrate` is reached from exactly one place — `schema._baseline`, which *is* migration 1 — so a database already at version 1 or above never runs it again. Adding a table to `_DDL` alone would mean it is never created on any existing database, including the 206-track library now at version 3. Task D2 hit this and solved it the same way: keep the DDL next to the feature it belongs to, and have a numbered migration execute it.
 
-```sql
-CREATE TABLE IF NOT EXISTS analysis_frames (
+So add the statements and a creator function to `database/alignment.py`, **not** to `_DDL`, following `database/arrays.py`'s `ensure_schema` exactly:
+
+```python
+# One statement per entry, never an executescript: a migration runs inside
+# schema.apply's explicit BEGIN/COMMIT and executescript would COMMIT early.
+_FRAMES_DDL_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS analysis_frames (
     song_id       INTEGER NOT NULL,
     stem_type     TEXT NOT NULL,      -- full | vocals | instrumental | bass
     pipeline      TEXT NOT NULL,
@@ -2360,9 +2366,50 @@ CREATE TABLE IF NOT EXISTS analysis_frames (
     bytes         INTEGER,
     written_at    TEXT DEFAULT (datetime('now')),
     UNIQUE(song_id, stem_type, pipeline)
-);
-CREATE INDEX IF NOT EXISTS idx_analysis_frames_song ON analysis_frames(song_id, pipeline);
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_analysis_frames_song
+        ON analysis_frames(song_id, pipeline)
+    """,
+)
+
+
+def ensure_frames_schema(conn: sqlite3.Connection) -> None:
+    """Create `analysis_frames` and its index on the caller's connection, one
+    statement at a time. Safe to re-run: `database/downgrade.py` resets
+    `user_version` to 0, so every migration replays from 1."""
+    for statement in _FRAMES_DDL_STATEMENTS:
+        conn.execute(statement)
 ```
+
+Then register it as migration 4 in `database/schema.py`, beside migrations 2 and 3:
+
+```python
+def _analysis_frames(conn: sqlite3.Connection) -> None:
+    """Create `analysis_frames`, the registry for the per-frame .npz sidecars
+    (analysis/timeseries.py).
+
+    It lives in `database/alignment.py` with the rest of the allin1 / pipeline
+    storage, and in that module's `TABLES`, so `database/downgrade.py` drops it
+    with the others. It is created here rather than in `alignment._DDL` because
+    `_DDL` only ever runs inside `_baseline`, i.e. migration 1, which a database
+    at version 1 or above never runs again.
+    """
+    from database import alignment
+    alignment.ensure_frames_schema(conn)
+```
+
+```python
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(1, "baseline", _baseline),
+    Migration(2, "feature_arrays", _feature_arrays),
+    Migration(3, "slim_candidates", _slim_candidates),
+    Migration(4, "analysis_frames", _analysis_frames),
+)
+```
+
+Add a test to `tests/test_timeseries.py` that the live path really gets the table — that an already-migrated database (one built by `get_conn`, i.e. at `SCHEMA_VERSION`) has `analysis_frames` — so this class of mistake cannot recur silently.
 
 Add the accessors at the end of `database/alignment.py`:
 
