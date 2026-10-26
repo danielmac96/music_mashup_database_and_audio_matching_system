@@ -1648,7 +1648,7 @@ def get_song_by_track_id(track_id: str, db_path: Path = DB_PATH) -> Optional[Dic
 def songs_by_identity(source_urls: Sequence[str] = (),
                       track_ids: Sequence[str] = (),
                       db_path: Path = DB_PATH,
-                      conn: Optional[sqlite3.Connection] = None) -> Dict[str, List[Dict]]:
+                      conn: Optional[sqlite3.Connection] = None) -> Dict[str, Dict[str, Dict]]:
     """Which of these SoundCloud tracks are already in the library.
 
     One query for a whole page of Discovery results — the alternative is a round

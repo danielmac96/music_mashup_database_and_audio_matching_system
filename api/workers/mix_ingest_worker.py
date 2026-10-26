@@ -61,7 +61,7 @@ def _link_rows(mix_id: int) -> list[dict]:
 def _point_at_songs(pairs: list[tuple[int, int]]) -> None:
     """Re-point mix_tracks rows at the songs they became, in one short
     transaction. Opened, committed and closed here so no write lock is held
-    while ingest_rows (on its own connections) is working."""
+    while ingest_rows (on its own connection) is working."""
     if not pairs:
         return
     conn = get_conn()
