@@ -172,7 +172,8 @@ def test_migration_3_drops_the_columns_and_keeps_the_rows(tmp_path):
     conn.row_factory = sqlite3.Row
     try:
         assert schema.current_version(conn) == 2
-        assert schema.apply(conn) == [3]
+        # 3 and whatever has been appended after it: this test is about 3, not the tail.
+        assert schema.apply(conn) == [m.version for m in schema.MIGRATIONS if m.version >= 3]
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(mashup_candidates)")}
         assert not set(models.CANDIDATE_DROPPED_COLUMNS) & cols
         row = conn.execute("SELECT * FROM mashup_candidates").fetchone()
