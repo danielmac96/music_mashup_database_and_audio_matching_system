@@ -29,8 +29,9 @@ group.
 
 ``chroma`` and ``mfcc`` are stored float16 (relative error ~1e-3; both are
 normalised or z-scored before use), ``bands`` float16 after scaling by its own
-maximum — the scale is kept as a float64 so the ratios an occupancy reads are
-exact, and raw band power overflows float16. ``curves`` and ``f0`` stay
+maximum — the scale is kept as a float64, so the ratios an occupancy reads
+hold to float16 precision (~5e-4 relative; a band below ~6e-8 of the loudest
+flushes to zero), and raw band power overflows float16. ``curves`` and ``f0`` stay
 float32: those values are absolute Hz and nothing normalises them.
 
 A matrix that was not measured is an absent key in the file and ``None`` on
@@ -40,6 +41,8 @@ zero-length matrix is never written.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Optional
@@ -118,6 +121,7 @@ def _payload(frames: StemFrames) -> Dict[str, np.ndarray]:
     payload: Dict[str, np.ndarray] = {
         "step": np.asarray([frames.step], dtype=np.float64)}
     stored = 0
+    lengths: Dict[str, int] = {}
     for name in ROWS:
         m = getattr(frames, name)
         if m is None:
@@ -127,8 +131,15 @@ def _payload(frames: StemFrames) -> Dict[str, np.ndarray]:
             raise ValueError(f"{name} must be ({ROWS[name]}, n), got {a.shape}")
         if a.shape[1] == 0:
             raise ValueError(f"{name} has no frames; leave it None instead")
+        # NaN/inf would be "unmeasured" stored as a value (readme §5: unknown is
+        # absent, never a number), and one inf makes the bands' scale inf so the
+        # whole matrix reads back NaN or zero.
+        if not np.isfinite(a).all():
+            raise ValueError(f"{name} contains NaN or inf; leave it None "
+                             "(unmeasured) instead of storing a stand-in")
+        lengths[name] = int(a.shape[1])
         if name in _SCALED:
-            scale = float(np.nanmax(np.abs(a))) or 1.0
+            scale = float(np.max(np.abs(a))) or 1.0
             payload[name] = (a / scale).astype(np.float16)
             payload[f"{name}_scale"] = np.asarray([scale], dtype=np.float64)
         elif name in _F16:
@@ -138,6 +149,13 @@ def _payload(frames: StemFrames) -> Dict[str, np.ndarray]:
         stored += 1
     if not stored:
         raise ValueError("no matrices to store")
+    # One grid is the whole design: nothing downstream resamples. A chroma of 500
+    # frames beside an MFCC of 498 would otherwise be stored, and n_frames()
+    # would report whichever came first; the misalignment would surface much
+    # later as a broadcast error or, worse, a silently shifted section.
+    if len(set(lengths.values())) > 1:
+        raise ValueError("matrices must share one frame count, got "
+                         + ", ".join(f"{k}={v}" for k, v in lengths.items()))
     return payload
 
 
@@ -150,12 +168,26 @@ def write(song_id: int, stem_type: str, pipeline: str, frames: StemFrames,
     payload = _payload(frames)
     out = path_for(song_id, stem_type, pipeline)
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_name(out.name + ".part")
-    # A file object, not the path: np.savez_compressed appends ".npz" to a path
-    # that does not end in it, which would leave the rename below nothing to move.
-    with open(tmp, "wb") as fh:
-        np.savez_compressed(fh, **payload)
-    tmp.replace(out)
+    # A unique temp name: a fixed one is shared by two writers of the same
+    # (song, stem, pipeline), and one could `replace` the other's partial bytes
+    # into place. It is unlinked on any failure, since an orphan `.part` would
+    # also keep `drop` from removing the song's folder.
+    fd, tmp_name = tempfile.mkstemp(dir=out.parent, prefix=out.name + ".",
+                                    suffix=".part")
+    tmp = Path(tmp_name)
+    try:
+        # A file object, not the path: np.savez_compressed appends ".npz" to a
+        # path that does not end in it, which would leave the rename below
+        # nothing to move.
+        with os.fdopen(fd, "wb") as fh:
+            np.savez_compressed(fh, **payload)
+        tmp.replace(out)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
     meta = {"path": out, "content_hash": content_hash, "version": VERSION,
             "step_secs": float(frames.step), "n_frames": frames.n_frames(),
@@ -230,7 +262,11 @@ def drop(song_id: int, pipeline: Optional[str] = None, db_path=None) -> int:
 
     removed = 0
     for row in alignment.get_frames(song_id, pipeline=pipeline, db_path=db_path):
-        p = Path(row["path"])
+        # Resolved against the current configuration, not the stored path: the
+        # app runs both in Docker (/data/...) and on the host against one data
+        # folder, and a path registered by the other side would not be found,
+        # leaving the file orphaned while its row is deleted.
+        p = path_for(song_id, row["stem_type"], row["pipeline"])
         try:
             if p.exists():
                 p.unlink()

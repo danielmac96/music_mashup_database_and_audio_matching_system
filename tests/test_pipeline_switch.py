@@ -175,7 +175,8 @@ def test_downgrade_round_trip(env):
     assert out["tables"] == 6 and out["columns"] >= 10
     conn = sqlite3.connect(db)
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    assert not tables & {"allin1_analysis", "sections_allin1", "pipeline_parked"}
+    assert not tables & {"allin1_analysis", "sections_allin1", "pipeline_parked",
+                        "analysis_frames"}
     assert "separation_pipeline" not in {r[1] for r in conn.execute("PRAGMA table_info(songs)")}
     conn.close()
     assert _counts(db) == counts_before            # nothing older was touched

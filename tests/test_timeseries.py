@@ -201,10 +201,10 @@ def _tables(conn) -> set:
         "SELECT name FROM sqlite_master WHERE type='table'")}
 
 
-def test_a_database_built_by_get_conn_has_analysis_frames(tmp_path):
-    """The live path: get_conn -> schema.apply. `alignment.migrate` runs only
-    inside migration 1, so a table added to `_DDL` alone would pass every test
-    that builds a fresh database and never exist on the 206-track library."""
+def test_get_conn_builds_the_table_and_its_index_on_a_fresh_database(tmp_path):
+    """The live path on a NEW database: get_conn -> schema.apply. This does not
+    catch the table being added to `alignment._DDL` instead of a migration (a
+    fresh database gets both); the version-3 test below is the one that does."""
     from database import models, schema
 
     conn = models.get_conn(tmp_path / "fresh.db")
@@ -219,7 +219,13 @@ def test_a_database_built_by_get_conn_has_analysis_frames(tmp_path):
 
 
 def test_migration_4_reaches_a_database_already_at_version_3(tmp_path, monkeypatch):
-    """An existing library: migrations 1-3 have run, 4 has not."""
+    """An existing library: migrations 1-3 have run, 4 has not.
+
+    This is the test that tells a numbered migration from `alignment._DDL`.
+    `alignment.migrate` runs only inside migration 1, so a table added to `_DDL`
+    alone already exists after step 1 and the "not in _tables" assertion below
+    fails; left that way it would pass every fresh-database test and never
+    reach the 206-track library, which is already past migration 1."""
     from database import schema
 
     real = schema.MIGRATIONS
@@ -233,7 +239,9 @@ def test_migration_4_reaches_a_database_already_at_version_3(tmp_path, monkeypat
         assert schema.current_version(conn) == 3
         assert "analysis_frames" not in _tables(conn)
 
-        assert schema.apply(conn) == [4]
+        # Everything from 4 up, not exactly [4]: a later migration must not
+        # break this test (the trap test_candidates_slim fell into).
+        assert schema.apply(conn) == [m.version for m in real if m.version >= 4]
         assert "analysis_frames" in _tables(conn)
         assert schema.current_version(conn) == schema.SCHEMA_VERSION
     finally:
@@ -251,3 +259,139 @@ def test_ensure_frames_schema_is_idempotent(tmp_path):
         assert "analysis_frames" in _tables(conn)
     finally:
         conn.close()
+
+
+# ── Backstops: one grid, finite values, a clean temp file ────────────────────
+
+def test_matrices_of_different_lengths_are_refused_and_nothing_is_written(db):
+    """A trimming bug upstream must be loud: n_frames() and the registry row
+    would otherwise report whichever matrix is found first."""
+    from analysis import timeseries as ts
+    from database import alignment
+
+    bad = ts.StemFrames(step=ts.STEP_SECS,
+                        chroma=np.ones((12, 500), dtype=np.float32),
+                        mfcc=np.ones((13, 498), dtype=np.float32))
+    with pytest.raises(ValueError, match=r"chroma=500.*mfcc=498"):
+        ts.write(11, "full", "unified_4stem", bad, "h", db_path=db)
+    assert alignment.get_frames(11, db_path=db) == []
+    assert not ts.path_for(11, "full", "unified_4stem").exists()
+
+
+@pytest.mark.parametrize("name,rows,bad", [
+    ("chroma", 12, np.nan), ("mfcc", 13, np.inf),
+    ("bands", 8, np.inf), ("curves", 5, -np.inf), ("f0", 1, np.nan)])
+def test_non_finite_values_are_refused_naming_the_matrix(db, name, rows, bad):
+    """NaN is "unmeasured" stored as a value, which readme §5 forbids; an inf in
+    bands would also make its scale inf so it reads back as NaN."""
+    from analysis import timeseries as ts
+    from database import alignment
+
+    m = np.ones((rows, 10), dtype=np.float32)
+    m[0, 3] = bad
+    frames = ts.StemFrames(step=ts.STEP_SECS, **{name: m})
+    with pytest.raises(ValueError, match=name):
+        ts.write(12, "full", "unified_4stem", frames, "h", db_path=db)
+    assert alignment.get_frames(12, db_path=db) == []
+    assert not ts.path_for(12, "full", "unified_4stem").exists()
+
+
+def test_an_all_nan_matrix_is_refused_without_a_runtime_warning(db):
+    import warnings
+    from analysis import timeseries as ts
+
+    frames = ts.StemFrames(step=ts.STEP_SECS,
+                           bands=np.full((8, 10), np.nan, dtype=np.float32))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match="bands"):
+            ts.write(13, "full", "unified_4stem", frames, "h", db_path=db)
+
+
+def _parts(folder):
+    return [p.name for p in folder.iterdir() if p.name.endswith(".part")]
+
+
+def test_no_part_file_remains_after_a_successful_write(db):
+    from analysis import timeseries as ts
+
+    frames = ts.StemFrames(step=ts.STEP_SECS,
+                           chroma=np.ones((12, 10), dtype=np.float32))
+    ts.write(14, "full", "unified_4stem", frames, "h", db_path=db)
+    ts.write(14, "full", "unified_4stem", frames, "h2", db_path=db)
+    folder = ts.path_for(14, "full", "unified_4stem").parent
+    assert _parts(folder) == []
+    assert [p.name for p in folder.iterdir()] == ["unified_4stem.full.npz"]
+
+
+@pytest.mark.parametrize("fail", ["savez", "replace"])
+def test_a_failed_write_leaves_no_part_file_and_no_registry_row(db, monkeypatch, fail):
+    from pathlib import Path
+    from analysis import timeseries as ts
+    from database import alignment
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    if fail == "savez":
+        monkeypatch.setattr(ts.np, "savez_compressed", boom)
+    else:
+        monkeypatch.setattr(Path, "replace", boom)
+    frames = ts.StemFrames(step=ts.STEP_SECS,
+                           chroma=np.ones((12, 10), dtype=np.float32))
+    with pytest.raises(OSError):
+        ts.write(15, "full", "unified_4stem", frames, "h", db_path=db)
+
+    folder = ts.path_for(15, "full", "unified_4stem").parent
+    assert _parts(folder) == []
+    assert not ts.path_for(15, "full", "unified_4stem").exists()
+    assert alignment.get_frames(15, db_path=db) == []
+
+
+def test_drop_resolves_the_file_from_the_current_root_not_the_stored_path(db):
+    """A row registered from inside the container stores /data/...; the host's
+    drop must still find the file under its own root."""
+    from analysis import timeseries as ts
+    from database import models
+
+    frames = ts.StemFrames(step=ts.STEP_SECS,
+                           chroma=np.ones((12, 10), dtype=np.float32))
+    ts.write(16, "full", "unified_4stem", frames, "h", db_path=db)
+    conn = models.get_conn(db)
+    try:
+        conn.execute("UPDATE analysis_frames SET path='/data/audio/features/"
+                     "16/unified_4stem.full.npz' WHERE song_id=16")
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert ts.drop(16, "unified_4stem", db_path=db) == 1
+    assert not ts.path_for(16, "full", "unified_4stem").exists()
+    assert not ts.path_for(16, "full", "unified_4stem").parent.exists()
+
+
+def test_f0_round_trips_in_hz(db):
+    from analysis import timeseries as ts
+
+    f0 = np.zeros((1, 40), dtype=np.float32)
+    f0[0, 10:30] = np.linspace(110.0, 880.0, 20)       # unvoiced frames stay 0
+    frames = ts.StemFrames(step=ts.STEP_SECS, f0=f0)
+    meta = ts.write(17, "vocals", "unified_4stem", frames, "h", db_path=db)
+    assert meta["matrices"] == {"f0": 1}
+
+    back = ts.read(17, "vocals", "unified_4stem", db_path=db)
+    assert back.f0.shape == (1, 40)
+    assert np.array_equal(back.f0, f0)            # float32, absolute Hz: exact
+    assert back.chroma is None
+
+
+def test_bands_with_a_zero_maximum_store_and_read_back_as_zeros(db):
+    """scale falls back to 1.0 instead of dividing by zero."""
+    from analysis import timeseries as ts
+
+    frames = ts.StemFrames(step=ts.STEP_SECS,
+                           bands=np.zeros((8, 10), dtype=np.float32))
+    ts.write(18, "full", "unified_4stem", frames, "h", db_path=db)
+    back = ts.read(18, "full", "unified_4stem", db_path=db)
+    assert back.bands.shape == (8, 10)
+    assert np.all(back.bands == 0) and np.isfinite(back.bands).all()
