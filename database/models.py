@@ -5,6 +5,7 @@ pair_hidden, track_excluded, mixes, mix_tracks, mashup_pairs, datasets, models,
 crates, crate_items, app_prefs.
 """
 from typing import Optional, List, Dict, Sequence, Iterable, Tuple
+import contextlib
 import re
 import sqlite3
 import json
@@ -513,6 +514,43 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+@contextlib.contextmanager
+def connection(db_path: Path = DB_PATH):
+    """One connection for a whole batch: commits on a clean exit, rolls back on
+    an exception, always closes.
+
+    Every helper here opens and commits its own connection, and that is
+    deliberate — SQLite has one writer, and a caller sitting on an uncommitted
+    UPDATE while a helper opens its own connection is what made ingesting a
+    206-track mix save one track and answer 500 forever (readme §7). This does
+    not change that rule; it gives a batch path a way to be the owner. Pass the
+    yielded connection to the helpers that accept one (`conn=`) and they will
+    use it and leave the commit to this block.
+
+    The convention every such helper follows: given a `conn`, it never commits
+    and never opens another connection — the caller owns the transaction; with
+    `conn=None` it behaves as it always did (open, write, commit, close).
+
+    Measured: opening a connection and its three PRAGMAs costs 1.97 ms against
+    0.03 ms on an open one, so a 200-row import was spending over a second
+    inside sqlite3.connect.
+
+    Never hold one of these across a call that opens its own connection — that
+    is the same deadlock, dressed differently. Everything inside the block
+    commits or rolls back together, so a batch that must keep its finished rows
+    when a later one fails needs a block per unit, not one around the lot.
+    """
+    conn = get_conn(db_path)
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 _SONGS_OPTIONAL_COLUMNS = (
@@ -1213,8 +1251,14 @@ def upsert_song(
     origin_url: str = "",
     origin_duration_secs: Optional[float] = None,
     db_path: Path = DB_PATH,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> int:
     """Insert or update a song row. Returns the song id.
+
+    `conn` joins the caller's transaction (`connection()`): the row is written
+    and its id read back on that connection — a fresh row's id is visible
+    before any commit — and nothing is committed or closed. With none, it
+    opens, commits and closes its own, as ever.
 
     `metadata_partial=1` marks rows seeded from a flat playlist enumerate where
     full per-track enrichment failed. On re-upsert, the flag can only be cleared
@@ -1233,75 +1277,82 @@ def upsert_song(
     origin_url = origin_url or source_url
     if origin_duration_secs is None and (duration_secs or 0) > _PREVIEW_MAX_SECS:
         origin_duration_secs = float(duration_secs)
-    conn = get_conn(db_path)
-    cur = conn.execute(
-        """INSERT INTO songs (
-               title, artist, source_url, source, duration_secs, genre, raw_path, status,
-               artist_id, track_id, duration_str, upload_date,
-               likes, reposts, comments, plays, thumbnail, metadata_partial,
-               tags, release_year, origin_url, origin_duration_secs
-           )
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(source_url) DO UPDATE SET
-               origin_url=COALESCE(origin_url, excluded.origin_url),
-               origin_duration_secs=COALESCE(origin_duration_secs,
-                                             excluded.origin_duration_secs),
-               title=excluded.title,
-               artist=excluded.artist,
-               source=CASE WHEN excluded.source != '' THEN excluded.source ELSE source END,
-               duration_secs=excluded.duration_secs,
-               genre=CASE WHEN excluded.genre != '' THEN excluded.genre ELSE genre END,
-               raw_path=CASE WHEN excluded.raw_path != '' THEN excluded.raw_path ELSE raw_path END,
-               status=excluded.status,
-               -- Descriptive metadata is only ever IMPROVED by a re-upsert.
-               -- A sparse row (a flat playlist seed, a legacy crate payload, a
-               -- mix re-ingest) carries '' / 0 for all of this, and an
-               -- unguarded assignment would blank a row a metadata backfill had
-               -- just repaired. Same shape as tags/release_year below.
-               artist_id=CASE WHEN excluded.artist_id != '' THEN excluded.artist_id ELSE artist_id END,
-               track_id=CASE WHEN excluded.track_id != '' THEN excluded.track_id ELSE track_id END,
-               duration_str=excluded.duration_str,
-               upload_date=CASE WHEN excluded.upload_date != '' THEN excluded.upload_date ELSE upload_date END,
-               likes=CASE WHEN excluded.likes > 0 THEN excluded.likes ELSE likes END,
-               reposts=CASE WHEN excluded.reposts > 0 THEN excluded.reposts ELSE reposts END,
-               comments=CASE WHEN excluded.comments > 0 THEN excluded.comments ELSE comments END,
-               plays=CASE WHEN excluded.plays > 0 THEN excluded.plays ELSE plays END,
-               thumbnail=CASE WHEN excluded.thumbnail != '' THEN excluded.thumbnail ELSE thumbnail END,
-               metadata_partial=MIN(metadata_partial, excluded.metadata_partial),
-               tags=CASE WHEN excluded.tags != '' THEN excluded.tags ELSE tags END,
-               release_year=CASE WHEN excluded.release_year > 0
-                                 THEN excluded.release_year ELSE release_year END,
-               updated_at=datetime('now')""",
-        (
-            title,
-            artist,
-            source_url,
-            source,
-            duration_secs,
-            genre,
-            raw_path,
-            status,
-            artist_id,
-            track_id,
-            duration_str,
-            upload_date,
-            likes,
-            reposts,
-            comments,
-            plays,
-            thumbnail,
-            int(bool(metadata_partial)),
-            tags,
-            int(release_year or 0),
-            origin_url,
-            origin_duration_secs,
-        ),
-    )
-    conn.commit()
-    row = conn.execute("SELECT id FROM songs WHERE source_url=?", (source_url,)).fetchone()
-    song_id = row["id"] if row else cur.lastrowid
-    conn.close()
-    return song_id
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            """INSERT INTO songs (
+                   title, artist, source_url, source, duration_secs, genre, raw_path, status,
+                   artist_id, track_id, duration_str, upload_date,
+                   likes, reposts, comments, plays, thumbnail, metadata_partial,
+                   tags, release_year, origin_url, origin_duration_secs
+               )
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(source_url) DO UPDATE SET
+                   origin_url=COALESCE(origin_url, excluded.origin_url),
+                   origin_duration_secs=COALESCE(origin_duration_secs,
+                                                 excluded.origin_duration_secs),
+                   title=excluded.title,
+                   artist=excluded.artist,
+                   source=CASE WHEN excluded.source != '' THEN excluded.source ELSE source END,
+                   duration_secs=excluded.duration_secs,
+                   genre=CASE WHEN excluded.genre != '' THEN excluded.genre ELSE genre END,
+                   raw_path=CASE WHEN excluded.raw_path != '' THEN excluded.raw_path ELSE raw_path END,
+                   status=excluded.status,
+                   -- Descriptive metadata is only ever IMPROVED by a re-upsert.
+                   -- A sparse row (a flat playlist seed, a legacy crate payload, a
+                   -- mix re-ingest) carries '' / 0 for all of this, and an
+                   -- unguarded assignment would blank a row a metadata backfill had
+                   -- just repaired. Same shape as tags/release_year below.
+                   artist_id=CASE WHEN excluded.artist_id != '' THEN excluded.artist_id ELSE artist_id END,
+                   track_id=CASE WHEN excluded.track_id != '' THEN excluded.track_id ELSE track_id END,
+                   duration_str=excluded.duration_str,
+                   upload_date=CASE WHEN excluded.upload_date != '' THEN excluded.upload_date ELSE upload_date END,
+                   likes=CASE WHEN excluded.likes > 0 THEN excluded.likes ELSE likes END,
+                   reposts=CASE WHEN excluded.reposts > 0 THEN excluded.reposts ELSE reposts END,
+                   comments=CASE WHEN excluded.comments > 0 THEN excluded.comments ELSE comments END,
+                   plays=CASE WHEN excluded.plays > 0 THEN excluded.plays ELSE plays END,
+                   thumbnail=CASE WHEN excluded.thumbnail != '' THEN excluded.thumbnail ELSE thumbnail END,
+                   metadata_partial=MIN(metadata_partial, excluded.metadata_partial),
+                   tags=CASE WHEN excluded.tags != '' THEN excluded.tags ELSE tags END,
+                   release_year=CASE WHEN excluded.release_year > 0
+                                     THEN excluded.release_year ELSE release_year END,
+                   updated_at=datetime('now')""",
+            (
+                title,
+                artist,
+                source_url,
+                source,
+                duration_secs,
+                genre,
+                raw_path,
+                status,
+                artist_id,
+                track_id,
+                duration_str,
+                upload_date,
+                likes,
+                reposts,
+                comments,
+                plays,
+                thumbnail,
+                int(bool(metadata_partial)),
+                tags,
+                int(release_year or 0),
+                origin_url,
+                origin_duration_secs,
+            ),
+        )
+        row = conn.execute("SELECT id FROM songs WHERE source_url=?",
+                           (source_url,)).fetchone()
+        song_id = row["id"] if row else cur.lastrowid
+        if own:
+            conn.commit()
+        return song_id
+    finally:
+        if own:
+            conn.close()
 
 
 def set_quick_state(song_id: int, state: Optional[str],
@@ -1552,22 +1603,31 @@ def get_song(song_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
     return dict(row) if row else None
 
 
-def get_song_by_url(source_url: str, db_path: Path = DB_PATH) -> Optional[Dict]:
+def get_song_by_url(source_url: str, db_path: Path = DB_PATH,
+                    conn: Optional[sqlite3.Connection] = None) -> Optional[Dict]:
     """Look up a song by its exact source_url (used for pre-ingest dedup).
     Callers should pass an already-normalized URL (ingest.sources.normalize_url)
     so trivial variants of the same link collide.
 
     The import link counts too: a track whose audio came from a YouTube
     substitute is still the SoundCloud link you pasted, and pasting it again
-    must not import it twice."""
+    must not import it twice.
+
+    `conn` reads on the caller's connection — and so sees its uncommitted
+    rows — and leaves it open."""
     if not source_url:
         return None
-    conn = get_conn(db_path)
-    row = conn.execute(
-        "SELECT * FROM songs WHERE source_url=? OR origin_url=? "
-        "ORDER BY source_url=? DESC LIMIT 1",
-        (source_url, source_url, source_url)).fetchone()
-    conn.close()
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM songs WHERE source_url=? OR origin_url=? "
+            "ORDER BY source_url=? DESC LIMIT 1",
+            (source_url, source_url, source_url)).fetchone()
+    finally:
+        if own:
+            conn.close()
     return dict(row) if row else None
 
 
@@ -1587,7 +1647,8 @@ def get_song_by_track_id(track_id: str, db_path: Path = DB_PATH) -> Optional[Dic
 
 def songs_by_identity(source_urls: Sequence[str] = (),
                       track_ids: Sequence[str] = (),
-                      db_path: Path = DB_PATH) -> Dict[str, List[Dict]]:
+                      db_path: Path = DB_PATH,
+                      conn: Optional[sqlite3.Connection] = None) -> Dict[str, List[Dict]]:
     """Which of these SoundCloud tracks are already in the library.
 
     One query for a whole page of Discovery results — the alternative is a round
@@ -1596,7 +1657,10 @@ def songs_by_identity(source_urls: Sequence[str] = (),
 
     Empty track ids are dropped before the query: '' is the default for rows that
     never learned their id, so matching on it would claim every such row is the
-    track being looked at."""
+    track being looked at.
+
+    `conn` reads on the caller's connection (so a batch sees its own
+    uncommitted rows) and leaves it open."""
     urls = [u for u in {str(u) for u in source_urls} if u]
     tids = [t for t in {str(t) for t in track_ids} if t]
     out: Dict[str, Dict[str, Dict]] = {"by_url": {}, "by_track_id": {}}
@@ -1613,11 +1677,16 @@ def songs_by_identity(source_urls: Sequence[str] = (),
         clauses.append(f"(track_id != '' AND track_id IN ({','.join('?' * len(tids))}))")
         params.extend(tids)
 
-    conn = get_conn(db_path)
-    rows = conn.execute(
-        "SELECT id, title, artist, source_url, origin_url, track_id, status, last_error "
-        f"FROM songs WHERE {' OR '.join(clauses)}", params).fetchall()
-    conn.close()
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, title, artist, source_url, origin_url, track_id, status, last_error "
+            f"FROM songs WHERE {' OR '.join(clauses)}", params).fetchall()
+    finally:
+        if own:
+            conn.close()
 
     url_set, tid_set = set(urls), set(tids)
     for row in rows:
@@ -3957,15 +4026,21 @@ def reorder_crate(crate_id: int, item_ids: Sequence[int],
         conn.close()
 
 
-def relink_crate_songs(crate_id: Optional[int] = None, db_path: Path = DB_PATH) -> int:
+def relink_crate_songs(crate_id: Optional[int] = None, db_path: Path = DB_PATH,
+                       conn: Optional[sqlite3.Connection] = None) -> int:
     """Point crate items at library songs that now exist, matching on source_url.
     Returns how many items gained a song_id.
 
     ``crate_id=None`` relinks every crate, which is what the shared ingest path
     runs: a track imported from the Library paste bar can be the same record a
     crate has been holding for a week, and that crate only becomes a library
-    group once the item knows its song."""
-    conn = get_conn(db_path)
+    group once the item knows its song.
+
+    `conn` joins the caller's transaction: the update runs on it, nothing is
+    committed and it is left open."""
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
     try:
         cur = conn.execute(
             """UPDATE crate_items
@@ -3976,10 +4051,12 @@ def relink_crate_songs(crate_id: Optional[int] = None, db_path: Path = DB_PATH) 
                   AND EXISTS (SELECT 1 FROM songs s
                                WHERE s.source_url = crate_items.source_url)""",
             (crate_id, crate_id))
-        conn.commit()
+        if own:
+            conn.commit()
         return cur.rowcount
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
 def crate_payloads(crate_id: int, only_unlinked: bool = True,
