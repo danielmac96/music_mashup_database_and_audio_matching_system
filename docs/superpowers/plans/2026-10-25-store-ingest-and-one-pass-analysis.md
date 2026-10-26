@@ -97,6 +97,7 @@ Also found, and fixed in Phase D:
 - **One separation.** The single Demucs run is the 4-source `htdemucs` pass that allin1 consumes (`separation_pipeline = unified_4stem`); its drums+bass+other are summed to the playback instrumental and allin1 never separates again. The existing 206-track library stays on `legacy_2stem` and is **not** backfilled; the work is validated on a new ~30-track library of user-provided files.
 - **No wasted data.** Any array a measurement produces that a later stage could use is persisted — to an `analysis_frames` sidecar, to `allin1_analysis`, or to a `features`/`sections` column. A measurement computed and dropped is a bug in this plan.
 - **Every migration is idempotent on an already-migrated database** (established while implementing D1). `database/downgrade.py` resets `PRAGMA user_version = 0`, so a rollback replays every migration from 1 — a migration that assumes a fresh database breaks the documented rollback in readme §2.
+- **A test never isolates its database with `monkeypatch.setenv("MASHUP_DB_PATH", …)` alone** (learned while implementing D5). `config.DB_PATH` binds at import, so setting the env var afterwards changes nothing and the test runs against **the user's real library**. Either pass `db_path=` explicitly to every call, or do what the existing ingest tests do: `setenv`, then `importlib.reload` of `config`, `database.models` and the route module, in that order.
 - **A migration never calls `executescript`** (established while implementing D1). `schema.apply` runs each migration inside an explicit `BEGIN`/`COMMIT`, and `executescript` COMMITs early, which silently ends that transaction and makes the migration non-atomic. Issue statements one at a time, as `database/alignment.py`'s `migrate` already does — its comment says exactly why.
 
 ---
@@ -4413,8 +4414,11 @@ def test_incremental_assignment_matches_a_full_rebuild(tmp_path, monkeypatch):
     from matcher.dedup import assign_variant_cluster, rebuild_variant_clusters
     from database.models import get_conn
 
+    # Every call below passes db_path explicitly. Do NOT reach for
+    # monkeypatch.setenv("MASHUP_DB_PATH", …) here: config.DB_PATH is bound at
+    # import, so setting the env var afterwards does nothing and the test would
+    # silently run against the real library (this bit D5's brief).
     db = tmp_path / "t.db"
-    monkeypatch.setenv("MASHUP_DB_PATH", str(db))
     base = [0.0] * 13
     rows = [("Fireproof", "Kade Monroe", base),
             ("Fireproof (Extended Mix)", "Kade Monroe", base),
@@ -4447,8 +4451,7 @@ def test_assignment_reads_only_candidate_rows(tmp_path, monkeypatch):
     """The whole point: it must not pull the library's features for one track."""
     from matcher import dedup
 
-    db = tmp_path / "t.db"
-    monkeypatch.setenv("MASHUP_DB_PATH", str(db))
+    db = tmp_path / "t.db"          # explicit db_path throughout; see above
     ids = _seed(db, [("A Song", "An Artist", [0.0] * 13),
                      ("A Song (Radio Edit)", "An Artist", [0.0] * 13)])
 
