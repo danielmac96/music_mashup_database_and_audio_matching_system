@@ -1193,7 +1193,13 @@ t=time.perf_counter(); c.execute('SELECT * FROM mashup_candidates WHERE combo_ty
 c.execute('VACUUM')
 import os; print('MB', round(os.path.getsize('/tmp/rehearse.db')/1e6,1))"
 ```
-Expected: version 3; 62 candidate columns; a plan with `USING INDEX idx_candidates_vocal_score` and **no** `TEMP B-TREE`; the dock query in single-digit ms against 119 ms; and the file well under 93.7 MB. If the plan still shows a temp sort, the index's column order does not match the query's — fix the index, not the query.
+Expected: version 3; **63** candidate columns (seven dropped, not eight — `inst_energy` stays, see below); a plan with `USING INDEX idx_candidates_vocal_score` and **no** `TEMP B-TREE`; and the file well under 93.7 MB. If the plan still shows a temp sort, the index's column order does not match the query's — fix the index, not the query.
+
+**Time the right things, and time the write side too.** Three corrections learned while implementing this task:
+
+- The candidate query alone is not the cost. The listing's whole-table `PERCENT_RANK` over `inst_energy` (the `nrg` CTE, `database/models.py:3274`) has no index, so time the **full listing** — `get_candidates_enriched` as the dock calls it — not just the `SELECT` the test asserts on. The indexes added here may have moved only the cheap half.
+- This task drops two indexes and adds four, on a table that `score_all_pairs` truncates and reinserts up to 200,000 rows into. Every row now writes seven b-trees instead of five, so **time a full Score library run**, not only the reads. The brief priced the read side only. If the write cost has grown more than the read cost fell, `idx_candidates_pair` is the one to reconsider: `ux_candidates_section_pair` already covers its columns as a prefix, and it measured 0.07 ms → 0.07 ms on synthetic data.
+- `vocal_energy` was dropped and `inst_energy` kept. That is correct and was symmetry-checked: `vocal_energy` has no reader anywhere, while `inst_energy` feeds the dock's bed-energy filter. You filter on the bed's energy, not the vocal's.
 
 - [ ] **Step 8: Commit**
 
@@ -5437,6 +5443,23 @@ columns, and list the four new candidate indexes.
 *§2 Settings* — a sentence under the table: which database is live is decided
 by `settings.json`, and a library built from scratch for testing is a different
 `MASHUP_DB_PATH` / `MASHUP_AUDIO_ROOT` / `MASHUP_DATA_DIR`, not a flag.
+
+*§5.7 and §7* — two things D3 left that the readme must not describe loosely:
+
+- **A pair's "reason" is two different sentences under one field name.** The
+  dock card prints `matcher.recipe.alignment_reason` (tempo, stretch,
+  transpose, nudge), rebuilt on read since the column went. Studio's timing
+  pill prints `matcher.alignment.describe` (section labels, timestamps, bars,
+  loop, `126→128 BPM`), which `_pair_row` still emits unbound and the plan's
+  `section_options` and Segments' live rows carry. They take different inputs
+  and share no text. Say which is which rather than calling `reason` one thing.
+- **`pairs_freshness.last_scored_at` changed meaning.** It now comes from
+  `app_prefs.last_score`, which only a finished full run writes — which is the
+  point, since `MAX(scored_at)` advanced even for a run that died partway and
+  made stale pairs read fresh. The consequence to document: a library with
+  pairs but no `last_score` pref (scored only by per-track `score_song_pairs`,
+  which deliberately never writes it) now reports `null` where it used to
+  report a timestamp.
 
 - [ ] **Step 1: §2 Settings — the new rows**
 
