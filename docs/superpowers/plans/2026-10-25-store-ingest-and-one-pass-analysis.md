@@ -1180,7 +1180,7 @@ Expected: PASS. `tests/test_dock_quick_fixes.py` asserts `pairs_freshness` retur
 Then rehearse migrations 2 and 3 on a copy, never the original:
 
 ```bash
-docker compose exec app sh -c "cp /data/mashup.db /tmp/rehearse.db"
+docker compose exec app python -c "import sqlite3; sqlite3.connect('file:/data/mashup.db?mode=ro', uri=True).execute(\"VACUUM INTO '/tmp/rehearse.db'\")"
 docker compose exec app python -c "
 import sqlite3, time
 from database import schema
@@ -1914,11 +1914,10 @@ if __name__ == "__main__":
 
 - [ ] **Step 2: Take the "before" reading**
 
-Run it against a copy of the live database *before* the migrations, so the comparison is honest:
+Point it straight at the live database, *before* the migrations. That is safe: `scripts/db_report.py` opens a `file:…?mode=ro` connection, which cannot write, cannot create the file and cannot checkpoint the WAL. **Do not `cp` the database to take a snapshot** — a plain copy takes only the main file and leaves any un-checkpointed `-wal` pages behind, so the "before" numbers would come from a stale state. If a point-in-time snapshot is ever wanted, use `VACUUM INTO` (as D3's rehearsal step does) or `sqlite3 .backup`, both of which account for the WAL.
 
 ```bash
-docker compose exec app sh -c "cp /data/mashup.db /tmp/before.db"
-docker compose exec app python scripts/db_report.py --db /tmp/before.db
+docker compose exec app python scripts/db_report.py --db /data/mashup.db
 ```
 Expected (it is the audit's own numbers): file ~93.7 MB, `mashup_candidates` ~31.6 MB, `feature_cache` ~19.6 MB, the dock scoped query ~119 ms flagged `⚠ TEMPSORT`, `features` flagged `⚠ SCAN` at ~53 ms.
 
