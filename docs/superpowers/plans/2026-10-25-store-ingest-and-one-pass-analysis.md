@@ -5418,8 +5418,15 @@ Four edits, before the analysis ones:
 *§6 Repo map* — add `database/schema.py` (the migration ledger) and
 `database/arrays.py` (the float-array store) to the table, and a line saying
 the schema now carries `PRAGMA user_version`, that `database/schema.py`'s
-`MIGRATIONS` is the only place a shape change belongs, and that a shipped
-migration is never edited.
+`MIGRATIONS` is the only place a shape change belongs, that a shipped
+migration is never edited, that each one must be idempotent (a rollback
+replays from 1) and must not call `executescript`.
+
+*§7 Data and scoring* — the parking decision's second limb was already written
+into the readme when D2 landed, because an incomplete load-bearing rule is a
+hazard for anyone reading it in the meantime. Check it still reads true, and
+add the two migration rules above as their own decision bullet if §6's line
+does not carry them.
 
 *§6 Tables* — add `feature_arrays` (`song_id`, `stem_type`, `name`, `dtype`,
 `dim`, `data` — `beat_times` and `waveform_rms` as float32 BLOBs, out of
@@ -5567,7 +5574,7 @@ git commit -m "Document the one-pass analysis pipeline in readme and drop the pl
 |---|---|---|
 | Schema version | none — twelve functions re-deriving the shape | `PRAGMA user_version`, a numbered ledger, fresh ≡ migrated (test-pinned) |
 | Dock query, scoped to a track | 119 ms, index scan + temp B-tree sort | index range scan, single-digit ms |
-| `features` read for scoring | 52.8 ms full scan (4.5 MB of JSON along for the ride) | projected index read; the arrays live in `feature_arrays` |
+| `features` read for scoring | 52.8 ms full scan (4.5 MB of JSON along for the ride) | still a scan of `features`, but it no longer touches the arrays' overflow pages — they live in `feature_arrays`. `mfcc_json` and `band_energy_json` stay in the projection, so this is not an index-only read; judge it on wall time, not on the plan losing its `SCAN`. |
 | Freshness poll (every 20 s) | `MAX(scored_at)` full scan of 63,918 rows | one `app_prefs` read |
 | `mashup_candidates` | 31.6 MB, 70 columns | ~24 MB, 62 columns; no per-row prose, no per-row timestamp |
 | Database file | 93.7 MB at 206 tracks | smaller after the VACUUM, and it stops growing with text |

@@ -2050,7 +2050,14 @@ Existing databases migrate on start.
   judgements carried by `remap_feedback_sections` and the `pair_feedback`
   count checked. A writer that replaces a track's stems under another
   pipeline must `park_live` first, as `do_stems` does, or the old pipeline's
-  rows are gone.
+  rows are gone. **A parked `features` row has two limbs**: its columns, and
+  the per-stem arrays in `feature_arrays` (`database/arrays.py`) that used to
+  be `beat_times_json` / `waveform_rms_json` columns inside it. `_park`
+  captures the arrays inline under those old column names and the restore
+  writes them back through the array store, so the parked JSON's shape is
+  unchanged and a row parked by an older build still restores. A new array
+  moved out of `features` must join that capture, or a pipeline swap silently
+  leaves one pipeline's scalars beside the other's beat grid.
 - **Section indexes are a namespace per engine.** Essentia's sections are
   numbered from 0, allin1's (`sections_allin1`) from `ALLIN1_SECTION_BASE`
   (1000); allin1 rows' segment ids from `ALLIN1_SEGMENT_ID_BASE`. That is
