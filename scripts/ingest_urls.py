@@ -8,8 +8,14 @@ import accounting are all that function's, not a second copy.
 
 With --process it then walks each track through the real pipeline in this
 process (download → quick → stems → analyse → allin1 → structure) and prints
-what each one cost. Without it the tracks are queued the way an import from the
-UI queues them, and the server's own workers pick them up.
+what each one cost. Without it the tracks are saved at status 'queued' and
+nothing processes them: this process starts no workers, and a running server
+only re-queues unfinished tracks when it starts. So either re-run with
+--process, or restart the server afterwards.
+
+If the real server is running in the same container during --process, stop or
+idle it first. The Demucs concurrency gate is per-process, so a separation the
+UI starts and one this script starts can run at the same time.
 
     docker compose exec app python scripts/ingest_urls.py /data/urls.txt --process
     docker compose exec app python scripts/ingest_urls.py - --process < urls.txt
@@ -33,10 +39,14 @@ from typing import List
 
 def read_urls(path_or_dash: str) -> List[str]:
     """One URL a line, in order. '-' reads stdin."""
+    # Windows PowerShell 5.1 (`>`, Out-File) and older Notepad write a UTF-8 BOM.
+    # str.strip() does not remove U+FEFF, so without this the BOM stays on the
+    # first line: a URL is corrupted, and a leading "# comment" is no longer
+    # recognised as a comment and would be sent to ingest_rows as a URL.
     if path_or_dash == "-":
-        text = sys.stdin.read()
+        text = sys.stdin.read().lstrip(chr(0xFEFF))
     else:
-        text = Path(path_or_dash).read_text(encoding="utf-8")
+        text = Path(path_or_dash).read_text(encoding="utf-8-sig")
     out: List[str] = []
     for line in text.splitlines():
         line = line.strip()
@@ -50,7 +60,10 @@ def main(argv=None) -> int:
     # The docstring (printed by --help) and the progress lines use · → — …; a
     # Windows console on cp1252 would crash on them, so write UTF-8 regardless
     # of the console (same as scripts/db_report.py).
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    # Guarded like scripts/db_report.py: a caller that swaps stdout for a plain
+    # StringIO (a test, redirect_stdout) has no reconfigure().
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     # Raw formatter: the example commands in the docstring stay on their own lines.
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -94,8 +107,10 @@ def main(argv=None) -> int:
     ids = out["inserted_ids"]
     if not ids or not args.process:
         if ids:
-            print("\nQueued. The server's workers will pick them up; watch the "
-                  "Queue screen or GET /api/jobs/queue.")
+            print(f"\nSaved {len(ids)} track(s) at status 'queued', but nothing is "
+                  "processing them: this process starts no workers. Re-run with "
+                  "--process to run the pipeline here, or restart the server, "
+                  "which re-queues unfinished tracks on startup.")
         return 0
 
     from api import jobs
