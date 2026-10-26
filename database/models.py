@@ -9,6 +9,8 @@ import re
 import sqlite3
 import json
 from pathlib import Path
+
+from database import arrays
 from config import (
     AUTO_LINK_MIN_ARTIST, AUTO_LINK_MIN_DURATION, AUTO_LINK_MIN_SCORE,
     DB_PATH, format_duration,
@@ -569,6 +571,26 @@ _PREVIEW_MAX_SECS = 35
 SC_LINK_OVERWRITTEN_SQL = """source = 'youtube' AND (
        (COALESCE(track_id, '') != '' AND track_id NOT GLOB '*[^0-9]*')
     OR COALESCE(thumbnail, '') LIKE '%sndcdn.com%')"""
+
+
+# The `features` values that live in `feature_arrays` (database/arrays.py), not
+# in a column. `upsert_features` pops them; `get_features_for_song` puts them
+# back. The columns they replaced (beat_times_json, waveform_rms_json) still
+# appear in _FEATURES_OPTIONAL_COLUMNS below because that list is migration 1;
+# migration 2 (database/schema.py) moves their contents and drops them.
+_FEATURES_ARRAY_KEYS = ("beat_times", "waveform_rms")
+
+# What the pair scorer, the learned model's features and the dedup pass actually
+# read. Projecting to this instead of `f.*` keeps the scan to the scalar columns
+# (measured on 204 rows: 52.8 ms with the arrays in the row). The three spectral
+# scalars are here for `matcher/features.pair_features`, which the learned-model
+# path and the dataset builder call on these same rows.
+FEATURES_SCORING_COLUMNS = (
+    "song_id", "stem_type", "bpm", "bpm_confidence", "key", "mode", "camelot",
+    "key_confidence", "loudness_rms", "energy", "mfcc_json", "band_energy_json",
+    "beat_phase", "residual_vocal_ratio", "analyzer",
+    "spectral_centroid", "spectral_rolloff", "zero_crossing_rate",
+)
 
 
 _FEATURES_OPTIONAL_COLUMNS = (
@@ -1428,53 +1450,53 @@ def upsert_features(song_id: int, stem_type: str, features: dict,
                     db_path: Path = DB_PATH):
     mfcc = features.pop("mfcc", None)
     mfcc_json = json.dumps(mfcc) if mfcc is not None else None
-    beat_times = features.pop("beat_times", None)
-    beat_times_json = json.dumps(beat_times) if beat_times is not None else None
-    waveform_rms = features.pop("waveform_rms", None)
-    waveform_rms_json = json.dumps(waveform_rms) if waveform_rms is not None else None
+    # The big arrays go to the BLOB store on this same connection, in this
+    # same transaction (database/arrays.py); None clears a stale one, as the
+    # NULL column used to.
+    array_values = {k: features.pop(k, None) for k in _FEATURES_ARRAY_KEYS}
     band_energy = features.pop("band_energy", None)
     band_energy_json = json.dumps(band_energy) if band_energy is not None else None
     conn = get_conn(db_path)
-    conn.execute(
-        """INSERT INTO features
-               (song_id, stem_type, bpm, bpm_confidence, key, mode, camelot,
-                key_confidence, beat_phase, loudness_rms, energy, mfcc_json,
-                spectral_centroid, spectral_rolloff, zero_crossing_rate,
-                beat_times_json, waveform_rms_json,
-                band_energy_json, residual_vocal_ratio,
-                hook_start, hook_end, hook_role)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(song_id, stem_type) DO UPDATE SET
-               bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
-               key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
-               key_confidence=excluded.key_confidence,
-               beat_phase=excluded.beat_phase,
-               loudness_rms=excluded.loudness_rms, energy=excluded.energy,
-               mfcc_json=excluded.mfcc_json,
-               spectral_centroid=excluded.spectral_centroid,
-               spectral_rolloff=excluded.spectral_rolloff,
-               zero_crossing_rate=excluded.zero_crossing_rate,
-               beat_times_json=excluded.beat_times_json,
-               waveform_rms_json=excluded.waveform_rms_json,
-               band_energy_json=excluded.band_energy_json,
-               residual_vocal_ratio=excluded.residual_vocal_ratio,
-               hook_start=excluded.hook_start, hook_end=excluded.hook_end,
-               hook_role=excluded.hook_role""",
-        (song_id, stem_type,
-         features.get("bpm"), features.get("bpm_confidence"),
-         features.get("key"), features.get("mode"), features.get("camelot"),
-         features.get("key_confidence"), features.get("beat_phase") or 0,
-         features.get("loudness_rms"), features.get("energy"), mfcc_json,
-         features.get("spectral_centroid"), features.get("spectral_rolloff"),
-         features.get("zero_crossing_rate"),
-         beat_times_json, waveform_rms_json,
-         band_energy_json, features.get("residual_vocal_ratio"),
-         features.get("hook_start"), features.get("hook_end"),
-         features.get("hook_role"))
-    )
-    mark_pairs_input(conn, song_id)
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            """INSERT INTO features
+                   (song_id, stem_type, bpm, bpm_confidence, key, mode, camelot,
+                    key_confidence, beat_phase, loudness_rms, energy, mfcc_json,
+                    spectral_centroid, spectral_rolloff, zero_crossing_rate,
+                    band_energy_json, residual_vocal_ratio,
+                    hook_start, hook_end, hook_role)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(song_id, stem_type) DO UPDATE SET
+                   bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
+                   key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
+                   key_confidence=excluded.key_confidence,
+                   beat_phase=excluded.beat_phase,
+                   loudness_rms=excluded.loudness_rms, energy=excluded.energy,
+                   mfcc_json=excluded.mfcc_json,
+                   spectral_centroid=excluded.spectral_centroid,
+                   spectral_rolloff=excluded.spectral_rolloff,
+                   zero_crossing_rate=excluded.zero_crossing_rate,
+                   band_energy_json=excluded.band_energy_json,
+                   residual_vocal_ratio=excluded.residual_vocal_ratio,
+                   hook_start=excluded.hook_start, hook_end=excluded.hook_end,
+                   hook_role=excluded.hook_role""",
+            (song_id, stem_type,
+             features.get("bpm"), features.get("bpm_confidence"),
+             features.get("key"), features.get("mode"), features.get("camelot"),
+             features.get("key_confidence"), features.get("beat_phase") or 0,
+             features.get("loudness_rms"), features.get("energy"), mfcc_json,
+             features.get("spectral_centroid"), features.get("spectral_rolloff"),
+             features.get("zero_crossing_rate"),
+             band_energy_json, features.get("residual_vocal_ratio"),
+             features.get("hook_start"), features.get("hook_end"),
+             features.get("hook_role"))
+        )
+        for name, values in array_values.items():
+            arrays.put(conn, song_id, stem_type, name, values)
+        mark_pairs_input(conn, song_id)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def update_features_extras(song_id: int, stem_type: str, extras: Dict,
@@ -1684,6 +1706,7 @@ def delete_song(song_id: int, db_path: Path = DB_PATH) -> Dict:
         if r["file_path"]:
             files.append(r["file_path"])
     conn.execute("DELETE FROM features WHERE song_id=?", (song_id,))
+    arrays.delete_for(conn, song_id)
     conn.execute("DELETE FROM sections WHERE song_id=?", (song_id,))
     conn.execute("DELETE FROM stems WHERE song_id=?", (song_id,))
     conn.execute(
@@ -1889,6 +1912,7 @@ def update_song_url(song_id: int, new_url: str, db_path: Path = DB_PATH,
         if r["file_path"]:
             files.append(r["file_path"])
     conn.execute("DELETE FROM features WHERE song_id=?", (song_id,))
+    arrays.delete_for(conn, song_id)
     conn.execute("DELETE FROM sections WHERE song_id=?", (song_id,))
     conn.execute("DELETE FROM stems WHERE song_id=?", (song_id,))
     conn.execute(
@@ -1942,27 +1966,28 @@ def get_songs_by_status(*statuses: str, db_path: Path = DB_PATH) -> List[Dict]:
 
 def get_features_for_song(song_id: int, stem_type: str = "full",
                            db_path: Path = DB_PATH) -> Optional[Dict]:
+    """One stem's features row, decoded, with its beat grid and waveform
+    envelope put back from `feature_arrays` (absent = unmeasured, so the key is
+    left out rather than set to an empty list)."""
     conn = get_conn(db_path)
-    row = conn.execute(
-        "SELECT * FROM features WHERE song_id=? AND stem_type=?",
-        (song_id, stem_type)
-    ).fetchone()
-    conn.close()
-    if row is None:
-        return None
-    d = dict(row)
+    try:
+        row = conn.execute(
+            "SELECT * FROM features WHERE song_id=? AND stem_type=?",
+            (song_id, stem_type)
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        for name in _FEATURES_ARRAY_KEYS:
+            got = arrays.get(conn, song_id, stem_type, name)
+            if got:
+                d[name] = got
+    finally:
+        conn.close()
     if d.get("mfcc_json"):
         d["mfcc"] = json.loads(d.pop("mfcc_json"))
     else:
         d.pop("mfcc_json", None)
-    if d.get("beat_times_json"):
-        d["beat_times"] = json.loads(d.pop("beat_times_json"))
-    else:
-        d.pop("beat_times_json", None)
-    if d.get("waveform_rms_json"):
-        d["waveform_rms"] = json.loads(d.pop("waveform_rms_json"))
-    else:
-        d.pop("waveform_rms_json", None)
     if d.get("band_energy_json"):
         d["band_energy"] = json.loads(d.pop("band_energy_json"))
     else:
@@ -2070,18 +2095,48 @@ def get_stem_facts(song_ids, db_path: Path = DB_PATH) -> Dict:
     return {(r["song_id"], r["stem_type"]): dict(r) for r in rows}
 
 
-def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[Dict]:
-    conn = get_conn(db_path)
-    rows = conn.execute(
-        """SELECT f.*, s.title, s.artist, s.variant_cluster,
-                  st.quality AS stem_quality
-           FROM features f
-           JOIN songs s ON s.id=f.song_id
-           LEFT JOIN stems st ON st.song_id=f.song_id AND st.stem_type=f.stem_type
-           WHERE f.stem_type=?""",
-        (stem_type,)
-    ).fetchall()
-    conn.close()
+def get_all_features(stem_type: str = "full",
+                     columns: Optional[Sequence[str]] = None,
+                     song_ids: Optional[Sequence[int]] = None,
+                     db_path: Path = DB_PATH,
+                     conn: Optional[sqlite3.Connection] = None) -> List[Dict]:
+    """Every row for one stem type, joined with the song's title, artist and
+    variant cluster and the stem's quality.
+
+    `columns` restricts the `features` projection — pass FEATURES_SCORING_COLUMNS
+    on the scoring and dedup paths. None selects every column of `features`,
+    which no longer includes the big arrays (they are in `feature_arrays`; ask
+    for them by name through database/arrays.py).
+
+    `song_ids` limits it to those songs, which is what makes
+    `dedup.assign_variant_cluster` one track's worth of work rather than the
+    library's.
+
+    `conn` reuses the caller's connection (and leaves it open).
+    """
+    own = conn is None
+    conn = conn or get_conn(db_path)
+    try:
+        proj = "f.*" if not columns else ", ".join(f"f.[{c}]" for c in columns)
+        where = ["f.stem_type = ?"]
+        args: list = [stem_type]
+        if song_ids is not None:
+            ids = [int(i) for i in song_ids]
+            if not ids:
+                return []
+            where.append(f"f.song_id IN ({','.join('?' * len(ids))})")
+            args += ids
+        rows = conn.execute(
+            f"""SELECT {proj}, s.title, s.artist, s.variant_cluster,
+                       st.quality AS stem_quality
+                  FROM features f
+                  JOIN songs s ON s.id = f.song_id
+                  LEFT JOIN stems st ON st.song_id = f.song_id
+                                    AND st.stem_type = f.stem_type
+                 WHERE {' AND '.join(where)}""", args).fetchall()
+    finally:
+        if own:
+            conn.close()
     result = []
     for r in rows:
         d = dict(r)

@@ -22,7 +22,7 @@ from typing import Optional, List, Dict, Iterable
 # database.models never imports matcher, so this is safe at module scope — and
 # it has to be, so the library-stats cache can read features without threading a
 # handle through every scoring call.
-from database.models import DB_PATH, get_all_features
+from database.models import DB_PATH, FEATURES_SCORING_COLUMNS, get_all_features
 from analysis.quality import collision_block, collision_score
 from matcher.effort import effort_block
 
@@ -229,6 +229,7 @@ def compute_library_stats(db_path=None) -> LibraryStats:
     rows = []
     for stem in _STEM_KINDS:
         rows.extend(get_all_features(stem_type=stem,
+                                     columns=FEATURES_SCORING_COLUMNS,
                                      db_path=db_path or DB_PATH) or [])
     mats = [r["mfcc"] for r in rows if r.get("mfcc") and len(r["mfcc"]) >= 13]
     mfcc_mean = mfcc_std = None
@@ -997,7 +998,7 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from database.models import (
         bulk_upsert_candidates, candidate_row, clear_candidates,
-        get_all_features, get_sections, DB_PATH,
+        get_all_features, get_sections, DB_PATH, FEATURES_SCORING_COLUMNS,
     )
     # Read once per run, so a scoring pass is internally consistent even if the
     # user saves settings while it is going, and so a knob turned in the UI
@@ -1058,9 +1059,10 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         from database.models import delete_song_candidates
         delete_song_candidates(only, keep_scorers=(FORCED_SCORER,), db_path=db)
 
-    vocals      = get_all_features(stem_type="vocals",        db_path=db)
-    inst        = get_all_features(stem_type="instrumental",  db_path=db)
-    full        = get_all_features(stem_type="full",          db_path=db)
+    cols        = FEATURES_SCORING_COLUMNS
+    vocals      = get_all_features(stem_type="vocals",        columns=cols, db_path=db)
+    inst        = get_all_features(stem_type="instrumental",  columns=cols, db_path=db)
+    full        = get_all_features(stem_type="full",          columns=cols, db_path=db)
     full_by_song = {f["song_id"]: f for f in full}
     v_add, i_add = _provisional_stand_ins(full, vocals, inst)
     vocals += v_add
@@ -1402,12 +1404,16 @@ def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict
     cfg = current_scoring_settings()
     weights = cfg["match_weights_vocal"]
     effort_weight = cfg["effort_weight"]
-    full_by_song = {f["song_id"]: f for f in get_all_features(stem_type="full", db_path=db)
-                    if f["song_id"] in (vocal_song_id, inst_song_id)}
-    top = next((f for f in get_all_features(stem_type="vocals", db_path=db)
-                if f["song_id"] == vocal_song_id), None)
-    bed = next((f for f in get_all_features(stem_type="instrumental", db_path=db)
-                if f["song_id"] == inst_song_id), None)
+    pair_ids = (vocal_song_id, inst_song_id)
+    full_by_song = {f["song_id"]: f for f in get_all_features(
+        stem_type="full", columns=FEATURES_SCORING_COLUMNS, song_ids=pair_ids,
+        db_path=db)}
+    top = next(iter(get_all_features(
+        stem_type="vocals", columns=FEATURES_SCORING_COLUMNS,
+        song_ids=[vocal_song_id], db_path=db)), None)
+    bed = next(iter(get_all_features(
+        stem_type="instrumental", columns=FEATURES_SCORING_COLUMNS,
+        song_ids=[inst_song_id], db_path=db)), None)
     if top is None or bed is None:
         return []
     top, bed = _with_full_bpm(top, full_by_song), _with_full_bpm(bed, full_by_song)

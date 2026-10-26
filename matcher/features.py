@@ -31,7 +31,8 @@ import numpy as np
 
 from config import BPM_MAX_DIFF, DATASETS_DIR
 from database.models import (
-    DB_PATH, get_all_features, get_conn, get_sections, is_trusted_link,
+    DB_PATH, FEATURES_SCORING_COLUMNS, get_all_features, get_conn,
+    get_sections, is_trusted_link,
 )
 from matcher.match import (
     LibraryStats, _bpm_min_diff, _parse_camelot, _with_full_bpm,
@@ -527,9 +528,11 @@ def build_dataset(name: str = "bbm", neg_ratio: int = 5, seed: int = 42,
     there are no usable positives yet."""
     conn = get_conn(db_path)
     try:
-        vocals = get_all_features(stem_type="vocals", db_path=db_path)
-        inst = get_all_features(stem_type="instrumental", db_path=db_path)
-        full = get_all_features(stem_type="full", db_path=db_path)
+        cols = FEATURES_SCORING_COLUMNS
+        vocals = get_all_features(stem_type="vocals", columns=cols, db_path=db_path)
+        inst = get_all_features(stem_type="instrumental", columns=cols,
+                                db_path=db_path)
+        full = get_all_features(stem_type="full", columns=cols, db_path=db_path)
         full_by_song = {f["song_id"]: f for f in full}
 
         vocals = [_with_full_bpm(v, full_by_song) for v in vocals]

@@ -62,8 +62,64 @@ def _baseline(conn: sqlite3.Connection) -> None:
     alignment.migrate(conn)
 
 
+def _feature_arrays(conn: sqlite3.Connection) -> None:
+    """Move `features`' two big JSON arrays into `feature_arrays`.
+
+    beat_times_json and waveform_rms_json were 4.5 MB of the table's 5.6 MB and
+    are read by nothing on the scoring or listing path, while `SELECT f.*`
+    carried them into every scan. Copied value for value as float32, then the
+    columns are dropped — neither appears in an index or a view, so SQLite can
+    drop them in place.
+
+    Idempotent, because a rollback (database/downgrade.py) resets
+    ``user_version`` and replays every migration: migration 1 puts the two
+    (empty) columns back, this one finds nothing to move and drops them again.
+    Only statements, never ``executescript`` — see `apply`.
+    """
+    import json
+
+    from database import arrays
+
+    # The caller's factory is whatever it set: `get_conn` uses sqlite3.Row, a
+    # bare `sqlite3.connect` does not. This reads columns by name.
+    previous = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        arrays.ensure_schema(conn)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(features)")}
+        moves = [("beat_times_json", "beat_times"),
+                 ("waveform_rms_json", "waveform_rms")]
+        present = [(col, name) for col, name in moves if col in cols]
+        if present:
+            select = ", ".join(col for col, _ in present)
+            for row in conn.execute(
+                    f"SELECT song_id, stem_type, {select} FROM features").fetchall():
+                for col, name in present:
+                    raw = row[col]
+                    if not raw:
+                        continue
+                    try:
+                        values = json.loads(raw)
+                    except (TypeError, ValueError):
+                        log.warning("features.%s for song %s/%s is not JSON; dropped",
+                                    col, row["song_id"], row["stem_type"])
+                        continue
+                    arrays.put(conn, int(row["song_id"]), row["stem_type"], name,
+                               values)
+        for col, _name in moves:
+            if col in cols:
+                conn.execute(f"ALTER TABLE features DROP COLUMN {col}")
+        # The scorer and dedup read every full-mix row; give that the index it
+        # never had (`features` was only indexed on bpm and (key, mode)).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_features_stem "
+                     "ON features(stem_type, song_id)")
+    finally:
+        conn.row_factory = previous
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline", _baseline),
+    Migration(2, "feature_arrays", _feature_arrays),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
@@ -80,7 +136,9 @@ def apply(conn: sqlite3.Connection) -> List[int]:
     Each runs in its own transaction with ``user_version`` set inside it, so a
     failure rolls that migration back and leaves the stored version on the last
     one that succeeded — the next start retries exactly the one that broke. The
-    error names the failed version and chains the original exception.
+    error names the failed version and chains the original exception. Only an
+    ``Exception`` is wrapped that way; a ``KeyboardInterrupt`` or ``SystemExit``
+    rolls back and propagates as itself.
 
     Why not SAVEPOINTs: Python's sqlite3 opens implicit transactions of its own
     and ``executescript`` (migration 1 uses it) COMMITs whatever is pending,
@@ -108,12 +166,18 @@ def apply(conn: sqlite3.Connection) -> List[int]:
                 conn.execute(f"PRAGMA user_version = {int(migration.version)}")
                 if conn.in_transaction:      # an executescript may have committed
                     conn.execute("COMMIT")
-            except BaseException as exc:
+            except Exception as exc:
                 if conn.in_transaction:
                     conn.execute("ROLLBACK")
                 raise RuntimeError(
                     f"schema migration {migration.version} ({migration.name}) "
                     f"failed: {exc}") from exc
+            except BaseException:
+                # Ctrl-C or SystemExit part-way through a long migration: undo
+                # it, but do not rename it "migration N failed" — it did not.
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
             done.append(migration.version)
     finally:
         conn.isolation_level = previous

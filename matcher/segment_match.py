@@ -89,11 +89,13 @@ class _Snapshot:
             _camelot_index, _prepare_block, _with_full_bpm, get_library_stats,
         )
         self.stats = get_library_stats(db_path=db, refresh=True)
-        full = {f["song_id"]: f for f in models.get_all_features("full", db_path=db)}
-        self.vocals = [_with_full_bpm(f, full)
-                       for f in models.get_all_features("vocals", db_path=db)]
-        self.beds = [_with_full_bpm(f, full)
-                     for f in models.get_all_features("instrumental", db_path=db)]
+        cols = models.FEATURES_SCORING_COLUMNS
+        full = {f["song_id"]: f for f in models.get_all_features(
+            "full", columns=cols, db_path=db)}
+        self.vocals = [_with_full_bpm(f, full) for f in models.get_all_features(
+            "vocals", columns=cols, db_path=db)]
+        self.beds = [_with_full_bpm(f, full) for f in models.get_all_features(
+            "instrumental", columns=cols, db_path=db)]
         (self.code_index, self.key_table, self.shift_table,
          self.shift_known) = _camelot_index([self.vocals, self.beds])
         self.v_block = _prepare_block(self.vocals, self.code_index, self.stats)

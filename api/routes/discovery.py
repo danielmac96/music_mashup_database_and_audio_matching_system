@@ -89,7 +89,9 @@ def _with_fit_hints(tracks: list[dict]) -> None:
     from database.models import get_all_features
     from ingest.fit_hints import fits, parse
     try:
-        library = get_all_features(stem_type="full")
+        # fit_hints.fits reads tempo and Camelot code, nothing else.
+        library = get_all_features(stem_type="full",
+                                   columns=("song_id", "bpm", "camelot"))
     except Exception:  # noqa: BLE001 — a hint is never worth a failed search
         library = []
     for row in tracks:
@@ -601,7 +603,8 @@ def library_gaps(max_partners: int = Query(2, ge=0, le=10)) -> dict:
     from api.routes.tracks import _mash_summary_by_song
     from database.models import get_all_features, get_all_songs
     mash, _ = _mash_summary_by_song()
-    feats = {f["song_id"]: f for f in get_all_features(stem_type="full")}
+    feats = {f["song_id"]: f for f in get_all_features(
+        stem_type="full", columns=("song_id", "bpm", "camelot"))}
     songs = {s["id"]: s for s in get_all_songs()}
     lonely = {"bed": [], "vocal": []}   # what each group NEEDS
     for sid, m in mash.items():

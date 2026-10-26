@@ -499,16 +499,34 @@ def phrases_for_songs(song_ids, db_path: Optional[Path] = None) -> Dict[int, Lis
 
 PARKED_TABLES = ("stems", "features", "sections")
 
+# `features` keeps its beat grid and waveform envelope in `feature_arrays`
+# (database/arrays.py), keyed by (song, stem) rather than by row. They belong to
+# the pipeline whose features they describe, so a parked features row carries
+# them inline under the column names it used to have: parked JSON written
+# before the arrays moved restores through the same path, and nothing new has
+# to be added to the pipeline_parked format.
+_PARKED_ARRAY_COLUMNS = {"beat_times_json": "beat_times",
+                         "waveform_rms_json": "waveform_rms"}
+
 
 def _park(conn: sqlite3.Connection, song_id: int, pipeline: str) -> int:
+    from database import arrays
+
     conn.execute("DELETE FROM pipeline_parked WHERE song_id=? AND pipeline=?",
                  (song_id, pipeline))
     n = 0
     for tbl in PARKED_TABLES:
-        rows = conn.execute(f"SELECT * FROM {tbl} WHERE song_id=?", (song_id,)).fetchall()
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT * FROM {tbl} WHERE song_id=?", (song_id,)).fetchall()]
+        if tbl == "features":
+            for row in rows:
+                for col, name in _PARKED_ARRAY_COLUMNS.items():
+                    values = arrays.get(conn, song_id, row["stem_type"], name)
+                    if values:
+                        row[col] = json.dumps(values)
         conn.executemany(
             "INSERT INTO pipeline_parked(song_id, pipeline, tbl, row_json) VALUES (?,?,?,?)",
-            [(song_id, pipeline, tbl, json.dumps(dict(r))) for r in rows])
+            [(song_id, pipeline, tbl, json.dumps(r)) for r in rows])
         n += len(rows)
     return n
 
@@ -561,6 +579,7 @@ def activate_pipeline(song_id: int, target: str, db_path: Optional[Path] = None)
     """
     if target not in PIPELINES:
         raise ValueError(f"unknown pipeline {target!r}")
+    from database import arrays
     m = _models()
     conn = _conn(db_path)
     try:
@@ -579,15 +598,23 @@ def activate_pipeline(song_id: int, target: str, db_path: Optional[Path] = None)
         _park(conn, song_id, current)
         for tbl in PARKED_TABLES:
             conn.execute(f"DELETE FROM {tbl} WHERE song_id=?", (song_id,))
+            if tbl == "features":
+                arrays.delete_for(conn, song_id)
             live_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")}
             for (row_json,) in conn.execute(
                     "SELECT row_json FROM pipeline_parked WHERE song_id=? AND "
                     "pipeline=? AND tbl=? ORDER BY id", (song_id, target, tbl)).fetchall():
-                row = {k: v for k, v in json.loads(row_json).items() if k in live_cols}
+                parked = json.loads(row_json)
+                row = {k: v for k, v in parked.items() if k in live_cols}
                 cols = list(row)
                 conn.execute(
                     f"INSERT INTO {tbl} ({', '.join(cols)}) "
                     f"VALUES ({','.join('?' * len(cols))})", [row[c] for c in cols])
+                if tbl == "features":
+                    for col, name in _PARKED_ARRAY_COLUMNS.items():
+                        if parked.get(col):
+                            arrays.put(conn, song_id, parked["stem_type"], name,
+                                       json.loads(parked[col]))
         conn.execute("DELETE FROM pipeline_parked WHERE song_id=? AND pipeline=?",
                      (song_id, target))
         conn.execute("UPDATE songs SET separation_pipeline=? WHERE id=?",

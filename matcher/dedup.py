@@ -269,12 +269,15 @@ def rebuild_variant_clusters(db_path=None,
     Reads the full-mix feature rows (title, artist and the mean MFCC come back
     in one query via get_all_features), clusters, and writes the column. Returns
     a summary dict for the job message."""
-    from database.models import DB_PATH, get_all_features, get_conn
+    from database.models import (
+        DB_PATH, FEATURES_SCORING_COLUMNS, get_all_features, get_conn,
+    )
 
     db = db_path or DB_PATH
     if on_progress:
         on_progress(5, "Loading library…")
-    songs = get_all_features(stem_type="full", db_path=db)
+    songs = get_all_features(stem_type="full", columns=FEATURES_SCORING_COLUMNS,
+                             db_path=db)
     # Songs that were never analysed still have a title and artist worth
     # clustering on, so pull them too.
     conn = get_conn(db)

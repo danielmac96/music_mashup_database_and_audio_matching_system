@@ -763,7 +763,9 @@ def _with_reasons(rows: list) -> list:
     if not rows or not any(r.get("scorer") == "model" for r in rows):
         return rows
     try:
-        from database.models import get_all_features, get_sections
+        from database.models import (
+            FEATURES_SCORING_COLUMNS as cols, get_all_features, get_sections,
+        )
         from matcher.features import pair_features
         from matcher.match import _with_full_bpm, get_library_stats
         from matcher.model_scorer import feature_contributions, load_active_model
@@ -771,11 +773,12 @@ def _with_reasons(rows: list) -> list:
         if not bundle:
             return rows
         stats = get_library_stats()
-        full = {f["song_id"]: f for f in get_all_features(stem_type="full")}
+        full = {f["song_id"]: f
+                for f in get_all_features(stem_type="full", columns=cols)}
         vocals = {f["song_id"]: _with_full_bpm(f, full)
-                  for f in get_all_features(stem_type="vocals")}
+                  for f in get_all_features(stem_type="vocals", columns=cols)}
         inst = {f["song_id"]: _with_full_bpm(f, full)
-                for f in get_all_features(stem_type="instrumental")}
+                for f in get_all_features(stem_type="instrumental", columns=cols)}
         sec_cache: dict = {}
 
         def sections(sid):
