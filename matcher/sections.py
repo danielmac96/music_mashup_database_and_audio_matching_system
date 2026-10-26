@@ -383,6 +383,11 @@ def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
         **parts,
         **aligned,
         **extra,
+        # Not a stored column since schema migration 3 (absent from
+        # SECTION_PAIR_COLUMNS on purpose): the plan's `section_options` and
+        # Segments' live rows hand it to the UI, where Studio's timing pills
+        # show it (MixStudio.jsx, `o.reason`). Stored rows get
+        # matcher.recipe.alignment_reason on read instead.
         "reason": describe(v, i, row_bars, aligned, bpm, bpm),
         "vocal_section_idx": _index_of(v, vi),
         "inst_section_idx": _index_of(i, ii),

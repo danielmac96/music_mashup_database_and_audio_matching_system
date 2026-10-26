@@ -2492,14 +2492,27 @@ def upsert_candidate(vocal: dict, inst: dict, scores: dict,
     conn.close()
 
 
+# Removed by schema migration 3 (database/schema.py). Kept as a constant so the
+# writer, the migration and the test all name the same list. `inst_energy` is
+# NOT here although the migration's brief listed it: the dock's "bed energy"
+# filter ranks it (`nrg.energy_pct`, PERCENT_RANK over inst_energy), so it is
+# read; the other seven have no reader outside the table's own writer.
+CANDIDATE_DROPPED_COLUMNS = (
+    "vocal_mode", "inst_mode",                      # 0 readers
+    "vocal_energy",                                 # 0 readers
+    "vocal_loudness_rms", "inst_loudness_rms",      # a test, nothing else
+    "reason",        # rebuilt by matcher.recipe.alignment_reason
+    "scored_at",     # one timestamp a run; app_prefs.last_score has it
+)
+
+
 _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        combo_type,
        vocal_song_id, vocal_title, vocal_artist,
-       vocal_bpm, vocal_key, vocal_mode, vocal_camelot,
-       vocal_loudness_rms, vocal_energy,
+       vocal_bpm, vocal_key, vocal_camelot,
        inst_song_id, inst_title, inst_artist,
-       inst_bpm, inst_key, inst_mode, inst_camelot,
-       inst_loudness_rms, inst_energy,
+       inst_bpm, inst_key, inst_camelot,
+       inst_energy,
        score_total, score_bpm, score_key, score_energy, score_timbre,
        score_collision, scorer, model_version,
        vocal_section_idx, inst_section_idx,
@@ -2512,18 +2525,16 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_label, score_duration, score_voice,
        score_room_section, score_coverage, score_energy_match,
        alignment_downbeat, alignment_offset, target_bpm,
-       tempo_adjustment, pitch_adjustment, reason,
+       tempo_adjustment, pitch_adjustment,
        score_effort, effort_stretch, effort_pitch,
        effort_tempo_fold, effort_grid, effort_key_certainty,
        harmonic_shift, harmonic_confidence, bass_clash,
        score_timing, timing_ok, timing_err_mean_ms, timing_err_max_ms,
        vocal_phrase_start, vocal_pickup_ms, bed_landing_sec,
-       engine, engine_version, pipeline,
-       scored_at
+       engine, engine_version, pipeline
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -2555,7 +2566,6 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        target_bpm=excluded.target_bpm,
        tempo_adjustment=excluded.tempo_adjustment,
        pitch_adjustment=excluded.pitch_adjustment,
-       reason=excluded.reason,
        score_effort=excluded.score_effort,
        effort_stretch=excluded.effort_stretch,
        effort_pitch=excluded.effort_pitch,
@@ -2583,17 +2593,11 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        model_version=excluded.model_version,
        vocal_bpm=excluded.vocal_bpm,
        vocal_key=excluded.vocal_key,
-       vocal_mode=excluded.vocal_mode,
        vocal_camelot=excluded.vocal_camelot,
-       vocal_loudness_rms=excluded.vocal_loudness_rms,
-       vocal_energy=excluded.vocal_energy,
        inst_bpm=excluded.inst_bpm,
        inst_key=excluded.inst_key,
-       inst_mode=excluded.inst_mode,
        inst_camelot=excluded.inst_camelot,
-       inst_loudness_rms=excluded.inst_loudness_rms,
-       inst_energy=excluded.inst_energy,
-       scored_at=datetime('now')"""
+       inst_energy=excluded.inst_energy"""
 
 
 # Bind order for the section-pair block. MUST match the column list and the
@@ -2610,7 +2614,7 @@ SECTION_PAIR_COLUMNS = (
     "score_label", "score_duration", "score_voice",
     "score_room_section", "score_coverage", "score_energy_match",
     "alignment_downbeat", "alignment_offset", "target_bpm",
-    "tempo_adjustment", "pitch_adjustment", "reason",
+    "tempo_adjustment", "pitch_adjustment",
 )
 
 
@@ -2625,11 +2629,11 @@ TIMING_COLUMNS = (
 
 
 # The column each candidate_row value binds to, read off the insert itself so
-# the two cannot drift (scored_at is the statement's own datetime('now')).
+# the two cannot drift.
 CANDIDATE_COLUMNS = tuple(
     c.strip() for c in
     _CANDIDATE_INSERT_SQL.split("(", 1)[1].split(")", 1)[0].split(",")
-    if c.strip() and c.strip() != "scored_at")
+    if c.strip())
 
 
 def candidate_dict(vocal: dict, inst: dict, scores: dict,
@@ -2661,11 +2665,10 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
     return (
         combo_type,
         vocal["song_id"], vocal.get("title"), vocal.get("artist"),
-        vocal.get("bpm"), vocal.get("key"), vocal.get("mode"), vocal.get("camelot"),
-        vocal.get("loudness_rms"), vocal.get("energy"),
+        vocal.get("bpm"), vocal.get("key"), vocal.get("camelot"),
         inst["song_id"], inst.get("title"), inst.get("artist"),
-        inst.get("bpm"), inst.get("key"), inst.get("mode"), inst.get("camelot"),
-        inst.get("loudness_rms"), inst.get("energy"),
+        inst.get("bpm"), inst.get("key"), inst.get("camelot"),
+        inst.get("energy"),
         scores["total"], scores["bpm_score"], scores["key_score"],
         scores["energy_score"], scores["timbre_score"],
         scores.get("collision_score"), scorer, model_version,
@@ -3664,7 +3667,11 @@ def pairs_freshness(db_path: Path = DB_PATH) -> Dict:
     the last successful "Score library" run started (songs.pairs_input_at).
     never_scored is true when no run has finished and there is something to
     pair; a library scored before this was recorded counts as scored, with no
-    change known."""
+    change known.
+
+    `last_scored_at` is the run's `app_prefs.last_score.started_at`. It was
+    MAX(mashup_candidates.scored_at), a full scan of a 31 MB table on a route
+    the dock polls every 20 s, for a value one pref row already holds."""
     last = get_pref("last_score", db_path=db_path) or {}
     started = last.get("started_at")
     conn = get_conn(db_path)
@@ -3673,8 +3680,6 @@ def pairs_freshness(db_path: Path = DB_PATH) -> Dict:
             "SELECT COUNT(*) FROM songs WHERE status='analysed'").fetchone()[0]
         has_pairs = conn.execute(
             "SELECT EXISTS(SELECT 1 FROM mashup_candidates)").fetchone()[0]
-        last_scored = conn.execute(
-            "SELECT MAX(scored_at) FROM mashup_candidates").fetchone()[0]
         changed = 0
         if started:
             changed = conn.execute(
@@ -3685,7 +3690,7 @@ def pairs_freshness(db_path: Path = DB_PATH) -> Dict:
         conn.close()
     return {
         "last_score_started_at": started,
-        "last_scored_at": last_scored,
+        "last_scored_at": started,
         "changed_tracks": int(changed),
         "never_scored": bool(not started and not has_pairs and analysed >= 2),
         "analysed_tracks": int(analysed),

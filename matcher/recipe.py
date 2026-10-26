@@ -234,6 +234,40 @@ def nudge_text(ms: Optional[float], bpm: Optional[float]) -> str:
             + (f" {_signed(rest, ' ms')}" if rest else ""))
 
 
+def alignment_reason(row: Dict) -> str:
+    """The one-line "what it took to line these up" sentence.
+
+    It used to be a TEXT column on every candidate row: 4.42 MB over 63,918
+    rows, for a sentence derived from numbers already on the row. Built on
+    read now (the listing attaches it beside the recipe; the candidate preview
+    route and worker call it directly). Empty string when there is nothing to
+    say. (matcher.sections._pair_row still builds its fuller `describe()`
+    line for each section pair, because GET /api/mashups/plan returns it in
+    `section_options` and Studio's timing pills show it as their tooltip,
+    MixStudio.jsx `o.reason`; only the stored copy is gone.)
+
+    It says what is done to the bed: the tempo it lands on, the stretch, the
+    transpose and the nudge. The stored sentence also began with the two
+    section labels and spans ("chorus 0:40-1:10 over drop 0:20-0:50"); those
+    are printed by the card and the timing pills themselves, so they are not
+    repeated here.
+    """
+    bits = []
+    target = row.get("target_bpm")
+    if target:
+        bits.append(f"bed to {float(target):.1f} BPM")
+    rate = row.get("tempo_adjustment")
+    if rate:
+        bits.append(f"{float(rate) * 100:+.1f}% tempo")
+    shift = row.get("pitch_adjustment")
+    if shift:
+        bits.append(f"{int(shift):+d} st")
+    offset = row.get("alignment_offset")
+    if offset is not None:
+        bits.append(f"nudge {float(offset) * 1000:+.0f} ms")
+    return ", ".join(bits)
+
+
 def _rate_to(target: float, bpm: Optional[float]):
     """(rate, fold) to play a side at `target`, read at half/double time when
     closer — rate > 1 plays it faster. (None, None) when its tempo is unknown."""

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from matcher.recipe import alignment_reason
 from render.mixdown import build_mixdown
 
 from api import jobs
@@ -97,5 +98,5 @@ def run(job_id: str, candidate: dict) -> None:
 
     jobs.done(job_id, {
         "audio_url": f"/api/studio/mixdown/{job_id}/audio",
-        "reason": candidate.get("reason") or "",
+        "reason": alignment_reason(candidate),
     })

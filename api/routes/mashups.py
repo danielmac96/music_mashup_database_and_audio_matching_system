@@ -23,7 +23,7 @@ from api import jobs
 from api.workers import candidate_preview_worker, match_worker
 from matcher.effort import dominant_component, effort_label
 from matcher.match import compute_stretch_factor
-from matcher.recipe import bed_shift, pair_recipe
+from matcher.recipe import alignment_reason, bed_shift, pair_recipe
 from matcher.plan import build_mashup_plan
 
 router = APIRouter()
@@ -204,6 +204,11 @@ def _with_recipes(rows: list, target_of=None) -> None:
         r["confidence_tier"] = confidence_tier(r.get("score_percentile"),
                                                r["harmonic_sure"])
         r["compat"] = pair_compat(r, facts)
+        # No longer a stored column (schema migration 3); the dock's rows, the
+        # Studio layer picker and the timing pills still read `reason`. A set
+        # item frozen before the migration keeps the sentence it was saved with.
+        if not r.get("reason"):
+            r["reason"] = alignment_reason(r)
 
 
 def _with_scope_rank(rows: list, vocal_song_id: Optional[int],
@@ -619,7 +624,7 @@ def queue_candidate_preview(candidate_id: int, background: BackgroundTasks) -> d
     background.add_task(candidate_preview_worker.run, job_id, candidate)
     return {"job_id": job_id,
             "audio_url": f"/api/studio/mixdown/{job_id}/audio",
-            "reason": candidate.get("reason") or ""}
+            "reason": alignment_reason(candidate)}
 
 
 @router.get("/plan")

@@ -117,9 +117,65 @@ def _feature_arrays(conn: sqlite3.Connection) -> None:
         conn.row_factory = previous
 
 
+def _slim_candidates(conn: sqlite3.Connection) -> None:
+    """Drop what nothing reads from `mashup_candidates`, and index what does.
+
+    Measured on a 206-track library: the table was 31.6 MB over 63,918 rows.
+    `reason` was 4.42 MB of a sentence rebuilt from the row's own numbers
+    (matcher.recipe.alignment_reason), and `scored_at` 1.21 MB of one timestamp
+    repeated — the run's, which `app_prefs.last_score` already holds. The
+    other five (`models.CANDIDATE_DROPPED_COLUMNS`) have no reader outside the
+    table's own writer. None of the seven is in an index, view or trigger, so
+    SQLite drops them in place.
+
+    Then the indexes. `idx_candidates_type` is on a column with two distinct
+    values, so the dock's query scanned half the table and sorted it in a temp
+    B-tree: 119 ms scoped to one track, at 63,918 rows, against a cap of
+    200,000. Each index below serves one access path the app actually takes.
+
+    Also drops `idx_feature_arrays_song` (migration 2): it is a strict prefix
+    of that table's PRIMARY KEY autoindex (song_id, stem_type, name), so SQLite
+    never chooses it and it costs a b-tree write on every `arrays.put`. Dropped
+    here rather than edited out of migration 2, which has shipped.
+
+    Idempotent: a rollback resets ``user_version`` and replays every migration,
+    and migration 1 puts the columns and the old indexes back. Statements only,
+    never ``executescript`` — see `apply`.
+    """
+    from database.models import CANDIDATE_DROPPED_COLUMNS
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(mashup_candidates)")}
+    for col in CANDIDATE_DROPPED_COLUMNS:
+        if col in cols:
+            conn.execute(f"ALTER TABLE mashup_candidates DROP COLUMN {col}")
+    for statement in (
+            # the dock scoped to a track, each side
+            "CREATE INDEX IF NOT EXISTS idx_candidates_vocal_score "
+            "ON mashup_candidates(combo_type, vocal_song_id, score_total DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_candidates_inst_score "
+            "ON mashup_candidates(combo_type, inst_song_id, score_total DESC)",
+            # the dock library-wide, and every "best in library" order
+            "CREATE INDEX IF NOT EXISTS idx_candidates_combo_score "
+            "ON mashup_candidates(combo_type, score_total DESC)",
+            # the stepper's pairings of two songs, and the per-row
+            # pairing_count / pairing_rank subqueries the listing runs per row
+            "CREATE INDEX IF NOT EXISTS idx_candidates_pair "
+            "ON mashup_candidates(combo_type, vocal_song_id, inst_song_id, "
+            "score_total DESC)",
+            # superseded: combo_type has two distinct values, and score_total
+            # alone cannot serve a filtered order
+            "DROP INDEX IF EXISTS idx_candidates_type",
+            "DROP INDEX IF EXISTS idx_candidates_score",
+            # a strict prefix of feature_arrays' primary key (migration 2)
+            "DROP INDEX IF EXISTS idx_feature_arrays_song",
+    ):
+        conn.execute(statement)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline", _baseline),
     Migration(2, "feature_arrays", _feature_arrays),
+    Migration(3, "slim_candidates", _slim_candidates),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

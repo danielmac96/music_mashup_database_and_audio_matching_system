@@ -64,7 +64,15 @@ def test_every_pair_row_key_is_a_bound_column():
     i = _sections([("drop", 0, 32), ("verse", 32, 64)], vocal=False)
     row = top_section_pairs(v, i, stretch=1.0, bpm=128.0, limit=1)[0]
 
-    dropped = set(row) - set(SECTION_PAIR_COLUMNS)
+    # `reason` is the one deliberate exception, and it has a live reader:
+    # schema migration 3 stopped STORING it (matcher.recipe.alignment_reason
+    # rebuilds a sentence on read), but _pair_row still emits describe()'s
+    # richer line because GET /api/mashups/plan returns these rows unbound as
+    # `section_options` (matcher/plan.py:297) and Studio's timing pills show
+    # it as their tooltip (frontend/src/components/MixStudio.jsx:2312,
+    # `o.reason`). Segments' live rows carry it too (matcher/segment_match.py).
+    # If that tooltip goes, drop the key from _pair_row and this exemption.
+    dropped = set(row) - set(SECTION_PAIR_COLUMNS) - {"reason"}
     assert not dropped, f"_pair_row computes these but nothing binds them: {dropped}"
 
 

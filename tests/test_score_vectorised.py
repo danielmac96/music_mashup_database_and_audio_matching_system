@@ -209,7 +209,6 @@ def test_rows_carry_the_display_metadata(library):
     v = by_song[row["vocal_song_id"]]
     assert row["vocal_title"] == v["title"]
     assert row["vocal_camelot"] == v["camelot"]
-    assert row["vocal_loudness_rms"] == v["loudness_rms"]
     # BPM is the full-mix reading, not the stem's (see _with_full_bpm).
     assert row["vocal_bpm"] == full[row["vocal_song_id"]]["bpm"]
     assert row["scorer"] == "heuristic" and row["model_version"] is None

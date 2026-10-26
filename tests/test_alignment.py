@@ -168,4 +168,8 @@ def test_alignment_reaches_the_candidate_row(tmp_path, monkeypatch):
     assert row["alignment_downbeat"] == 40.5
     assert row["alignment_offset"] == pytest.approx(0.3)
     assert row["target_bpm"] == 128.0
-    assert row["reason"] and "chorus" in row["reason"]
+    # The sentence is no longer stored (schema migration 3): the section pair
+    # still carries it for the plan's options (Studio's timing-pill tooltip),
+    # and the listing rebuilds a shorter one from the row's numbers.
+    assert "reason" not in row.keys()
+    assert "chorus" in pair["reason"]
