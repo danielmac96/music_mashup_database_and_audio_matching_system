@@ -150,8 +150,8 @@ def _resolve_metadata(flat: dict) -> tuple[dict, bool]:
     return merged, is_rich
 
 
-def _existing_ids(rows: list[dict],
-                  conn: sqlite3.Connection) -> dict[int, dict]:
+def _existing_ids(rows: list[dict], conn: sqlite3.Connection,
+                  urls: Optional[list[str]] = None) -> dict[int, dict]:
     """Row index → the song it already is, for the rows the library already has.
 
     By normalised URL first, then SoundCloud `track_id`: the same record reached
@@ -160,20 +160,25 @@ def _existing_ids(rows: list[dict],
     analyses — then two rows that pair with each other. `songs_by_identity` has
     always known how to answer this; ingest asked `get_song_by_url` instead.
 
-    One query for the batch."""
-    urls, track_ids = [], []
+    One query for the batch. `urls` is each row's already-normalised link, for a
+    caller that has computed them: `normalize_url` is a urlparse + parse_qsl +
+    urlencode, and it was running three times a row inside the write
+    transaction."""
+    if urls is None:
+        urls = [normalize_url((row.get("source_url") or "").strip())
+                for row in rows]
+    want_urls, track_ids = [], []
     per_row = []
-    for row in rows:
-        url = normalize_url((row.get("source_url") or "").strip())
+    for row, url in zip(rows, urls):
         tid = str(row.get("track_id") or "").strip()
         per_row.append((url, tid))
         if url:
-            urls.append(url)
+            want_urls.append(url)
         if tid:
             track_ids.append(tid)
-    if not urls and not track_ids:
+    if not want_urls and not track_ids:
         return {}
-    found = songs_by_identity(source_urls=urls, track_ids=track_ids, conn=conn)
+    found = songs_by_identity(source_urls=want_urls, track_ids=track_ids, conn=conn)
     by_url, by_tid = found["by_url"], found["by_track_id"]
     out: dict[int, dict] = {}
     for idx, (url, tid) in enumerate(per_row):
@@ -231,7 +236,9 @@ def ingest_rows(tracks: list[dict[str, Any]],
         # Ask the library BEFORE the network. Enriching first meant a re-import
         # of a 200-track mix paid ~190 metadata fetches to throw away, against
         # a host that throttles per track.
-        existing = _existing_ids(rows, conn)
+        row_urls = [normalize_url((row.get("source_url") or "").strip())
+                    for row in rows]
+        existing = _existing_ids(rows, conn, row_urls)
 
         todo: list[int] = []
         for idx, row in enumerate(rows):
@@ -239,7 +246,7 @@ def ingest_rows(tracks: list[dict[str, Any]],
                 hit = existing[idx]
                 skipped.append({
                     "title": row.get("title") or hit.get("title") or "Unknown",
-                    "url": normalize_url((row.get("source_url") or "").strip()),
+                    "url": row_urls[idx],
                     "id": hit.get("id"),
                 })
                 ordered_song_ids[idx] = int(hit["id"]) if hit.get("id") else None
@@ -247,7 +254,7 @@ def ingest_rows(tracks: list[dict[str, Any]],
             # No URL, nothing to save. `songs.source_url` is UNIQUE and SQLite
             # treats '' as a real value, so upserting these would collapse every
             # one of them onto a single row, each silently overwriting the last.
-            if not normalize_url((row.get("source_url") or "").strip()):
+            if not row_urls[idx]:
                 unresolvable.append({"title": row.get("title") or "Unknown",
                                      "url": ""})
                 log.warning("skipping a row with no usable source_url: %r",
@@ -279,7 +286,7 @@ def ingest_rows(tracks: list[dict[str, Any]],
             # this look a record repeated in one import upserts onto its first
             # row (resetting it to `queued`) and is queued twice. It reads on
             # `conn`, so it sees the rows already written above.
-            seen = _existing_ids([merged], conn).get(0)
+            seen = _existing_ids([merged], conn, [source_url]).get(0)
             if seen:
                 skipped.append({
                     "title": merged.get("title") or seen.get("title") or "Unknown",
@@ -317,6 +324,19 @@ def ingest_rows(tracks: list[dict[str, Any]],
                 # way a row with no usable URL is — visible in the import's
                 # accounting, not silently dropped. Only sqlite3.Error: a
                 # programming error here should still fail loudly.
+                #
+                # Except when the failure took the transaction with it. A
+                # constraint or type error fails one statement and leaves the
+                # transaction open; SQLITE_FULL and SQLITE_IOERR roll the whole
+                # thing back themselves. Carrying on then would return ids of
+                # rows that no longer exist in `inserted_ids`, and the enqueue
+                # after this block would start pipeline jobs against them —
+                # the very thing enqueueing after the commit is there to
+                # prevent. `inserted_ids` non-empty means a write had opened the
+                # transaction, so it being closed now means it was lost.
+                if inserted_ids and not conn.in_transaction:
+                    log.exception("transaction lost while saving %s", source_url)
+                    raise
                 log.exception("could not save %s", source_url)
                 unresolvable.append({"title": merged.get("title") or "Unknown",
                                      "url": source_url})
