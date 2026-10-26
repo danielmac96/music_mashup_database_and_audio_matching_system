@@ -1581,16 +1581,18 @@ def _existing_ids(rows: list[dict],
     if not urls and not track_ids:
         return {}
     found = songs_by_identity(source_urls=urls, track_ids=track_ids, conn=conn)
-    by_url = {k: v for k, v in found.items()}
+    by_url, by_tid = found["by_url"], found["by_track_id"]
     out: dict[int, dict] = {}
     for idx, (url, tid) in enumerate(per_row):
-        hit = (by_url.get(url) if url else None) or (by_url.get(tid) if tid else None)
+        # URL first: it is the link the user actually pasted. The track id is
+        # the fallback that catches the same record under a different link.
+        hit = (by_url.get(url) if url else None) or (by_tid.get(tid) if tid else None)
         if hit:
             out[idx] = hit
     return out
 ```
 
-`songs_by_identity`'s returned mapping is keyed by whatever it was asked about — read that function and key `by_url` the way it actually returns, rather than assuming. If it keys only by URL, add `track_id` keys to its result there (in `models.py`), with a comment, so both lookups land.
+`songs_by_identity` returns `{"by_url": {url: row}, "by_track_id": {tid: row}}` — verified, and it already matches on `origin_url` as well as `source_url`, so a track whose audio came from a YouTube substitute is still found by the SoundCloud link that was pasted. It also drops empty track ids before querying, so `''` cannot claim every row that never learned its id. Task D4 gave it a `conn` parameter that reads on the caller's connection, which is what lets this see the batch's own uncommitted rows.
 
 Then restructure `ingest_rows` so the library check comes first and only the survivors are enriched:
 
@@ -1706,6 +1708,25 @@ Then restructure `ingest_rows` so the library check comes first and only the sur
 ```
 
 Import the context manager under a distinct name so it cannot be confused with a connection object: `from database.models import connection as models_connection`, alongside the existing imports from that module. Add `import sqlite3` and keep `normalize_url`, `classify_url`, `songs_by_identity`, `upsert_song`, `relink_crate_songs` in the module's import list.
+
+`get_song_by_url`, `songs_by_identity`, `upsert_song` and `relink_crate_songs` are the only `database/models.py` helpers `ingest_rows` calls, and D4 gave all four a `conn` parameter — verified, so nothing inside the transaction opens its own connection. `_save_as_group`'s helpers (`get_or_create_crate`, `add_songs_to_crate`, `library_groups`) are **not** among them and must stay outside the `with` block, where they already are: that function is documented as never failing the import, because the audio is already saved and queued by the time it runs.
+
+**One row must not lose the batch.** A single `connection()` block rolls back everything on any exception, so an unexpected failure on row 150 of 200 would discard the 149 rows that worked — worse than today, where each row commits on its own. Wrap the per-row save so a bad row is recorded and skipped instead:
+
+```python
+            try:
+                sid = upsert_song(..., conn=conn)
+            except sqlite3.Error:
+                # One malformed row must not cost the other 199. It is reported
+                # the same way a row with no usable URL is: visible in the
+                # import's accounting, not silently dropped.
+                log.exception("could not save %s", source_url)
+                unresolvable.append({"title": merged.get("title") or "Unknown",
+                                     "url": source_url})
+                continue
+```
+
+Catch `sqlite3.Error`, not bare `Exception`: a programming error in this function should still fail loudly rather than be filed as a bad row. The all-or-nothing property is still worth having for anything that escapes that — a `BEGIN` that cannot commit leaves no half-written import behind.
 
 Note the two ordering rules the rewrite depends on, and keep them: `ordered_song_ids` is pre-sized and written **by index**, so a dropped row can no longer shift every id after it (the comment in the current code warns about exactly that); and `enqueue_song` runs **after** the transaction commits.
 
