@@ -50,7 +50,7 @@ LEGACY = "legacy_2stem"
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 TABLES = ("allin1_analysis", "allin1_embeddings", "sections_allin1",
-          "vocal_phrases", "pipeline_parked")
+          "vocal_phrases", "pipeline_parked", "analysis_frames")
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS allin1_analysis (
@@ -178,6 +178,48 @@ def migrate(conn: sqlite3.Connection) -> None:
         existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if existing and col not in existing:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+
+
+# `analysis_frames` is created by schema migration 4, NOT by `_DDL`. `migrate`
+# above is reached from exactly one place -- schema._baseline, which is
+# migration 1 -- so a database already at version 1 or above never runs it
+# again: a table added to `_DDL` alone would exist on every fresh database and
+# on none that predates it, the 206-track library included. The statements live
+# here, beside the accessors that use them, and `schema._analysis_frames`
+# executes them (as `arrays.ensure_schema` does for migration 2).
+#
+# One statement per entry, never an executescript: a migration runs inside
+# schema.apply's explicit BEGIN/COMMIT and executescript would COMMIT early.
+_FRAMES_DDL_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS analysis_frames (
+    song_id       INTEGER NOT NULL,
+    stem_type     TEXT NOT NULL,      -- full | vocals | instrumental | bass
+    pipeline      TEXT NOT NULL,
+    path          TEXT NOT NULL,      -- the .npz sidecar
+    content_hash  TEXT,               -- hash of the stem the frames describe
+    version       INTEGER NOT NULL,   -- analysis.timeseries.VERSION
+    step_secs     REAL NOT NULL,
+    n_frames      INTEGER NOT NULL,
+    matrices      TEXT NOT NULL,      -- JSON: {"chroma": 12, "mfcc": 13, ...}
+    bytes         INTEGER,
+    written_at    TEXT DEFAULT (datetime('now')),
+    UNIQUE(song_id, stem_type, pipeline)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_analysis_frames_song
+        ON analysis_frames(song_id, pipeline)
+    """,
+)
+
+
+def ensure_frames_schema(conn: sqlite3.Connection) -> None:
+    """Create `analysis_frames` and its index on the caller's connection, one
+    statement at a time. Safe to re-run: `database/downgrade.py` resets
+    `user_version` to 0, so every migration replays from 1."""
+    for statement in _FRAMES_DDL_STATEMENTS:
+        conn.execute(statement)
 
 
 # ── Which pipeline a song's live rows belong to ───────────────────────────────
@@ -636,5 +678,79 @@ def activate_pipeline(song_id: int, target: str, db_path: Optional[Path] = None)
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+# ── Per-frame analysis matrices (analysis/timeseries.py) ──────────────────────
+
+def put_frames(song_id: int, stem_type: str, pipeline: str, meta: Dict,
+               db_path: Optional[Path] = None) -> None:
+    """Register one stem's .npz sidecar. `meta` is what timeseries.write built:
+    path, content_hash, version, step_secs, n_frames, matrices, bytes."""
+    conn = _conn(db_path)
+    try:
+        conn.execute(
+            """INSERT INTO analysis_frames
+                 (song_id, stem_type, pipeline, path, content_hash, version,
+                  step_secs, n_frames, matrices, bytes, written_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?, datetime('now'))
+               ON CONFLICT(song_id, stem_type, pipeline) DO UPDATE SET
+                 path=excluded.path, content_hash=excluded.content_hash,
+                 version=excluded.version, step_secs=excluded.step_secs,
+                 n_frames=excluded.n_frames, matrices=excluded.matrices,
+                 bytes=excluded.bytes, written_at=excluded.written_at""",
+            (song_id, stem_type, pipeline, str(meta["path"]),
+             meta.get("content_hash"), int(meta["version"]),
+             float(meta["step_secs"]), int(meta["n_frames"]),
+             json.dumps(meta["matrices"]), meta.get("bytes")))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_frames(song_id: int, stem_type: Optional[str] = None,
+               pipeline: Optional[str] = None,
+               db_path: Optional[Path] = None) -> List[Dict]:
+    """The registered sidecars for a song, `matrices` parsed."""
+    conn = _conn(db_path)
+    try:
+        sql = "SELECT * FROM analysis_frames WHERE song_id=?"
+        args: list = [song_id]
+        if stem_type:
+            sql += " AND stem_type=?"
+            args.append(stem_type)
+        if pipeline:
+            sql += " AND pipeline=?"
+            args.append(pipeline)
+        rows = conn.execute(sql + " ORDER BY stem_type", args).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["matrices"] = json.loads(d["matrices"] or "{}")
+        except (TypeError, ValueError):
+            d["matrices"] = {}
+        out.append(d)
+    return out
+
+
+def delete_frames(song_id: int, pipeline: Optional[str] = None,
+                  db_path: Optional[Path] = None) -> int:
+    """Remove a song's registry rows (one pipeline's, or all). The files are
+    `analysis.timeseries.drop`'s business."""
+    conn = _conn(db_path)
+    try:
+        if pipeline:
+            cur = conn.execute(
+                "DELETE FROM analysis_frames WHERE song_id=? AND pipeline=?",
+                (song_id, pipeline))
+        else:
+            cur = conn.execute("DELETE FROM analysis_frames WHERE song_id=?",
+                               (song_id,))
+        conn.commit()
+        return cur.rowcount or 0
     finally:
         conn.close()

@@ -172,10 +172,28 @@ def _slim_candidates(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _analysis_frames(conn: sqlite3.Connection) -> None:
+    """Create `analysis_frames`, the registry for the per-frame .npz sidecars
+    (analysis/timeseries.py).
+
+    It lives in `database/alignment.py` with the rest of the allin1 / pipeline
+    storage, and in that module's `TABLES`, so `database/downgrade.py` drops it
+    with the others. It is created here rather than in `alignment._DDL` because
+    `_DDL` only ever runs inside `_baseline`, i.e. migration 1, which a database
+    at version 1 or above never runs again.
+
+    Idempotent (`IF NOT EXISTS`): a rollback resets ``user_version`` and replays
+    every migration. Statements only, never ``executescript`` -- see `apply`.
+    """
+    from database import alignment
+    alignment.ensure_frames_schema(conn)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline", _baseline),
     Migration(2, "feature_arrays", _feature_arrays),
     Migration(3, "slim_candidates", _slim_candidates),
+    Migration(4, "analysis_frames", _analysis_frames),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version
