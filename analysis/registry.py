@@ -89,6 +89,13 @@ def _essentia_params(**extra) -> Callable[[], dict]:
     return _p
 
 
+def _frames_params() -> dict:
+    """The sidecar's own format: its grid, its matrices and its layout version.
+    A change to any of them recomputes the frames and nothing else."""
+    from analysis.timeseries import ROWS, STEP_SECS, VERSION
+    return {"step": round(STEP_SECS, 9), "rows": dict(ROWS), "fmt": VERSION}
+
+
 def _key_profile() -> str:
     from config import current_essentia_key_profile
     return current_essentia_key_profile()
@@ -184,6 +191,15 @@ _GROUPS = (
                  "full mix only: Discogs-EffNet genre (400 styles) and tags — "
                  "voice, gender, danceable, tonal, bright, seven moods, "
                  "mood/theme and instrument top-5", step="effnet"),
+    # Not a step: nothing in analyze_file_essentia serves it. Its payload is the
+    # sidecar's metadata (shape, content hash); the arrays are a .npz beside the
+    # audio. essentia.tonal / essentia.spectral are unchanged by it.
+    FeatureGroup("essentia.frames", 1, "essentia", 1,
+                 _essentia_params(frames=_frames_params),
+                 "per-frame chroma / MFCC / 8-band power / centroid-rolloff-flux-"
+                 "zcr-rms for one stem, on the shared 46.44 ms grid. The payload "
+                 "is the sidecar's metadata; the arrays live in a .npz beside "
+                 "the audio (analysis/timeseries.py)"),
     # v3: section BPM fitted through the beats.
     FeatureGroup("essentia.structure", 4, "essentia", 1, _structure_params,
                  "sections on the Essentia beat grid (the librosa segmenter fed "

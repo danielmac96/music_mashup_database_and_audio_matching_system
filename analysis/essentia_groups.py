@@ -23,6 +23,13 @@ analyze_file_essentia):
                      a 50 ms f0 curve and the sung range — what a section's
                      ``f0`` is cut from (analysis/structure.py)
 
+``frames_out`` — the per-frame chroma (tonal) and MFCC / band power / curve
+matrices (spectral) that used to be averaged and dropped. The caller writes
+them to an ``analysis_frames`` sidecar (analysis/timeseries.py); the payloads
+stored in ``feature_cache`` are unchanged, so no group version moves. The
+sidecar's own cache entry is ``essentia.frames`` (metadata only; the arrays
+live in the .npz).
+
 Every payload uses the key names the ``features`` table already stores (bpm,
 key, mfcc, band_energy, waveform_rms, …) for the values that replace a librosa
 one, so analysis/project.py can project either analyser into the same row, plus
@@ -45,6 +52,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 import numpy as np
+
+from analysis.timeseries import CURVE_ROWS, STEP_SECS, StemFrames
 
 log = logging.getLogger(__name__)
 
@@ -230,6 +239,35 @@ def hpcp_to_chroma(hpcp_frames: np.ndarray) -> np.ndarray:
     return chroma / n if n > 0 else chroma
 
 
+def hpcp_frames_to_chroma(hpcp_frames: np.ndarray) -> Optional[np.ndarray]:
+    """Per-frame HPCP folded to the library's 12-bin chroma, (12, frames)
+    float32, each frame L2-normalised.
+
+    The same fold as ``hpcp_to_chroma`` — bins per semitone summed, index 0
+    moved from A to C — applied before the mean instead of after it, which is
+    the only reason the frames had to be thrown away. A silent frame (no energy
+    to normalise) is a column of zeros, not NaN. ``None`` when the input is not
+    a (frames, 12k) matrix."""
+    h = np.asarray(hpcp_frames, dtype=np.float32)
+    if h.ndim != 2 or not len(h):
+        return None
+    size = h.shape[1]
+    if size % 12:
+        return None
+    per = size // 12
+    if per == 1:
+        from_a = h
+    else:
+        half = per // 2
+        # Semitone i is bins per*i-half … per*i+per-half-1 (3i-1, 3i, 3i+1 at 3
+        # bins a semitone), wrapping at the octave.
+        idx = (per * np.arange(12)[:, None] + np.arange(-half, per - half)[None, :]) % size
+        from_a = h[:, idx].sum(axis=2)                  # (frames, 12), 0 = A
+    chroma = np.roll(from_a, -3, axis=1).T              # (12, frames), 0 = C
+    norms = np.linalg.norm(chroma, axis=0, keepdims=True)
+    return np.divide(chroma, norms, out=np.zeros_like(chroma), where=norms > 1e-12)
+
+
 def group_rhythm(sig: Signals, method: str = "degara") -> dict:
     import essentia.standard as es
     from analysis.analyze import _pick_beat_phase, beat_grid_confidence
@@ -274,7 +312,8 @@ def group_rhythm(sig: Signals, method: str = "degara") -> dict:
     }
 
 
-def group_tonal(sig: Signals, primary: str = "edma") -> dict:
+def group_tonal(sig: Signals, primary: str = "edma",
+                frames_out: Optional[dict] = None) -> dict:
     import essentia.standard as es
     from analysis.analyze import CAMELOT, KEY_NAMES
 
@@ -303,6 +342,17 @@ def group_tonal(sig: Signals, primary: str = "edma") -> dict:
     names = es.TonalExtractor().outputNames()
     t = dict(zip(names, tonal))
     hpcp_mean = hpcp_to_chroma(np.asarray(t.get("hpcp"), dtype=float))
+    if frames_out is not None:
+        # TonalExtractor already computed one HPCP per frame; the mean above is
+        # all that used to survive. Keep the frames: this is the chroma the
+        # segmenter and matcher/harmony.py need, and it costs nothing. The step
+        # is derived from the audio rather than hard-coded, so a future Essentia
+        # build changing the extractor's hop is resampled by frames_from instead
+        # of silently misaligned against the MFCC.
+        chroma = hpcp_frames_to_chroma(t.get("hpcp"))
+        if chroma is not None:
+            frames_out["chroma"] = chroma
+            frames_out["chroma_step"] = sig.secs / chroma.shape[1]
 
     return {
         "key": key, "mode": mode,
@@ -355,7 +405,8 @@ def group_loudness(sig: Signals) -> dict:
     }
 
 
-def group_spectral(sig: Signals, n_mfcc: int = 13, detail_every: int = 4) -> dict:
+def group_spectral(sig: Signals, n_mfcc: int = 13, detail_every: int = 4,
+                   frames_out: Optional[dict] = None) -> dict:
     """One spectrum per frame (Essentia window + FFT + MFCC, 2048/512 at
     22.05 kHz), every other descriptor computed from those spectra in numpy.
 
@@ -420,6 +471,38 @@ def group_spectral(sig: Signals, n_mfcc: int = 13, detail_every: int = 4) -> dic
     flat_db = 10.0 * np.log10(geo / (mag[ok].mean(axis=1) + 1e-20) + 1e-20)
     hfc = (power * np.arange(mag.shape[1])).sum(axis=1)
 
+    if frames_out is not None:
+        # Everything here already exists per frame (mag, power, mfccs, zcrs);
+        # only the means used to survive. Decimated by 2 onto timeseries.STEP_SECS, which is exactly
+        # TonalExtractor's hop, so one grid serves every matrix.
+        n = mag.shape[0]
+        band_frames = np.stack(
+            [power[:, (freqs >= lo) & (freqs < hi)].sum(axis=1)
+             for lo, hi in zip(BAND_EDGES[:-1], BAND_EDGES[1:])], axis=0)
+        # centroid/rolloff were computed on the `ok` rows only; put them back on
+        # the full frame clock (a silent frame has none: 0) so every curve
+        # shares one index.
+        centroid_full = np.zeros(n, dtype=np.float64)
+        rolloff_full = np.zeros(n, dtype=np.float64)
+        centroid_full[ok] = centroid
+        rolloff_full[ok] = rolloff
+        flux_full = np.zeros(n, dtype=np.float64)       # frame 0 has no predecessor
+        flux_full[1:] = flux if n > 1 else 0.0
+        curves = {"centroid": centroid_full, "rolloff": rolloff_full,
+                  "flux": flux_full, "zcr": np.asarray(zcrs, dtype=np.float64),
+                  "rms": np.sqrt(power.mean(axis=1))}
+        dec = slice(None, None, 2)
+        frames_out["mfcc"] = np.asarray(mfccs, dtype=np.float32).T[:, dec]
+        frames_out["bands"] = band_frames.astype(np.float32)[:, dec]
+        frames_out["curves"] = np.stack(
+            [curves[k] for k in CURVE_ROWS], axis=0).astype(np.float32)[:, dec]
+        frames_out["spectral_step"] = 2.0 * HOP / SR_FRAMES
+        # Deliberately an assert: this is the invariant the whole design rests
+        # on. A future Essentia build changing a default hop must fail loudly,
+        # not misalign a chroma against an MFCC.
+        assert abs(frames_out["spectral_step"] - STEP_SECS) < 1e-9, (
+            "the spectral hop and the shared frame grid have diverged")
+
     total = float(power.sum())
     col = power.sum(axis=0)
     bands = [float(col[(freqs >= lo) & (freqs < hi)].sum())
@@ -461,6 +544,51 @@ def group_spectral(sig: Signals, n_mfcc: int = 13, detail_every: int = 4) -> dic
             "valley": [round(float(v), 4) for v in val] if val is not None else None,
         },
     }
+
+
+def frames_from(frames_out: dict) -> Optional[StemFrames]:
+    """The two groups' per-frame contributions as one StemFrames on the shared
+    grid (analysis/timeseries.py), or None when nothing was collected.
+
+    A matrix whose own step is more than 1 % off the grid is resampled by
+    nearest neighbour (a future Essentia build changing TonalExtractor's hop
+    must not silently misalign a chroma against an MFCC). Every matrix is
+    trimmed to the shortest, because the last frame of one pass can run a frame
+    past another's. A matrix with a NaN or inf is left out — unmeasured, never
+    patched — so what comes back always passes timeseries.write's one-grid and
+    finite-value checks.
+
+    Only the frame *count* and *rate* are reconciled here, not a phase: the
+    spectral pass cuts frames from sample 0, and whether TonalExtractor's
+    first frame is centred on sample 0 (a one-frame, 46 ms offset against
+    the MFCC) or starts there has not been checked against a real Essentia
+    build (no Windows wheel). It does not matter to a bar-scale segmenter."""
+    def _on_grid(m, step):
+        if m is None:
+            return None
+        m = np.asarray(m, dtype=np.float32)
+        if not np.isfinite(m).all():
+            log.warning("a per-frame matrix held NaN/inf; leaving it out")
+            return None
+        if step and abs(step - STEP_SECS) / STEP_SECS > 0.01:
+            n_out = max(1, int(round(m.shape[1] * step / STEP_SECS)))
+            idx = np.clip(np.round(np.arange(n_out) * STEP_SECS / step).astype(int),
+                          0, m.shape[1] - 1)
+            m = m[:, idx]
+        return m
+
+    got = {
+        "chroma": _on_grid(frames_out.get("chroma"), frames_out.get("chroma_step")),
+        "mfcc": _on_grid(frames_out.get("mfcc"), frames_out.get("spectral_step")),
+        "bands": _on_grid(frames_out.get("bands"), frames_out.get("spectral_step")),
+        "curves": _on_grid(frames_out.get("curves"), frames_out.get("spectral_step")),
+    }
+    got = {k: v for k, v in got.items() if v is not None and v.shape[1]}
+    if not got:
+        return None
+    n = min(v.shape[1] for v in got.values())
+    return StemFrames(step=STEP_SECS,
+                      **{k: np.ascontiguousarray(v[:, :n]) for k, v in got.items()})
 
 
 def downsample_f0(pitch: np.ndarray, hop_secs: float,
@@ -557,14 +685,15 @@ def group_effnet(sig: Signals) -> Optional[dict]:
 
 # ── Run all groups for one file ───────────────────────────────────────────────
 
-def _runners() -> Dict[str, Callable[[Signals], dict]]:
+def _runners(frames_out: Optional[dict] = None) -> Dict[str, Callable[[Signals], dict]]:
     from config import (N_MFCC, current_essentia_key_profile,
                         current_essentia_rhythm_method)
     return {
         "rhythm": lambda s: group_rhythm(s, current_essentia_rhythm_method()),
-        "tonal": lambda s: group_tonal(s, current_essentia_key_profile()),
+        "tonal": lambda s: group_tonal(s, current_essentia_key_profile(),
+                                       frames_out=frames_out),
         "loudness": group_loudness,
-        "spectral": lambda s: group_spectral(s, N_MFCC),
+        "spectral": lambda s: group_spectral(s, N_MFCC, frames_out=frames_out),
         "melody": group_melody,
         "effnet": group_effnet,
     }
@@ -583,9 +712,17 @@ def runnable_steps(steps: tuple) -> tuple:
 
 def analyze_file_essentia(path: Path, cache=None, timings: Optional[dict] = None,
                           on_progress: Optional[Callable] = None,
-                          extra_steps: tuple = ()) -> Dict[str, dict]:
+                          extra_steps: tuple = (),
+                          frames_out: Optional[dict] = None,
+                          force_steps: tuple = ()) -> Dict[str, dict]:
     """Every Essentia group for one file: {step: payload}, plus any of
     EXTRA_STEPS named in ``extra_steps`` (the melody, for a vocal stem).
+
+    ``frames_out``, when given, is filled by whichever of tonal / spectral
+    actually ran (hand it to ``frames_from``). A step served from the cache
+    computes no frames, so a caller that needs them for a stem with no sidecar
+    names ``force_steps``: those steps run even on a cache hit. The stored
+    payload is kept if the re-run fails.
 
     ``cache`` is the same protocol analyze_file takes (analysis/cache.py
     StepCache, here bound to the essentia groups). A step that raises is logged,
@@ -602,8 +739,9 @@ def analyze_file_essentia(path: Path, cache=None, timings: Optional[dict] = None
             hit = cache.get(step)
             if hit is not None:
                 out[step] = hit
-                cached_steps.append(step)
-    todo = [s for s in steps if s not in out]
+                if step not in force_steps:
+                    cached_steps.append(step)
+    todo = [s for s in steps if s not in out or s in force_steps]
     if timings is not None:
         timings["cached_steps"] = list(cached_steps)
         timings["failed_steps"] = []
@@ -618,7 +756,7 @@ def analyze_file_essentia(path: Path, cache=None, timings: Optional[dict] = None
         timings["load"] = (time.perf_counter() - t0) * 1000.0
         timings["audio_secs"] = sig.secs
 
-    runners = _runners()
+    runners = _runners(frames_out)
     failed: List[str] = []
     for step in todo:
         if on_progress:
