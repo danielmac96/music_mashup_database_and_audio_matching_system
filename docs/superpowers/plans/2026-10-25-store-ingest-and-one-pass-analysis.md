@@ -1462,6 +1462,16 @@ def no_network(monkeypatch):
     return calls
 
 
+# ⚠️ SUPERSEDED — the four tests below are kept as the record of what was
+# asked for, but their `monkeypatch.setenv("MASHUP_DB_PATH", …)` is WRONG and
+# must not be copied: `config.DB_PATH` binds at import, so the env var has no
+# effect and these would run against the user's real library. The shipped
+# version in `tests/test_ingest_dedup.py` uses a fixture that does `setenv`
+# then `importlib.reload` of `config`, `database.models` and
+# `api.routes.playlists`, in that order — read that file, not this block, if
+# this task ever needs rework. See the Global Constraint on test isolation.
+
+
 def test_a_row_already_in_the_library_is_never_enriched(tmp_path, monkeypatch,
                                                         no_network):
     from api.routes.playlists import ingest_rows
