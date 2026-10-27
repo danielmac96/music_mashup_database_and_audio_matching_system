@@ -74,6 +74,26 @@ FRAME = 2048
 HOP = 512
 N_WAVEFORM = 360
 
+# TonalExtractor's frame/hop at 44.1 kHz (4096/2048, centred). Its hop is
+# timeseries.STEP_SECS, and its frame count is ceil(n_samples / TONAL_HOP) + 1
+# — the +1 is the centring pad. Measured on the real extractor (Docker,
+# 2026-10-26): 2 s -> 45 frames, 4 s -> 88, 10 s -> 217, 20 s -> 432, exactly
+# that formula each time.
+TONAL_HOP = 2048
+# Frames of the centred chroma that have no counterpart in the spectral pass.
+# TonalExtractor centres frame k on sample k * 2048, so frame 0 straddles the
+# start of the file; the spectral pass cuts from sample 0 (startFromZero), so
+# its decimated frame j spans [2048 j, 2048 j + 4096), centred on 2048 (j + 1),
+# i.e. on chroma frame j + 1. Measured on the real extractor with 2 s of
+# silence then a loud A440 (Docker, 2026-10-26): before the drop chroma first
+# sounded at frame 43 and the spectral rms at frame 42, one frame (46.4 ms)
+# apart. After it the two agree to the frame at onsets of 2.000, 2.010 and
+# 2.046 s and differ by one in the OTHER direction at 2.020-2.030 s: HPCP
+# reads a 4096-sample window against the spectral pass's 2048, so a sub-frame
+# jitter of a frame either way stays. The systematic lag is what mattered,
+# and it is gone. chroma[:, 1:] is what lines up with mfcc[:, 0:].
+CHROMA_LEAD_FRAMES = 1
+
 # Profiles that vote on key confidence. Each KeyExtractor recomputes its own
 # HPCP (~0.1 s per 100 s of audio), so the panel is kept to four
 # differently-derived profiles: two trained on electronic music (edma, bgate),
@@ -345,14 +365,30 @@ def group_tonal(sig: Signals, primary: str = "edma",
     if frames_out is not None:
         # TonalExtractor already computed one HPCP per frame; the mean above is
         # all that used to survive. Keep the frames: this is the chroma the
-        # segmenter and matcher/harmony.py need, and it costs nothing. The step
-        # is derived from the audio rather than hard-coded, so a future Essentia
-        # build changing the extractor's hop is resampled by frames_from instead
-        # of silently misaligned against the MFCC.
+        # segmenter and matcher/harmony.py need, and it costs nothing.
         chroma = hpcp_frames_to_chroma(t.get("hpcp"))
         if chroma is not None:
-            frames_out["chroma"] = chroma
-            frames_out["chroma_step"] = sig.secs / chroma.shape[1]
+            n_raw = chroma.shape[1]
+            # The step is the extractor's known hop, not sig.secs / n_frames:
+            # the count is ceil(n / 2048) + 1 (TONAL_HOP), so dividing seconds
+            # by frames understates the hop — 0.0444 s at 2 s of audio, 0.0463
+            # at 20 s, never reaching 0.04644 — and, worse, frames_from's 1 %
+            # test would then resample a short clip and leave a long one alone.
+            expected = -(-len(sig.mono44) // TONAL_HOP) + 1
+            if abs(n_raw - expected) > 1:
+                # A build with another hop gives a very different count on any
+                # track longer than a couple of seconds. Say so; frames_from's
+                # resampling can only guard a step this block reports.
+                log.warning("TonalExtractor gave %d frames for %d samples, "
+                            "expected %d at hop %d; its hop may have changed",
+                            n_raw, len(sig.mono44), expected, TONAL_HOP)
+            # Drop the centring frame so chroma and MFCC share a time origin
+            # (CHROMA_LEAD_FRAMES). A track too short to have anything left
+            # leaves chroma unmeasured; a zero-width matrix is not a measurement.
+            chroma = chroma[:, CHROMA_LEAD_FRAMES:]
+            if chroma.shape[1]:
+                frames_out["chroma"] = np.ascontiguousarray(chroma)
+                frames_out["chroma_step"] = STEP_SECS
 
     return {
         "key": key, "mode": mode,
@@ -558,11 +594,11 @@ def frames_from(frames_out: dict) -> Optional[StemFrames]:
     patched — so what comes back always passes timeseries.write's one-grid and
     finite-value checks.
 
-    Only the frame *count* and *rate* are reconciled here, not a phase: the
-    spectral pass cuts frames from sample 0, and whether TonalExtractor's
-    first frame is centred on sample 0 (a one-frame, 46 ms offset against
-    the MFCC) or starts there has not been checked against a real Essentia
-    build (no Windows wheel). It does not matter to a bar-scale segmenter."""
+    Phase is settled upstream, not here: group_tonal drops TonalExtractor's
+    centring frame (CHROMA_LEAD_FRAMES) so chroma[:, k] and mfcc[:, k] describe
+    the same 46 ms. With the chroma step now the known hop, the resample branch
+    below is unreachable for chroma from the current build; it stays as the
+    guard for a build that changes a default hop and reports it."""
     def _on_grid(m, step):
         if m is None:
             return None

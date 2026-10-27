@@ -513,13 +513,20 @@ def test_group_tonal_emits_per_frame_chroma(tmp_path):
 
     assert len(payload["hpcp"]) == 12
     assert payload == group_tonal(sig)                  # the side channel moved nothing
-    assert out["chroma"].shape[0] == 12 and out["chroma"].shape[1] > 1
-    assert out["chroma_step"] == pytest.approx(ts.STEP_SECS, rel=0.05)
+    # Exactly, not within 5 %: the step is the extractor's own hop, and the
+    # count is its ceil(n / hop) + 1 less the centring frame group_tonal drops.
+    from analysis.essentia_groups import CHROMA_LEAD_FRAMES, TONAL_HOP
+    expected = -(-len(sig.mono44) // TONAL_HOP) + 1 - CHROMA_LEAD_FRAMES
+    assert out["chroma"].shape == (12, expected)
+    assert out["chroma_step"] == pytest.approx(ts.STEP_SECS, abs=1e-9)
     # Each frame is L2-normalised, so a section's mean compares shape not level.
     norms = np.linalg.norm(out["chroma"], axis=0)
     assert ((norms > 0.99) & (norms < 1.01)).mean() > 0.9
-    # The triad is rooted on C: the frames' mean agrees with the stored mean.
-    assert int(np.argmax(out["chroma"].mean(axis=1))) == int(np.argmax(payload["hpcp"])) == 0
+    # The triad is rooted on C: C, E and G dominate both the frames' mean and
+    # the stored mean. Which of the three peaks is a hairline — 0.5475 against
+    # 0.5490 on this tone — so the assertion is the set, never the argmax.
+    assert set(np.argsort(out["chroma"].mean(axis=1))[-3:].tolist()) == {0, 4, 7}
+    assert set(np.argsort(np.asarray(payload["hpcp"]))[-3:].tolist()) == {0, 4, 7}
 
 
 @needs_essentia
@@ -568,6 +575,36 @@ def test_frames_from_puts_both_groups_on_one_grid(tmp_path):
     for name in ("chroma", "mfcc", "bands", "curves"):
         assert getattr(frames, name).shape == (ts.ROWS[name], n)
     ts._payload(frames)                                 # timeseries.write's own checks
+
+
+@needs_essentia
+def test_chroma_and_the_spectral_curves_share_a_time_origin():
+    """The bug this guards: TonalExtractor centres its first frame, so the raw
+    chroma ran one frame (46 ms) behind the spectral pass, which cuts from
+    sample 0; group_tonal drops that frame. One onset cannot show it — the two
+    read different window lengths (4096 against 2048) and jitter a frame either
+    way — so the measure is the MEAN offset over onsets spread across one
+    frame: a systematic lag reads about +1, a shared origin about 0."""
+    from analysis import timeseries as ts
+    from analysis.essentia_groups import Signals, group_spectral, group_tonal
+
+    sr, offsets = 44100, []
+    for phase_ms in (0, 10, 20, 30, 46):
+        n, start = int(5.0 * sr), int((2.0 + phase_ms / 1000.0) * sr)
+        y = np.zeros(n, dtype=np.float32)
+        t = np.arange(n - start) / sr
+        y[start:] = (0.5 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+        sig = Signals(np.stack([y, y], axis=1))
+        out = {}
+        group_tonal(sig, frames_out=out)
+        group_spectral(sig, frames_out=out)
+        chroma = out["chroma"].max(axis=0)
+        rms = out["curves"][list(ts.CURVE_ROWS).index("rms")]
+        offsets.append(int(np.argmax(chroma > 0.3 * chroma.max()))
+                       - int(np.argmax(rms > 0.3 * rms.max())))
+
+    assert max(abs(o) for o in offsets) <= 1, offsets           # jitter, not drift
+    assert -0.6 <= sum(offsets) / len(offsets) <= 0.5, offsets  # no systematic lag
 
 
 class _MemCache:
@@ -739,8 +776,15 @@ def test_groups_hand_out_frames_on_one_grid_and_keep_their_payloads(monkeypatch)
     assert json.dumps(tonal, sort_keys=True) == json.dumps(group_tonal(sig), sort_keys=True)
     assert json.dumps(spectral, sort_keys=True) == json.dumps(group_spectral(sig), sort_keys=True)
 
-    assert out["chroma"].shape[0] == 12 and out["chroma_step"] == pytest.approx(
-        sig.secs / out["chroma"].shape[1])
+    # The chroma step is TonalExtractor's known hop, never seconds / frames:
+    # its count is ceil(n / 2048) + 1, so a derived step understates the hop
+    # and drifts with the duration. The extra frame is the centring pad and is
+    # dropped, so chroma[:, k] and mfcc[:, k] describe the same 46 ms.
+    raw_hpcp = len(sig.mono44) // 2048 + 1              # the stand-in's own count
+    assert out["chroma"].shape == (12, raw_hpcp - 1)
+    assert out["chroma_step"] == pytest.approx(ts.STEP_SECS, abs=1e-9)
+    assert out["chroma_step"] != pytest.approx(sig.secs / out["chroma"].shape[1],
+                                               abs=1e-6)
     assert out["spectral_step"] == pytest.approx(ts.STEP_SECS, abs=1e-9)
     assert out["mfcc"].shape[0] == 13 and out["bands"].shape[0] == 8
     assert out["curves"].shape[0] == len(ts.CURVE_ROWS)
@@ -755,8 +799,9 @@ def test_groups_hand_out_frames_on_one_grid_and_keep_their_payloads(monkeypatch)
     assert (cen[:10] == 0).all() and (rol[:10] == 0).all() and (rms[:10] == 0).all()
     assert cen[-10:].min() > 0                      # the 220 Hz tone, once it sounds
     assert (out["bands"][:, :10] == 0).all() and out["bands"][:, -10:].sum() > 0
-    # A silent HPCP frame is zeros in the chroma (frame 7 of the stand-in's).
-    assert out["chroma"][:, 7].sum() == 0
+    # A silent HPCP frame is zeros in the chroma: frame 7 of the stand-in's,
+    # frame 6 once the centring frame is dropped.
+    assert out["chroma"][:, 6].sum() == 0
 
     frames = frames_from(out)
     assert frames.n_frames() == min(out["chroma"].shape[1], n)
