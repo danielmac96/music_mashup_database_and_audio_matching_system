@@ -3889,8 +3889,9 @@ Today, with the allin1 engine on, a track is cut twice (the Essentia novelty cut
 **Files:**
 - Modify: `api/workers/pipeline_worker.py` (`STAGES`, `next_stage`, `run_stage`, `_structure_pass`, `_score_track`, `_finalize`)
 - Modify: `config.py` (`current_dual_cut`)
-- Modify: `database/models.py` (`songs.scored_at`, `mark_scored`, `needs_scoring`)
-- Modify: `matcher/match.py` (`score_song_pairs` stamps `scored_at`)
+- Modify: `database/schema.py` (migration 5, `songs.scored_at`)
+- Modify: `database/models.py` (`mark_scored`, `needs_scoring`)
+- Modify: `matcher/match.py` (`_score_all_pairs` stamps `scored_at` — CORRECTED (Task 5): `score_song_pairs` only delegates to it)
 - Test: `tests/test_one_pass_pipeline.py` (extend)
 
 **Interfaces:**
@@ -3990,18 +3991,26 @@ Expected: FAIL — `AssertionError: assert 'allin1' == 'structure'` and `ImportE
 
 - [ ] **Step 3: Add `songs.scored_at` and its two helpers**
 
-In `database/models.py`, add to `_SONGS_OPTIONAL_COLUMNS`, directly after the `pairs_input_at` entry (keeping its comment style):
+CORRECTED (Task 5): the plan said to add the column to
+`models._SONGS_OPTIONAL_COLUMNS`. `database/schema.py`'s own docstring forbids
+that — "``models.SCHEMA`` and the ``_migrate_*`` functions … are migration 1
+now, and a change to them reaches only databases that have not run it yet". A
+new column is a new migration. In `database/schema.py`, append migration 5, and
+add nothing to `models`:
 
 ```python
-    # When this track's pairs were last scored (matcher.score_song_pairs, or a
-    # full Score library run that covered it). Compared with pairs_input_at,
-    # this is what stops the pipeline scoring one track three times — once after
-    # the quick tier, once after the sections, once on finalise — each of which
-    # is a library-wide scan.
-    ("scored_at", "TEXT"),
+def _songs_scored_at(conn: sqlite3.Connection) -> None:
+    # Idempotent (PRAGMA table_info first), statements only, never
+    # executescript — see `apply`. A rollback replays every migration.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(songs)")}
+    if "scored_at" not in cols:
+        conn.execute("ALTER TABLE songs ADD COLUMN scored_at TEXT")
+
+
+MIGRATIONS = (..., Migration(5, "songs_scored_at", _songs_scored_at))
 ```
 
-and these two functions beside `mark_pairs_input`:
+and these two functions in `database/models.py` beside `mark_pairs_input`:
 
 ```python
 def mark_scored(song_id: int, db_path: Path = DB_PATH) -> None:
@@ -4017,9 +4026,14 @@ def mark_scored(song_id: int, db_path: Path = DB_PATH) -> None:
 
 
 def needs_scoring(song_id: int, db_path: Path = DB_PATH) -> bool:
+    # CORRECTED (Task 5): the plan's docstring said "no inputs recorded at all
+    # is True"; the code it gives returns False for that, and the CODE is
+    # right — a legacy row with no pairs_input_at would otherwise be rescored
+    # on every pipeline pass forever. It is scored once, then left to a full
+    # Score library run.
     """True when a scoring input changed since this track was last scored.
-    Never scored is True; no inputs recorded at all is True (a track whose
-    features predate pairs_input_at)."""
+    Never scored is True. A track with no pairs_input_at at all is True until
+    it is scored once and then left alone."""
     conn = get_conn(db_path)
     try:
         row = conn.execute(
@@ -4032,15 +4046,29 @@ def needs_scoring(song_id: int, db_path: Path = DB_PATH) -> bool:
     return bool(row["pairs_input_at"] and row["pairs_input_at"] > row["scored_at"])
 ```
 
-In `matcher/match.py`, at the end of `score_song_pairs` — after its rows are committed and inside the same `_SCORE_LOCK` hold — stamp each song:
+CORRECTED (Task 5): `score_song_pairs` is a one-line delegate to
+`score_all_pairs` — there is no "end" of it, it holds no `_SCORE_LOCK` of its
+own, and its parameter is `song_id`, not `song_ids`. Both entry points reach
+`_score_all_pairs`, so stamp there, once, right after
+`bulk_upsert_candidates`, and let `only` (the `song_ids` set, None on a full
+run) decide the scope:
 
 ```python
-    from database.models import mark_scored
-    for sid in song_ids:
-        mark_scored(sid)
+    bulk_upsert_candidates(rows, db_path=db)
+    _mark_scored(db, only)          # one UPDATE; never a write of last_score
 ```
 
-and in `score_all_pairs`, after `last_score` is written, stamp every song it scored the same way (one `UPDATE songs SET scored_at=datetime('now')` over the scored ids is fine there — it is one statement, not one per track).
+```python
+def _mark_scored(db, only):
+    # One UPDATE over the ids this run covered (every song on a full run).
+    # Never fatal: the stamp decides whether the pipeline scores a track
+    # again, not whether its pairs exist.
+```
+
+It must stay out of the `if only is None:` block that writes
+`app_prefs.last_score` — a per-track run stamps `scored_at` and leaves
+`last_score` alone, which is what keeps the dock's staleness honest (readme
+section 7).
 
 - [ ] **Step 4: Add the `dual_cut` setting**
 
@@ -4057,9 +4085,14 @@ def current_dual_cut() -> bool:
     # CORRECTED 2026-10-26: there is no config._resolve_bool (see Task 3's
     # correction). Copy current_keep_analysis_stems' inline env -> settings ->
     # default walk, as current_keep_frames does.
+    # CORRECTED (Task 5): the settings reader is `_load_settings`, not
+    # `load_settings`, and the empty-value guard has to come first or a blank
+    # settings entry reads as True.
     raw = os.environ.get("MASHUP_DUAL_CUT")
     if raw is None:
-        raw = load_settings().get("dual_cut", False)
+        raw = _load_settings().get("dual_cut")
+    if raw is None or str(raw).strip() == "":
+        return False
     if isinstance(raw, bool):
         return raw
     return str(raw).strip().lower() not in ("0", "false", "off", "no")
@@ -4143,14 +4176,30 @@ def _structure_pass(job_id: str, song_id: int) -> None:
     # … the rest unchanged …
 ```
 
-In `run_stage`, delete the `if stage == "analysis" and next_stage(song_id) == "allin1":` block (its two calls are what duplicated the cut and the score), add a `structure` branch, and leave `_finalize` as the single place that scores:
+In `run_stage`, delete the `if stage == "analysis" and next_stage(song_id) == "allin1":` block (its two calls are what duplicated the cut and the score), and handle `structure` BEFORE the generic wrapper.
+
+CORRECTED (Task 5), twice over. The plan's `elif stage == "structure":` sits
+inside `run_stage`'s generic machinery, which calls `jobs.stage_start` before
+the try and `jobs.stage_finish(..., "done")` after it — so it would overwrite
+`_structure_pass`'s own `skipped` / `failed` record with `done` on every run.
+And the plan's tail re-queues the track for its own last stage **forever**:
+`_wants_structure` is `not sections_are_current`, `detect_sections` falls back
+to the track BPM, and a section it could not measure leaves that False for
+good, so `next_stage` goes on answering `"structure"` after the stage ran. The
+cut is terminal.
 
 ```python
-        elif stage == "structure":
-            _structure_pass(job_id, song_id)
+    if stage == "structure":
+        # _structure_pass owns this stage's whole record and swallows its own
+        # failures (structure is non-fatal). It is also the last stage and the
+        # only one that can still be owed after it ran.
+        jobs.update(job_id, status="running", song_id=song_id, stage="structure")
+        _structure_pass(job_id, song_id)
+        _finalize(job_id, song_id)
+        return "done"
 ```
 
-and
+and the tail, unchanged otherwise:
 
 ```python
     jobs.stage_finish(job_id, stage, "done")
@@ -4203,23 +4252,60 @@ def _score_track(song_id: int, why: str) -> None:
                     exc_info=True)
 ```
 
-Also register the new queue stage in `api/queue_runner.py`: it builds a pool per stage name from `STAGES`, so `structure` needs a worker count. Give it the analysis pool's (`ANALYSIS_WORKERS`) and add a `_STAGE_GATES["structure"] = _STAGE_GATES["analysis"]` alias in `stages.py` so a structure run still counts against the analysis gate — it is the same librosa-bound work when it falls back to decoding.
+Also register the new queue stage. CORRECTED (Task 5): `api/queue_runner.py`
+does NOT build its pools from `STAGES` — `_QUEUES` and `_STAGE_WORKERS` are two
+hand-written dicts, and both need the `structure` key (`ANALYSIS_WORKERS`) or
+`_put("structure", …)` raises `KeyError` on dispatch. Add
+`_STAGE_GATES["structure"] = _STAGE_GATES["analysis"]` in `stages.py` (the same
+semaphore object, so a cut counts against the analysis gate). Four more maps
+sent `structure` to the **analysis** pool and have to be repointed, or the new
+pool reports nobody running in it:
+
+* `api/routes/jobs._POOL_OF` — `"structure": "analysis"` becomes
+  `"structure"`, and it was missing `allin1` entirely.
+* `api/queue_eta.POOL_OF`, `POOL_GROUPS` (`"analysis": ("analysis",
+  "structure")` becomes one group per stage) and `_STAGE_ORDER` (the cut now
+  comes after allin1).
+* `frontend/src/components/QueueScreen.jsx` `POOLS` (there was no structure
+  card at all — "Analyse + structure" was one card) and `POOL_TIMING`.
+* `frontend/src/hooks/useQueue.js` `STAGES`, which listed `structure` BEFORE
+  `allin1`; the Timeline is read left to right, so it has to match `STAGES`.
+
+The tests that pinned the old topology, updated with it:
+`test_queue_screen.test_busy_is_counted_from_running_stages_not_job_status`
+("Structure is the trailing pass of the analysis pool"),
+`test_queue_eta.test_the_analysis_pool_counts_analysis_and_structure`,
+`test_pipeline_queue.test_stage_queues_route_track_through_pipeline` (its
+stage loop) and `test_job_timeline_marks_current_structure_skipped` — a track
+with current sections now never enters the stage, so there is no `skipped`
+record and the Queue screen fills the cell in from the track.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/test_one_pass_pipeline.py -q`
-Expected: PASS (6 passed)
+Expected: PASS. CORRECTED (Task 5): "6 passed" counts only the new tests; the
+file already held 18.
 
 - [ ] **Step 7: Run the whole suite**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests -q`
-Expected: PASS. Watch for `tests/test_allin1_stage.py` and `tests/test_engine_dual_mode.py`: the latter compares both engines on one library and must now set `MASHUP_DUAL_CUT=1` (or call `config.current_dual_cut` monkeypatched to `True`) to get both cuts. Update those tests to opt in rather than changing the default.
+Expected: PASS. CORRECTED (Task 5): neither `tests/test_engine_dual_mode.py`
+nor `tests/test_allin1_stage.py` needs `MASHUP_DUAL_CUT` — both seed the two
+namespaces' sections directly through `models.replace_sections` /
+`alignment.replace_allin1_sections` and never run the structure stage, so the
+cut gate is not on their path. What did break in `test_allin1_stage.py` is
+`next_stage` now answering `"structure"` for a song with no sections: two
+tests there assert `is None` / `== "done"` and opt out with
+`monkeypatch.setattr(pw, "_wants_structure", lambda sid: False)`. `dual_cut` is
+pinned off for the whole suite in `tests/conftest.py`, beside the engine and
+the pipeline.
 
 - [ ] **Step 8: Verify the Queue screen still shows six stages**
 
 ```bash
 docker compose exec app python -c "from api.workers.pipeline_worker import STAGES; print(STAGES)"
-docker compose exec app curl -s localhost:8000/api/jobs/queue | head -c 600
+# CORRECTED (Task 5): the image has no curl (`command -v curl` -> nothing).
+docker compose exec app python -c "import json,urllib.request; print(list(json.load(urllib.request.urlopen('http://localhost:8000/api/jobs/queue'))['stages']))"
 ```
 Expected: `('download', 'quick', 'stems', 'analysis', 'allin1', 'structure')` and a `pools` object with an entry per stage. The frontend reads the stage names from the API, so a renamed or missing pool shows as a blank segment in the Queue timeline — check the screen if the JSON looks odd.
 
