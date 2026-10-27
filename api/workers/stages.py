@@ -37,7 +37,16 @@ log = logging.getLogger(__name__)
 
 ProgressCb = Optional[Callable[[Optional[int], str], None]]
 
-_ANALYSIS_STEM_ORDER = ("full", "vocals", "instrumental")
+_ANALYSIS_STEM_ORDER = ("full", "vocals", "instrumental", "bass")
+
+# Stems whose per-frame matrices are kept (analysis/timeseries.py).
+_FRAME_STEMS = ("full", "vocals", "instrumental", "bass")
+
+# Analysed for their frames alone: a bass chroma from the bass stem is both
+# better and ~13x cheaper than band-passing the mix and taking a CQT of it
+# (measured: structure.stem_chroma was 57 s a track). Nothing reads a `features`
+# row for the bass, so none is written.
+_TONAL_ONLY_STEMS = ("bass",)
 
 # Global concurrency gates, sized to the pipeline worker pools. The pipeline
 # queues already bound their own threads, but the Library per-stage buttons run
@@ -409,10 +418,18 @@ _ESSENTIA_EXTRA_STEPS = {"vocals": ("melody",), "full": ("effnet",)}
 
 
 def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
-                  on_progress: ProgressCb, extra_steps: tuple = ()) -> tuple[dict, bool]:
+                  on_progress: ProgressCb, extra_steps: tuple = (),
+                  frames_out: Optional[dict] = None,
+                  force_steps: tuple = (),
+                  only_steps: tuple = ()) -> tuple[dict, bool]:
     """Every Essentia group for one stem, cached. Returns (payloads, fully
     cached). Never raises: a failure is an empty result, which leaves the
-    librosa analyser to fill the core."""
+    librosa analyser to fill the core.
+
+    ``frames_out``, when given, collects the per-frame matrices the tonal and
+    spectral groups already compute (analysis/timeseries.py); ``force_steps``
+    re-runs a cached step so they are produced at all; ``only_steps`` narrows
+    the run to the groups a stem is analysed for (the bass: tonal alone)."""
     from analysis.cache import StepCache
     from analysis.essentia_groups import analyze_file_essentia
     from analysis.registry import ESSENTIA_STEP_GROUPS
@@ -420,7 +437,8 @@ def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
     try:
         out = analyze_file_essentia(path, cache=StepCache(key, ESSENTIA_STEP_GROUPS),
                                     timings=timings, on_progress=on_progress,
-                                    extra_steps=extra_steps)
+                                    extra_steps=extra_steps, frames_out=frames_out,
+                                    force_steps=force_steps, only_steps=only_steps)
     except Exception:  # noqa: BLE001
         log.exception("essentia analysis failed for %s/%s", song_id, stem_type)
         out = {}
@@ -470,14 +488,56 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
 
             # Essentia first when it runs at all: in essentia mode it owns the
             # core columns, in shadow mode only the extras (analysis/project.py).
+            tonal_only = stem_type in _TONAL_ONLY_STEMS
             ess: dict = {}
+            frames_out: Optional[dict] = None
             if run_essentia:
+                from analysis import timeseries
+                from config import current_keep_frames
+                from database import alignment
+
+                pipeline = alignment.live_pipeline(song_id)
+                want_frames = (gate != "quick" and stem_type in _FRAME_STEMS
+                               and current_keep_frames())
+                force: tuple = ()
+                if want_frames:
+                    frames_out = {}
+                    if not timeseries.have(song_id, stem_type, pipeline, key):
+                        # The payloads may be cached while the sidecar is not on
+                        # disk (a new install, a cleared ./data, frames switched
+                        # back on). Re-run just the two steps that carry frames;
+                        # everything else still comes from the cache.
+                        force = ("tonal", "spectral")
                 # The quick tier skips the extras (the melody, the tags): it
-                # exists to put BPM and key in the library in seconds.
-                extra = () if gate == "quick" else _ESSENTIA_EXTRA_STEPS.get(stem_type, ())
-                ess, ess_cached = _run_essentia(song_id, stem_type, path, key,
-                                                on_progress, extra)
+                # exists to put BPM and key in the library in seconds. A
+                # tonal-only stem is there for its chroma frames.
+                if gate == "quick" or tonal_only:
+                    extra: tuple = ()
+                else:
+                    extra = _ESSENTIA_EXTRA_STEPS.get(stem_type, ())
+                ess, ess_cached = _run_essentia(
+                    song_id, stem_type, path, key, on_progress, extra,
+                    frames_out=frames_out, force_steps=force,
+                    only_steps=("tonal",) if tonal_only else ())
                 fully_cached = fully_cached and ess_cached
+                if frames_out:
+                    try:
+                        from analysis.essentia_groups import frames_from
+                        built = frames_from(frames_out)
+                        if built is not None:
+                            timeseries.write(song_id, stem_type, pipeline, built, key)
+                    except Exception:  # noqa: BLE001 — frames are an optimisation
+                        log.exception("frames sidecar failed for %s/%s",
+                                      song_id, stem_type)
+            if tonal_only:
+                # Measured for its frames only: no features row, so no half-empty
+                # row for the matcher's library z-scores to average over. In
+                # librosa mode (or when the group failed) nothing ran for it at
+                # all, so it counts as neither analysed nor failed — a track is
+                # fully analysed with or without a bass chroma.
+                if run_essentia and ess:
+                    analysed.append(stem_type)
+                continue
 
             used = "librosa"
             if core_analyzer == "essentia":

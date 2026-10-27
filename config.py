@@ -412,6 +412,21 @@ def current_keep_analysis_stems() -> bool:
         return raw
     return str(raw).strip().lower() not in ("0", "false", "off", "no")
 
+
+def current_keep_frames() -> bool:
+    """Keep the per-frame analysis matrices (analysis/timeseries.py) as .npz
+    sidecars. On, because they are what makes a re-cut, the Segments screen and
+    phrase matching free; off throws the arrays away after the sections are
+    measured and every later re-cut decodes and recomputes them."""
+    raw = os.environ.get("MASHUP_KEEP_ANALYSIS_FRAMES")
+    if raw is None:
+        raw = _load_settings().get("keep_analysis_frames")
+    if raw is None or str(raw).strip() == "":
+        return True
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "off", "no")
+
 # ── Structure detection (sections: intro/verse/chorus/drop/…) ─────────────────
 SECTION_MIN_LEN_SECS  = 12.0   # minimum section length
 SECTION_MAX_COUNT     = 14     # cap on sections per track

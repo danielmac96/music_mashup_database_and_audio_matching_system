@@ -750,7 +750,8 @@ def analyze_file_essentia(path: Path, cache=None, timings: Optional[dict] = None
                           on_progress: Optional[Callable] = None,
                           extra_steps: tuple = (),
                           frames_out: Optional[dict] = None,
-                          force_steps: tuple = ()) -> Dict[str, dict]:
+                          force_steps: tuple = (),
+                          only_steps: tuple = ()) -> Dict[str, dict]:
     """Every Essentia group for one file: {step: payload}, plus any of
     EXTRA_STEPS named in ``extra_steps`` (the melody, for a vocal stem).
 
@@ -759,6 +760,13 @@ def analyze_file_essentia(path: Path, cache=None, timings: Optional[dict] = None
     computes no frames, so a caller that needs them for a stem with no sidecar
     names ``force_steps``: those steps run even on a cache hit. The stored
     payload is kept if the re-run fails.
+
+    ``only_steps``, when given, narrows the run to those steps — a stem
+    analysed for one group's frames alone (the bass's chroma) must not pay for
+    the rhythm, loudness, spectral and tag groups, and nothing reads a
+    ``features`` row for it. Nothing else is looked up in the cache or stored,
+    so the groups left out stay absent from the result rather than arriving
+    half-filled.
 
     ``cache`` is the same protocol analyze_file takes (analysis/cache.py
     StepCache, here bound to the essentia groups). A step that raises is logged,
@@ -770,6 +778,10 @@ def analyze_file_essentia(path: Path, cache=None, timings: Optional[dict] = None
     out: Dict[str, dict] = {}
     cached_steps: List[str] = []
     steps = runnable_steps(STEPS + tuple(s for s in extra_steps if s in EXTRA_STEPS))
+    if only_steps:
+        # Narrowed before the cache is consulted, so a step left out is neither
+        # read nor written: the one list drives both loops below.
+        steps = tuple(s for s in steps if s in only_steps)
     if cache is not None:
         for step in steps:
             hit = cache.get(step)
