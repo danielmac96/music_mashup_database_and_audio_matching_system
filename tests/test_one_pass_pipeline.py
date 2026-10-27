@@ -50,8 +50,15 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("MASHUP_SETTINGS_DIR", str(tmp_path / "settings"))
     import config
     import database.models as models
+    import api.jobs
     import api.workers.stages as stages
-    for mod in (config, models, stages):
+    import api.workers.pipeline_worker as pipeline_worker
+    # Dependency order. api.jobs and api.workers.pipeline_worker are in the list
+    # because the pipeline tests below drive them: pipeline_worker binds
+    # database.models.get_conn/get_song at ITS import, so without the reload
+    # next_stage would read the user's live library.
+    _MODS = (config, models, api.jobs, stages, pipeline_worker)
+    for mod in _MODS:
         importlib.reload(mod)
     models.init_db()
     from analysis import decode
@@ -64,7 +71,7 @@ def env(tmp_path, monkeypatch):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = val
-        for mod in (config, models, stages):
+        for mod in _MODS:
             importlib.reload(mod)
         decode.clear()
 
@@ -364,3 +371,299 @@ def test_a_bass_chroma_alone_is_not_an_analysed_track(seeded_song, env, monkeypa
     with pytest.raises(stages.StageError, match="every stem"):
         stages.do_analyze(song_id)
     assert models.get_song(song_id, db_path=db)["status"] == "error_analysis"
+
+
+# ── One cut, one score (Task 5) ───────────────────────────────────────────────
+
+def test_structure_is_the_last_stage_so_allin1_cuts_once():
+    from api.workers import pipeline_worker as pw
+
+    assert pw.STAGES[-1] == "structure"
+    assert pw.STAGES.index("allin1") < pw.STAGES.index("structure")
+
+
+def test_every_stage_has_a_queue_a_pool_and_a_gate():
+    """A stage with no queue raises KeyError in queue_runner._put; one with no
+    pool draws as a blank segment on the Queue screen."""
+    import api.queue_runner as queue_runner
+    from api import queue_eta
+    from api.routes import jobs as jobs_route
+    from api.workers import pipeline_worker as pw
+    from api.workers import stages as stage_mod
+
+    assert set(queue_runner._QUEUES) == set(pw.STAGES)
+    assert set(queue_runner._STAGE_WORKERS) == set(pw.STAGES)
+    assert set(stage_mod._STAGE_GATES) == set(pw.STAGES)
+    # Structure shares the analysis gate: it is the same librosa-bound work.
+    assert stage_mod._STAGE_GATES["structure"] is stage_mod._STAGE_GATES["analysis"]
+    # Every stage record maps to a pool, and the two mappings agree.
+    for stage in pw.STAGES:
+        assert jobs_route._POOL_OF[stage] in queue_runner._QUEUES
+        assert queue_eta.POOL_OF[stage] == jobs_route._POOL_OF[stage]
+    assert set(queue_eta.POOL_GROUPS) == set(pw.STAGES)
+    assert set(queue_eta.RECORD_GROUPS) == set(pw.STAGES)
+    assert queue_eta._STAGE_ORDER == pw.STAGES
+
+
+def test_the_frontend_lists_the_stages_in_the_order_they_run():
+    """The Queue timeline is read left to right. Its stage list and its pool
+    cards are hand-written in the JSX; the API decides what they describe."""
+    import re
+
+    from api.workers import pipeline_worker as pw
+
+    src = ROOT / "frontend" / "src"
+    use_queue = (src / "hooks" / "useQueue.js").read_text(encoding="utf-8")
+    block = use_queue[use_queue.index("export const STAGES = ["):]
+    block = block[:block.index("];")]
+    assert re.findall(r'\["(\w+)",', block) == list(pw.STAGES)
+
+    screen = (src / "components" / "QueueScreen.jsx").read_text(encoding="utf-8")
+    pools = screen[screen.index("const POOLS = ["):]
+    pools = pools[:pools.index("];")]
+    assert re.findall(r'\["(\w+)",', pools) == list(pw.STAGES)
+
+
+def test_needs_scoring_is_false_until_an_input_changes(seeded_song, env):
+    from database.models import get_conn, mark_scored, needs_scoring
+
+    song_id, _ = seeded_song
+    assert needs_scoring(song_id) is True          # never scored
+
+    mark_scored(song_id)
+    assert needs_scoring(song_id) is False
+
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE songs SET pairs_input_at=datetime('now','+1 second') "
+                     "WHERE id=?", (song_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    assert needs_scoring(song_id) is True
+
+
+def test_a_track_that_was_never_told_its_inputs_changed_is_not_rescored(seeded_song,
+                                                                       env):
+    """A row whose features predate pairs_input_at: scored once, then left
+    alone. A full Score library is what covers it, not every pipeline pass."""
+    from database.models import get_conn, mark_scored, needs_scoring
+
+    song_id, _ = seeded_song
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE songs SET pairs_input_at=NULL WHERE id=?", (song_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    assert needs_scoring(song_id) is True
+    mark_scored(song_id)
+    assert needs_scoring(song_id) is False
+
+
+def test_a_track_is_scored_once_per_set_of_sections(monkeypatch, seeded_song, env):
+    """Three scoring passes per track was three library-wide scans."""
+    from api.workers import pipeline_worker as pw
+    from database.models import get_conn, mark_pairs_input
+
+    song_id, _ = seeded_song
+    calls = []
+
+    def fake_score(sid):
+        calls.append(sid)
+        from database.models import mark_scored
+        mark_scored(sid)
+
+    monkeypatch.setattr("matcher.match.score_song_pairs", fake_score)
+
+    conn = get_conn()
+    try:
+        mark_pairs_input(conn, song_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+    pw._score_track(song_id, "analysed")
+    pw._score_track(song_id, "allin1")       # nothing changed in between
+    pw._score_track(song_id, "finalize")
+    assert calls == [song_id]
+
+
+def test_a_per_track_score_leaves_the_docks_staleness_alone(seeded_song, env):
+    """readme section 7: a per-track run never stands in for Score library.
+    Stamping scored_at must not touch app_prefs.last_score, or the dock would
+    stop offering the full re-score the library still needs."""
+    from matcher.match import score_song_pairs
+
+    models, _stages, db = env
+    song_id, _ = seeded_song
+
+    models.update_song_status(song_id, "analysed")
+    models.upsert_features(song_id, "full", {"bpm": 124.0}, db_path=db)
+    models.set_pref("last_score", {"started_at": "2000-01-01 00:00:00"},
+                    db_path=db)
+    assert models.pairs_freshness(db_path=db)["changed_tracks"] == 1
+
+    score_song_pairs(song_id, db_path=db)
+
+    assert models.get_pref("last_score", db_path=db)["started_at"] \
+        == "2000-01-01 00:00:00"
+    assert models.pairs_freshness(db_path=db)["changed_tracks"] == 1
+    conn = models.get_conn(db)
+    try:
+        assert conn.execute("SELECT scored_at FROM songs WHERE id=?",
+                            (song_id,)).fetchone()[0] is not None
+    finally:
+        conn.close()
+
+
+def test_the_provisional_pairs_still_land_and_are_then_replaced(monkeypatch,
+                                                                seeded_song, env):
+    """readme section 3: the first pairs land straight after the quick tier, the
+    mix standing in for both stems. Score once must not mean score later."""
+    from api import jobs
+    from api.workers import pipeline_worker as pw
+    from database.models import get_conn, mark_pairs_input
+
+    song_id, _ = seeded_song
+    scored = []
+
+    def fake_score(sid):
+        scored.append(sid)
+        from database.models import mark_scored
+        mark_scored(sid)
+
+    monkeypatch.setattr("matcher.match.score_song_pairs", fake_score)
+    monkeypatch.setattr(pw.stages, "do_quick", lambda sid, cb=None: {})
+
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE songs SET status='downloaded' WHERE id=?", (song_id,))
+        mark_pairs_input(conn, song_id)
+        conn.commit()
+    finally:
+        conn.close()
+
+    job = jobs.new_job(kind="pipeline", song_id=song_id)
+    assert pw.run_stage(job, song_id, "quick") == "next"
+    assert scored == [song_id]                    # the provisional pairs
+
+    # The analysis that follows changes an input, so the real pairs replace them.
+    conn = get_conn()
+    try:
+        conn.execute("UPDATE songs SET pairs_input_at=datetime('now','+5 second') "
+                     "WHERE id=?", (song_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    pw._score_track(song_id, "analysed")
+    assert scored == [song_id, song_id]
+
+
+def test_an_analysed_track_with_provisional_rows_is_always_rescored(seeded_song,
+                                                                    env):
+    """songs.pairs_input_at has one-second resolution, so an analysis served
+    entirely from the caches can finish inside the same second as the
+    provisional score. The prov chip must not survive that."""
+    from api.workers import pipeline_worker as pw
+    from database.models import mark_scored
+    from matcher.match import PROVISIONAL_SCORER
+
+    models, _stages, db = env
+    song_id, _ = seeded_song
+    models.update_song_status(song_id, "analysed")
+    mark_scored(song_id)
+    assert pw._wants_scoring(song_id) is False
+
+    other = models.upsert_song(title="U", artist="A", source_url="u://2",
+                               db_path=db)
+    conn = models.get_conn(db)
+    try:
+        conn.execute(
+            "INSERT INTO mashup_candidates (combo_type, vocal_song_id, "
+            "inst_song_id, score_total, scorer) VALUES "
+            "('vocal_over_instrumental', ?, ?, 0.5, ?)",
+            (song_id, other, PROVISIONAL_SCORER))
+        conn.commit()
+    finally:
+        conn.close()
+    assert pw._wants_scoring(song_id) is True
+
+
+def test_essentia_cut_is_skipped_under_the_allin1_engine(monkeypatch, seeded_song,
+                                                         env):
+    from api.workers import pipeline_worker as pw
+
+    song_id, _ = seeded_song
+    monkeypatch.setattr("config.current_segmentation_engine", lambda: "allin1")
+    monkeypatch.setattr("config.current_dual_cut", lambda: False)
+    monkeypatch.setattr(pw, "_allin1_section_count", lambda sid: 7)
+    assert pw._wants_essentia_cut(song_id) is False
+
+    # allin1 found nothing: the Essentia cut is the fallback, not an option.
+    monkeypatch.setattr(pw, "_allin1_section_count", lambda sid: 0)
+    assert pw._wants_essentia_cut(song_id) is True
+
+    # The Engines comparison needs both cuts.
+    monkeypatch.setattr(pw, "_allin1_section_count", lambda sid: 7)
+    monkeypatch.setattr("config.current_dual_cut", lambda: True)
+    assert pw._wants_essentia_cut(song_id) is True
+
+    # The essentia engine: the novelty cut IS the engine.
+    monkeypatch.setattr("config.current_segmentation_engine", lambda: "essentia")
+    monkeypatch.setattr("config.current_dual_cut", lambda: False)
+    assert pw._wants_essentia_cut(song_id) is True
+
+
+def test_dual_cut_defaults_off(monkeypatch):
+    import config
+
+    monkeypatch.delenv("MASHUP_DUAL_CUT", raising=False)
+    assert config.current_dual_cut() is False
+    monkeypatch.setenv("MASHUP_DUAL_CUT", "1")
+    assert config.current_dual_cut() is True
+
+
+def test_the_structure_stage_is_terminal(monkeypatch, seeded_song, env):
+    """detect_sections falls back to the track BPM, so a section it could not
+    measure leaves sections_are_current False for good. Asking next_stage again
+    after the structure stage would re-queue the track for its own last stage
+    forever."""
+    from api import jobs
+    from api.workers import bulk_worker
+    from api.workers import pipeline_worker as pw
+
+    models, _stages, _db = env
+    song_id, _ = seeded_song
+    models.update_song_status(song_id, "analysed")
+    monkeypatch.setattr(bulk_worker, "sections_are_current", lambda *a, **k: False)
+    monkeypatch.setattr(pw.stages, "do_structure", lambda sid, cb=None: {})
+    monkeypatch.setattr(pw, "_score_track", lambda *a, **k: None)
+
+    assert pw.next_stage(song_id) == "structure"
+    job = jobs.new_job(kind="pipeline", song_id=song_id)
+    assert pw.run_stage(job, song_id, "structure") == "done"
+    assert jobs.get(job)["status"] == "completed"
+
+
+def test_the_structure_stage_skips_the_cut_allin1_already_made(monkeypatch,
+                                                               seeded_song, env):
+    from api import jobs
+    from api.workers import bulk_worker
+    from api.workers import pipeline_worker as pw
+
+    models, _stages, _db = env
+    song_id, _ = seeded_song
+    models.update_song_status(song_id, "analysed")
+    cut = []
+    monkeypatch.setattr(bulk_worker, "sections_are_current", lambda *a, **k: False)
+    monkeypatch.setattr(pw.stages, "do_structure",
+                        lambda sid, cb=None: cut.append(sid) or {})
+    monkeypatch.setattr(pw, "_score_track", lambda *a, **k: None)
+    monkeypatch.setattr("config.current_segmentation_engine", lambda: "allin1")
+    monkeypatch.setattr(pw, "_allin1_section_count", lambda sid: 7)
+
+    job = jobs.new_job(kind="pipeline", song_id=song_id)
+    assert pw.run_stage(job, song_id, "structure") == "done"
+    assert cut == []
+    assert jobs.get(job)["stages"]["structure"]["state"] == "skipped"

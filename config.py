@@ -393,6 +393,27 @@ def current_segmentation_engine() -> str:
                         SEGMENTATION_ENGINES, "essentia")
 
 
+def current_dual_cut() -> bool:
+    """Cut sections with BOTH engines on every track.
+
+    Off (the default): under the allin1 engine a track is cut once, by allin1,
+    and the Essentia novelty cut runs only as the fallback when allin1 failed or
+    skipped — the sections it would otherwise produce are thrown away by every
+    query that reads the allin1 namespace. On: both cuts are stored, which is
+    what Analysis › Engines compares."""
+    # No config._resolve_bool exists; this is current_keep_analysis_stems' and
+    # current_keep_frames' inline env -> settings -> default walk, with the
+    # default the other way round.
+    raw = os.environ.get("MASHUP_DUAL_CUT")
+    if raw is None:
+        raw = _load_settings().get("dual_cut")
+    if raw is None or str(raw).strip() == "":
+        return False
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "off", "no")
+
+
 def current_allin1_device() -> str:
     """cpu unless set. The Docker image ships CPU torch; cuda falls back to cpu
     in analysis/allin1_runner when torch sees no GPU."""

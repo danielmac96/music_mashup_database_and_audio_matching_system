@@ -157,6 +157,7 @@ Resolution order: **environment variable > `settings.json` > default**.
 | Essentia key profile / rhythm method | `MASHUP_ESSENTIA_KEY_PROFILE` / `MASHUP_ESSENTIA_RHYTHM` | `essentia_key_profile` / `essentia_rhythm_method` | `edma` / `degara` |
 | Separation pipeline | `MASHUP_SEPARATION_PIPELINE` | `separation_pipeline` | `legacy_2stem` (`unified_4stem` = one htdemucs 4-source pass for allin1 and playback; §5.3) |
 | Segmentation engine | `MASHUP_SEGMENTATION_ENGINE` | `segmentation_engine` | `essentia` (`allin1` = allin1 sections, phrase placement, the timing gate; §5.5, §5.7) |
+| Cut with both engines | `MASHUP_DUAL_CUT` | `dual_cut` | off (on = store the Essentia cut beside allin1's, for Analysis › Engines; §5.5) |
 | allin1 device / workers | `MASHUP_ALLIN1_DEVICE` / `MASHUP_ALLIN1_WORKERS` | `allin1_device` / `allin1_workers` | `cpu` / `1` |
 | allin1 limits | `MASHUP_ALLIN1_MAX_SECS` / `MASHUP_ALLIN1_MEM_BUDGET_MB` | `allin1_max_secs` / `allin1_mem_budget_mb` | `900` (longer is skipped) / `6000` |
 | Keep the unified drums/bass/other | `MASHUP_KEEP_ANALYSIS_STEMS` | `keep_analysis_stems` | on (off deletes them after allin1 stored its result) |
@@ -217,8 +218,9 @@ browser reads `GET /api/settings`.
  1. COLLECT     Library paste bar ─┐   Discover search/browse ─┐   Mixes tracklist import ─┐
                                    └──────────► POST /api/playlists/ingest ◄───────────────┘
  2. PROCESS     per track, on bounded priority queues:
-                download → quick (mix: BPM, key, provisional sections) → stems → analyse → structure (+ hooks)
+                download → quick (mix: BPM, key, provisional sections) → stems → analyse
                 → allin1 (when the allin1 engine is on: downbeats, labelled sections, vocal phrases)
+                → structure (+ hooks) — the cut, last, on the engine's own bar lines
  3. SCORE       dock "↻ Re-score" (or ⚙ Score library) → every vocal × bed section pair → mashup_candidates
  4. JUDGE       pair dock: loop the moment, rate 1–5 (again to clear), compare, note, hide, exclude
                 Segments: any vocal section × any bed section, scored live → mini studio loop
@@ -268,7 +270,7 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
 - **Everything slow is a job.** Routes return a `job_id`; the UI polls
   `/api/jobs`. Jobs live in memory; durable progress is the track's `status`
   column, which is why resume works without persisting jobs. A pipeline job
-  also carries a per-stage timeline (`stages.download/stems/analysis/structure`:
+  also carries a per-stage timeline (`stages.download/quick/stems/analysis/allin1/structure`:
   state, enqueued/started/finished, progress, message, error), and
   `GET /api/jobs/queue` snapshots each stage pool (workers, busy, waiting) and
   every waiting job's place in line.
@@ -284,8 +286,9 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
   the lifecycle status (`queued → downloaded → stemmed → analysed`) or an
   `error_*` status with `songs.last_error`. A semaphore keeps Demucs to one run
   at a time whoever asks. Structure is not status-bearing: matching works
-  without sections. Nor is the **quick tier** (`do_quick`, between download and
-  stems): it records `songs.quick_state` (`done`/`failed`, cleared by a new
+  without sections — it is the last queue stage and the only one whose failure
+  leaves the track `analysed` anyway. Nor is the **quick tier** (`do_quick`,
+  between download and stems): it records `songs.quick_state` (`done`/`failed`, cleared by a new
   download), its failure never stops a track, and `status` still means "fully
   processed". Pairs no longer wait for stems: straight after the quick tier
   the pipeline scores that one track against the library
@@ -328,13 +331,26 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
   results without decoding anything (`analysis.cached` in the timings), a
   re-separated stem recomputes, and bumping one group's version recomputes that
   group only.
-- **allin1 is a sixth, optional stage** (§5.5): after the analysis, when the
-  allin1 engine is on or a Bulk reprocess asked for it (`songs.allin1_state =
-  'queued'`). Its own pool (`ALLIN1_WORKERS`, 1) that also takes the stems
-  gate, so it never runs beside Demucs. The Essentia sections and the pairs on
-  them land first; allin1 refines them after. Non-fatal: a failure leaves
-  `allin1_state = 'failed'` with the reason and the track on its Essentia
-  sections (rows say `essentia_fallback`).
+- **allin1 is an optional stage, and it runs BEFORE the cut** (§5.5): after
+  the analysis, when the allin1 engine is on or a Bulk reprocess asked for it
+  (`songs.allin1_state = 'queued'`). Its own pool (`ALLIN1_WORKERS`, 1) that
+  also takes the stems gate, so it never runs beside Demucs. Non-fatal: a
+  failure leaves `allin1_state = 'failed'` with the reason, and the structure
+  stage behind it then cuts the track the Essentia way after all — the
+  fallback every reader falls back to (rows say `essentia_fallback`). It used
+  to run after a cut that had already happened, so an allin1 library cut every
+  track twice and scored it twice; `MASHUP_DUAL_CUT` is how you ask for both
+  cuts on purpose (Analysis › Engines).
+- **A track is cut once and scored once per set of inputs.** The structure
+  stage is last and gated: under the allin1 engine the librosa/Essentia novelty
+  cut runs only when allin1 produced no sections, or `dual_cut` is on
+  (`pipeline_worker._wants_essentia_cut`). Scoring is gated on
+  `songs.scored_at` against `songs.pairs_input_at`
+  (`models.needs_scoring`, `pipeline_worker._wants_scoring`): the quick tier's
+  provisional pass still lands first, the post-analysis pass replaces its rows,
+  and the third call the pipeline used to make — a library-wide scan — is
+  gone. A per-track run never writes `app_prefs.last_score`, so the dock still
+  counts the track as changed until a full Score library run (§7).
 - **Essentia is the analyser.** `config.current_analyzer()` is `essentia`:
   Essentia fills every stem's `features` row — the core columns, the extras
   (LUFS, true peak, tuning, chords, danceability…) and, on the full mix, the
@@ -608,12 +624,14 @@ downloading or in the quick tier gets its first (provisional) pairs —
 `/api/jobs/queue` `next_playable_secs`, from each job's `playable_eta_secs`
 (`api/queue_eta.py`: what is left of its download plus a typical quick tier).
 
-- **Six stages**: download · quick · stems · analyse · structure · **allin1**.
-  The allin1 segment reads *off* (a thin outline) when the essentia engine is
-  on and nothing asked for it, so a library never shows an eternal "todo".
+- **Six stages**, in the order they run: download · quick · stems · analyse ·
+  **allin1** · structure. The allin1 segment reads *off* (a thin outline) when
+  the essentia engine is on and nothing asked for it, so a library never shows
+  an eternal "todo".
 - **Header**: the counts, the tabs **Active · Waiting · Failed · Done · All**
   (with counts), and **⟳ Retry all failed (n)**.
-- **Pool cards**: download, quick analysis, stems and analyse + structure —
+- **Pool cards**: download, quick analysis, stems, analyse, allin1 and
+  sections (the cut, at the analysis pool's size and sharing its gate) —
   busy slots out of workers, how many tracks wait, the **typical time per
   track** for that stage on this library (median from `GET /api/jobs/timings`,
   so it survives a restart) and when the line clears (`clears_in_secs`). The
@@ -623,8 +641,8 @@ downloading or in the quick tier gets its first (provisional) pairs —
   for ten minutes after it ends.
 - **One 44px row per track** that has a job this server session or an
   `error_*` status, with a 2px edge in its phase colour, as a **Timeline**: the
-  track, a five-segment bar (download · quick · stems · analyse · structure,
-  each as wide as √ of its typical time here — done green, running violet with
+  track, a segment per stage (download · quick · stems · analyse · allin1 ·
+  structure, each as wide as √ of its typical time here — done green, running violet with
   its progress, waiting dashed, failed red), the API's one-sentence **summary**
   of where it is ("Separating vocals — about 2 min left", "Waiting for stems
   (#3 in line)", "Failed downloading: … — Retry"), its **ETA** (`eta_secs`) and
@@ -1283,6 +1301,17 @@ voiceless-section rule), the rest as named; `start`/`end` silence folds into
 its neighbour. One retry, then `failed`; a track longer than `allin1_max_secs`
 is `skipped`; a run whose estimated memory would pass `allin1_mem_budget_mb`
 is refused with the reason (peaks are recorded in `analysis_runs.peak_mb`).
+
+**One cut per track.** allin1 runs **before** the structure stage, which is
+last (`pipeline_worker.STAGES`). Under the allin1 engine the novelty cut is
+then skipped — allin1's sections are what every reader asks for — unless
+allin1 produced none (failed, skipped, or found nothing), where it is the
+fallback, or `dual_cut` is on, which stores both cuts for Analysis › Engines.
+Before this the pipeline cut every allin1-engine track twice: the novelty pass
+after the analysis and then allin1's, and it scored the track after each.
+`pipeline_worker._wants_essentia_cut` is the one place that decides; the stage
+itself is still non-fatal and still skips a track whose sections are current
+(`bulk_worker.sections_are_current`, the staleness badge's own definition).
 
 **Vocal phrases** (`analysis/phrases.py`, stored in `vocal_phrases` per grid).
 On the vocal stem's frame RMS (the envelope `vocal_activity` thresholds), a
@@ -1998,8 +2027,10 @@ read the endpoint (extra keys on pair rows, jobs and mixes are ignored).
 length, write-once; `audio_provenance` — JSON, where the file came from;
 `metadata_partial` — 1 when the per-track metadata fetch never landed;
 `pairs_input_at` — when a scoring input last changed, the dock's staleness
-test; `quick_state` / `quick_at` — the quick tier's outcome for the current
-download) · `stems` (path, separator tag, quality metrics, `content_hash` of the bytes last analysed) · `features` (per
+test; `scored_at` — when this track's pairs were last scored, compared with
+`pairs_input_at` so the pipeline scores a track once per set of inputs and
+never writes `app_prefs.last_score`; `quick_state` / `quick_at` — the quick
+tier's outcome for the current download) · `stems` (path, separator tag, quality metrics, `content_hash` of the bytes last analysed) · `features` (per
 stem: tempo/grid/phase, key/confidence/Camelot, loudness, MFCC, spectral, bands,
 envelope, beats, hook window; `analyzer`; the Essentia-only `lufs`, `lra`,
 `true_peak`, `replay_gain`, `tuning_hz`, `key_strength`, `dynamic_complexity`,
@@ -2149,6 +2180,32 @@ Existing databases migrate on start.
   provisional row (`scorer = provisional`) is the mix standing in for a stem
   and is only ever replaced, by the same track's run after its analysis or by
   a full run; nothing filters on it. Both kinds of run take `_SCORE_LOCK`.
+  Both also stamp `songs.scored_at` (`matcher.match._mark_scored`, one UPDATE
+  over the ids the run covered) and **neither stamp touches
+  `app_prefs.last_score`** — that is what keeps the dock's staleness honest
+  while the pipeline uses `scored_at` to decide whether to score at all.
+- **The pipeline scores a track once per set of inputs.**
+  `pipeline_worker._wants_scoring` is `models.needs_scoring`
+  (`pairs_input_at > scored_at`) OR "analysed and still carrying provisional
+  rows". The second half is there because both timestamps are
+  `datetime('now')`: an analysis served entirely from the feature cache can
+  finish inside the same second as the quick tier's provisional score, and the
+  card's `prov` chip would then survive until the next full Score library run.
+  The quick tier's call is NOT special-cased — a never-scored track has
+  `scored_at IS NULL`, so the provisional pairs still land straight after it
+  (24 s after download, measured). A track with no `pairs_input_at` at all is
+  scored once and then left to a full run.
+- **Structure is the last queue stage, and the only one that is terminal.**
+  `run_stage` finishes the job after it instead of asking `next_stage` again:
+  `_wants_structure` is `not sections_are_current`, and `detect_sections` falls
+  back to the track BPM, so a section it could not measure leaves that False
+  for good — re-asking would re-queue such a track for its own last stage
+  forever. Every stage name in `STAGES` needs a queue and a worker count in
+  `api/queue_runner.py`, a gate in `stages._STAGE_GATES`, a pool in
+  `api/routes/jobs._POOL_OF` and `api/queue_eta.POOL_OF`/`POOL_GROUPS`, and a
+  card in `QueueScreen.POOLS`; `frontend/src/hooks/useQueue.js` `STAGES` lists
+  them in the order they run (all pinned together by a test). A stage with no
+  queue raises `KeyError` on dispatch; one with no pool card runs invisibly.
 - **Every writer of a scoring input bumps `songs.pairs_input_at`**
   (`models.mark_pairs_input`, on the writer's own connection): today
   `upsert_features`, `update_features_manual`, `replace_sections` and the

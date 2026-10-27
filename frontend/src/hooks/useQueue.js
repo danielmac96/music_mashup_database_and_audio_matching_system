@@ -17,10 +17,13 @@ export const STAGES = [
   ["quick", "Quick"],
   ["stems", "Stems"],
   ["analysis", "Analyse"],
-  ["structure", "Structure"],
   // allin1 (readme §5.5): downbeats and labelled sections, after the analysis.
   // Only owed in the allin1 engine or after a backfill — "off" otherwise.
   ["allin1", "allin1"],
+  // The cut, LAST: under the allin1 engine the bar lines and segments it sits
+  // on are allin1's. Same order as pipeline_worker.STAGES, so the Timeline
+  // reads left to right in the order the stages actually run.
+  ["structure", "Structure"],
 ];
 
 const ACTIVE = new Set(["queued", "running"]);

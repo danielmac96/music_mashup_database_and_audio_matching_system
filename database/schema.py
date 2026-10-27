@@ -189,11 +189,33 @@ def _analysis_frames(conn: sqlite3.Connection) -> None:
     alignment.ensure_frames_schema(conn)
 
 
+def _songs_scored_at(conn: sqlite3.Connection) -> None:
+    """Add `songs.scored_at`: when this track's pairs were last scored.
+
+    Compared with `songs.pairs_input_at` (`models.needs_scoring`), it is what
+    stops the pipeline scoring one track three times — once after the quick
+    tier, once after the sections, once on finalise — each of which is a
+    library-wide scan.
+
+    Deliberately NOT in `models._SONGS_OPTIONAL_COLUMNS`: those functions are
+    migration 1 now, and a column added there reaches only databases that have
+    never run it (see this module's docstring). A new column is a new migration.
+
+    Idempotent (`PRAGMA table_info` first): a rollback (database/downgrade.py)
+    resets ``user_version`` and replays every migration. Statements only, never
+    ``executescript`` — see `apply`.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(songs)")}
+    if "scored_at" not in cols:
+        conn.execute("ALTER TABLE songs ADD COLUMN scored_at TEXT")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline", _baseline),
     Migration(2, "feature_arrays", _feature_arrays),
     Migration(3, "slim_candidates", _slim_candidates),
     Migration(4, "analysis_frames", _analysis_frames),
+    Migration(5, "songs_scored_at", _songs_scored_at),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

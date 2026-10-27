@@ -1497,6 +1497,43 @@ def mark_pairs_input(conn: sqlite3.Connection, song_id: int) -> None:
                  (song_id,))
 
 
+def mark_scored(song_id: int, db_path: Path = DB_PATH) -> None:
+    """Note that this track's pairs are current for its inputs.
+
+    Its own connection, because the scorer's caller has none open. Deliberately
+    NOT a write of app_prefs.last_score: a per-track run never stands in for
+    Score library (readme §7), so the dock's freshness check — which compares
+    pairs_input_at with that pref — must not see this at all."""
+    conn = get_conn(db_path)
+    try:
+        conn.execute("UPDATE songs SET scored_at=datetime('now') WHERE id=?",
+                     (song_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def needs_scoring(song_id: int, db_path: Path = DB_PATH) -> bool:
+    """True when a scoring input changed since this track was last scored.
+
+    Never scored is True. A track with no pairs_input_at at all — features
+    written before the column existed — is True until it is scored once and
+    then left alone: a full Score library run is what covers it, not every
+    pipeline pass. Both timestamps are SQLite `datetime('now')` text, so the
+    comparison has one-second resolution; api.workers.pipeline_worker's
+    `_wants_scoring` carries the one case that matters."""
+    conn = get_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT scored_at, pairs_input_at FROM songs WHERE id=?",
+            (song_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row["scored_at"]:
+        return True
+    return bool(row["pairs_input_at"] and row["pairs_input_at"] > row["scored_at"])
+
+
 def upsert_features(song_id: int, stem_type: str, features: dict,
                     db_path: Path = DB_PATH):
     mfcc = features.pop("mfcc", None)

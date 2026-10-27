@@ -121,3 +121,53 @@ def test_a_failing_migration_names_its_version_and_is_not_recorded(tmp_path, mon
         assert "half_done" not in tables
     finally:
         conn.close()
+
+
+def test_scored_at_arrives_as_migration_five(tmp_path):
+    """songs.scored_at — when this track's pairs were last scored. The live
+    library is at version 4, so it has to arrive from there, and the ledger
+    replays everything after a rollback, so it has to be idempotent."""
+    from database import schema
+
+    conn = sqlite3.connect(tmp_path / "v4.db")
+    try:
+        five = [m for m in schema.MIGRATIONS if m.version == 5]
+        assert len(five) == 1 and five[0].name == "songs_scored_at"
+        # Bring it to exactly version 4, the shape the live library is in.
+        monkeyed = tuple(m for m in schema.MIGRATIONS if m.version <= 4)
+        real = schema.MIGRATIONS
+        schema.MIGRATIONS = monkeyed
+        try:
+            schema.apply(conn)
+        finally:
+            schema.MIGRATIONS = real
+        assert schema.current_version(conn) == 4
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(songs)")}
+        assert "scored_at" not in cols
+
+        assert schema.apply(conn) == [5]
+        assert schema.current_version(conn) == schema.SCHEMA_VERSION
+        info = {r[1]: r[2].upper() for r in conn.execute("PRAGMA table_info(songs)")}
+        assert info["scored_at"] == "TEXT"
+
+        # Replayed (a rollback resets user_version): no second column, no error.
+        conn.execute("PRAGMA user_version = 4")
+        assert schema.apply(conn) == [5]
+        assert [r[1] for r in conn.execute("PRAGMA table_info(songs)")].count(
+            "scored_at") == 1
+    finally:
+        conn.close()
+
+
+def test_no_migration_uses_executescript_after_the_baseline():
+    """executescript COMMITs inside apply's explicit BEGIN and leaves
+    user_version unset for that migration."""
+    import inspect
+
+    from database import schema
+
+    for migration in schema.MIGRATIONS:
+        if migration.version == 1:
+            continue                    # the baseline IS the pre-ledger path
+        src = inspect.getsource(migration.up)
+        assert ".executescript(" not in src, migration.name

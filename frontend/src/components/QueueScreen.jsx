@@ -8,10 +8,10 @@ import {
 import { toast } from "../toast";
 
 // The pipeline in detail (revamp step 2): every track's download → quick →
-// stems → analyse → structure, the four worker pools, and whatever
-// library-wide job is running.
+// stems → analyse → allin1 → structure, the worker pool behind each, and
+// whatever library-wide job is running.
 //
-// Each row is a Timeline: the track, a five-segment bar (each stage as wide
+// Each row is a Timeline: the track, a segment per stage (each stage as wide
 // as √ of how long it usually takes here, so Demucs reads as the long one), the
 // API's one-sentence `summary` of where it is ("Separating vocals — about
 // 2 min left", "Waiting for stems (#3 in line)"), its `eta_secs` and Retry.
@@ -27,9 +27,12 @@ const PHASE_ORDER = { running: 0, waiting: 1, failed: 2, done: 3 };
 const PHASE_COLOR = {
   running: "var(--run)", waiting: "var(--faint)", failed: "var(--fail)", done: "var(--ok)",
 };
+// One card per worker pool, in the order the stages run. api/queue_runner.py
+// has a pool per pipeline_worker.STAGES name; a stage with no card here would
+// run with nothing on the screen saying so.
 const POOLS = [
   ["download", "Download"], ["quick", "Quick analysis"], ["stems", "Stems"],
-  ["analysis", "Analyse + structure"], ["allin1", "allin1"],
+  ["analysis", "Analyse"], ["allin1", "allin1"], ["structure", "Sections"],
 ];
 const STAGE_LABEL = Object.fromEntries(STAGES);
 const FAILED_AT = {
@@ -44,8 +47,8 @@ const STAGE_TIMING = {
   analysis: ["analysis"], structure: ["structure"], allin1: ["allin1"],
 };
 const POOL_TIMING = {
-  download: ["download"], quick: ["quick"], stems: ["stems"], analysis: ["analysis", "structure"],
-  allin1: ["allin1"],
+  download: ["download"], quick: ["quick"], stems: ["stems"],
+  analysis: ["analysis"], allin1: ["allin1"], structure: ["structure"],
 };
 // Seconds per stage before this library has any timings of its own — only to
 // size the Timeline's segments, never shown as an estimate.

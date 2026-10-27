@@ -214,9 +214,11 @@ def test_structure_failure_is_non_fatal(env, monkeypatch):
 
 
 def test_stage_queues_route_track_through_pipeline(env, monkeypatch):
-    """A queued track hops download → stems → analysis queues and completes.
-    Queues are drained synchronously here (no worker threads) so the routing
-    logic is tested without daemon-thread/monkeypatch lifetime hazards."""
+    """A queued track hops download → quick → stems → analysis → structure
+    queues and completes. Queues are drained synchronously here (no worker
+    threads) so the routing logic is tested without daemon-thread/monkeypatch
+    lifetime hazards. Structure is its own queue since the cut moved after
+    allin1 (whose bar lines it sits on)."""
     models = env
     _mock_stages(monkeypatch)
     import api.queue_runner as queue_runner
@@ -228,7 +230,7 @@ def test_stage_queues_route_track_through_pipeline(env, monkeypatch):
     jid = queue_runner.enqueue_song(sid)
     assert jobs.get(jid)["stages"]["download"]["state"] == "waiting"
 
-    for expected in ("download", "quick", "stems", "analysis"):
+    for expected in ("download", "quick", "stems", "analysis", "structure"):
         job_id, song_id = queue_runner.take(expected, block=False)
         assert song_id == sid
         outcome = pw.run_stage(job_id, song_id, expected)
@@ -306,9 +308,14 @@ def test_job_timeline_stops_at_the_failed_stage(env, monkeypatch):
     assert "analysis" not in stages and "structure" not in stages
 
 
-def test_job_timeline_marks_current_structure_skipped(env, monkeypatch):
+def test_a_track_with_current_sections_never_enters_the_structure_stage(env,
+                                                                        monkeypatch):
+    """The cut is its own stage now, gated on the same staleness question the
+    trailing pass used to ask itself: a track whose sections are current is
+    never routed to it, so there is no stage record at all. The Queue screen
+    fills the cell in from the track (useQueue DONE_ON_TRACK.structure)."""
     models = env
-    _mock_stages(monkeypatch)
+    calls = _mock_stages(monkeypatch)
     import api.workers.pipeline_worker as pw
     import api.jobs as jobs
 
@@ -316,11 +323,13 @@ def test_job_timeline_marks_current_structure_skipped(env, monkeypatch):
                              status="analysed")
     models.replace_sections(sid, [dict(_CURRENT_SECTION)])
     jid = jobs.new_job(kind="pipeline", song_id=sid)
+    assert pw.next_stage(sid) is None
     pw.run(jid, sid)
 
     # Stages passed before this job are not invented; the frontend reads the track.
-    assert _stages(jid) == {"structure": _stages(jid)["structure"]}
-    assert _stages(jid)["structure"]["state"] == "skipped"
+    assert _stages(jid) == {}
+    assert calls["structure"] == 0
+    assert jobs.get(jid)["status"] == "completed"
 
 
 def test_structure_failure_shows_on_the_timeline_not_the_job(env, monkeypatch):

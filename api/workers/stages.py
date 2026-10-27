@@ -60,6 +60,10 @@ _STAGE_GATES = {
     "quick": threading.Semaphore(QUICK_WORKERS),
     "allin1": threading.Semaphore(ALLIN1_WORKERS),
 }
+# Structure is the same librosa-bound work as the analysis, so it counts
+# against the analysis gate rather than adding concurrency of its own — the
+# same object, deliberately. One entry per pipeline_worker.STAGES name.
+_STAGE_GATES["structure"] = _STAGE_GATES["analysis"]
 
 
 class StageError(RuntimeError):

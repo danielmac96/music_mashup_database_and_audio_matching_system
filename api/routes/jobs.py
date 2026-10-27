@@ -7,10 +7,12 @@ from api import jobs, queue_eta, queue_runner
 
 router = APIRouter()
 
-# Which worker pool a running stage record occupies. Structure runs on the
-# analysis pool (it is the trailing pass of that stage), so it counts there.
+# Which worker pool a running stage record occupies. One entry per
+# api.workers.pipeline_worker.STAGES name; api.queue_eta.POOL_OF is the same
+# map (pinned by tests/test_one_pass_pipeline.py).
 _POOL_OF = {"download": "download", "quick": "quick", "stems": "stems",
-            "analysis": "analysis", "structure": "analysis"}
+            "analysis": "analysis", "allin1": "allin1",
+            "structure": "structure"}
 
 
 @router.get("")

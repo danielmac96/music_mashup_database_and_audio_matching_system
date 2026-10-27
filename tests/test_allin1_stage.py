@@ -236,6 +236,10 @@ def test_next_stage_routes_to_allin1_only_when_owed(env, monkeypatch):
     import api.workers.pipeline_worker as pw
     from database import alignment
     song = _song(models, tmp)
+    # The cut is a stage of its own after allin1, and this song has no sections,
+    # so one is owed; that routing has its own test
+    # (tests/test_one_pass_pipeline.py). This test is about allin1.
+    monkeypatch.setattr(pw, "_wants_structure", lambda sid: False)
     assert pw.next_stage(song) is None                  # essentia engine
     monkeypatch.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
     assert pw.next_stage(song) == "allin1"
@@ -254,6 +258,7 @@ def test_pipeline_failure_is_non_fatal(env, monkeypatch):
     monkeypatch.setattr(allin1_runner, "run", lambda *a, **k: (_ for _ in ()).throw(
         RuntimeError("boom")))
     monkeypatch.setattr(pw, "_score_track", lambda *a, **k: None)
+    monkeypatch.setattr(pw, "_wants_structure", lambda sid: False)
     monkeypatch.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
     song = _song(models, tmp)
     job = jobs.new_job(kind="pipeline", song_id=song)

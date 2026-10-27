@@ -41,15 +41,16 @@ _RANK = {
 # Queue stages in lifecycle order. "quick" is the quick tier (readme §9, phase
 # 3): the downloaded mix analysed and cut into provisional sections before
 # Demucs, so a track has BPM, key and a structure within seconds of its
-# download instead of after its separation. "analysis" covers do_analyze + the
-# non-fatal do_structure pass (structure is not status-bearing, so it never gets
-# its own resumable stage).
+# download instead of after its separation.
 # "allin1" (readme §5.5) follows the analysis when the allin1 engine is on, or
 # when a bulk backfill asked for it (songs.allin1_state = 'queued'): beats,
-# downbeats and labelled sections from one neural pass. It is the heaviest stage
-# and is never in the way: the track's Essentia sections and pairs exist before
-# it starts, and its failure leaves the track on them (non-fatal).
-STAGES = ("download", "quick", "stems", "analysis", "allin1")
+# downbeats and labelled sections from one neural pass.
+# "structure" is LAST, and its own stage. Under the allin1 engine the bar lines
+# and segments a cut sits on are allin1's, so cutting before it ran meant
+# cutting the track twice — the librosa/Essentia novelty pass and then allin1's
+# — and scoring twice on top. It stays non-status-bearing: matching works
+# without sections, so a failure here never fails the track.
+STAGES = ("download", "quick", "stems", "analysis", "allin1", "structure")
 
 _STAGE_MIN_RANK = {"download": 1, "stems": 2, "analysis": 3}
 
@@ -87,6 +88,8 @@ def next_stage(song_id: int) -> Optional[str]:
             return stage
     if _wants_allin1(row):
         return "allin1"
+    if _wants_structure(song_id):
+        return "structure"
     return None
 
 
@@ -103,6 +106,38 @@ def _wants_allin1(row) -> bool:
     return current_segmentation_engine() == "allin1"
 
 
+def _wants_structure(song_id: int) -> bool:
+    """Sections are owed when the engine's own cut is not current. Reuses the
+    staleness definition the Settings badge uses, so the two cannot disagree."""
+    from api.workers.bulk_worker import sections_are_current
+    return not sections_are_current(song_id)
+
+
+def _allin1_section_count(song_id: int) -> int:
+    from database import alignment
+    try:
+        return len(alignment.get_allin1_sections(song_id))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def _wants_essentia_cut(song_id: int) -> bool:
+    """Whether the librosa/Essentia novelty cut is worth running on this track.
+
+    Under the essentia engine: always, it IS the engine. Under allin1: only when
+    dual_cut is on (Analysis › Engines compares the two) or allin1 produced no
+    sections — a failure, a skip (a DJ set over allin1_max_secs) or a track it
+    found nothing in, where these sections are what every reader falls back to
+    (`essentia_fallback`)."""
+    from config import current_dual_cut, current_segmentation_engine
+
+    if current_segmentation_engine() != "allin1":
+        return True
+    if current_dual_cut():
+        return True
+    return _allin1_section_count(song_id) == 0
+
+
 def _structure_pass(job_id: str, song_id: int) -> None:
     """Non-fatal structure detection: matching still works without sections, so
     a failure never fails the job or changes the track's 'analysed' status.
@@ -114,6 +149,9 @@ def _structure_pass(job_id: str, song_id: int) -> None:
     tempo/grid column stayed NULL and the Settings badge went on reporting the
     library as stale. sections_are_current shares its definition with that
     badge, so the two can no longer disagree.
+
+    Under the allin1 engine the track's sections are allin1's, measured in its
+    own stage; this pass is then the fallback only (_wants_essentia_cut).
     """
     # Imported here rather than at module scope: bulk_worker resolves get_conn
     # per call so its db_path is not frozen at import, and this module's own
@@ -124,6 +162,10 @@ def _structure_pass(job_id: str, song_id: int) -> None:
     if sections_are_current(song_id):
         jobs.stage_finish(job_id, "structure", "skipped",
                           message="sections already current")
+        return
+    if not _wants_essentia_cut(song_id):
+        jobs.stage_finish(job_id, "structure", "skipped",
+                          message="allin1 cut this track; essentia cut not needed")
         return
     jobs.update(job_id, stage="structure", progress=0, message="structure: starting…")
     jobs.stage_start(job_id, "structure")
@@ -152,15 +194,60 @@ def _structure_pass(job_id: str, song_id: int) -> None:
                     song_id)
 
 
+def _has_provisional_pairs(song_id: int) -> bool:
+    """Whether any stored pair of this track is still the quick tier's
+    stand-in (matcher.match.PROVISIONAL_SCORER)."""
+    from matcher.match import PROVISIONAL_SCORER
+    conn = get_conn()
+    try:
+        return bool(conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM mashup_candidates "
+            "WHERE combo_type='vocal_over_instrumental' AND scorer=? "
+            "AND (vocal_song_id=? OR inst_song_id=?))",
+            (PROVISIONAL_SCORER, song_id, song_id)).fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _wants_scoring(song_id: int) -> bool:
+    """Whether this track's pairs are owed a run.
+
+    models.needs_scoring is the timestamp question — did a scoring input change
+    since the last run for this track. The second half is the one thing the
+    timestamps cannot answer: songs.pairs_input_at has one-second resolution, so
+    an analysis served entirely from the feature cache can finish inside the
+    same second as the quick tier's provisional score, and the card's `prov`
+    chip would then sit there until the next full Score library run. An
+    analysed track still carrying provisional rows is owed its real pairs
+    whatever the clock says.
+    """
+    from database.models import needs_scoring
+    if needs_scoring(song_id):
+        return True
+    return _status(song_id) == "analysed" and _has_provisional_pairs(song_id)
+
+
 def _score_track(song_id: int, why: str) -> None:
     """Score this one track against the library (matcher.score_song_pairs).
 
     After the quick tier its mix stands in for both stems and the rows are
-    provisional — the first pairs land minutes after download, not after
+    provisional — the first pairs land seconds after download, not after
     Demucs; after the final analysis the same call replaces them with real
-    ones. Never fails the job: a full Score library covers anything missed.
+    ones.
+
+    Scores only when something changed since the last run for this track
+    (_wants_scoring): the pipeline used to call this after the quick tier, after
+    the sections and again on finalise, and each call is a library-wide scan.
+    Never fails the job: a full Score library covers anything missed.
     """
     import time
+
+    try:
+        if not _wants_scoring(song_id):
+            log.debug("song %s already scored for its inputs (%s)", song_id, why)
+            return
+    except Exception:  # noqa: BLE001
+        pass          # a staleness check that cannot run must not skip scoring
     t0 = time.monotonic()
     try:
         from matcher.match import score_song_pairs
@@ -171,8 +258,8 @@ def _score_track(song_id: int, why: str) -> None:
 
 
 def _finalize(job_id: str, song_id: int) -> None:
-    """Run the trailing structure pass if needed, then mark the job done."""
-    _structure_pass(job_id, song_id)
+    """Score the track if a scoring input changed since it was last scored,
+    then mark the job done. The structure pass is its own stage now."""
     _score_track(song_id, "analysed")
     jobs.done(job_id, {"song_id": song_id, "status": _status(song_id)})
 
@@ -200,6 +287,20 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
     if stage not in STAGES:
         jobs.fail(job_id, f"Unknown pipeline stage {stage!r}")
         return "failed"
+
+    if stage == "structure":
+        # _structure_pass owns this stage's whole record (it can finish
+        # 'skipped' without ever starting) and swallows its own failures —
+        # structure is non-fatal. It is also the LAST stage and the only one
+        # that can still be owed after it ran: detect_sections falls back to
+        # the track BPM, so a section it could not measure leaves
+        # sections_are_current False for good. Finishing here rather than
+        # asking next_stage again is what stops such a track being re-queued
+        # for its own last stage forever.
+        jobs.update(job_id, status="running", song_id=song_id, stage="structure")
+        _structure_pass(job_id, song_id)
+        _finalize(job_id, song_id)
+        return "done"
 
     jobs.update(job_id, status="running", song_id=song_id, stage=stage,
                 progress=0, message=f"{stage}: starting…")
@@ -250,11 +351,6 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
     jobs.stage_finish(job_id, stage, "done")
     if stage == "quick":
         _score_track(song_id, "provisional")
-    if stage == "analysis" and next_stage(song_id) == "allin1":
-        # The Essentia sections and the pairs on them land now; allin1 (minutes
-        # on CPU) refines them after, without anything waiting on it.
-        _structure_pass(job_id, song_id)
-        _score_track(song_id, "analysed")
     if next_stage(song_id) is None:
         _finalize(job_id, song_id)
         return "done"
@@ -273,8 +369,8 @@ def run(job_id: str, song_id: int) -> None:
     while True:
         stage = next_stage(song_id)
         if stage is None:
-            # Already fully analysed on entry (e.g. re-Process on a done track):
-            # still give it the trailing structure pass.
+            # Nothing left to do (e.g. re-Process on a done track whose
+            # sections are current): score it if an input changed, then finish.
             _finalize(job_id, song_id)
             return
         if run_stage(job_id, song_id, stage) != "next":

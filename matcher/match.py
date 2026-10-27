@@ -945,6 +945,32 @@ def score_song_pairs(song_id: int, db_path=None, progress=None) -> dict:
     return score_all_pairs(db_path=db_path, song_ids=[song_id], progress=progress)
 
 
+def _mark_scored(db, only: Optional[set]) -> None:
+    """Stamp songs.scored_at for what this run covered: the named tracks in
+    incremental mode, every song in a full run — which really is the whole
+    library, provisional stand-ins included (_provisional_stand_ins), and a row
+    with nothing to score is stamped harmlessly because its first features
+    write bumps pairs_input_at past it again. One UPDATE, never one per track,
+    and never fatal — the stamp decides whether the pipeline scores a track
+    again, not whether its pairs exist."""
+    from database.models import get_conn
+    try:
+        conn = get_conn(db)
+        try:
+            if only:
+                ids = sorted(only)
+                conn.execute(
+                    "UPDATE songs SET scored_at=datetime('now') WHERE id IN "
+                    f"({','.join('?' * len(ids))})", ids)
+            else:
+                conn.execute("UPDATE songs SET scored_at=datetime('now')")
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        log.warning("could not stamp songs.scored_at for this run", exc_info=True)
+
+
 def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                     key_min_score: Optional[float] = None,
                     scorer: str = "auto", progress=None,
@@ -1303,6 +1329,11 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     if progress:
         progress(90, f"Writing {len(rows)} candidates…")
     bulk_upsert_candidates(rows, db_path=db)
+    # The tracks this run covered now have pairs for their current inputs
+    # (songs.scored_at). One statement, on its own connection, after the rows
+    # are committed — never a per-track call, and never a write of
+    # app_prefs.last_score, which only a full run owns.
+    _mark_scored(db, only)
 
     evaluated = len(vocals) * len(inst) + len(inst) * (len(inst) - 1) // 2
     dropped = scored - kept
