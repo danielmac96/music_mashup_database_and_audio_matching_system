@@ -54,11 +54,18 @@ def activity_curve(rms: np.ndarray, sr: int, hop: int,
 
 
 def span_fraction(active: np.ndarray, sr: int, hop: int,
-                  start: float, end: float) -> Optional[float]:
+                  start: float, end: float,
+                  frames_per_sec: Optional[float] = None) -> Optional[float]:
     """Share of frames in [start, end) that are sung; None when the span holds
-    no frame."""
-    f0 = max(0, int(start * sr / hop))
-    f1 = min(active.size, int(end * sr / hop))
+    no frame.
+
+    ``frames_per_sec``, when given, is the envelope's own clock and replaces
+    ``sr / hop``: the stored per-frame curves (analysis/timeseries.py) are on a
+    46.44 ms grid, not the librosa hop, and converting with the wrong one reads
+    the wrong part of the track."""
+    fps = float(frames_per_sec) if frames_per_sec else sr / hop
+    f0 = max(0, int(start * fps))
+    f1 = min(active.size, int(end * fps))
     if f1 <= f0:
         return None
     return round(float(active[f0:f1].mean()), 4)

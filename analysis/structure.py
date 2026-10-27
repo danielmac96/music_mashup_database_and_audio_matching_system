@@ -243,8 +243,11 @@ def _novelty_boundaries(X: np.ndarray, min_beats: int, max_sections: int) -> Lis
 
 def _frame_rms(y: np.ndarray) -> np.ndarray:
     # Same call as analysis' dynamics step, so it is shared (analysis/frames.py).
-    from analysis import frames
-    return frames.rms(y, HOP_LENGTH)[0]
+    # Imported as frame_ops throughout this module: `frames` is now the name of
+    # detect_sections' stored-matrix parameter, and a module shadowed by it is
+    # an AttributeError on exactly the path the suite does not take.
+    from analysis import frames as frame_ops
+    return frame_ops.rms(y, HOP_LENGTH)[0]
 
 
 # Bass region for the second chroma. Below ~40 Hz is mostly rumble; above
@@ -292,6 +295,12 @@ SECTION_INSTRUMENTAL_MAX = 0.12
 # flat. A build is not subtle, and calling every gentle wobble a "build" would
 # make the label useless for picking one.
 ENERGY_TREND_EPSILON = 0.004
+
+# Where this cut's chroma / MFCC / band power / RMS came from. Recorded in
+# `timings` so a run that silently fell back to decoding is visible in
+# analysis_runs rather than only in the wall time.
+FRAME_SOURCE_LIBROSA = "librosa"
+FRAME_SOURCE_STORED = "stored"
 
 
 def _section_bpm(section_beats: np.ndarray, track_bpm: Optional[float],
@@ -388,14 +397,20 @@ def _phrase_length(bar_count: float) -> Optional[float]:
 
 
 def _section_bands(band_frames: Optional[np.ndarray], start: float, end: float,
-                   sr: int = SAMPLE_RATE, hop: int = HOP_LENGTH) -> Optional[list]:
+                   frames_per_sec: float = SAMPLE_RATE / HOP_LENGTH
+                   ) -> Optional[list]:
     """8-band occupancy (fractions summing to 1) of one stem inside [start, end),
-    from analysis/frames.power_stats' per-frame band power. None when the stem is
-    missing or silent there — unmeasured, not an empty spectrum."""
+    from the per-frame band power. None when the stem is missing or silent there
+    — unmeasured, not an empty spectrum.
+
+    ``frames_per_sec`` is the matrix's own clock: the librosa cut's
+    ``sr / hop`` (analysis/frames.power_stats), or ``1 / step`` for the stored
+    frames (analysis/timeseries.py, 46.44 ms). Converting with the wrong one
+    reads the wrong half of the track."""
     if band_frames is None:
         return None
-    f0 = max(0, int(start * sr / hop))
-    f1 = min(band_frames.shape[1], int(end * sr / hop))
+    f0 = max(0, int(start * frames_per_sec))
+    f1 = min(band_frames.shape[1], int(end * frames_per_sec))
     if f1 <= f0:
         return None
     per_band = band_frames[:, f0:f1].sum(axis=1).astype(float)
@@ -477,7 +492,8 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
                     timings: Optional[dict] = None,
                     grid: Optional[dict] = None,
                     melody: Optional[dict] = None,
-                    fixed_segments: Optional[list] = None) -> List[dict]:
+                    fixed_segments: Optional[list] = None,
+                    frames: Optional["object"] = None) -> List[dict]:
     """Analyse the full mix (and the stems when available) and return an
     ordered list of section dicts: start_sec, end_sec, label, energy,
     vocal_presence, repetition, confidence. Returns [] on failure.
@@ -514,6 +530,16 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     from allin1's vocabulary (allin1_label). Every per-section measurement is
     the same code as the Essentia cut, so the two engines' sections compare.
 
+    ``frames`` — an analysis.timeseries.TrackFrames. When given, NOTHING here
+    decodes or calls librosa: the full mix's chroma and MFCC, each stem's
+    chroma, each stem's per-frame band power and the vocal stem's frame RMS all
+    come off the .npz sidecars the analysis stage wrote (analysis/timeseries.py),
+    which is where Essentia's own per-frame output now lives. Measured: the
+    stage was 88.6 s a track, 57.1 s of it librosa CQT chroma on the stems, for
+    numbers Essentia had already computed and discarded. Without ``frames`` the
+    librosa path below is exactly what it always was, which is what
+    ``analyzer=librosa`` and the test suite use.
+
     With the stems present each section also carries, measured on them:
     ``vocal_activity`` (share of frames with a voice, analysis/vocals.py) and
     ``band_energy_vocal`` / ``band_energy_bed`` (8-band occupancy of each stem
@@ -542,21 +568,44 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         log.error("librosa not installed. Run: pip install librosa")
         return []
 
-    # Every decode and transform below goes through the decode cache: the
-    # analysis pass that ran just before has usually decoded the mix and the
-    # stems and computed their beat track, chroma, MFCC and RMS with these very
-    # parameters, so structure reuses them instead of repeating them.
-    from analysis import frames
-    from analysis.decode import load_mono
+    # On the librosa path every decode and transform below goes through the
+    # decode cache: the analysis pass that ran just before has usually decoded
+    # the mix and the stems and computed their beat track, chroma, MFCC and RMS
+    # with these very parameters, so structure reuses them instead of repeating
+    # them. On the stored path none of it runs at all.
+    from analysis import frames as frame_ops
+
+    # The stored matrices, when the caller has them: then neither the decoder
+    # nor a single librosa transform is touched below. `frames.get` is
+    # TrackFrames' accessor; anything else is treated as "not given" rather
+    # than raising, because a cut is never worth failing over.
+    stored = None
+    if frames is not None and getattr(frames, "get", None):
+        stored = frames.get("full")
+    use_stored = stored is not None and stored.chroma is not None
 
     log.info(f"Detecting structure: {full_path.name}")
-    _phase("load", "Loading full mix…")
+    # Deliberately NOT called "load" on the stored path: `structure.load` in
+    # analysis_runs is the decode, and its absence is how a stored-frame cut is
+    # told from one that quietly fell back to decoding (readme §3).
+    _phase("frames" if use_stored else "load",
+           "Reading stored frames…" if use_stored else "Loading full mix…")
     sr = SAMPLE_RATE
-    y = load_mono(full_path, sr=sr)
-    duration = len(y) / sr
+    if use_stored:
+        from analysis.timeseries import CURVE_ROWS, sync_by_time
+        step = float(stored.step)
+        n_frames_total = stored.n_frames()
+        duration = n_frames_total * step
+        y = None
+    else:
+        from analysis.decode import load_mono
+        y = load_mono(full_path, sr=sr)
+        duration = len(y) / sr
     _phase(None)
     if timings is not None:
         timings["audio_secs"] = duration
+        timings["frame_source"] = (FRAME_SOURCE_STORED if use_stored
+                                   else FRAME_SOURCE_LIBROSA)
     if duration < 4 * SECTION_MIN_LEN_SECS:
         log.info("  Track too short for structural segmentation, single section.")
         return [{
@@ -567,15 +616,31 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
 
     _phase("beats", "Beat tracking…")
     if grid and grid.get("beat_times"):
-        # Seconds → this signal's frame indices; beats past the end are dropped.
-        n_frames = 1 + len(y) // HOP_LENGTH
-        beats = librosa.time_to_frames(np.asarray(grid["beat_times"], dtype=float),
-                                       sr=sr, hop_length=HOP_LENGTH)
-        beats = beats[(beats >= 0) & (beats < n_frames)]
+        # Seconds → this clock's frame indices; beats past the end are dropped.
+        bt = np.asarray(grid["beat_times"], dtype=float)
+        if use_stored:
+            beats = np.asarray(np.round(bt / step), dtype=int)
+            beats = beats[(beats >= 0) & (beats < n_frames_total)]
+            # sync_by_time de-duplicates its boundaries (as librosa.util.sync
+            # does), so two beats landing on one frame would leave beat_times
+            # one longer than the matrices have columns — and every section
+            # after it reading the wrong span. Ascending and unique already in
+            # the normal case, so this changes nothing there.
+            beats = np.unique(beats)
+        else:
+            n_frames = 1 + len(y) // HOP_LENGTH
+            beats = librosa.time_to_frames(bt, sr=sr, hop_length=HOP_LENGTH)
+            beats = beats[(beats >= 0) & (beats < n_frames)]
         tempo = grid.get("bpm")
+    elif use_stored:
+        # Stored frames and no grid is a caller error, not a fallback: the whole
+        # point is that nothing here decodes, and there is no signal to track.
+        log.error("  stored frames given without a beat grid — nothing to cut on.")
+        _phase(None)
+        return []
     else:
         from analysis.analyze import fitted_bpm
-        tempo, beats = frames.beat_track(y, sr, HOP_LENGTH)
+        tempo, beats = frame_ops.beat_track(y, sr, HOP_LENGTH)
         # The same fitted tempo the track's features carry, not librosa's bin.
         tempo = fitted_bpm(librosa.frames_to_time(beats, sr=sr, hop_length=HOP_LENGTH),
                            float(np.atleast_1d(tempo)[0]))
@@ -588,66 +653,108 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         _phase(None)
         log.warning("  Too few beats detected — skipping structure analysis.")
         return []
-    beat_times = librosa.frames_to_time(beats, sr=sr, hop_length=HOP_LENGTH)
+    beat_times = (beats * step if use_stored
+                  else librosa.frames_to_time(beats, sr=sr, hop_length=HOP_LENGTH))
 
     _phase("features", "Computing beat-synchronous features…")
-    chroma = frames.chroma_cqt(y, sr, HOP_LENGTH)
-    mfcc = frames.mfcc(y, sr, 13, HOP_LENGTH)
-    rms = _frame_rms(y)
+    if use_stored:
+        # Every matrix is already on one 46.44 ms grid, so "beat-synchronous"
+        # is one aggregation per matrix and no transform at all. sync_by_time
+        # is pinned against librosa.util.sync (tests/test_timeseries.py): a
+        # section's per-stem means do not change because the matrix came off
+        # disk.
+        def _beat_sync(matrix, agg):
+            return None if matrix is None else sync_by_time(matrix, step,
+                                                            beat_times, agg)
 
-    # Per-stem chroma on the SAME beat grid. Demucs writes stems sample-aligned
-    # with the mix, so the frame indices in `beats` index all of them.
-    def _stem_chroma(path: Optional[Path], what: str):
-        if not path or not Path(path).exists():
-            return None
-        try:
-            ys = load_mono(path, sr=SAMPLE_RATE)
-            if len(ys) == len(y):
-                # The usual case: the same signal the key step read, so its
-                # chroma is already computed.
-                c = frames.chroma_cqt(ys, sr, HOP_LENGTH)
-            else:
-                # Pad/trim to the mix so sync() cannot run off the end on a stem
-                # the separator emitted a few samples short.
-                if len(ys) < len(y):
-                    ys = np.pad(ys, (0, len(y) - len(ys)))
-                c = librosa.feature.chroma_cqt(y=ys[:len(y)], sr=sr,
-                                               hop_length=HOP_LENGTH)
-            return librosa.util.sync(c, beats, aggregate=np.median)
-        except Exception:  # noqa: BLE001
-            log.warning("  %s chroma failed; falling back to the full mix", what,
-                        exc_info=True)
-            return None
+        def _stem_chroma_stored(name: str):
+            got = frames.get(name)
+            return _beat_sync(getattr(got, "chroma", None), np.median)
 
-    _phase("stem_chroma", "Measuring per-stem harmony…")
-    vocal_chroma_b = _stem_chroma(vocals_path, "vocal")
-    bed_chroma_b = _stem_chroma(inst_path, "bed")
+        chroma_b = _beat_sync(stored.chroma, np.median)
+        mfcc_b = _beat_sync(stored.mfcc, np.mean)
+        if stored.curves is not None:
+            rms_row = CURVE_ROWS.index("rms")
+            rms_b = _beat_sync(stored.curves[rms_row:rms_row + 1], np.mean)[0]
+        else:
+            rms_b = np.zeros(chroma_b.shape[1])
+        _phase("stem_chroma", "Reading per-stem harmony…")
+        vocal_chroma_b = _stem_chroma_stored("vocals")
+        bed_chroma_b = _stem_chroma_stored("instrumental")
+        # The bass stem's own chroma, which Task 3 measures with the tonal
+        # group alone — so this sidecar holds chroma and nothing else. There is
+        # no band-passed fallback here: band-passing needs the signal, and
+        # reaching for it would be the decode this path exists to avoid. No
+        # bass sidecar simply means no bass_chroma on the section.
+        bass_chroma_b = _stem_chroma_stored("bass")
+        _phase("features")
+    else:
+        from analysis.decode import load_mono
+        chroma = frame_ops.chroma_cqt(y, sr, HOP_LENGTH)
+        mfcc = frame_ops.mfcc(y, sr, 13, HOP_LENGTH)
+        rms = _frame_rms(y)
 
-    # Phase E: a second chroma over the bass region only. Root clash in the low
-    # end is the most common reason a "key-compatible" mashup sounds wrong, and
-    # it is invisible to a full-spectrum chroma dominated by pads and hi-hats.
-    # The dedicated bass stem is the better source when four-stem separation ran;
-    # band-passing the mix is the fallback.
-    bass_chroma_b = _stem_chroma(bass_path, "bass stem")
-    if bass_chroma_b is None:
-        try:
-            y_bass = _bandpass(y, sr, BASS_LOW_HZ, BASS_HIGH_HZ)
-            bass_chroma = librosa.feature.chroma_cqt(y=y_bass, sr=sr,
-                                                     hop_length=HOP_LENGTH)
-            bass_chroma_b = librosa.util.sync(bass_chroma, beats, aggregate=np.median)
-        except Exception:  # noqa: BLE001
-            log.warning("  bass chroma failed; sections keep the full-mix chroma only",
-                        exc_info=True)
+        # Per-stem chroma on the SAME beat grid. Demucs writes stems
+        # sample-aligned with the mix, so the frame indices in `beats` index
+        # all of them.
+        def _stem_chroma(path: Optional[Path], what: str):
+            if not path or not Path(path).exists():
+                return None
+            try:
+                ys = load_mono(path, sr=SAMPLE_RATE)
+                if len(ys) == len(y):
+                    # The usual case: the same signal the key step read, so its
+                    # chroma is already computed.
+                    c = frame_ops.chroma_cqt(ys, sr, HOP_LENGTH)
+                else:
+                    # Pad/trim to the mix so sync() cannot run off the end on a
+                    # stem the separator emitted a few samples short.
+                    if len(ys) < len(y):
+                        ys = np.pad(ys, (0, len(y) - len(ys)))
+                    c = librosa.feature.chroma_cqt(y=ys[:len(y)], sr=sr,
+                                                   hop_length=HOP_LENGTH)
+                return librosa.util.sync(c, beats, aggregate=np.median)
+            except Exception:  # noqa: BLE001
+                log.warning("  %s chroma failed; falling back to the full mix", what,
+                            exc_info=True)
+                return None
 
-    _phase("features")
-    chroma_b = librosa.util.sync(chroma, beats, aggregate=np.median)
-    mfcc_b = librosa.util.sync(mfcc, beats, aggregate=np.mean)
-    rms_b = librosa.util.sync(rms[np.newaxis, :], beats, aggregate=np.mean)[0]
+        _phase("stem_chroma", "Measuring per-stem harmony…")
+        vocal_chroma_b = _stem_chroma(vocals_path, "vocal")
+        bed_chroma_b = _stem_chroma(inst_path, "bed")
+
+        # Phase E: a second chroma over the bass region only. Root clash in the
+        # low end is the most common reason a "key-compatible" mashup sounds
+        # wrong, and it is invisible to a full-spectrum chroma dominated by pads
+        # and hi-hats. The dedicated bass stem is the better source when
+        # four-stem separation ran; band-passing the mix is the fallback.
+        bass_chroma_b = _stem_chroma(bass_path, "bass stem")
+        if bass_chroma_b is None:
+            try:
+                y_bass = _bandpass(y, sr, BASS_LOW_HZ, BASS_HIGH_HZ)
+                bass_chroma = librosa.feature.chroma_cqt(y=y_bass, sr=sr,
+                                                         hop_length=HOP_LENGTH)
+                bass_chroma_b = librosa.util.sync(bass_chroma, beats,
+                                                  aggregate=np.median)
+            except Exception:  # noqa: BLE001
+                log.warning("  bass chroma failed; sections keep the full-mix "
+                            "chroma only", exc_info=True)
+
+        _phase("features")
+        chroma_b = librosa.util.sync(chroma, beats, aggregate=np.median)
+        mfcc_b = librosa.util.sync(mfcc, beats, aggregate=np.mean)
+        rms_b = librosa.util.sync(rms[np.newaxis, :], beats, aggregate=np.mean)[0]
 
     # Standardise MFCC rows so chroma and timbre carry comparable weight.
-    mfcc_z = (mfcc_b - mfcc_b.mean(axis=1, keepdims=True)) / \
-             (mfcc_b.std(axis=1, keepdims=True) + 1e-9)
-    X = np.vstack([chroma_b, mfcc_z])
+    # A sidecar without an MFCC (the spectral group failed, the stem was
+    # measured for its chroma alone) leaves the novelty search on harmony
+    # alone — fewer dimensions, not a fabricated matrix of zeros.
+    if mfcc_b is None:
+        X = np.asarray(chroma_b)
+    else:
+        mfcc_z = (mfcc_b - mfcc_b.mean(axis=1, keepdims=True)) / \
+                 (mfcc_b.std(axis=1, keepdims=True) + 1e-9)
+        X = np.vstack([chroma_b, mfcc_z])
 
     beat_dur = float(np.median(np.diff(beat_times))) if len(beat_times) > 1 else 0.5
     min_beats = max(8, int(round(SECTION_MIN_LEN_SECS / max(beat_dur, 1e-3))))
@@ -662,7 +769,19 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     # trims the head of the file before beat-tracking (BEAT_TRIM_SECS), so the
     # stored beat_phase indexes a different grid from the one above.
     from analysis.analyze import _pick_beat_phase, beat_grid_confidence
-    onset_env = frames.onset_env(y, sr, HOP_LENGTH)
+    if use_stored:
+        # Spectral flux frame by frame is what essentia.spectral measured and
+        # what librosa's onset envelope approximates; both the bar-phase pick
+        # and the grid confidence want "how much is happening here", on this
+        # clock. No curves at all means no salience to read, not zero onsets —
+        # but beat_grid_confidence needs an array, so a flat one says
+        # "nothing measured" and the steadiness term still carries the grid.
+        flux_row = CURVE_ROWS.index("flux")
+        onset_env = (stored.curves[flux_row].astype(np.float64)
+                     if stored.curves is not None
+                     else np.zeros(n_frames_total, dtype=np.float64))
+    else:
+        onset_env = frame_ops.onset_env(y, sr, HOP_LENGTH)
     if grid and grid.get("beat_times") and grid.get("beat_phase") is not None:
         # The grid's own bar phase (the kick band, for Essentia) — so a bar line
         # drawn from the stored grid and a section's downbeats agree.
@@ -693,7 +812,14 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     # Vocal stem RMS on the same clock (frame level, mapped by time).
     vocal_rms = None
     vocal_active = None
-    if vocals_path and Path(vocals_path).exists():
+    if use_stored:
+        vf = frames.get("vocals")
+        if vf is not None and getattr(vf, "curves", None) is not None:
+            _phase("vocal", "Reading vocal activity…")
+            from analysis.vocals import active_frames
+            vocal_rms = vf.curves[CURVE_ROWS.index("rms")].astype(np.float64)
+            vocal_active = active_frames(vocal_rms)
+    elif vocals_path and Path(vocals_path).exists():
         _phase("vocal", "Measuring vocal activity…")
         try:
             from analysis.vocals import active_frames
@@ -714,17 +840,28 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
             ys = load_mono(path, sr=SAMPLE_RATE)
             if len(ys) < 2048:
                 return None
-            return frames.power_stats(ys, sr, BAND_EDGES, HF_BAND_HZ, n_fft=2048,
-                                      hop=HOP_LENGTH)["band_frames"]
+            return frame_ops.power_stats(ys, sr, BAND_EDGES, HF_BAND_HZ,
+                                         n_fft=2048,
+                                         hop=HOP_LENGTH)["band_frames"]
         except Exception:  # noqa: BLE001
             log.warning("  %s band occupancy failed", what, exc_info=True)
             return None
 
-    _phase("stem_bands", "Measuring per-stem band occupancy…")
-    vocal_bands_f = _stem_band_frames(vocals_path, "vocal")
-    bed_bands_f = _stem_band_frames(inst_path, "bed")
+    _phase("stem_bands", "Reading per-stem band occupancy…" if use_stored
+           else "Measuring per-stem band occupancy…")
+    if use_stored:
+        # The VOCALS and INSTRUMENTAL stems only — the bass sidecar holds
+        # chroma alone (Task 3 analyses it with the tonal group), so there is
+        # nothing to read there and nothing here asks.
+        vf, bf = frames.get("vocals"), frames.get("instrumental")
+        vocal_bands_f = getattr(vf, "bands", None)
+        bed_bands_f = getattr(bf, "bands", None)
+    else:
+        vocal_bands_f = _stem_band_frames(vocals_path, "vocal")
+        bed_bands_f = _stem_band_frames(inst_path, "bed")
 
-    frames_per_sec = sr / HOP_LENGTH
+    # The active clock: the stored grid's step, or the librosa hop.
+    frames_per_sec = (1.0 / step) if use_stored else sr / HOP_LENGTH
     rms_max = float(np.percentile(rms_b, 95)) or 1.0
     v_scale = float(np.percentile(vocal_rms, 95)) if vocal_rms is not None else 1.0
 
@@ -816,9 +953,12 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
         if vocal_active is not None:
             from analysis.vocals import span_fraction
             seg["vocal_activity"] = span_fraction(vocal_active, sr, HOP_LENGTH,
-                                                  start_t, end_t)
-        seg["band_energy_vocal"] = _section_bands(vocal_bands_f, start_t, end_t)
-        seg["band_energy_bed"] = _section_bands(bed_bands_f, start_t, end_t)
+                                                  start_t, end_t,
+                                                  frames_per_sec=frames_per_sec)
+        seg["band_energy_vocal"] = _section_bands(vocal_bands_f, start_t, end_t,
+                                                  frames_per_sec)
+        seg["band_energy_bed"] = _section_bands(bed_bands_f, start_t, end_t,
+                                                frames_per_sec)
         if melody and melody.get("f0") and melody.get("step"):
             from analysis.vocals import f0_summary
             seg["f0"] = f0_summary(melody["f0"], float(melody["step"]), start_t, end_t)

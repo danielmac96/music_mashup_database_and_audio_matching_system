@@ -718,6 +718,33 @@ def do_quick(song_id: int, on_progress: ProgressCb = None) -> dict:
     return {"analysed": analysed, "sections": result.get("section_count", 0)}
 
 
+def _load_frames(song_id: int, pipeline: Optional[str] = None):
+    """(TrackFrames, cache-key fragment) for this song's pipeline (its live
+    one when not named), or (None, None).
+
+    The per-frame matrices the analysis stage kept (analysis/timeseries.py).
+    The fragment is part of the structure cache key: a cut made from decoded
+    librosa transforms and one made from the stored frames are different
+    answers and must not share a row. Without a sidecar for the full mix there
+    is nothing to cut from, so the librosa path runs exactly as before.
+
+    Never raises: frames are an optimisation, and a cut is not worth failing
+    over.
+    """
+    try:
+        from analysis import timeseries
+        from database import alignment
+
+        pipeline = pipeline or alignment.live_pipeline(song_id)
+        loaded = timeseries.load_track(song_id, pipeline)
+        if loaded.stems.get("full") is None:
+            return None, None
+        return loaded, f"{timeseries.VERSION}:" + ",".join(sorted(loaded.stems))
+    except Exception:  # noqa: BLE001
+        log.exception("could not load the frame sidecars for song %s", song_id)
+        return None, None
+
+
 def do_structure(song_id: int, on_progress: ProgressCb = None,
                  gate: str = "analysis", use_stems: bool = True) -> dict:
     from analysis.structure import detect_sections
@@ -777,6 +804,15 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
         if mel and mel.get("f0"):
             melody = {"step": mel.get("step"), "f0": mel["f0"]}
             hashes["melody"] = f"{mel_group.version}:{mel_group.params_hash()}"
+    # The stored per-frame matrices, but only with a beat grid to cut them on:
+    # the stored path has no signal to beat-track, so it refuses rather than
+    # decoding, and shadow mode writes sidecars while leaving the core (and the
+    # grid) to librosa. No grid therefore means the librosa path, exactly as
+    # before — and `hashes["frames"]` is absent, so the two never share a row.
+    track_frames, frames_key = (_load_frames(song_id) if use_stems and grid
+                                else (None, None))
+    if frames_key:
+        hashes["frames"] = frames_key
     key = _combo_key(hashes, required=("full",))
 
     timings: dict = {}
@@ -791,6 +827,7 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
                 inputs["full"], inputs["vocals"],
                 inst_path=inputs["instrumental"], bass_path=inputs["bass"],
                 on_progress=on_progress, timings=timings, grid=grid, melody=melody,
+                frames=track_frames,
             ) or None)
             sections = sections or []
             tinfo["audio_secs"] = timings.get("audio_secs")
@@ -1032,6 +1069,9 @@ def _allin1_sections(song_id: int, pipeline: str, stem_paths: dict, full: Path,
               "bass": _p("bass")}
     hashes = _hash_inputs(inputs)
     hashes["allin1"] = a1_key
+    track_frames, frames_key = _load_frames(song_id, pipeline)
+    if frames_key:
+        hashes["frames"] = frames_key
     key = _combo_key(hashes, required=("full", "allin1"))
     grid = {"beat_times": summary["beats"], "bpm": summary.get("bpm"),
             "beat_phase": None, "downbeats": summary["downbeats"]}
@@ -1040,7 +1080,7 @@ def _allin1_sections(song_id: int, pipeline: str, stem_paths: dict, full: Path,
         sections, hit, _ms = cached("allin1.structure", key, lambda: detect_sections(
             inputs["full"], inputs["vocals"], inst_path=inputs["instrumental"],
             bass_path=inputs["bass"], timings=timings, grid=grid,
-            fixed_segments=summary["segments"]) or None)
+            fixed_segments=summary["segments"], frames=track_frames) or None)
         if hit:
             tinfo["grp"] = "structure.cached"
     _record_steps("allin1.structure", song_id, timings, analyzer="allin1")

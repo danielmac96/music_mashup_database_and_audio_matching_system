@@ -161,7 +161,10 @@ _GROUPS = (
     # occupancy and, given a melody, the sung range. v3: track and section
     # BPM fitted through the beats. v4: a voiceless section is a drop or a
     # breakdown, never a verse (label_segments).
-    FeatureGroup("librosa.structure", 4, "librosa", 1, _structure_params,
+    # v5: chroma and MFCC come from Essentia's own per-frame output
+    # (analysis/timeseries.py) instead of a second librosa CQT/STFT pass, and
+    # the bass chroma is the bass stem's rather than a band-passed mix.
+    FeatureGroup("librosa.structure", 5, "librosa", 1, _structure_params,
                  "sections: boundaries, labels, per-section measurements "
                  "(mix + vocal/instrumental/bass stems)"),
     # ── Essentia (analysis/essentia_groups.py) ────────────────────────────────
@@ -201,14 +204,17 @@ _GROUPS = (
                  "is the sidecar's metadata; the arrays live in a .npz beside "
                  "the audio (analysis/timeseries.py)"),
     # v3: section BPM fitted through the beats.
-    FeatureGroup("essentia.structure", 4, "essentia", 1, _structure_params,
-                 "sections on the Essentia beat grid (the librosa segmenter fed "
-                 "essentia.rhythm's beats and phase)"),
+    # v5: see librosa.structure v5 — the frames are Essentia's now.
+    FeatureGroup("essentia.structure", 5, "essentia", 1, _structure_params,
+                 "sections on the Essentia beat grid, cut from the stored "
+                 "per-frame chroma and MFCC (analysis/timeseries.py)"),
     # ── allin1 (analysis/allin1_runner.py, readme §5.5) ───────────────────────
     FeatureGroup("allin1.analysis", 1, "allin1", 2, _allin1_params,
                  "full mix + the 4 Demucs sources: beats, downbeats, beat-in-bar, "
                  "BPM, labelled segments, activation and embedding summaries"),
-    FeatureGroup("allin1.structure", 1, "allin1", 2,
+    # v2: see librosa.structure v5 — it is the same detect_sections, so the
+    # frames are Essentia's here too.
+    FeatureGroup("allin1.structure", 2, "allin1", 2,
                  lambda: {**_structure_params(), **_allin1_params()},
                  "sections on allin1's segments and downbeats, measured by the "
                  "same per-section code as the Essentia cut"),
