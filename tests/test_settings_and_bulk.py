@@ -399,3 +399,51 @@ def test_bulk_rejects_a_bad_action_or_scope(client):
     assert c.post("/api/tracks/bulk", json={"action": "delete"}).status_code == 400
     assert c.post("/api/tracks/bulk",
                   json={"action": "analyze", "scope": "sideways"}).status_code == 400
+
+
+def test_an_allin1_cut_track_is_not_owed_the_essentia_cut(client, monkeypatch):
+    """Under the allin1 engine, allin1's sections ARE the track's sections.
+
+    Task 5 made the structure stage skip the novelty cut when allin1 already cut
+    the track (pipeline_worker._wants_essentia_cut), but left this predicate
+    asking only about the `sections` table — which is then empty for good. That
+    is the exact failure test_badge_and_structure_gate_share_one_definition
+    exists to prevent, one engine along: the badge counts every allin1 track as
+    needing a re-analysis forever, and the button that answers it re-runs the
+    whole analysis and then skips the cut, so the count never drops.
+
+    With dual_cut on both cuts are wanted, so the Essentia one is owed again.
+    """
+    c, db = client
+    sid = _add(db, 1, bands=True, quality=True, sections=False)
+
+    from database.models import get_conn
+    conn = get_conn(db)
+    conn.execute(
+        "INSERT INTO sections_allin1 (song_id, pipeline, section_index, label,"
+        " start_sec, end_sec) VALUES (?,?,?,?,?,?)",
+        (sid, "legacy_2stem", 1000, "chorus", 0.0, 30.0))
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
+    from api.workers.bulk_worker import sections_are_current
+    assert sections_are_current(sid, db_path=db) is True
+    got = c.get("/api/tracks/staleness").json()
+    assert got["needs_analysis"] == 0
+    assert got["missing_sections"] == 0
+
+    monkeypatch.setenv("MASHUP_DUAL_CUT", "1")
+    assert sections_are_current(sid, db_path=db) is False
+    assert c.get("/api/tracks/staleness").json()["missing_sections"] == 1
+    monkeypatch.delenv("MASHUP_DUAL_CUT")
+
+    # The other pipeline's parked sections are not this track's, so they cover
+    # nothing (alignment.get_allin1_sections matches the pipeline too).
+    conn = get_conn(db)
+    conn.execute("UPDATE sections_allin1 SET pipeline='unified_4stem' "
+                 "WHERE song_id=?", (sid,))
+    conn.commit()
+    conn.close()
+    assert sections_are_current(sid, db_path=db) is False
+    assert c.get("/api/tracks/staleness").json()["missing_sections"] == 1

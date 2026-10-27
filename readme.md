@@ -187,7 +187,7 @@ refused by the API with the reason (`GET /api/analysis/status` →
 
 | To undo | Do | What happens |
 |---|---|---|
-| The allin1 engine | Settings › Tuning › Section engine › essentia, then **Score library** | Pairs are re-cut from the Essentia sections, which allin1 never touched. Its sections, phrases and analysis stay stored for the next switch or the Engines comparison. |
+| The allin1 engine | Settings › Tuning › Section engine › essentia, then **Bulk reprocess › re-analyse** for any track imported under allin1, then **Score library** | Pairs are re-cut from the Essentia sections, and allin1's sections, phrases and analysis stay stored for the next switch or the Engines comparison. **Not free any more:** a track imported while the allin1 engine was on has no Essentia sections at all — the cut is skipped where allin1 made one (`dual_cut`, §5.5) — so it needs one novelty cut per track on the way back. The staleness badge counts exactly those tracks (it reads the live engine, `bulk_worker._allin1_covers_sections_sql`), so the button names the work. Turn `dual_cut` on before an allin1 import to keep the switch free. |
 | The unified pipeline | Settings › Tuning › Separation pipeline › legacy | Saving starts a `switch_pipeline` job (also in Bulk reprocess): each track's legacy stems / features / sections rows come back from `pipeline_parked` in one transaction and the unified ones are parked (§7). No Demucs, no analysis, no file deleted. A track that was never separated the legacy way is queued for it. Then **Score library**. |
 | The schema | Switch back to legacy first, then `python -m database.downgrade alignment` with the server stopped | Drops the five tables and the columns `database/alignment.py` added, nothing else. Refuses while a track is live on the unified pipeline, or a judgement names an allin1 section. The next start migrates up again. |
 
@@ -2294,7 +2294,16 @@ Existing databases migrate on start.
   copies of the arithmetic together.
 - **The structure gate.** `pipeline_worker._structure_pass` asks whether sections
   are *current* via `bulk_worker.sections_are_current` (`_SECTION_CURRENT_COLUMNS`),
-  shared with the staleness badge. Add the next section column to that tuple or
+  shared with the staleness badge. **That one definition is engine-aware**
+  (`_sections_owed_sql` = stale/absent Essentia sections AND NOT
+  `_allin1_covers_sections_sql`), because the cut is skipped where allin1 made
+  one: under the allin1 engine with `dual_cut` off the `sections` table stays
+  empty for good, and a predicate that asked only about it counted every
+  allin1-cut track as needing a re-analysis forever — behind a button that
+  re-runs the whole analysis and then skips the cut, which is the exact failure
+  this shared definition exists to prevent. `_stale_analysis_sql` is a function
+  rather than a constant for the same reason: the engine and `dual_cut` are read
+  live, and a module-level f-string would freeze them at import. Add the next section column to that tuple or
   bulk re-analysis silently skips structure. `bpm_source IS NOT NULL` is
   satisfied by `track_fallback`. Provisional sections (the quick tier's, cut
   without stems) are stale whenever a vocal stem exists, in the same SQL, and
