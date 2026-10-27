@@ -634,7 +634,10 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         update_song_error(song_id, "error_analysis", str(exc))
         raise
 
-    if not analysed:
+    # A tonal-only stem writes no features row, so it cannot be the one stem
+    # that makes a track analysed: `status` means the rows are there (readme
+    # §7), and a track with a bass chroma and nothing else has none of them.
+    if not [s for s in analysed if s not in _TONAL_ONLY_STEMS]:
         update_song_error(song_id, "error_analysis", "Analysis failed for every stem")
         raise StageError("Analysis failed for every stem")
 

@@ -4015,7 +4015,15 @@ def current_dual_cut() -> bool:
     track, measured, and the Essentia sections it produces are then thrown away
     by every query that reads the allin1 namespace. On: both cuts are stored,
     which is what Analysis › Engines compares."""
-    return _resolve_bool("MASHUP_DUAL_CUT", "dual_cut", False)
+    # CORRECTED 2026-10-26: there is no config._resolve_bool (see Task 3's
+    # correction). Copy current_keep_analysis_stems' inline env -> settings ->
+    # default walk, as current_keep_frames does.
+    raw = os.environ.get("MASHUP_DUAL_CUT")
+    if raw is None:
+        raw = load_settings().get("dual_cut", False)
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "off", "no")
 ```
 
 - [ ] **Step 5: Reorder the stages and gate the cut**

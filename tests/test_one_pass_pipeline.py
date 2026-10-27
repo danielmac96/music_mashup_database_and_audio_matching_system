@@ -335,3 +335,32 @@ def test_the_bass_stem_gets_a_chroma_sidecar_and_no_features_row(monkeypatch,
     assert frames.matrices() == {"chroma": 12}        # spectral never ran
     assert frames.step == pytest.approx(ts.STEP_SECS)
     assert models.get_features_for_song(song_id, "bass", db_path=db) is None
+
+
+def test_a_bass_chroma_alone_is_not_an_analysed_track(seeded_song, env, monkeypatch):
+    """`status = analysed` means the features rows are there (readme §7). The
+    bass writes none, so a track whose full, vocals and instrumental all failed
+    is a failed analysis even though its bass chroma was measured — otherwise
+    the matcher gets an "analysed" track with nothing to rank."""
+    models, stages, db = env
+    song_id, paths = seeded_song
+
+    def fake(song_id_, stem_type, path, key, on_progress, extra_steps=(),
+             frames_out=None, force_steps=(), only_steps=()):
+        if stem_type == "bass":                     # its one group ran
+            return {"tonal": {"key": "A", "mode": "minor", "camelot": "8A",
+                              "key_confidence": 0.5, "hpcp": [0.0] * 12}}, False
+        return {"tonal": {}}, False                 # incomplete core: the stem fails
+
+    monkeypatch.setattr(stages, "_run_essentia", fake)
+    monkeypatch.setattr(stages, "effective_analyzer", lambda: ("essentia", "essentia"))
+    monkeypatch.setattr(stages, "require_analyzer", lambda: None)
+
+    analysed, failed = stages._analyze_stems(song_id, paths,
+                                             stages._ANALYSIS_STEM_ORDER, None)
+    assert analysed == ["bass"]
+    assert set(failed) == {"full", "vocals", "instrumental"}
+
+    with pytest.raises(stages.StageError, match="every stem"):
+        stages.do_analyze(song_id)
+    assert models.get_song(song_id, db_path=db)["status"] == "error_analysis"
