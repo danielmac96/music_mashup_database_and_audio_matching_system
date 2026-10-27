@@ -3200,18 +3200,39 @@ def seeded_song(tmp_path):
         sf.write(p, y, sr)
         paths[stem] = str(p)
     song_id = upsert_song(title="T", artist="A", source_url="u://1",
-                          raw_path=paths["full"], duration_secs=2)
+                          raw_path=paths["full"], duration_secs=2, db_path=db)
     for stem, p in paths.items():
-        upsert_stem(song_id, stem, p, separator="demucs:htdemucs:4:unified")
+        upsert_stem(song_id, stem, p, separator="demucs:htdemucs:4:unified",
+                    db_path=db)
     return song_id, paths
 ```
+
+CORRECTED 2026-10-26 (Task 3): **as written above, this test writes to the
+user's real library.** `config.DB_PATH` binds at import, and the stage under
+test calls `upsert_features`, `set_stem_content_hash` and `timeseries.write`
+itself — there is no `db_path=` to hand it. Passing one to the fixture's own
+calls is necessary but not sufficient. The file therefore needs the isolation
+`tests/test_quick_tier.py` already uses: set `MASHUP_AUDIO_ROOT`,
+`MASHUP_DB_PATH` and `MASHUP_SETTINGS_DIR` under `tmp_path`, then
+`importlib.reload(config)`, `reload(database.models)` and
+`reload(api.workers.stages)` so the defaults re-bind; `models.init_db()`;
+`analysis.decode.clear()`. `tests/test_one_pass_pipeline.py` does this in an
+`env` fixture that `seeded_song` depends on, and restores the real environment
+and re-reloads at teardown so a later test file in the same invocation does
+not inherit a `tmp_path` pytest will delete. `get_features_for_song` in the
+test body takes that `db_path` too.
 
 `upsert_song` takes keyword arguments (`title`, `artist`, `source_url`, `duration_secs`, `genre`, `raw_path`, `status`, then keyword-only extras) — **not** a dict. Every fixture in this plan calls it that way; if you find a call passing a dict, it is a mistake in the plan, not a second supported form.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/test_one_pass_pipeline.py -q`
-Expected: FAIL — `AttributeError: module 'api.workers.stages' has no attribute '_TONAL_ONLY_STEMS'`
+Expected: FAIL. CORRECTED 2026-10-26 (Task 3): pytest runs the first test
+first, so the first failure is `AssertionError: assert None is not None` on
+`ts.read(...)` (no sidecar is written yet), and the second is
+`AssertionError: assert 'bass' in ('full', 'vocals', 'instrumental')`. The
+`AttributeError` on `_TONAL_ONLY_STEMS` is never reached, because the line
+above it in that test fails first. All three have the one cause.
 
 - [ ] **Step 3: Add the `keep_analysis_frames` setting**
 
@@ -3223,10 +3244,21 @@ def current_keep_frames() -> bool:
     sidecars. On, because they are what makes a re-cut, the Segments screen and
     phrase matching free; off throws the arrays away after the sections are
     measured and every later re-cut decodes and recomputes them."""
-    return _resolve_bool("MASHUP_KEEP_ANALYSIS_FRAMES", "keep_analysis_frames", True)
+    raw = os.environ.get("MASHUP_KEEP_ANALYSIS_FRAMES")
+    if raw is None:
+        raw = _load_settings().get("keep_analysis_frames")
+    if raw is None or str(raw).strip() == "":
+        return True
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() not in ("0", "false", "off", "no")
 ```
 
-Use whichever boolean resolver `current_keep_analysis_stems` uses — copy that line's shape exactly rather than inventing a helper.
+CORRECTED 2026-10-26 (Task 3): there is **no `_resolve_bool` in `config.py`** —
+`current_keep_analysis_stems` spells the env → settings → default walk out
+inline, and the body above is that body with the two names changed. Copy it,
+and do not add a helper (a shared resolver is a refactor of eight live readers,
+not part of this task).
 
 - [ ] **Step 4: Write the sidecars in `_analyze_stems`**
 
@@ -3251,15 +3283,20 @@ Give `_run_essentia` the two new arguments and forward them:
 def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
                   on_progress: ProgressCb, extra_steps: tuple = (),
                   frames_out: Optional[dict] = None,
-                  force_steps: tuple = ()) -> tuple[dict, bool]:
+                  force_steps: tuple = (),
+                  only_steps: tuple = ()) -> tuple[dict, bool]:
 ```
 
 ```python
         out = analyze_file_essentia(path, cache=StepCache(key, ESSENTIA_STEP_GROUPS),
                                     timings=timings, on_progress=on_progress,
                                     extra_steps=extra_steps, frames_out=frames_out,
-                                    force_steps=force_steps)
+                                    force_steps=force_steps, only_steps=only_steps)
 ```
+
+(CORRECTED 2026-10-26 (Task 3): the signature the plan printed left
+`only_steps` out while the prose below it says to thread it through. Both
+arguments go in at once.)
 
 Inside `_analyze_stems`, replace the Essentia call site with the version that collects and writes the frames. The `for stem_type in stem_types:` loop body becomes (only the changed parts shown in place):
 
@@ -3312,10 +3349,21 @@ Inside `_analyze_stems`, replace the Essentia call site with the version that co
                                       song_id, stem_type)
             if tonal_only:
                 # Measured for its frames only: no features row, so no half-empty
-                # row for the matcher's library z-scores to average over.
-                analysed.append(stem_type)
+                # row for the matcher's library z-scores to average over. In
+                # librosa mode (or when the group failed) nothing ran for it at
+                # all, so it counts as neither analysed nor failed — a track is
+                # fully analysed with or without a bass chroma.
+                if run_essentia and ess:
+                    analysed.append(stem_type)
                 continue
 ```
+
+CORRECTED 2026-10-26 (Task 3): the plan appended unconditionally. `analysed`
+is what `do_analyze` tests before it raises "Analysis failed for every stem"
+and what the job reports as `analysed_stems`, so in `analyzer=librosa` mode —
+which the whole suite pins, and where `run_essentia` is False — an unconditional
+append would mark a track whose every real stem failed as analysed, on the
+strength of a bass stem nothing looked at.
 
 For a tonal-only stem, `analyze_file_essentia` must not be asked for the other groups. It has `force_steps` but no "only these steps" argument (checked on `c9d296c`; a Task 2 report claiming otherwise is wrong), so add one with the same shape as `force_steps`:
 
@@ -3325,7 +3373,15 @@ def analyze_file_essentia(path: Path, cache=None, timings=None, on_progress=None
                           force_steps: tuple = (), only_steps: tuple = ()):
 ```
 
-and, where it iterates its step mapping, `if only_steps and step not in only_steps: continue`. Then pass `only_steps=("tonal",)` from `_run_essentia` when `stem_type in _TONAL_ONLY_STEMS`, threading one more argument through `_run_essentia` the same way as `force_steps`.
+and narrow the step list once, right after `steps = runnable_steps(...)` and **before the cache loop**: `if only_steps: steps = tuple(s for s in steps if s in only_steps)`. Then pass `only_steps=("tonal",)` from `_run_essentia` when `stem_type in _TONAL_ONLY_STEMS`, threading one more argument through `_run_essentia` the same way as `force_steps`.
+
+CORRECTED 2026-10-26 (Task 3): the plan said to put a
+`if only_steps and step not in only_steps: continue` in the loop over the step
+mapping. `analyze_file_essentia` has **two** such loops — the cache lookup and
+the `todo` walk — and guarding only the second would still return the other
+groups' cached payloads in the result, so a bass stem would come back with a
+complete core and look like a `features` row waiting to be written. Narrowing
+the one `steps` list drives both loops and is what the code does.
 
 - [ ] **Step 5: Run the test to verify it passes**
 
