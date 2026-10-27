@@ -3442,7 +3442,11 @@ import numpy as np
 import pytest
 
 
-def _frames(n=600, rows=None):
+# CORRECTED (Task 4): n must clear detect_sections' short-track early
+# return, 4 * SECTION_MIN_LEN_SECS = 48 s. 600 frames is 27.9 s on the
+# 46.44 ms grid, so every test below got one stand-in section and the
+# per-stem and fixed-segment assertions could not pass. 3000 = 139 s.
+def _frames(n=3000, rows=None):
     from analysis import timeseries as ts
 
     rng = np.random.default_rng(11)
@@ -3466,11 +3470,13 @@ def test_sections_from_frames_do_not_decode(tmp_path, monkeypatch):
         raise AssertionError("structure decoded or recomputed with frames given")
 
     monkeypatch.setattr(decode, "load_mono", boom)
-    monkeypatch.setattr(structure, "load_mono", boom, raising=False)
+    # CORRECTED (Task 4): `load_mono` is imported INSIDE detect_sections, so
+    # patching it on the structure module is a no-op. decode.load_mono is the
+    # one that bites.
     for name in ("chroma_cqt", "mfcc", "power_stats", "beat_track"):
         monkeypatch.setattr(frames_mod, name, boom)
 
-    n = 600
+    n = 3000
     track = ts.TrackFrames(stems={k: _frames(n) for k in
                                   ("full", "vocals", "instrumental", "bass")})
     beat_times = [i * 0.46875 for i in range(int(n * ts.STEP_SECS / 0.46875))]
@@ -3489,7 +3495,7 @@ def test_sections_from_frames_carry_every_per_stem_measure(tmp_path):
     from analysis import structure
     from analysis import timeseries as ts
 
-    n = 600
+    n = 3000
     track = ts.TrackFrames(stems={k: _frames(n) for k in
                                   ("full", "vocals", "instrumental", "bass")})
     beat_times = [i * 0.46875 for i in range(int(n * ts.STEP_SECS / 0.46875))]
@@ -3514,7 +3520,7 @@ def test_fixed_segments_from_frames_use_the_given_boundaries(tmp_path):
     from analysis import structure
     from analysis import timeseries as ts
 
-    n = 600
+    n = 3000
     track = ts.TrackFrames(stems={"full": _frames(n), "vocals": _frames(n),
                                   "instrumental": _frames(n)})
     beat_times = [i * 0.46875 for i in range(int(n * ts.STEP_SECS / 0.46875))]
@@ -3593,7 +3599,13 @@ Immediately after the `import librosa` block and the `from analysis.decode impor
         stored = frames.get("full")
     use_stored = stored is not None and stored.chroma is not None
 
-    _phase("load", "Loading full mix…" if not use_stored else "Reading stored frames…")
+    # CORRECTED (Task 4): NOT "load" on the stored path. _record_steps files
+    # every numeric timing as `structure.<step>`, and Step 9 below checks that
+    # a stored-frame cut leaves NO `structure.load` row — that absence is how
+    # a cut from the frames is told from one that quietly fell back to
+    # decoding. The stored phase is "frames".
+    _phase("frames" if use_stored else "load",
+           "Reading stored frames…" if use_stored else "Loading full mix…")
     sr = SAMPLE_RATE
     if use_stored:
         from analysis.timeseries import CURVE_ROWS, sync_by_time
@@ -3686,7 +3698,7 @@ Replace the `_phase("features", …)` block and the two stem helpers with a bran
         # `git diff` that only the indentation moved.
 ```
 
-Keep the existing `mfcc_z` / `X` lines after the branch — they read `chroma_b` and `mfcc_b` only, so the novelty search now runs on the stored HPCP and MFCC.
+Keep the existing `mfcc_z` / `X` lines after the branch — they read `chroma_b` and `mfcc_b` only, so the novelty search now runs on the stored HPCP and MFCC. **CORRECTED (Task 4):** guard them. A sidecar can hold chroma and nothing else — that is exactly what Task 3 writes for the bass, and what a stem whose spectral group failed leaves — so `mfcc_b` can be `None` and `mfcc_b.mean(...)` raises. With no MFCC the novelty search runs on `chroma_b` alone: fewer dimensions, never a fabricated matrix of zeros.
 
 The beat phase and grid confidence need an onset envelope. Under the stored path, use the `flux` curve, which is what `essentia.spectral` measured frame by frame and the onset envelope approximates:
 
@@ -3739,7 +3751,7 @@ Finally, two frame-clock constants are read further down and must follow the act
     frames_per_sec = (1.0 / step) if use_stored else sr / HOP_LENGTH
 ```
 
-`_section_bands(band_frames, start, end)` converts seconds to frame indices with `int(start * sr / hop)`; give it the step instead so it works on either clock. Change its signature to `_section_bands(band_frames, start, end, frames_per_sec)` and its body to `f0 = int(start * frames_per_sec)` / `f1 = min(band_frames.shape[1], int(end * frames_per_sec))`, then update both call sites to pass `frames_per_sec`. Do the same for `analysis.vocals.span_fraction(vocal_active, sr, HOP_LENGTH, start_t, end_t)`: add a keyword `frames_per_sec=None` which, when given, is used instead of `sr / hop`, and pass `frames_per_sec` from here.
+`_section_bands(band_frames, start, end)` converts seconds to frame indices with `int(start * sr / hop)`; give it the step instead so it works on either clock. Change its signature to `_section_bands(band_frames, start, end, frames_per_sec)` and its body to `f0 = max(0, int(start * frames_per_sec))` / `f1 = min(band_frames.shape[1], int(end * frames_per_sec))` (**CORRECTED (Task 4):** the existing body clamps at 0; dropping that clamp lets a negative start index read from the end of the matrix), then update both call sites to pass `frames_per_sec`. Do the same for `analysis.vocals.span_fraction(vocal_active, sr, HOP_LENGTH, start_t, end_t)`: add a keyword `frames_per_sec=None` which, when given, is used instead of `sr / hop`, and pass `frames_per_sec` from here.
 
 - [ ] **Step 4: Bump the two structure group versions**
 
@@ -3771,8 +3783,15 @@ In `api/workers/stages.py`, inside `do_structure`, after `hashes` is built and b
     # The per-frame matrices the analysis stage kept (analysis/timeseries.py).
     # Part of the key: a cut made from decoded librosa transforms and one made
     # from the stored frames are different answers, and must not share a row.
+    # CORRECTED (Task 4): `and grid`. Step 3's stored path returns [] without a
+    # beat grid (it has no signal to track), and SHADOW mode writes sidecars
+    # while leaving the core — and therefore the grid — to librosa; so does
+    # essentia mode before `essentia.rhythm` is in the cache. Offering the
+    # frames there made every structure cut come back empty. No grid means the
+    # librosa path, and `hashes["frames"]` is then absent, so the two answers
+    # never share a cache row.
     track_frames = None
-    if use_stems:
+    if use_stems and grid:
         from analysis import timeseries
         from database import alignment
 
@@ -3783,6 +3802,9 @@ In `api/workers/stages.py`, inside `do_structure`, after `hashes` is built and b
             hashes["frames"] = f"{timeseries.VERSION}:" + ",".join(
                 sorted(loaded.stems))
 ```
+(Implemented as `stages._load_frames(song_id) -> (TrackFrames | None, key | None)`,
+which `_allin1_sections` calls too and which never raises: frames are an
+optimisation, and a cut is not worth failing over.)
 
 and pass it into the call:
 
@@ -3833,6 +3855,23 @@ Expected: well under 10 s against the 88.6 s median, and
 docker compose exec app python -c "import sqlite3,config; c=sqlite3.connect(config.DB_PATH); print(c.execute(\"select grp,round(ms) from analysis_runs where grp like 'structure%' order by id desc limit 10\").fetchall())"
 ```
 shows no `structure.load` row for that run.
+
+**Two consequences measured on the real library (Task 4, 2026-10-26), both
+left as the plan has them:**
+
+- **`detect_sections` decodes nothing, but `do_structure` still decodes the
+  vocal stem.** `store_phrases` (analysis/phrases.py) wants a librosa-hop RMS
+  envelope and the plan never mentions it, so the stage's wall time is the cut
+  (0.16 s) plus that decode plus `warm_hooks` — 2.4 s on a 232 s track, not
+  0.16 s. Feeding it the sidecar's `rms` curve would change what `vocal.phrases`
+  returns and so needs its own version bump; it is not Task 4's.
+- **A legacy 2-stem track loses its bass chroma.** The stored path has no
+  signal to band-pass, so with no bass sidecar `bass_chroma` is simply absent —
+  0 of song 1's 10 sections carry one, where the band-passed fallback used to
+  fill all 10. `harmony.bass_clash` then answers `known: False` (no warning
+  rather than a wrong one) and `_SECTION_CURRENT_COLUMNS` does not ask for it,
+  so nothing loops; but the bass-clash chip is gone for a 2-stem library until
+  it moves to `unified_4stem`, which is what gives it a real bass stem.
 
 - [ ] **Step 10: Commit**
 
