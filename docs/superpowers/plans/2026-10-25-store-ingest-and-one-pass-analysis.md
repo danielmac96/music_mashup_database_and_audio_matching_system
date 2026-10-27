@@ -3156,8 +3156,8 @@ def test_analysis_writes_a_sidecar_per_stem(tmp_path, monkeypatch, seeded_song):
     for stem in ("full", "vocals", "instrumental"):
         assert ts.read(song_id, stem, "legacy_2stem") is not None, stem
     # The bass stem is analysed for its chroma only — no features row.
-    from database.models import get_features
-    assert get_features(song_id, "bass") is None
+    from database.models import get_features_for_song
+    assert get_features_for_song(song_id, "bass") is None
 
 
 def test_bass_is_analysed_tonal_only():
@@ -3317,7 +3317,7 @@ Inside `_analyze_stems`, replace the Essentia call site with the version that co
                 continue
 ```
 
-For a tonal-only stem, `analyze_file_essentia` must not be asked for the other groups. Restrict the steps it runs by passing the step list through `extra_steps`' sibling — if `analyze_file_essentia` has no "only these steps" argument, add one with the same shape as `force_steps`:
+For a tonal-only stem, `analyze_file_essentia` must not be asked for the other groups. It has `force_steps` but no "only these steps" argument (checked on `c9d296c`; a Task 2 report claiming otherwise is wrong), so add one with the same shape as `force_steps`:
 
 ```python
 def analyze_file_essentia(path: Path, cache=None, timings=None, on_progress=None,
