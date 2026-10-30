@@ -4723,223 +4723,166 @@ backfill recorded as done; the null test moved to the head of the ordered list).
 
 ## Task 7: Variant clustering stops rebuilding the library per track
 
-`rebuild_variant_clusters()` runs after **every** track's analysis and re-clusters the whole library: 624 runs at a 1.0 s median on 206 tracks (56 minutes of the measured total), and it grows with the library while the per-track work does not. One track joining a library only needs that track compared against the existing clusters.
+> **Corrected after implementation (2026-10-30, commit `c729978`).** The draft
+> carried **twelve** errors, one of them a correctness bug that would have made
+> the incremental answer differ from the full rebuild. Read `matcher/dedup.py`
+> and `tests/test_dedup_incremental.py` for the shape that shipped.
+>
+> 1. `variant_key` takes `(artist, title)` — the draft passed the title as the
+>    artist.
+> 2. **LOAD-BEARING:** the candidate set is keyed on the TITLE half, not the
+>    full `variant_key`. See the section below.
+> 3. `get_all_features` already takes `song_ids` (and its docstring already
+>    names this function as the reason), so "if it does not, add one" does not
+>    apply and `database/models.py` needs no change.
+> 4. It must be passed `columns=FEATURES_SCORING_COLUMNS`, as the rebuild does.
+> 5. "Keep the bulk path calling it" is false — `stages.py` was the *only*
+>    production caller, so after this change there is none.
+> 6. The rows must be built the way the rebuild builds them, not hand-merged
+>    from two dicts.
+> 7. The test fixture (3 rows, one Extended Mix) exercises none of the branches
+>    that discriminate this change.
+> 8. `test_assignment_reads_only_candidate_rows` asserts `calls["rows"] <= 2`
+>    on a two-song library, which is unfalsifiable: it passes when the whole
+>    library is read, i.e. against the very bug it is named for.
+> 9. The cost line ("624 runs at a 1.0 s median … 56 minutes") miscounts the
+>    runs and, worse, quotes the one statistic that hides the argument.
+> 10. The draft never considers a track **leaving** a group, so the stale
+>    `variant_cluster` its former mates keep goes unmentioned.
+> 11. Three connections where one does: `get_all_features` takes the caller's
+>    `conn`, and readme §7 forbids holding a write across a call that opens its
+>    own.
+> 12. `mapping.get(song_id)` should be `mapping.get(int(song_id))`:
+>    `cluster_variants` keys its result on `int(sid)`, so a `song_id` arriving
+>    as a string would read back `None` from a map that does contain it.
+>
+> Also: the `git add` list omits `readme.md`, which the project's own
+> instructions make mandatory (`readme.md` is the single source of
+> documentation), and lists `database/models.py`, which does not change.
+
+`rebuild_variant_clusters()` runs after **every** track's analysis and re-clusters the whole library. **CORRECTED — the measurement.** The draft said "624 runs at a 1.0 s median on 206 tracks (56 minutes of the measured total)", which reads like an arithmetic slip; it is right at both ends and wrong in the middle. Measured on the live library, `analysis_runs` where `grp='dedup'`, **627 rows**: median **982 ms**, mean **5,343 ms**, p90 **18,425 ms**, max **34,921 ms**, total **55.8 min** — the 8th largest `grp` in the table. **The distribution is the argument, not the median**: the mean is five times the median and the worst run took 35 seconds, because each run re-clusters a library that keeps growing while the track that triggered it does not. One track joining a library only needs that track compared against the existing clusters.
 
 **Files:**
 - Modify: `matcher/dedup.py` (`assign_variant_cluster`)
 - Modify: `api/workers/stages.py` (`do_analyze` calls the incremental path)
+- Modify: `readme.md` (§5.6, and a §7 load-bearing bullet)
 - Test: `tests/test_dedup_incremental.py`
 
+**CORRECTED — not `database/models.py`.** The draft's `git add` listed it, on the assumption that `get_all_features` would need a `song_ids` parameter. It already has one, and its docstring already names `dedup.assign_variant_cluster` as the reason (`database/models.py:2204`). Nothing in `database/models.py` changes.
+
 **Interfaces:**
-- Consumes: `matcher.dedup.cluster_variants`, `variant_key`, `AUDIO_CONFIRM_MIN`, `database.models.get_all_features`.
+- Consumes: `matcher.dedup.cluster_variants`, `normalise_title`, `AUDIO_CONFIRM_MIN`, `database.models.get_all_features`, `database.models.FEATURES_SCORING_COLUMNS`.
 - Produces:
-  - `matcher.dedup.assign_variant_cluster(song_id: int, db_path=None) -> int | None` — the cluster id now stored for that song (the smallest song id in its cluster), or `None` when it has no known variant. Writes `songs.variant_cluster` for the song **and** for every member of the cluster it joined, since the id is the smallest member.
+  - `matcher.dedup.assign_variant_cluster(song_id: int, db_path=None) -> int | None` — the cluster id now stored for that song (the smallest song id in its cluster), or `None` when it has no known variant. Writes `songs.variant_cluster` for every member of the cluster it joined, since the id is the smallest member — and for the group it **left**, when the track's title changed.
 
-- [ ] **Step 1: Write the failing test**
+### THE LOAD-BEARING CORRECTION: the candidate set is keyed on the TITLE half, not the full `variant_key`
 
-Create `tests/test_dedup_incremental.py`:
+The draft filtered candidates on the whole `variant_key`. That is wrong, and it is the one error that would have changed the answer rather than only the cost.
+
+Read `cluster_variants` (`matcher/dedup.py:207`). It indexes the library twice:
 
 ```python
-"""One track joining the library does not re-cluster the library."""
-from __future__ import annotations
-
-import pytest
-
-
-def _seed(db_path, rows):
-    from database.models import get_conn, upsert_features, upsert_song
-
-    ids = []
-    for title, artist, mfcc in rows:
-        sid = upsert_song(title=title, artist=artist,
-                          source_url=f"u://{title}-{artist}",
-                          raw_path=f"/tmp/{title}.mp3", duration_secs=200,
-                          db_path=db_path)
-        upsert_features(sid, "full", {"mfcc": mfcc, "bpm": 124.0}, db_path=db_path)
-        ids.append(sid)
-    return ids
-
-
-def test_incremental_assignment_matches_a_full_rebuild(tmp_path, monkeypatch):
-    from matcher.dedup import assign_variant_cluster, rebuild_variant_clusters
-    from database.models import get_conn
-
-    # Every call below passes db_path explicitly. Do NOT reach for
-    # monkeypatch.setenv("MASHUP_DB_PATH", …) here: config.DB_PATH is bound at
-    # import, so setting the env var afterwards does nothing and the test would
-    # silently run against the real library (this bit D5's brief).
-    db = tmp_path / "t.db"
-    base = [0.0] * 13
-    rows = [("Fireproof", "Kade Monroe", base),
-            ("Fireproof (Extended Mix)", "Kade Monroe", base),
-            ("Other Thing", "Someone Else", [5.0] * 13)]
-    ids = _seed(db, rows)
-
-    rebuild_variant_clusters(db_path=db)
-    conn = get_conn(db)
-    try:
-        want = {r["id"]: r["variant_cluster"] for r in
-                conn.execute("SELECT id, variant_cluster FROM songs")}
-        conn.execute("UPDATE songs SET variant_cluster=NULL")
-        conn.commit()
-    finally:
-        conn.close()
-
-    for sid in ids:
-        assign_variant_cluster(sid, db_path=db)
-
-    conn = get_conn(db)
-    try:
-        got = {r["id"]: r["variant_cluster"] for r in
-               conn.execute("SELECT id, variant_cluster FROM songs")}
-    finally:
-        conn.close()
-    assert got == want
-
-
-def test_assignment_reads_only_candidate_rows(tmp_path, monkeypatch):
-    """The whole point: it must not pull the library's features for one track."""
-    from matcher import dedup
-
-    db = tmp_path / "t.db"          # explicit db_path throughout; see above
-    ids = _seed(db, [("A Song", "An Artist", [0.0] * 13),
-                     ("A Song (Radio Edit)", "An Artist", [0.0] * 13)])
-
-    calls = {"n": 0}
-    real = dedup.cluster_variants
-
-    def counted(rows):
-        calls["n"] += 1
-        calls["rows"] = len(rows)
-        return real(rows)
-
-    monkeypatch.setattr(dedup, "cluster_variants", counted)
-    dedup.assign_variant_cluster(ids[1], db_path=db)
-    assert calls["n"] == 1
-    # Only the rows sharing this track's work key, not the library.
-    assert calls["rows"] <= 2
-
-
-def test_analysis_uses_the_incremental_path():
-    from pathlib import Path
-
-    src = Path("api/workers/stages.py").read_text(encoding="utf-8")
-    assert "assign_variant_cluster" in src
-    assert "rebuild_variant_clusters()" not in src
+by_key[variant_key(artist, title)]           # "artist|title"
+by_title[key.split("|", 1)[1]]               # the title half alone
+for title, group in by_title.items(): ...    # ← the index it WALKS
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+Every union it makes is between two members of one **normalised-title** group. The artist half never gates a comparison; it only decides *how* a pair unions — `same_artist and not generic` → straight union, otherwise `_audio_agrees`. That is deliberate, and the module's own comment says so: the title index is there "for re-uploads where the artist field is an uploader name rather than the recording artist".
+
+Two consequences, and the second is the whole basis of this task:
+
+1. **The candidate set for one track is every song whose `normalise_title` matches its own.** Filtering on the full key would silently drop every re-upload under a different uploader name — exactly the case the title index was written for.
+2. **A cluster can never span two title groups**, because unions only ever happen inside one. So re-clustering the single group a track belongs to gives *exactly* the answer a full rebuild gives for every member of that group: nothing outside it could have joined, and nothing inside it could have been pulled away. State this in a comment; it is why the incremental path is not an approximation.
+
+The cluster id is order-independent for a related reason: `_Union.union` keeps the smaller of the two roots, so a component's root is its minimum id however the pairs are visited — the incremental walk need not see them in the rebuild's order.
+
+- [x] **Step 1: Write the failing tests**
+
+Create `tests/test_dedup_incremental.py`.
+
+**CORRECTED — the draft's fixture (3 rows, one obvious Extended Mix) exercises none of the branches that discriminate this change**, and its `assert calls["rows"] <= 2` was unfalsifiable on a two-song library. One fixture must hold, each asserted against `rebuild_variant_clusters` on the same database as a whole `{id: variant_cluster}` map:
+
+  a. same normalised title, **different artists, agreeing MFCC** → clustered (the title index; the case the wrong candidate key would drop);
+  b. same normalised title, different artists, **disagreeing MFCC** → not clustered;
+  c. a **generic** title (`_GENERIC_TITLES`, or shorter than 4 characters) with the **same** artist → not clustered, because the artist rule must not fire;
+  d. a track with **no features row at all** → must not raise, and must agree with the rebuild;
+
+plus a same-artist pair with *disagreeing* audio (clustered anyway — case 2 of the rule does not ask about audio), an un-keyable title (`"(Extended Mix)"` → `""`), a record with no variant at all, a track that **leaves** a group, and a `song_id` that does not exist. Disagreeing MFCCs have to be constructed, not sampled: 93% of random pairs clear `AUDIO_CONFIRM_MIN = 0.80` (readme §5.6), so the fixture uses two orthogonal unit vectors.
+
+Every call passes `db_path` explicitly. Do NOT reach for `monkeypatch.setenv("MASHUP_DB_PATH", …)`: `config.DB_PATH` binds at import, so setting the env var afterwards does nothing and the test runs against the real library (this bit D5's brief, and it is why the suite has been writing to the repo-root `mashup.db`).
+
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/test_dedup_incremental.py -q`
-Expected: FAIL — `ImportError: cannot import name 'assign_variant_cluster' from 'matcher.dedup'`
+Expected: FAIL — `ImportError: cannot import name 'assign_variant_cluster' from 'matcher.dedup'`, and the `stages.py` source assertion.
 
-- [ ] **Step 3: Write the incremental assignment**
+- [x] **Step 3: Write the incremental assignment**
 
-Add to `matcher/dedup.py`, below `rebuild_variant_clusters`:
+Add to `matcher/dedup.py`, below `rebuild_variant_clusters`. Three corrections to the draft's body:
 
-```python
-def assign_variant_cluster(song_id: int, db_path=None) -> Optional[int]:
-    """Put ONE track in its variant cluster, without re-clustering the library.
+- **CORRECTED — `variant_key` takes `(artist, title)`, two arguments.** The draft wrote `variant_key(row["title"] or "")`, which passes the title as the *artist*; `normalise_title(None)` is then `""`, so `variant_key` returns `""` for every row, the filter `== work` matches the whole library, and the task's cost saving silently disappears while the answer happens to stay right. Use `normalise_title(title)` directly — a title is what the candidate set is keyed on.
+- **CORRECTED — pass `columns=FEATURES_SCORING_COLUMNS`**, as `rebuild_variant_clusters` does (`dedup.py:279`). The draft omitted `columns`, which selects every column of `features` for every candidate.
+- **CORRECTED — build the rows the way the rebuild does.** The draft hand-merged `{**got, **base}` from two dicts. `get_all_features` already returns `song_id`, `title` and `artist` joined onto each features row, and the rebuild adds a `{song_id, title, artist}` dict for each song with no `full` row. Mirror that exactly, so `cluster_variants` cannot be handed a different shape by its two callers. Factor it (`_cluster_ids`) rather than copying it.
 
-    `rebuild_variant_clusters` ran after every track's analysis — 624 runs at a
-    1.0 s median on a 206-track library, measured, and it grows with the library
-    while the track that triggered it does not. A track can only ever be a
-    variant of the records that normalise to the same work, so that is all this
-    reads: the candidates sharing its `variant_key` title, clustered with it by
-    exactly the same `cluster_variants` the full rebuild uses, so the two
-    answers agree (pinned in tests/test_dedup_incremental.py).
+Two further points the draft did not have:
 
-    Writes `songs.variant_cluster` for every member of the cluster it joined,
-    because the id is the smallest member and a new, lower id renames it.
-    Returns the id stored for `song_id`, or None when it has no known variant.
-    """
-    from database.models import get_all_features, get_conn
-    from database.models import DB_PATH
+- **Pass `conn=conn`.** `get_all_features` accepts the caller's connection and leaves it open, so the whole assignment runs on one connection. The draft opened one connection, closed it, let `get_all_features` open its own, and opened a third to write — three connections where one does, against readme §7's "never hold an open write transaction across a call that opens its own connection".
+- **An un-keyable title reads nothing at all.** `normalise_title` returning `""` means "cannot key on this"; the rebuild skips such rows entirely, so the incremental path must write NULL for the track and make no features query.
 
-    db = db_path if db_path is not None else DB_PATH
-    conn = get_conn(db)
-    try:
-        row = conn.execute("SELECT id, title, artist FROM songs WHERE id=?",
-                           (song_id,)).fetchone()
-        if not row:
-            return None
-        work = variant_key(row["title"] or "")
-        others = [dict(r) for r in conn.execute(
-            "SELECT id, title, artist FROM songs WHERE id!=?", (song_id,)).fetchall()
-            if variant_key(r["title"] or "") == work]
-    finally:
-        conn.close()
+- [x] **Step 3b: A track can LEAVE a group** (not in the draft)
 
-    ids = [song_id, *[o["id"] for o in others]]
-    feats = {f["song_id"]: f for f in
-             get_all_features(stem_type="full", song_ids=ids, db_path=db)}
-    rows = []
-    for sid, title, artist in [(row["id"], row["title"], row["artist"])] + \
-                              [(o["id"], o["title"], o["artist"]) for o in others]:
-        base = {"song_id": sid, "title": title, "artist": artist}
-        got = feats.get(sid)
-        if got:
-            base = {**got, **base}
-        rows.append(base)
+`update_song_metadata` fills a blank or `Unknown` title, and a re-upsert can replace one — which rewinds `status` and sends the track back through `do_analyze`. Reading only the *new* title group means the group the track left is never recomputed, and if the departing track was the smallest id its former mates keep a `variant_cluster` naming a song that is no longer in their cluster.
 
-    mapping = cluster_variants(rows)
-    conn = get_conn(db)
-    try:
-        current = {r["id"]: r["variant_cluster"] for r in conn.execute(
-            f"SELECT id, variant_cluster FROM songs WHERE id IN "
-            f"({','.join('?' * len(ids))})", ids).fetchall()}
-        changes = [(mapping.get(sid), sid) for sid in ids
-                   if mapping.get(sid) != current.get(sid)]
-        if changes:
-            conn.executemany("UPDATE songs SET variant_cluster=? WHERE id=?",
-                             changes)
-            conn.commit()
-    finally:
-        conn.close()
-    return mapping.get(song_id)
-```
+Recompute it too. The track's own title no longer names the old group, so it is found through the mates that still carry the old cluster id (`SELECT id, title FROM songs WHERE variant_cluster=? AND id!=?`) — they all share one normalised title, because a cluster lives in one title group. One extra group, only when the stored cluster actually changed.
 
-`get_all_features` may not take a `song_ids` filter. If it does not, add one — an optional `song_ids: Optional[Iterable[int]] = None` that appends `AND song_id IN (…)` — rather than loading the library and filtering in Python, which is the cost this task exists to remove.
+The case this still cannot see is a **deleted** song, whose former mates may keep pointing at it; `rebuild_variant_clusters` is the repair, and the readme says so.
 
-`cluster_variants` must be given the same shape of row the full rebuild gives it (song_id, title, artist, mean MFCC); read that function's expectations before writing the `rows` list and match them exactly.
+- [x] **Step 4: Call it from the analysis stage**
 
-- [ ] **Step 4: Call it from the analysis stage**
+In `api/workers/stages.py`, inside `do_analyze`, replace the dedup block's `rebuild_variant_clusters()` with `assign_variant_cluster(song_id)`, keeping the `with _timed("dedup", song_id):` gate and the non-fatal `try/except` exactly as they were, and putting the measured distribution in the comment.
 
-In `api/workers/stages.py`, inside `do_analyze`, replace the dedup block:
+**CORRECTED — "Leave `rebuild_variant_clusters` in place and keep the bulk path calling it" is false.** `stages.py:673` was the **only** production caller; nothing in `bulk_worker` calls it (a bulk re-analysis rewinds `status` and goes back through `do_analyze`, so after this change it does N incremental assignments — which is correct and cheaper). After this change the function has **no production caller**: it is the manual repair and what `tests/test_dedup.py` pins. Keep it, and say that plainly in its docstring and in the readme rather than implying a caller exists.
 
-```python
-    # Near-duplicate grouping (A.2). Needs the mean MFCC this stage just wrote,
-    # so it runs here rather than at download. One track against the records
-    # that normalise to the same work — not the whole library, which is what
-    # this cost before (624 rebuilds at ~1 s on 206 tracks, and growing).
-    # Never fatal: a track without a cluster is one that might pair with its own
-    # Extended Mix, not a failure.
-    try:
-        from matcher.dedup import assign_variant_cluster
-        with _timed("dedup", song_id):
-            assign_variant_cluster(song_id)
-    except Exception:  # noqa: BLE001
-        log.exception("variant clustering failed for %s", song_id)
-```
-
-Leave `rebuild_variant_clusters` in place and keep the bulk path calling it: a full rebuild is still the right answer after a bulk re-analysis, and `tests/test_dedup.py` pins it.
-
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 Run: `.\.venv\Scripts\python.exe -m pytest tests/test_dedup_incremental.py tests/test_dedup.py -q`
 Expected: PASS
 
-- [ ] **Step 6: Run the whole suite**
+- [x] **Step 6: Run the whole suite**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests -q`
-Expected: PASS
+Run: `.\.venv\Scripts\python.exe -m pytest tests -q` — ONE invocation from the repo root, in the background, redirected to a file.
+Expected: the 4 pre-existing `tests/test_essentia_genre.py` failures and nothing else.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
+
+**CORRECTED — the file list.** The draft's `git add` listed
+`database/models.py` (which does not change, error 3) and omitted `readme.md`
+(which the project's own instructions make mandatory — it is the single source
+of documentation). What shipped also touches two stale comments: the
+`variant_cluster` schema comment in `database/models.py`, which named
+`rebuild_variant_clusters` as the writer, and
+`test_rebuild_only_writes_changed_rows`'s docstring, which said "it runs after
+every analysis".
 
 ```bash
-git add matcher/dedup.py database/models.py api/workers/stages.py tests/test_dedup_incremental.py
+git add matcher/dedup.py api/workers/stages.py database/models.py readme.md \
+        tests/test_dedup.py tests/test_dedup_incremental.py
 git commit -m "Assign one track's variant cluster instead of re-clustering the library"
 ```
+
+**Measured, in process, both paths settled so neither writes** (a synthetic
+library, `scratchpad/bench_dedup.py`):
+
+| library | `rebuild_variant_clusters` | `assign_variant_cluster` | |
+|---|---|---|---|
+| 400 songs | 79.4 ms median | 8.7 ms median | 9.2× |
+| 1,200 songs | 650.2 ms median | 31.6 ms median | 20.6× |
+
+The gap widens with the library, which is the claim: the rebuild grows with it
+and the assignment does not. The assignment is not *flat* either — the
+`(id, title)` scan `_title_group` needs is linear in the library, because the
+normalisation is Python and cannot be pushed into SQL. Making it sublinear
+would need a stored normalised-title column, which is a task of its own.
 
 ---
 
