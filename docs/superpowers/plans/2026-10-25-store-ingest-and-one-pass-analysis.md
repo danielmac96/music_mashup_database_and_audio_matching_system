@@ -5118,324 +5118,201 @@ git commit -m "Keep the sung-pitch curve in the vocals sidecar, not only in the 
 
 ## Task 9: Benchmark the allin1 folds and set the default
 
-468 s of the 594 s allin1 stage is inference over the 8-fold `harmonix-all` ensemble. A single fold is ~8× cheaper, but the 25 ms timing gate and every section boundary rest on its downbeats, so the choice is a measurement, not a guess. This script makes it one.
+468 s of the 594 s allin1 stage is inference over the 8-fold `harmonix-all` ensemble (medians of the 27 real runs in `analysis_runs`; the means are 525 s of 662 s, over a 330–1080 s range). A single fold is ~8× cheaper **on the inference** — about 410 s a track, since its own Demucs (median 125 s) and the spectrograms (4.4 s) do not get cheaper — but the 25 ms timing gate and every section boundary rest on its downbeats, so the choice is a measurement, not a guess. This script makes it one.
+
+> **Corrected after implementation (2026-10-30).** The draft carried **eleven**
+> errors, two of them load-bearing: one would have selected **zero tracks** on
+> the only library this exists to measure, the other would have paid allin1's
+> own 125 s separation once per candidate — the exact waste the unified pipeline
+> exists to remove. The script that shipped is
+> `scripts/bench_allin1_models.py`; every part of it is unit-tested with allin1
+> faked at `allin1_runner.run` and `allin1_runner._model`
+> (`tests/test_bench_allin1_models.py`, 14 tests). **The measurement itself has
+> not been run** — it needs allin1, its weights and Demucs, i.e. the container
+> (readme §9 item 12.6).
+>
+> 1. **LOAD-BEARING: `_pick_songs` must not require four sources on disk.**
+>    Counted read-only against `data/mashup.db`: all 206 songs have
+>    `separation_pipeline` NULL (legacy two-stem) and all 27 `allin1_analysis`
+>    rows say `demixed_by = 'allin1'`. A picker asking for the four unified
+>    sources therefore returns `[]` and the script does nothing. `pick_songs`
+>    takes analysed tracks with a downloaded file and a measured tempo (204 of
+>    the 206 are `analysed`), spread over the BPM range at even fractions of it
+>    so both ends are in the pick (a fixed step leaves the fastest tracks out),
+>    and the four sources are something the script **produces**.
+> 2. **LOAD-BEARING: separate once per track, not once per model.** With `stems`
+>    None, `run` lets allin1 demix — a median 125 s a track. With N candidates
+>    that is N × 125 s × tracks of pure waste. `separate_four` runs one
+>    `python -m demucs -n htdemucs` subprocess into its own temp directory
+>    (never `stems.separate.separate(unified=True)`, which writes under the live
+>    audio root) and the same `{source: Path}` dict goes to every candidate's
+>    `run`, so each is also judged on identical input. Its seconds are reported
+>    on their own line, never as a model's. A track it cannot separate is
+>    skipped rather than handed to allin1 with no stems.
+> 3. **`analysis/compare.py` already has the agreement helpers**, so the draft's
+>    "if it has one — otherwise the script computes the match share itself" does
+>    not apply: `downbeat_agreement(a, b, tolerance)` gives the share (called
+>    once per tolerance, at 25 / 40 / 70 ms) and `boundary_prf(est, ref, window,
+>    trim)` the boundary F. The two things they do not give are the **median
+>    |Δt| at matched downbeats** and the **share a whole beat or more out**,
+>    which `downbeat_report` computes itself. The draft's own `_boundary_f` also
+>    matched each reference boundary many times over, which inflates F;
+>    `boundary_prf` matches each at most once.
+> 4. **Pass `boundary_prf`'s `trim`.** allin1 brackets every track with `start`
+>    and `end` silence segments. Untrimmed, two identical cuts score F 0.75
+>    rather than 1.0 — measured, and pinned by
+>    `test_segment_report_trims_the_edge_boundaries_every_segmenter_emits`.
+> 5. **The output path matched neither sibling script.** It is
+>    `DATA_DIR / "bench" / "allin1_models" / <timestamp>/` holding `summary.md`,
+>    `results.csv` and `results.json`, as `bench_pipelines.py` and
+>    `bench_analyzers.py` write.
+> 6. **The fold names are unverified against a real build**, so the pre-flight
+>    is load-bearing rather than decorative: `loadable_models` loads every
+>    candidate **before any track**, prints each failure with its reason, drops
+>    the unloadable ones, and `main` **exits 2** when the reference itself will
+>    not load.
+> 7. **The draft's pre-flight silently re-referenced onto a fold.** Its
+>    `models = [m for m in models if _available(m)]` then `if len(models) < 2`
+>    lets a run proceed with the first surviving fold as the reference when the
+>    ensemble is the one that failed — a whole report whose reference never ran,
+>    and the mutation that survived the first version of the test here.
+> 8. **`SELECT stem_type, path FROM stems` names a column that does not
+>    exist** — it is `file_path` (`database/models.py`). The shipped script
+>    reads the song row, not the stems.
+> 9. **`demixed_by="pipeline" if four else "allin1"`** is wrong on a partial
+>    stem dict: `four` is truthy with one source of the four. It is decided on
+>    `len(four) == len(SOURCES)`.
+> 10. **`--auto` defaulting to 0** made a bare invocation measure nothing
+>     (`[] or _pick_songs(0)` → `[]` → exit 1). It defaults to 10.
+> 11. **The draft's closing `print` of the summary raises** — observed, not
+>     supposed: `UnicodeEncodeError: 'charmap' codec can't encode character
+>     'Δ'` on a Windows cp1252 console, after every file is already
+>     written. A two-hour run ended in a traceback for the sake of an echo.
+>     `_say` falls back to ASCII-replace.
+>
+> One more thing the draft left out, and the brief asked for: the library is
+> read through a **read-only** connection (`file:…?mode=ro`), so the script
+> cannot write the DB even by accident. It needs no scratch library, unlike
+> `bench_pipelines.py` — the docstring says so, because adding one is the
+> obvious wrong turn.
 
 **Files:**
-- Create: `scripts/bench_allin1_models.py`
-- Modify: `readme.md` (§8, the script's entry)
+- Create: `scripts/bench_allin1_models.py` (`.gitignore`'s `/Scripts/` matches `scripts/` on Windows — `git add -f`, then prove it with `git show --stat`)
+- Create: `tests/test_bench_allin1_models.py`
+- Modify: `readme.md` (§8, the script's entry; §9 item 12.6, which said the script did not exist yet and put the fold's saving at ⅛ of the stage rather than of the inference)
 
 **Interfaces:**
-- Consumes: `analysis.allin1_runner.run/summarise/model_name/PeakRss/SOURCES`, `analysis.compare` (for the downbeat agreement helper, if it has one — otherwise the script computes the match share itself), `config.current_allin1_device`, `database.models.get_conn`.
-- Produces: `scripts/bench_allin1_models.py` with `main(argv=None) -> int`, writing `<data_dir>/bench/<timestamp>/allin1_models.{md,csv}`.
+- Consumes: `analysis.allin1_runner.run` / `summarise` / `_model` / `missing` / `PeakRss` / `SOURCES`, `analysis.compare.downbeat_agreement` / `boundary_prf` / `bpm_relation`, `stems.separate.thread_env`, `config.DB_PATH` / `DATA_DIR` / `DEMUCS_MODEL` / `DEMUCS_THREADS` / `current_allin1_device`.
+- Produces: `scripts/bench_allin1_models.py` with `main(argv=None) -> int` (0 measured · 1 nothing to measure · 2 allin1 or the reference checkpoint cannot run here) and these testable parts:
+  - `pick_songs(limit, db_path=None)`, `song_meta(song_id, db_path=None)`, `parse_song_ids(text)` — read-only.
+  - `separate_four(audio_path, out_dir, threads=None, run=None)` → `{source: Path}` or `{}`; `run` is the subprocess seam.
+  - `loadable_models(names, device="cpu")` → `(kept, [(name, reason)])`.
+  - `downbeat_report(ref, got, beat_secs)` → `n_ref`, `median_ms`, `within_25ms` / `_40ms` / `_70ms`, `off_phase`.
+  - `segment_report(ref_segments, got_segments, duration)` → `boundary_f_0_5s`, `boundary_f_3s`, `label_agreement`; `label_agreement(ref, got)` on its own.
+  - `run_one(full_path, sources, model, device, threads)` → the summary plus `_secs`, `_peak_mb`, `_timings`.
+  - `compare_to_reference(ref, got, duration)`, `write_report(rows, reference, out_dir, separations=None)`.
+- Writes: `<data_dir>/bench/allin1_models/<timestamp>/{summary.md,results.csv,results.json}`, and temp directories it deletes unless `--keep`.
 
-- [ ] **Step 1: Write the script**
+- [x] **Step 1: Write the failing tests**
 
-Create `scripts/bench_allin1_models.py`:
+`tests/test_bench_allin1_models.py`, with allin1 faked at its two seams and the
+script loaded by `importlib` (scripts/ is not a package). Fifteen tests: the
+picker (analysed tracks only, spread over BPM, **no four sources in the seeded
+library** — which is what the real one looks like), `parse_song_ids`, the three
+downbeat cases (a perfect grid, a uniform 30 ms lag, a grid shifted by one
+beat), the two segment cases (edge boundaries trimmed, overlap-weighted
+labels), the pre-flight (an unloadable candidate dropped with its reason), four
+`main` cases (allin1 missing → 2; the reference unloadable → 2 with no
+separation and no output directory; two candidates × two tracks → one
+separation per track and four runs, every run seeing four sources; a track that
+could not be separated → skipped, not handed to allin1), the report writer
+(reference first, header matching the rows, the separation reported on its own),
+`_say` against a cp1252 stream and `separate_four` against a fake subprocess.
 
-```python
-"""scripts/bench_allin1_models.py — which allin1 checkpoint is worth its time.
+- [x] **Step 2: Run the tests to verify they fail**
 
-`harmonix-all` is an 8-fold ensemble: measured on this library, 468 s of
-inference a track against a ~200 s track (RTF 2.3). A single fold is roughly an
-eighth of that. What it costs in accuracy is the question, and it is not a
-question to answer by intuition — the 25 ms timing gate, every section boundary
-and the FL export's bar-1 all sit on these downbeats.
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_bench_allin1_models.py -q`
+Observed: 14 errors, all
+`FileNotFoundError: … scripts\bench_allin1_models.py` — the script does not
+exist. (The fifteenth test, `_say`'s, was written later against an observed
+failure and watched fail on its own:
+`AttributeError: module 'bench_allin1_models' has no attribute '_say'`.)
 
-For each candidate model this runs the real inference on the same tracks (the
-ensemble first, as the reference) and reports:
+- [x] **Step 3: Write the script**
 
-  * seconds and peak resident MB per track
-  * downbeat agreement with the reference: median |Δt| at matched downbeats, the
-    share within 25 / 40 / 70 ms, and the share that is a WHOLE BEAT or more out
-    (an off-phase bar line, which is the failure that matters — it moves every
-    section and every placement)
-  * segment agreement: boundary F at ±0.5 s and ±3 s, and label agreement on
-    overlapping segments
-  * BPM agreement
+As the Interfaces above, with the eleven corrections applied. Then: 15 passed.
 
-Not part of the test suite: it needs allin1, its weights and Demucs, i.e. Docker.
+- [x] **Step 4: Mutate, to prove the tests discriminate**
 
-    docker compose exec app python scripts/bench_allin1_models.py --auto 10
-    docker compose exec app python scripts/bench_allin1_models.py --songs 12,40 \
-        --models harmonix-all,harmonix-fold0,harmonix-fold1
-"""
-from __future__ import annotations
+Six mutations by exact string rewrite, each reverted:
 
-import argparse
-import csv
-import json
-import statistics as st
-import sys
-import time
-from pathlib import Path
-from typing import Dict, List, Optional
+| Mutation | Killed by |
+|---|---|
+| `pick_songs` requires the four sources (the draft's own SQL) | the picker test — `0 == 3`, exactly the draft's failure |
+| the separation moved inside the model loop | both `main` tests — 2 separations became 4 |
+| `boundary_prf` called without `trim` | the edge-boundary test — F 0.75, not 1.0 |
+| the reference's pre-flight failure made a warning | **survived**, which exposed a weak test: with ≥ 2 folds loadable the run proceeded on the fold. The test was strengthened to three candidates and `code == 2` with no output directory, watched fail (`0 == 2`, a full report whose reference never ran), then the mutation reverted |
+| `OFF_PHASE_BEATS = 0.9` → `10.0` | the one-beat-shift test — off phase 0.0, not 1.0 |
+| the reference-first row ordering dropped | the report-writer test |
 
-# Candidates, reference first. allin1 1.1.0 ships the Harmonix folds; the list
-# is checked against what load_pretrained_model will actually accept before any
-# track runs, so a build with different names fails in the first second rather
-# than ten minutes in.
-DEFAULT_MODELS = ("harmonix-all", "harmonix-fold0")
+- [x] **Step 5: Check it parses and lists its options**
 
-BEAT_TOLERANCES_MS = (25.0, 40.0, 70.0)
+`.\.venv\Scripts\python.exe scripts/bench_allin1_models.py --help` prints the
+options; a real invocation on Windows exits **2** with "allin1 cannot run here:
+allin1 does not import (ModuleNotFoundError…). Install
+requirements-allin1.txt (the Docker image has it)."
 
+`main()` was then driven end to end against the **live** library with allin1 and
+Demucs faked — the library read `mode=ro`, the output in a scratch directory,
+nothing else touched: three tracks picked across the tempo range, **three**
+separations, six CSV rows, and the candidate whose grid sat 0.6 s out read
+`off_phase 1.0`, `within_25ms 0.0` and FAIL naming both broken terms. That run
+is what found error 11.
 
-def _available(name: str) -> bool:
-    """Can this build load that checkpoint? Cheap: it loads it, which is also
-    what the run will do, and the model cache keeps it."""
-    from analysis import allin1_runner as runner
-    try:
-        runner._model("cpu", name)
-        return True
-    except Exception as exc:  # noqa: BLE001
-        print(f"  ! {name}: {type(exc).__name__}: {exc}")
-        return False
+- [x] **Step 6: The readme entry** (§8 beside the other owner-run scripts, and
+§9 item 12.6).
 
-
-def _pick_songs(limit: int) -> List[int]:
-    """Analysed tracks with four sources on disk, spread over the BPM range so a
-    fold is not judged on one tempo."""
-    from database.models import get_conn
-
-    conn = get_conn()
-    try:
-        rows = conn.execute(
-            """SELECT s.id, f.bpm FROM songs s
-                 JOIN features f ON f.song_id = s.id AND f.stem_type='full'
-                WHERE s.status='analysed' AND f.bpm IS NOT NULL
-                  AND (SELECT COUNT(*) FROM stems x
-                        WHERE x.song_id=s.id
-                          AND x.stem_type IN ('vocals','drums','bass','other')) = 4
-                ORDER BY f.bpm""").fetchall()
-    finally:
-        conn.close()
-    if not rows:
-        return []
-    step = max(1, len(rows) // max(1, limit))
-    return [r["id"] for r in rows[::step]][:limit]
-
-
-def _sources(song_id: int) -> Dict[str, Path]:
-    from database.models import get_conn
-
-    conn = get_conn()
-    try:
-        rows = conn.execute("SELECT stem_type, path FROM stems WHERE song_id=?",
-                            (song_id,)).fetchall()
-    finally:
-        conn.close()
-    return {r["stem_type"]: Path(r["path"]) for r in rows
-            if Path(r["path"]).exists()}
-
-
-def _match_downbeats(ref: List[float], got: List[float], beat_secs: float) -> dict:
-    """Nearest-neighbour match of two downbeat lists."""
-    import numpy as np
-
-    if not ref or not got:
-        return {"n": 0}
-    a, b = np.asarray(ref, dtype=float), np.asarray(got, dtype=float)
-    deltas = np.asarray([float(np.min(np.abs(b - t))) for t in a])
-    out = {"n": int(deltas.size), "median_ms": float(np.median(deltas) * 1000.0)}
-    for tol in BEAT_TOLERANCES_MS:
-        out[f"within_{int(tol)}ms"] = float((deltas <= tol / 1000.0).mean())
-    # A whole beat or more out is an off-phase bar line, not a jitter.
-    out["off_phase"] = float((deltas >= beat_secs * 0.9).mean()) if beat_secs else None
-    return out
-
-
-def _boundary_f(ref: List[float], got: List[float], tol: float) -> Optional[float]:
-    import numpy as np
-
-    if not ref or not got:
-        return None
-    a, b = np.asarray(ref, dtype=float), np.asarray(got, dtype=float)
-    hit_r = sum(1 for t in a if np.min(np.abs(b - t)) <= tol)
-    hit_g = sum(1 for t in b if np.min(np.abs(a - t)) <= tol)
-    p, r = hit_g / len(b), hit_r / len(a)
-    return round(2 * p * r / (p + r), 4) if (p + r) else 0.0
-
-
-def _label_agreement(ref_segs: List[list], got_segs: List[list]) -> Optional[float]:
-    """Share of the reference's duration whose label the candidate agrees with."""
-    total = agree = 0.0
-    for start, end, label in ref_segs:
-        for g0, g1, glabel in got_segs:
-            overlap = max(0.0, min(end, g1) - max(start, g0))
-            if overlap <= 0:
-                continue
-            total += overlap
-            if str(glabel) == str(label):
-                agree += overlap
-    return round(agree / total, 4) if total else None
-
-
-def run_one(song_id: int, model: str) -> dict:
-    """One real allin1 run. Returns the summary plus seconds and peak MB."""
-    from analysis import allin1_runner as runner
-    from config import DEMUCS_THREADS, current_allin1_device
-    from database.models import get_conn
-
-    conn = get_conn()
-    try:
-        row = conn.execute("SELECT raw_path FROM songs WHERE id=?",
-                           (song_id,)).fetchone()
-    finally:
-        conn.close()
-    full = Path(row["raw_path"])
-    srcs = _sources(song_id)
-    four = {k: srcs[k] for k in runner.SOURCES if k in srcs}
-    timings: dict = {}
-    t0 = time.perf_counter()
-    with runner.PeakRss() as rss:
-        result = runner.run(full, four if len(four) == len(runner.SOURCES) else None,
-                            device=current_allin1_device(), timings=timings,
-                            threads=DEMUCS_THREADS, model=model)
-        secs = time.perf_counter() - t0
-        summary = runner.summarise(result, content_hash=None,
-                                   demixed_by="pipeline" if four else "allin1",
-                                   ms=secs * 1000.0, model=model)
-        del result
-    summary["_secs"] = round(secs, 2)
-    summary["_peak_mb"] = rss.peak_mb
-    summary["_inference_ms"] = timings.get("inference")
-    summary["_demix_ms"] = timings.get("demix")
-    return summary
-
-
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--auto", type=int, default=0,
-                    help="pick N analysed tracks spread over the BPM range")
-    ap.add_argument("--songs", default="", help="comma-separated song ids")
-    ap.add_argument("--models", default=",".join(DEFAULT_MODELS),
-                    help="comma-separated checkpoints; the FIRST is the reference")
-    args = ap.parse_args(argv)
-
-    from config import DATA_DIR
-
-    songs = [int(s) for s in args.songs.split(",") if s.strip()] or _pick_songs(args.auto)
-    if not songs:
-        print("No tracks with four sources on disk. Separate on unified_4stem first.")
-        return 1
-    models = [m.strip() for m in args.models.split(",") if m.strip()]
-    print(f"Checking {len(models)} checkpoint(s)…")
-    models = [m for m in models if _available(m)]
-    if len(models) < 2:
-        print("Need at least two loadable checkpoints to compare.")
-        return 1
-    reference = models[0]
-    print(f"Reference: {reference}. Tracks: {songs}")
-
-    rows: List[dict] = []
-    for song_id in songs:
-        ref = None
-        for model in models:
-            print(f"  song {song_id} · {model} …", flush=True)
-            try:
-                summary = run_one(song_id, model)
-            except Exception as exc:  # noqa: BLE001
-                print(f"    failed: {type(exc).__name__}: {exc}")
-                continue
-            beat_secs = 60.0 / summary["bpm"] if summary.get("bpm") else None
-            rec = {"song_id": song_id, "model": model, "secs": summary["_secs"],
-                   "peak_mb": summary["_peak_mb"], "bpm": summary.get("bpm"),
-                   "inference_ms": summary["_inference_ms"],
-                   "demix_ms": summary["_demix_ms"],
-                   "downbeats": len(summary["downbeats"]),
-                   "segments": len(summary["segments"])}
-            if model == reference:
-                ref = summary
-            elif ref is not None:
-                rec.update(_match_downbeats(ref["downbeats"], summary["downbeats"],
-                                            beat_secs or 0.0))
-                ref_b = [s[0] for s in ref["segments"]]
-                got_b = [s[0] for s in summary["segments"]]
-                rec["boundary_f_0.5s"] = _boundary_f(ref_b, got_b, 0.5)
-                rec["boundary_f_3s"] = _boundary_f(ref_b, got_b, 3.0)
-                rec["label_agreement"] = _label_agreement(ref["segments"],
-                                                          summary["segments"])
-                rec["bpm_delta"] = (round(abs((summary.get("bpm") or 0)
-                                              - (ref.get("bpm") or 0)), 3))
-            rows.append(rec)
-
-    out = Path(DATA_DIR) / "bench" / time.strftime("%Y%m%d-%H%M%S")
-    out.mkdir(parents=True, exist_ok=True)
-    keys = sorted({k for r in rows for k in r})
-    with open(out / "allin1_models.csv", "w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=keys)
-        w.writeheader()
-        w.writerows(rows)
-
-    lines = [f"# allin1 checkpoints — reference `{reference}`", ""]
-    for model in models:
-        mine = [r for r in rows if r["model"] == model]
-        if not mine:
-            continue
-        def med(key):
-            vals = [r[key] for r in mine if r.get(key) is not None]
-            return round(st.median(vals), 4) if vals else None
-        lines += [f"## {model}", "",
-                  f"- tracks: {len(mine)}",
-                  f"- seconds: median {med('secs')}",
-                  f"- peak MB: median {med('peak_mb')}",
-                  f"- inference ms: median {med('inference_ms')}"]
-        if model != reference:
-            lines += [f"- downbeat |Δt| median: {med('median_ms')} ms",
-                      *[f"- within {int(t)} ms: {med(f'within_{int(t)}ms')}"
-                        for t in BEAT_TOLERANCES_MS],
-                      f"- **off phase (≥ a beat out): {med('off_phase')}**",
-                      f"- boundary F ±0.5 s: {med('boundary_f_0.5s')}",
-                      f"- boundary F ±3 s: {med('boundary_f_3s')}",
-                      f"- label agreement: {med('label_agreement')}",
-                      f"- |ΔBPM| median: {med('bpm_delta')}"]
-        lines.append("")
-    (out / "allin1_models.md").write_text("\n".join(lines), encoding="utf-8")
-    print(f"\nWrote {out}")
-    print("\n".join(lines))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-```
-
-- [ ] **Step 2: Check it parses and lists its options**
-
-Run: `.\.venv\Scripts\python.exe scripts/bench_allin1_models.py --help`
-Expected: the argparse help, with `--auto`, `--songs`, `--models`. (It cannot run further on Windows — allin1 does not import there.)
-
-- [ ] **Step 3: Run it in the container on the test library**
-
-This step runs **after** Task 10 has built the 30-track library on `unified_4stem`.
+- [ ] **Step 7: Run it in the container** — OWED, and the user's to run
 
 ```bash
 docker compose exec app python scripts/bench_allin1_models.py --auto 10
 ```
-Expected: `data/bench/<timestamp>/allin1_models.md` with a block per checkpoint. Reading it:
 
-- **The decision rule.** A fold replaces the ensemble only when, against it, `off phase` is 0 (no bar line a whole beat out — that moves every section and every placement), `within 25 ms` ≥ 0.95, boundary F ±0.5 s ≥ 0.9 and label agreement ≥ 0.9. Anything less and the ensemble stays: the timing gate is 25 ms by default and the point of allin1 here is bar lines you can trust.
-- If the fold passes, also report the share of its *own* downbeats passing at 25 / 40 / 70 ms from the ensemble — readme §9 item 12.3 asks for exactly that before `timing_tol_ms` is settled.
+Cost, from the measured medians: 10 tracks × (125 s separation + 468 s ensemble
+inference + ~58 s fold inference) ≈ 1.8 h for two candidates. The single
+separation is what keeps it there: separating per candidate would add another
+125 s × 10 ≈ 21 min, and a third candidate another 125 s × 10 on top of its own
+inference.
 
-- [ ] **Step 4: Set the default from the measurement**
+Reading `summary.md`:
 
-Whatever the report says, write it down and act on it:
+- **The decision rule** (the script prints PASS / FAIL per candidate against
+  it): a fold replaces the ensemble only when `off phase` is 0 (no bar line a
+  whole beat out — that moves every section and every placement),
+  `within 25 ms` ≥ 0.95, boundary F ±0.5 s ≥ 0.9 and label agreement ≥ 0.9.
+  Anything less and the ensemble stays: the timing gate is 25 ms by default and
+  the point of allin1 here is bar lines you can trust.
+- The 25 / 40 / 70 ms shares are also what readme §9 item 12.3 asks for before
+  `timing_tol_ms` is settled.
+
+- [ ] **Step 8: Set the default from the measurement** — OWED
 
 - Fold passes → `docker compose exec app python -c "import config; config.save_settings({'allin1_model': '<the fold>'})"`, and change `config.ALLIN1_MODEL`'s comment to name the measurement date and the numbers.
 - Fold fails → leave `harmonix-all` and record the numbers that ruled it out.
 
-Either way the registry's `_allin1_params` now carries the live model, so the next run recomputes rather than reusing the other model's grid — verify:
+Either way the registry's `_allin1_params` carries the live model, so the next run recomputes rather than reusing the other model's grid — verify:
 
 ```bash
 docker compose exec app python -c "from analysis.registry import GROUPS; print(GROUPS['allin1.analysis'].params())"
 ```
 Expected: `{'allin1': '…', 'model': '<what you just set>', 'pooling': 'mean8models+bar'}`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
-git add -f scripts/bench_allin1_models.py
-git add config.py readme.md
-git commit -m "Benchmark the allin1 checkpoints and set the default from the measurement"
+git add -f scripts/bench_allin1_models.py tests/test_bench_allin1_models.py
+git add readme.md
+git commit -m "Benchmark the allin1 checkpoints, one separation for every candidate"
 ```
 
 ---
