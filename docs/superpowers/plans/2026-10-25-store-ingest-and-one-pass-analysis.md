@@ -4888,186 +4888,229 @@ would need a stored normalised-title column, which is a task of its own.
 
 ## Task 8: The sung pitch curve becomes durable
 
-`essentia.melody` costs 6.0 s a track and produces a 50 ms f0 curve. Sections keep a summary of it (`f0`: median, 10th/90th percentile, range), but the curve itself lives only in `feature_cache`, which the readme calls disposable — so clearing the cache destroys a measurement that cost 6 s a track and that the register term (readme §9 item 8.3, "the vocal out of register — needs `f0` after the shift") cannot be built without. This task moves it into the vocals sidecar, resampled onto the shared grid, and gives the pipeline a reader for it.
+> **Corrected after implementation (2026-10-30).** The draft carried **nine**
+> errors, two of them load-bearing: one would have rewritten every re-analysed
+> track's stored sung range (and so forced a re-cut of the library), the other
+> would have replaced a current frames sidecar with an f0-only one. Read
+> `analysis/vocals.f0_from_frames`, the one new line in
+> `analysis/essentia_groups.frames_from`, and the `f0` branch at the end of
+> `detect_sections`' per-section loop for the shape that shipped.
+>
+> 1. **LOAD-BEARING: Step 6 preferred the frames. It must prefer the melody.**
+>    See the section below.
+> 2. **LOAD-BEARING: Step 5 put the curve in `frames_out` beside the write, not
+>    inside it.** Its guard is `frames_out is not None`, which is true whenever
+>    frames are wanted at all — including the common case where the sidecar is
+>    already current, nothing forces the tonal and spectral steps, and
+>    `frames_out` therefore stays empty. Adding an `f0` there makes
+>    `if frames_out:` truthy, and `timeseries.write` then replaces a good
+>    sidecar (chroma, MFCC, bands, curves) with a one-row f0 file — after which
+>    `detect_sections` has no `stored.chroma` and the whole stored-frames path
+>    is dead for that track. The curve must go in **inside** that branch, so it
+>    only ever rides along with matrices that are being written anyway
+>    (`tests/test_one_pass_pipeline.py::test_the_curve_never_replaces_a_current_sidecar_on_its_own`).
+> 3. **`f0_to_grid` is redundant — it was not written.**
+>    `frames_from`'s inner `_on_grid` already resamples by nearest neighbour
+>    whenever a matrix's own step is more than 1 % off `STEP_SECS`, and 50 ms is
+>    7.7 % off, so the branch fires. The draft's `f0_to_grid` is the same four
+>    lines of arithmetic a second time — two implementations of one question
+>    (readme §5) and two things to keep in step. One line in `frames_from`'s
+>    `got` dict does it.
+> 4. **The key names were wrong.** `f0_summary` returns `median_midi`,
+>    `p10_midi`, `p90_midi`, `range_st`, `voiced` — not `median`/`p10`/`p90`/
+>    `range`.
+> 5. **Step 4's "if it returns a dict of `None`s" branch is moot**, and the
+>    Interfaces' "`None` when nothing in the span is voiced" is not the rule:
+>    `f0_summary` already returns `None` when fewer than `min_voiced` (8) voiced
+>    points fall inside the span. `f0_from_frames` inherits that and needs no
+>    guard of its own.
+> 6. **Nothing was owed to `analysis/timeseries.py`.** `ROWS["f0"] = 1`,
+>    `StemFrames.f0` and `f0` in `_F32` have been there since Task 1, with a
+>    comment saying "filled by a later task". No schema change, no
+>    `timeseries.VERSION` bump.
+> 7. **The Files list was short by three.** `analysis/essentia_groups.py`
+>    appears only under Interfaces, for the `f0_to_grid` that is not written,
+>    while `frames_from` — in that file — is where the change actually goes;
+>    `tests/test_structure_frames.py` is where the melody-first preference is
+>    pinned; and `readme.md` is mandatory under the project's own instructions.
+> 8. **The equivalence test was vacuous for the thing it existed to check.**
+>    `test_f0_from_frames_matches_f0_summary` feeds the function a row at step
+>    `0.05` — the melody's own step — so the resample is never exercised. It is
+>    kept (it does pin that `f0_from_frames` is a thin wrapper) and joined by
+>    the test that measures the resampled path.
+> 9. **The cost is 6.9 s a track, not 6.0.** `analysis_runs`,
+>    `grp='essentia.melody'`: **204 uncached runs, mean 6.9 s** (min 1.39 s,
+>    max 46.15 s, **23.5 min in total**) plus 428 cached hits at 0 ms.
+>
+> **What was actually at risk**, which the draft does not state: `feature_cache`
+> holds **204** `essentia.melody` payloads — the only copy of every curve —
+> while `sections` already holds **2,004 of 2,046** rows with `f0_json`. So a
+> purge would not have lost the summaries. It would have lost the 204 curves,
+> 23.5 minutes of compute, and the one input the register term (readme §9 item
+> 8.3) is built from.
+
+### The load-bearing one: melody first, the sidecar as the fallback
+
+The draft's Step 6 reads the sidecar whenever the cut is being made from stored
+frames, and falls back to the `melody` argument. That is backwards.
+
+`f0_summary` indexes a span as `f0[int(start/step):int(end/step)]`, so a curve
+on a different step takes a **different sample set**; the 50 → 46.44 ms
+nearest-neighbour resample duplicates about one point in thirteen (a 2,400-point
+curve becomes 2,584); and the `min_voiced = 8` gate can flip on a short span.
+Measured over 718 spans of 60 real `essentia.melody` payloads (read-only against
+the live library): `median_midi` is identical on **65.7 %** of spans, p95
+**0.20 st**, **worst 5.70 st**; `range_st` worst 4.74 st; `voiced` worst 0.0168.
+
+So preferring the sidecar would rewrite `sections.f0_json` for every re-analysed
+track. That is a changed group result, which readme §7 makes a version bump on
+the structure groups, which is a re-cut of the whole library — and `structure`
+is the single largest cost in `analysis_runs`: **387 min over 232 runs**. For
+nothing: the task's whole point is that the curve survives a cache purge, not
+that it is read in preference to the curve itself.
+
+Inverted, nothing stored moves, no version is bumped, and the curve still
+survives the purge. The fallback's numbers may differ slightly from what a
+cache-warm run stored; that is said in a comment where it is read, and it is a
+recovery path, not the normal one.
 
 **Files:**
-- Modify: `api/workers/stages.py` (`_analyze_stems` adds the melody curve to the frames)
+- Modify: `api/workers/stages.py` (`_analyze_stems` adds the melody curve to the frames — inside the `if frames_out:` branch)
+- Modify: `analysis/essentia_groups.py` (one line in `frames_from`'s `got` dict)
 - Modify: `analysis/vocals.py` (`f0_from_frames`)
-- Modify: `analysis/structure.py` (`detect_sections` prefers the frames' f0 over the `melody` argument)
-- Test: `tests/test_one_pass_pipeline.py` (extend)
+- Modify: `analysis/structure.py` (`detect_sections` reads the sidecar's f0 only when it was given no `melody`)
+- Modify: `readme.md` (§5.4's `essentia.melody` row, §5.5's `f0` bullet)
+- Test: `tests/test_one_pass_pipeline.py`, `tests/test_structure_frames.py` (extend)
 
 **Interfaces:**
-- Consumes: `analysis.timeseries.StemFrames.f0`, `ROWS`, `STEP_SECS` (Task 1); `analysis.registry.GROUPS["essentia.melody"]`; `analysis.vocals.f0_summary`.
+- Consumes: `analysis.timeseries.StemFrames.f0`, `ROWS`, `STEP_SECS` (Task 1, already present); `analysis.registry.GROUPS["essentia.melody"]`; `analysis.vocals.f0_summary`; `analysis.essentia_groups.frames_from` (Task 2).
 - Produces:
-  - `analysis.vocals.f0_from_frames(f0_row: np.ndarray, step: float, start: float, end: float) -> dict | None` — the same dict shape `f0_summary` returns (`median`, `p10`, `p90`, `range`, `voiced`), measured over `[start, end)` of a curve on an arbitrary step. `None` when nothing in the span is voiced.
-  - `analysis.essentia_groups.f0_to_grid(f0: list[float], step_in: float, step_out: float) -> np.ndarray` — `(1, n)` float32 Hz on the output grid, nearest-neighbour, 0 for unvoiced.
+  - `analysis.vocals.f0_from_frames(f0_row, step: float, start: float, end: float) -> dict | None` — `f0_summary`'s dict (`median_midi`, `p10_midi`, `p90_midi`, `range_st`, `voiced`) measured over `[start, end)` of a curve on an arbitrary step, accepting a `(1, n)` row or a flat one. `None` when the span holds fewer than `min_voiced` voiced points, or when the row or step is empty — inherited from `f0_summary`, not re-implemented.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
-Append to `tests/test_one_pass_pipeline.py`:
+In `tests/test_one_pass_pipeline.py`:
 
-```python
-def test_f0_curve_lands_in_the_vocals_sidecar(tmp_path, monkeypatch, seeded_song):
-    """6 s a track of Melodia must survive a feature_cache purge."""
-    from analysis import timeseries as ts
-    from api.workers import stages
+- `test_the_sung_pitch_curve_lands_in_the_vocals_sidecar` — a fake Essentia
+  whose **vocals** payload carries a melody; after `_analyze_stems`, the vocals
+  sidecar's `f0` is `(1, n)` with the same `n` as its chroma, its max is the
+  curve's and its min is 0 (unvoiced stays unvoiced), and the full,
+  instrumental and bass sidecars have `f0 is None` (T2).
+- `test_the_curve_never_replaces_a_current_sidecar_on_its_own` — analyse twice;
+  the second run forces nothing, so the sidecar must still hold its chroma
+  (error 2).
+- `test_f0_from_frames_matches_f0_summary_at_the_same_step` — the draft's test,
+  with the right key names, plus the three `None` cases.
+- `test_f0_from_frames_on_the_grid_is_close_but_not_identical` — the one that
+  matters: a deterministic sung line through `frames_from`, measured both ways
+  over ten section-length spans. Every one of the ten differs somewhere, and
+  the measured bounds are in the docstring.
+- `test_the_sung_range_staleness_rule_is_unchanged` — `sections_are_current` on
+  a singing track with and without `f0_json` (T3).
 
-    monkeypatch.setattr(ts, "FRAMES_DIR", tmp_path / "features")
-    song_id, stem_paths = seeded_song
+In `tests/test_structure_frames.py`, with the vocals sidecar's `f0` set to a
+constant 880 Hz so its answer is unmistakable:
 
-    def fake_essentia(song_id_, stem_type, path, key, on_progress,
-                      extra_steps=(), frames_out=None, force_steps=(),
-                      only_steps=()):
-        if frames_out is not None:
-            frames_out["chroma"] = np.full((12, 20), 0.2887, dtype=np.float32)
-            frames_out["chroma_step"] = ts.STEP_SECS
-        payload = _essentia_payload(stem_type)
-        if stem_type == "vocals":
-            payload["melody"] = {"step": 0.05,
-                                 "f0": [0.0, 220.0, 220.0, 0.0, 330.0] * 4,
-                                 "voiced": 0.6}
-        return payload, False
+- `test_a_section_f0_is_measured_from_the_melody_not_the_sidecar`,
+- `test_a_section_f0_falls_back_to_the_sidecar_without_a_melody`,
+- `test_no_melody_and_no_sidecar_f0_leaves_the_section_unmeasured`.
 
-    monkeypatch.setattr(stages, "_run_essentia", fake_essentia)
-    monkeypatch.setattr(stages, "effective_analyzer", lambda: ("essentia", "essentia"))
-    monkeypatch.setattr(stages, "require_analyzer", lambda: None)
+- [x] **Step 2: Run the tests to verify they fail**
 
-    stages._analyze_stems(song_id, stem_paths, stages._ANALYSIS_STEM_ORDER, None)
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_one_pass_pipeline.py tests/test_structure_frames.py -q`
+Observed: 5 failed — two on `vocals.f0 is None` (the curve is not in the
+sidecar), two on `ImportError: cannot import name 'f0_from_frames' from
+'analysis.vocals'`, one on "the sidecar's curve was not read". The two
+melody-first tests passed from the start, which is the point of them: they are
+the guard that this task changes nothing a cache-warm cut measures. Mutation 1
+below is what proves they can fail.
 
-    vocals = ts.read(song_id, "vocals", "legacy_2stem")
-    assert vocals is not None and vocals.f0 is not None
-    assert vocals.f0.shape[0] == 1
-    assert float(vocals.f0.max()) == pytest.approx(330.0, rel=0.01)
-    # Only the vocal stem sings.
-    assert ts.read(song_id, "instrumental", "legacy_2stem").f0 is None
+- [x] **Step 3: Carry the curve through the resampler that already exists**
 
-
-def test_f0_from_frames_matches_f0_summary():
-    from analysis import timeseries as ts
-    from analysis.vocals import f0_from_frames, f0_summary
-
-    step = 0.05
-    curve = [0.0, 220.0, 220.0, 440.0, 0.0, 330.0, 330.0, 0.0]
-    want = f0_summary(curve, step, 0.0, len(curve) * step)
-
-    row = np.asarray([curve], dtype=np.float32)
-    got = f0_from_frames(row, step, 0.0, len(curve) * step)
-    for key in want:
-        assert got[key] == pytest.approx(want[key], rel=1e-6), key
-
-    assert f0_from_frames(np.zeros((1, 8), dtype=np.float32), step, 0.0, 0.4) is None
-```
-
-- [ ] **Step 2: Run the tests to verify they fail**
-
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_one_pass_pipeline.py -q`
-Expected: FAIL — `ImportError: cannot import name 'f0_from_frames' from 'analysis.vocals'`
-
-- [ ] **Step 3: Resample the curve onto the grid**
-
-In `analysis/essentia_groups.py`, beside `downsample_f0`:
-
-```python
-def f0_to_grid(f0, step_in: float, step_out: float) -> np.ndarray:
-    """A 50 ms sung-pitch curve as a (1, n) float32 Hz row on the frames grid.
-
-    Nearest neighbour, not interpolation: a value between a voiced and an
-    unvoiced frame is not a pitch, and averaging one into existence would put a
-    note where nothing was sung. 0 stays 0 (unvoiced).
-    """
-    a = np.asarray(f0, dtype=np.float32)
-    if a.ndim != 1 or not a.size or not step_in or not step_out:
-        return np.zeros((1, 0), dtype=np.float32)
-    n_out = max(1, int(round(a.size * step_in / step_out)))
-    idx = np.clip(np.round(np.arange(n_out) * step_out / step_in).astype(int),
-                  0, a.size - 1)
-    return a[idx][np.newaxis, :].astype(np.float32)
-```
-
-- [ ] **Step 4: Measure a span of it**
-
-In `analysis/vocals.py`, beside `f0_summary`:
-
-```python
-def f0_from_frames(f0_row, step: float, start: float, end: float):
-    """``f0_summary`` for a curve already on a frame grid — the vocals sidecar's
-    `f0` row (analysis/timeseries.py) rather than the melody group's list.
-
-    The same numbers f0_summary returns for the same span (pinned in
-    tests/test_one_pass_pipeline.py), so a section measured from the sidecar and
-    one measured from the cache agree.
-    """
-    import numpy as np
-
-    a = np.asarray(f0_row, dtype=float)
-    if a.ndim == 2:
-        a = a[0]
-    if not a.size or not step:
-        return None
-    return f0_summary(a.tolist(), float(step), float(start), float(end))
-```
-
-If `f0_summary` returns `None` for an unvoiced span, this inherits that; if it returns a dict of `None`s, make this return `None` when `voiced` is 0 so the caller stores NULL rather than a row of nothings.
-
-- [ ] **Step 5: Put the curve in the sidecar**
-
-In `api/workers/stages.py`, inside `_analyze_stems`, after the Essentia payloads are in hand and before `timeseries.write(...)`, add the vocal stem's curve to the frames:
-
-```python
-                if frames_out is not None and stem_type == "vocals":
-                    mel = (ess or {}).get("melody") or {}
-                    if mel.get("f0") and mel.get("step"):
-                        # Melodia costs ~6 s a track and its curve lived only in
-                        # feature_cache, which is disposable — so clearing the
-                        # cache destroyed it. The register term (readme §9 item
-                        # 8.3) needs exactly this curve.
-                        from analysis.essentia_groups import f0_to_grid
-                        from analysis.timeseries import STEP_SECS
-                        frames_out["f0"] = f0_to_grid(mel["f0"], float(mel["step"]),
-                                                      STEP_SECS)
-                        frames_out["f0_step"] = STEP_SECS
-```
-
-and in `frames_from` (Task 2), carry it through alongside the others:
+In `analysis/essentia_groups.frames_from`, one line in the `got` dict:
 
 ```python
         "f0": _on_grid(frames_out.get("f0"), frames_out.get("f0_step")),
 ```
 
-- [ ] **Step 6: Let `detect_sections` read it**
+with a comment saying why nearest neighbour is right for a pitch curve (a value
+between a voiced and an unvoiced frame is not a pitch) and that this is the
+branch that fires. No `f0_to_grid`.
 
-In `analysis/structure.py`, where a section's `f0` is measured, prefer the frames when they are what the cut is being made from:
+- [x] **Step 4: Measure a span of it**
+
+In `analysis/vocals.py`, beside `f0_summary`:
 
 ```python
-        if use_stored:
-            vf = frames.get("vocals")
-            if vf is not None and vf.f0 is not None:
-                from analysis.vocals import f0_from_frames
-                got = f0_from_frames(vf.f0, step, start_t, end_t)
-                if got:
-                    seg["f0"] = got
-        elif melody and melody.get("f0") and melody.get("step"):
-            from analysis.vocals import f0_summary
-            seg["f0"] = f0_summary(melody["f0"], float(melody["step"]),
-                                   start_t, end_t)
+def f0_from_frames(f0_row, step: float, start: float,
+                   end: float) -> Optional[dict]:
+    a = np.asarray(f0_row, dtype=float)
+    if a.ndim == 2:
+        a = a[0]
+    if not a.size or not step:
+        return None
+    return f0_summary(a, float(step), float(start), float(end))
 ```
 
-The `melody` argument stays, because `do_structure` still passes it and the librosa path still uses it; under stored frames the curve in the sidecar is the same curve.
+The docstring carries the measured difference and says in terms that this is the
+recovery path.
 
-- [ ] **Step 7: Run the tests to verify they pass**
+- [x] **Step 5: Put the curve in the sidecar**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_one_pass_pipeline.py tests/test_structure_frames.py -q`
-Expected: PASS
+In `api/workers/stages.py`, **inside** `_analyze_stems`' existing
+`if frames_out:` block — the one that calls `frames_from` and
+`timeseries.write` — before the `try`:
 
-- [ ] **Step 8: Run the whole suite**
+```python
+                    if stem_type == "vocals":
+                        mel = (ess or {}).get("melody") or {}
+                        if mel.get("f0") and mel.get("step"):
+                            frames_out["f0"] = [mel["f0"]]
+                            frames_out["f0_step"] = float(mel["step"])
+```
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests -q`
-Expected: PASS. `bulk_worker._sections_stale_sql` treats a section with no `f0` on a singing track as stale — that rule is unchanged and still satisfied, since the sidecar path writes the same `f0` key.
+A list, not an array: `frames_from` makes it a `(1, n)` float32 and resamples
+it, and `stages.py` imports no numpy (heavy libraries stay lazy). `f0_step` is
+the **melody's own** step, not `STEP_SECS` — the resample is what reads it.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 6: Let `detect_sections` read it when there is no melody**
+
+In `analysis/structure.py`, where a section's `f0` is measured:
+
+```python
+        if melody and melody.get("f0") and melody.get("step"):
+            from analysis.vocals import f0_summary
+            seg["f0"] = f0_summary(melody["f0"], float(melody["step"]), start_t, end_t)
+        elif use_stored:
+            vocal_frames = frames.get("vocals")
+            if vocal_frames is not None and vocal_frames.f0 is not None:
+                from analysis.vocals import f0_from_frames
+                seg["f0"] = f0_from_frames(vocal_frames.f0, step, start_t, end_t)
+```
+
+The `melody` argument stays authoritative, because `do_structure` passes it on
+every normal run and because the two paths are not the same numbers (above).
+`step` exists only on the stored path, which is what `elif use_stored` keeps it
+inside.
+
+- [x] **Step 7: Run the tests to verify they pass**
+
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_one_pass_pipeline.py tests/test_structure_frames.py tests/test_timeseries.py tests/test_settings_and_bulk.py tests/test_stem_tier.py -q`
+Observed: 122 passed, 4 skipped.
+
+- [x] **Step 8: Run the whole suite**
+
+Observed: 2156 passed, 4 failed, 17 skipped — the four failures the
+pre-existing untracked `tests/test_essentia_genre.py`. The staleness rule
+(`bulk_worker._sections_stale_sql`: a section with no `f0` on a singing track is
+stale) is unchanged and still satisfied, now pinned by a test of its own.
+
+- [x] **Step 9: Commit**
 
 ```bash
-git add analysis/essentia_groups.py analysis/vocals.py analysis/structure.py api/workers/stages.py tests/test_one_pass_pipeline.py
+git add analysis/essentia_groups.py analysis/vocals.py analysis/structure.py \
+        api/workers/stages.py readme.md tests/test_one_pass_pipeline.py \
+        tests/test_structure_frames.py
 git commit -m "Keep the sung-pitch curve in the vocals sidecar, not only in the disposable cache"
 ```
 
