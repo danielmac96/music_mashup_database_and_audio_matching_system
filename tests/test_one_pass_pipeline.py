@@ -14,6 +14,7 @@ that binds them, the way tests/test_quick_tier.py does.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -667,3 +668,204 @@ def test_the_structure_stage_skips_the_cut_allin1_already_made(monkeypatch,
     assert pw.run_stage(job, song_id, "structure") == "done"
     assert cut == []
     assert jobs.get(job)["stages"]["structure"]["state"] == "skipped"
+
+
+# ── The sung pitch curve ──────────────────────────────────────────────────────
+#
+# `essentia.melody` costs 6.9 s a track (204 uncached runs on the 206-track
+# library, mean 6.9 s, 23.5 min in all) and its 50 ms curve lived only in
+# `feature_cache`, which readme §3 calls disposable. The sections' summaries are
+# durable (2,004 of 2,046 rows carry `f0_json`); the curve itself was one purge
+# from gone, and the register term (readme §9 item 8.3, "the vocal out of
+# register — needs `f0` after the shift") is built from the curve, not the
+# summary.
+
+# A deterministic sung line: (MIDI note, how many 50 ms points it is held;
+# 0 = a rest). Held notes and real rests, so a resample can move a percentile.
+_PHRASE = [(60, 8), (0, 3), (64, 11), (67, 6), (0, 4), (62, 14), (69, 7),
+           (0, 2), (65, 9), (72, 5), (0, 5), (59, 13), (57, 10), (0, 6)]
+_MELODY_STEP = 0.05
+
+
+def _sung_curve(secs: float = 120.0) -> list:
+    out: list = []
+    while len(out) * _MELODY_STEP < secs:
+        for midi, held in _PHRASE:
+            hz = 0.0 if not midi else round(440.0 * 2 ** ((midi - 69) / 12.0), 1)
+            out.extend([hz] * held)
+    return out[:int(secs / _MELODY_STEP)]
+
+
+def _essentia_mode_with_melody(stages, monkeypatch, curve,
+                               step: float = _MELODY_STEP) -> dict:
+    """`_essentia_mode`, except the vocal stem's payload carries a melody —
+    which is the only stem `_ESSENTIA_EXTRA_STEPS` asks for one on."""
+    captured: dict = {}
+    base = _fake_essentia(captured)
+
+    def fake(song_id_, stem_type, path, key, on_progress, extra_steps=(),
+             frames_out=None, force_steps=(), only_steps=()):
+        payload, cached = base(song_id_, stem_type, path, key, on_progress,
+                               extra_steps, frames_out=frames_out,
+                               force_steps=force_steps, only_steps=only_steps)
+        if stem_type == "vocals":
+            payload["melody"] = {"step": step, "f0": list(curve), "voiced": 0.6}
+        return payload, cached
+
+    monkeypatch.setattr(stages, "_run_essentia", fake)
+    monkeypatch.setattr(stages, "effective_analyzer",
+                        lambda: ("essentia", "essentia"))
+    monkeypatch.setattr(stages, "require_analyzer", lambda: None)
+    return captured
+
+
+def test_the_sung_pitch_curve_lands_in_the_vocals_sidecar(monkeypatch,
+                                                          seeded_song, env):
+    """6.9 s a track of Melodia must survive a feature_cache purge.
+
+    The curve rides in `frames_out` like the chroma and the MFCC, so it is
+    resampled onto the shared grid by `frames_from._on_grid` and trimmed to the
+    same frame count as everything else.
+    """
+    from analysis import timeseries as ts
+    _models, stages, _db = env
+    song_id, stem_paths = seeded_song
+
+    _essentia_mode_with_melody(stages, monkeypatch,
+                               [0.0, 220.0, 220.0, 0.0, 330.0] * 4)
+    stages._analyze_stems(song_id, stem_paths, stages._ANALYSIS_STEM_ORDER, None)
+
+    vocals = ts.read(song_id, "vocals", "legacy_2stem")
+    assert vocals is not None and vocals.f0 is not None
+    assert vocals.f0.shape == (1, vocals.chroma.shape[1])
+    assert float(vocals.f0.max()) == pytest.approx(330.0, rel=0.01)
+    # 0 is unvoiced and stays 0: nothing interpolates a pitch into existence.
+    assert float(vocals.f0.min()) == 0.0
+    # The vocal stem alone sings (readme §5.4: the melody group is the vocal
+    # stem's). A bass row holds chroma only and has no sidecar key at all.
+    assert ts.read(song_id, "full", "legacy_2stem").f0 is None
+    assert ts.read(song_id, "instrumental", "legacy_2stem").f0 is None
+    assert ts.read(song_id, "bass", "legacy_2stem").f0 is None
+
+
+def test_the_curve_never_replaces_a_current_sidecar_on_its_own(monkeypatch,
+                                                               seeded_song, env):
+    """A second analysis of unchanged audio forces nothing (the sidecar is
+    already current), so `frames_out` holds no chroma — and must not then be
+    written as an f0-only sidecar over the good one."""
+    from analysis import timeseries as ts
+    _models, stages, _db = env
+    song_id, stem_paths = seeded_song
+
+    _essentia_mode_with_melody(stages, monkeypatch, _sung_curve(10.0))
+    stages._analyze_stems(song_id, stem_paths, ("vocals",), None)
+    first = ts.read(song_id, "vocals", "legacy_2stem")
+    assert first is not None and first.chroma is not None
+
+    stages._analyze_stems(song_id, stem_paths, ("vocals",), None)
+    again = ts.read(song_id, "vocals", "legacy_2stem")
+    assert again.chroma is not None, "an f0-only sidecar replaced a current one"
+    assert again.f0 is not None
+
+
+def test_f0_from_frames_matches_f0_summary_at_the_same_step():
+    """A thin wrapper: a row on the melody's own step gives f0_summary's
+    numbers exactly."""
+    from analysis.vocals import f0_from_frames, f0_summary
+
+    step = 0.05
+    curve = [0.0, 220.0, 220.0, 440.0, 0.0, 330.0, 330.0, 0.0,
+             220.0, 246.9, 261.6, 0.0, 293.7, 329.6, 349.2, 0.0]
+    want = f0_summary(curve, step, 0.0, len(curve) * step)
+    assert want, "fixture must clear min_voiced"
+
+    row = np.asarray([curve], dtype=np.float32)
+    got = f0_from_frames(row, step, 0.0, len(curve) * step)
+    for key in want:
+        assert got[key] == pytest.approx(want[key], rel=1e-6), key
+
+    # f0_summary's own min_voiced gate is inherited, not re-implemented.
+    assert f0_from_frames(np.zeros((1, 8), dtype=np.float32), step, 0.0, 0.4) is None
+    assert f0_from_frames(np.zeros((1, 0), dtype=np.float32), step, 0.0, 0.4) is None
+    assert f0_from_frames(row, 0.0, 0.0, 0.4) is None
+
+
+def test_f0_from_frames_on_the_grid_is_close_but_not_identical():
+    """The resampled curve is CLOSE TO, not equal to, the 50 ms measurement —
+    which is why `detect_sections` prefers the melody and treats the sidecar as
+    a recovery path.
+
+    `f0_summary` indexes a span as ``f0[int(start/step):int(end/step)]``, so a
+    different step takes a different sample set, and the 50 → 46.44 ms
+    nearest-neighbour resample duplicates about one point in thirteen
+    (2,400 points become 2,584, ×1.0767).
+
+    Measured on this fixture (10 section-length spans of 7.5–30 s):
+    ``median_midi`` identical on all ten, ``p10_midi`` and ``range_st`` up to
+    **0.20 st** apart, ``voiced`` up to **0.0092**; not one of the ten agreed on
+    every key. On a short span the sample set shifts enough to move the median:
+    [2.0, 4.5) reads 62.0 from the curve and **65.0** from the grid.
+
+    Measured on 718 real spans from 60 real `essentia.melody` payloads in the
+    206-track library (read-only): ``median_midi`` identical on 65.7 %, p95
+    0.20 st, **max 5.70 st**; ``range_st`` max 4.74 st; ``voiced`` max 0.0168.
+    So the fallback's numbers are the same measurement, not the same number.
+    """
+    from analysis.essentia_groups import frames_from
+    from analysis.timeseries import STEP_SECS
+    from analysis.vocals import f0_from_frames, f0_summary
+
+    curve = _sung_curve(120.0)
+    built = frames_from({"f0": [curve], "f0_step": _MELODY_STEP})
+    assert built is not None and built.f0 is not None
+    assert built.f0.shape[1] == 2584, built.f0.shape    # 2400 × 0.05/0.046440
+
+    spans = [(0.0, 15.0), (7.5, 22.5), (15.0, 45.0), (30.0, 37.5), (45.0, 60.0),
+             (52.3, 74.8), (60.0, 90.0), (75.0, 82.5), (90.0, 105.0),
+             (97.1, 119.6)]
+    differed = 0
+    for start, end in spans:
+        want = f0_summary(curve, _MELODY_STEP, start, end)
+        got = f0_from_frames(built.f0, STEP_SECS, start, end)
+        assert want and got, (start, end)
+        for key in ("median_midi", "p10_midi", "p90_midi", "range_st"):
+            assert abs(want[key] - got[key]) <= 0.25, (key, start, want, got)
+        assert abs(want["voiced"] - got["voiced"]) <= 0.02, (start, want, got)
+        differed += want != got
+    assert differed == len(spans), "the two paths are not interchangeable"
+
+    # The same fixture, a 2.5 s span: three semitones of median.
+    near = f0_summary(curve, _MELODY_STEP, 2.0, 4.5)
+    far = f0_from_frames(built.f0, STEP_SECS, 2.0, 4.5)
+    assert near["median_midi"] == pytest.approx(62.0, abs=0.01)
+    assert far["median_midi"] == pytest.approx(65.0, abs=0.01)
+
+
+def test_the_sung_range_staleness_rule_is_unchanged(seeded_song, env):
+    """`bulk_worker._sections_stale_sql` calls a section with no `f0` on a
+    singing track stale. Nothing in Task 8 may move that: the melody is still
+    what a cut measures, so a library that read current before reads current
+    after, and one missing its sung ranges is still offered a re-analysis.
+    """
+    from api.workers import bulk_worker
+
+    models, _stages, db = env
+    song_id, _ = seeded_song
+    models.upsert_features(song_id, "vocals", {"tempo": 124.0}, db_path=db)
+    models.update_features_extras(
+        song_id, "vocals",
+        {"melody_json": json.dumps({"step": 0.05, "voiced": 0.8})}, db_path=db)
+
+    current = {"start_sec": 0.0, "end_sec": 30.0, "label": "chorus",
+               "energy": 0.5, "vocal_presence": 0.6, "repetition": 1,
+               "confidence": 0.8, "chroma": [1 / 12] * 12,
+               "bpm": 124.0, "bpm_source": "section_estimate",
+               "vocal_activity": 0.7,
+               "f0": {"median_midi": 69.0, "p10_midi": 64.0, "p90_midi": 74.0,
+                      "range_st": 10.0, "voiced": 0.8}}
+    models.replace_sections(song_id, [current], db_path=db)
+    assert bulk_worker.sections_are_current(song_id, db_path=db) is True
+
+    without = dict(current, f0=None)
+    models.replace_sections(song_id, [without], db_path=db)
+    assert bulk_worker.sections_are_current(song_id, db_path=db) is False

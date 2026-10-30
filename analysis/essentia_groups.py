@@ -588,9 +588,10 @@ def frames_from(frames_out: dict) -> Optional[StemFrames]:
 
     A matrix whose own step is more than 1 % off the grid is resampled by
     nearest neighbour (a future Essentia build changing TonalExtractor's hop
-    must not silently misalign a chroma against an MFCC). Every matrix is
-    trimmed to the shortest, because the last frame of one pass can run a frame
-    past another's. A matrix with a NaN or inf is left out — unmeasured, never
+    must not silently misalign a chroma against an MFCC; the vocal stem's f0,
+    at 50 ms, always takes that branch). Every matrix is trimmed to the
+    shortest, because the last frame of one pass can run a frame past
+    another's. A matrix with a NaN or inf is left out — unmeasured, never
     patched — so what comes back always passes timeseries.write's one-grid and
     finite-value checks.
 
@@ -618,6 +619,13 @@ def frames_from(frames_out: dict) -> Optional[StemFrames]:
         "mfcc": _on_grid(frames_out.get("mfcc"), frames_out.get("spectral_step")),
         "bands": _on_grid(frames_out.get("bands"), frames_out.get("spectral_step")),
         "curves": _on_grid(frames_out.get("curves"), frames_out.get("spectral_step")),
+        # The vocal stem's sung pitch, on the melody group's own 50 ms step —
+        # 7.7 % off the grid, so _on_grid's resample branch is what puts it
+        # there. No second resampler: nearest neighbour is exactly right for a
+        # pitch curve (a value between a voiced and an unvoiced frame is not a
+        # pitch, and averaging one into existence would put a note where
+        # nothing was sung), and it is already what that branch does.
+        "f0": _on_grid(frames_out.get("f0"), frames_out.get("f0_step")),
     }
     got = {k: v for k, v in got.items() if v is not None and v.shape[1]}
     if not got:

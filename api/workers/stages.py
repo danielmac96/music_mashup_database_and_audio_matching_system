@@ -525,6 +525,23 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
                     only_steps=("tonal",) if tonal_only else ())
                 fully_cached = fully_cached and ess_cached
                 if frames_out:
+                    # The sung pitch rides along with the matrices that are
+                    # being written anyway. Melodia costs 6.9 s a track (204
+                    # uncached runs, 23.5 min over the 206-track library) and
+                    # its curve lived only in `feature_cache`, which readme §3
+                    # calls disposable — so a purge destroyed it, and the
+                    # register term (readme §9 item 8.3) is built from the
+                    # curve, not from the sections' summaries. Inside this
+                    # branch, never beside it: when the sidecar is already
+                    # current nothing forces the frame steps, `frames_out` is
+                    # empty, and an f0 added out here would write an f0-only
+                    # sidecar over a good one. Left as a list — frames_from
+                    # makes it a (1, n) float32 and resamples it onto the grid.
+                    if stem_type == "vocals":
+                        mel = (ess or {}).get("melody") or {}
+                        if mel.get("f0") and mel.get("step"):
+                            frames_out["f0"] = [mel["f0"]]
+                            frames_out["f0_step"] = float(mel["step"])
                     try:
                         from analysis.essentia_groups import frames_from
                         built = frames_from(frames_out)

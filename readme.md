@@ -1223,7 +1223,7 @@ was bumped.
 | `essentia.tonal` | `KeyExtractor` per profile (edma primary; edma/bgate/krumhansl/temperley vote), confidence = strength × share of profiles agreeing, tuning, chords (`TonalExtractor`), HPCP folded to 12 bins from C | key, mode, camelot, key_confidence · extras |
 | `essentia.loudness` | EBU R128 integrated + LRA, true peak (4× oversampling only around the loudest samples — `TruePeakDetector` costs ~5 s per 100 s), ReplayGain, dynamic complexity, crest, stereo width, frame RMS | loudness_rms · extras |
 | `essentia.spectral` | Essentia window + FFT + MFCC per frame; centroid, rolloff, ZCR, flux, flatness, HFC and 8/3-band energy in numpy over those spectra; contrast, complexity, moments, dissonance on every 4th frame | mfcc, spectral_*, zero_crossing_rate, energy, band_energy, waveform_rms · extras |
-| `essentia.melody` | **vocal stem only**: `PitchMelodia` at 22.05 kHz, hop 128, median-downsampled to a 50 ms f0 curve (a bin is voiced when half its frames are); ~1.8 s per 100 s | `melody_json` (sung range + centre) · the curve stays in the cache, where structure reads it (§5.5) |
+| `essentia.melody` | **vocal stem only**: `PitchMelodia` at 22.05 kHz, hop 128, median-downsampled to a 50 ms f0 curve (a bin is voiced when half its frames are); ~1.8 s per 100 s | `melody_json` (sung range + centre) · the curve itself goes to the vocal stem's per-frame sidecar (`analysis/timeseries.py`), nearest-neighbour resampled onto the 46.44 ms frame grid as the `f0` row, so clearing the feature cache no longer destroys it; structure reads the cached curve where there still is one (§5.5) |
 | `essentia.effnet` | **full mix, analysis stage only** (not the quick tier): Discogs-EffNet (`discogs-effnet-bs64-1`) at 16 kHz → one 1280-d embedding per ~1 s patch → 15 heads (`analysis/ml_models.py`), each averaged over the track; ~3.2 s median per track (p90 5.1 s) on the library. Models are fetched on first use into `<data_dir>/essentia_models` (sha256 manifest; node names and classes from each model's JSON); without them the step is dropped before the cache is read — skipped, never failed | `tags_json`: top-5 Discogs styles + parent genre (by summed probability), voice, gender (only when voiced), danceable, tonal, bright, seven moods, top-5 mood/themes and instruments · the mean embedding stays in the cache |
 
 Measured (sandbox, 100 s file, warm): the four groups cost ~4.9 s + ~0.35 s
@@ -1278,6 +1278,24 @@ which is why the core must not mix analysers within one library.
    only where the Essentia analyser runs (`shadow`/`essentia`): librosa's pYIN
    would cost several times the whole analysis. None of the three is scored
    yet — they are measured first and weighted in phase 7 (§9).
+
+   **The melody group's own curve is what a section's `f0` is measured from;
+   the sidecar's copy is the fallback.** Melodia costs 6.9 s a track (204
+   uncached runs, 23.5 min over this library) and its curve used to live only
+   in `feature_cache`, which is disposable — so a purge destroyed the one input
+   the register term needs (§9 item 8.3), while the section summaries survived.
+   The curve is therefore written to the vocal stem's frames sidecar as well,
+   and `detect_sections` reads it from there **only** when no melody was handed
+   to the cut (`analysis/vocals.f0_from_frames`). Melody-first deliberately:
+   the sidecar holds the same curve resampled onto the 46.44 ms grid, and
+   `f0_summary` indexes a span in whole steps, so the two take different sample
+   sets and read slightly differently — measured over 718 spans of 60 real
+   payloads, the median agrees exactly 65.7% of the time (p95 0.20 st, worst
+   5.70 st) and the voiced share within 0.0168. Preferring the sidecar would
+   rewrite `sections.f0_json` for every re-analysed track, which is a changed
+   group result, which §7 makes a version bump on the structure groups, which
+   is a re-cut of the whole library — for nothing, since durability was the
+   point and both paths are the same measurement.
 
 **Provisional sections.** The quick tier cuts sections from the mix before any
 stem exists: `provisional = 1`, no vocal presence, `section_class = unknown`

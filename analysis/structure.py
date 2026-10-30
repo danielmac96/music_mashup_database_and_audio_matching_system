@@ -959,9 +959,26 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
                                                   frames_per_sec)
         seg["band_energy_bed"] = _section_bands(bed_bands_f, start_t, end_t,
                                                 frames_per_sec)
+        # The melody group's own curve leads; the vocals sidecar's `f0` row is
+        # the fallback for when the feature cache no longer holds it (that
+        # durability is why the row exists — analysis/timeseries.py). NOT the
+        # other way round: the sidecar holds the same curve resampled onto the
+        # 46.44 ms grid, and f0_summary indexes a span by int(start/step), so
+        # the two take different sample sets and read slightly differently
+        # (measured on real payloads: the median agrees exactly on 65.7 % of
+        # spans, p95 0.20 st, worst 5.70 st). Preferring the sidecar would
+        # rewrite sections.f0_json for every re-analysed track — a changed
+        # group result, which readme §7 makes a version bump on the structure
+        # groups, i.e. a re-cut of the whole library — and buy nothing, since
+        # durability is the point and both paths are the same measurement.
         if melody and melody.get("f0") and melody.get("step"):
             from analysis.vocals import f0_summary
             seg["f0"] = f0_summary(melody["f0"], float(melody["step"]), start_t, end_t)
+        elif use_stored:
+            vocal_frames = frames.get("vocals")
+            if vocal_frames is not None and vocal_frames.f0 is not None:
+                from analysis.vocals import f0_from_frames
+                seg["f0"] = f0_from_frames(vocal_frames.f0, step, start_t, end_t)
         segs.append(seg)
     # Extend the last section to the true end of the audio.
     segs[-1]["end_sec"] = round(duration, 2)

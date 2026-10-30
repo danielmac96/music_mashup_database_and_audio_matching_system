@@ -562,3 +562,91 @@ def test_sections_match_the_librosa_cut_on_the_same_numbers(tmp_path):
         # salience term is noise either way — both read near zero. A one-frame
         # shift in where the beats land is the whole difference.
         assert a["bpm_confidence"] == pytest.approx(b["bpm_confidence"], abs=0.05)
+
+
+# ── The sung pitch: the melody leads, the sidecar is the recovery path ────────
+
+_MELODY_STEP = 0.05
+
+
+def _melody(secs: float):
+    """A deterministic sung line on the melody group's own 50 ms step: A4 for
+    0.6 s, E5 for 0.6 s, a rest, repeated."""
+    one = [440.0] * 12 + [659.3] * 12 + [0.0] * 6
+    out = one * int(secs / (len(one) * _MELODY_STEP) + 1)
+    return {"step": _MELODY_STEP, "f0": out[:int(secs / _MELODY_STEP)],
+            "voiced": 0.8}
+
+
+def _track_with_sidecar_f0(hz: float):
+    """Every stem's frames, and a vocals `f0` row of a constant pitch — nothing
+    a real melody would ever read, so a section that reports it has gone to the
+    sidecar."""
+    track = _track()
+    vocals = track.get("vocals")
+    track.stems["vocals"] = type(vocals)(
+        step=vocals.step, chroma=vocals.chroma, mfcc=vocals.mfcc,
+        bands=vocals.bands, curves=vocals.curves,
+        f0=np.full((1, vocals.chroma.shape[1]), hz, dtype=np.float32))
+    return track
+
+
+def test_a_section_f0_is_measured_from_the_melody_not_the_sidecar(tmp_path):
+    """With the melody in hand, the sidecar's `f0` is not consulted.
+
+    The two are the same curve but not the same numbers: f0_summary indexes a
+    span by `int(start/step)`, so the 50 ms curve and its 46.44 ms resample take
+    different sample sets (measured: the median moves by up to 5.70 st on real
+    payloads). Preferring the sidecar would therefore rewrite `sections.f0_json`
+    for every re-analysed track — a changed group result, which readme §7 makes
+    a version bump on the structure groups, which is a re-cut of the library
+    (`structure` is the largest cost in `analysis_runs`: 387 min over 232 runs)
+    — and it would buy nothing, since durability is the whole point.
+    """
+    from analysis import structure
+
+    track = _track_with_sidecar_f0(880.0)          # A5, MIDI 81
+    out = structure.detect_sections(
+        tmp_path / "a.wav", tmp_path / "v.wav", inst_path=tmp_path / "i.wav",
+        bass_path=tmp_path / "b.wav", grid=_grid(),
+        melody=_melody(N_FRAMES * 0.04644 + 5), frames=track, timings={})
+
+    assert out
+    measured = [s["f0"] for s in out if s.get("f0")]
+    assert measured, "no section carried an f0 at all"
+    for f0 in measured:
+        # A4..E5 from the melody; 81.0 everywhere would be the sidecar.
+        assert 68.0 <= f0["median_midi"] <= 77.0, f0
+        assert f0["median_midi"] != pytest.approx(81.0, abs=0.01)
+
+
+def test_a_section_f0_falls_back_to_the_sidecar_without_a_melody(tmp_path):
+    """The point of the task: the curve survives a feature_cache purge, so a
+    cut made with no melody argument still measures the sung range."""
+    from analysis import structure
+
+    track = _track_with_sidecar_f0(880.0)
+    out = structure.detect_sections(
+        tmp_path / "a.wav", tmp_path / "v.wav", inst_path=tmp_path / "i.wav",
+        bass_path=tmp_path / "b.wav", grid=_grid(), melody=None,
+        frames=track, timings={})
+
+    assert out
+    measured = [s["f0"] for s in out if s.get("f0")]
+    assert measured, "the sidecar's curve was not read"
+    for f0 in measured:
+        assert f0["median_midi"] == pytest.approx(81.0, abs=0.01)
+        assert f0["voiced"] == pytest.approx(1.0)
+
+
+def test_no_melody_and_no_sidecar_f0_leaves_the_section_unmeasured(tmp_path):
+    """Unknown is absent, never a number (readme §5)."""
+    from analysis import structure
+
+    out = structure.detect_sections(
+        tmp_path / "a.wav", tmp_path / "v.wav", inst_path=tmp_path / "i.wav",
+        bass_path=tmp_path / "b.wav", grid=_grid(), melody=None,
+        frames=_track(), timings={})
+
+    assert out
+    assert all(s.get("f0") is None for s in out)
