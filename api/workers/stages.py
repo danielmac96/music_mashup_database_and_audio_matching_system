@@ -665,12 +665,17 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         log.exception("embedding sync failed for %s", song_id)
 
     # Near-duplicate grouping (A.2). Needs the mean MFCC this stage just wrote,
-    # so it runs here rather than at download. Never fatal: a track without a
-    # cluster is one that might pair with its own Extended Mix, not a failure.
+    # so it runs here rather than at download. ONE track against the records
+    # that normalise to the same work — not the whole library, which is what
+    # this cost before: 627 rebuilds on the 206-track library at a 982 ms
+    # median but a 5,343 ms mean, 18.4 s p90 and a 34.9 s worst run, 55.8 min
+    # in total, growing with the library while the track does not.
+    # Never fatal: a track without a cluster is one that might pair with its
+    # own Extended Mix, not a failure.
     try:
-        from matcher.dedup import rebuild_variant_clusters
+        from matcher.dedup import assign_variant_cluster
         with _timed("dedup", song_id):
-            rebuild_variant_clusters()
+            assign_variant_cluster(song_id)
     except Exception:  # noqa: BLE001
         log.exception("variant clustering failed for %s", song_id)
 

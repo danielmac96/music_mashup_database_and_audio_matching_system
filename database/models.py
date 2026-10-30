@@ -585,7 +585,8 @@ _SONGS_OPTIONAL_COLUMNS = (
     # NULL means no known variant. Pair scoring drops pairs whose two sides
     # share a non-NULL cluster: they are the same record, so they match
     # perfectly on every sub-score and would otherwise fill the ranked list.
-    # Computed by matcher.dedup.rebuild_variant_clusters.
+    # Written by matcher.dedup.assign_variant_cluster (one track's title group,
+    # after its analysis) and by rebuild_variant_clusters (the manual repair).
     ("variant_cluster", "INTEGER"),
     # Provenance. source_url is where the AUDIO came from, and a download
     # fallback rewrites it; origin_url / origin_duration_secs are the link the

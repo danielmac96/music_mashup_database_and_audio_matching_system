@@ -1402,6 +1402,29 @@ remix credits) → same title **and** artist = variant; same title, different
 artist = variant **only if** MFCC timbre agrees (catches re-uploads, keeps
 covers apart). Union-find; the cluster id is the smallest song id.
 
+**One track is clustered against its own title group, not the library**
+(`dedup.assign_variant_cluster`, called by the analysis stage). The clusterer
+unions only *inside* a normalised-title group — it indexes the library by
+`variant_key` and then re-indexes those groups by the title half alone, so the
+artist never gates a comparison, it only decides whether a pair needs the audio
+to agree. A cluster therefore cannot span two title groups, which makes
+re-clustering the one group a track belongs to exactly the answer a full
+rebuild would give for every member of it (pinned against the rebuild in
+`tests/test_dedup_incremental.py`). It reads a scan of `(id, title)` plus the
+feature rows of that group, where the rebuild read the library's: on the
+206-track library the rebuild ran 627 times after analyses, at a median of
+982 ms but a **mean of 5,343 ms**, a p90 of ~18.4 s and a worst run of
+34,921 ms — **55.8 minutes** in total, the 8th largest `grp` in
+`analysis_runs`. The distribution is the argument: each run re-clustered a
+library that keeps growing while the track that triggered it does not.
+A track whose *title changes* leaves its old cluster, so that group is
+recomputed too (found through the mates still carrying the old id — the
+track's own title no longer names it); its former mates would otherwise keep a
+`variant_cluster` pointing at a song that is no longer one of them.
+**`rebuild_variant_clusters` now has no production caller**: it is the manual
+repair — for a *deleted* song, whose former mates one assignment cannot see —
+and what `tests/test_dedup.py` pins.
+
 ### 5.7 Pair scoring
 
 `matcher/match.py::score_all_pairs`, a background job that truncates and
@@ -2245,6 +2268,21 @@ Existing databases migrate on start.
   bytes.** `sync_embeddings` is its only writer; it never re-analyses, and it
   drops a vector whose `content_hash` is no longer the full mix's. Nothing but
   `mode=sound` reads it — `matcher/dedup.py` is not on embeddings yet (§9).
+- **A variant cluster lives inside one normalised-title group, and that is
+  what makes `dedup.assign_variant_cluster` equal to a full rebuild.**
+  `cluster_variants` walks `by_title` — `by_key`'s groups re-indexed on
+  `key.split("|", 1)[1]` — and every union it makes is between two members of
+  one title group; the artist half only chooses whether a pair needs
+  `_audio_agrees`. So the candidate set for one track is every song whose
+  `normalise_title` matches its own, **never** every song whose full
+  `variant_key` matches: that filter would drop the re-upload under an
+  uploader name, which is the case the title index exists for, and the
+  incremental answer would then differ from the rebuild's. The cluster id is
+  order-independent for the same reason the two agree — `_Union.union` keeps
+  the smaller root, so a component's root is its minimum id however the pairs
+  are visited. A new reader of `variant_cluster` needs nothing; a new *writer*
+  must either go through one of these two, or it will key a cluster on
+  something a cluster cannot be keyed on.
 - **A per-track scoring run never stands in for Score library.** It replaces
   only that track's vocal-over-instrumental rows against the library's
   current stats, skips the instrumental pass, and leaves `last_score` alone —

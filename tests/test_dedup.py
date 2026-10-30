@@ -230,8 +230,11 @@ def test_variant_pairs_are_not_scored(db_path):
 
 
 def test_rebuild_only_writes_changed_rows(db_path):
-    """It runs after every analysis, so a no-op rebuild must not take a write
-    lock on the whole table."""
+    """A no-op rebuild must not take a write lock on the whole table.
+
+    It is now the manual repair rather than something the analysis stage runs
+    (that is `assign_variant_cluster`, tests/test_dedup_incremental.py), but it
+    can still be asked for while the analysis workers are writing."""
     from database.models import init_db
     from matcher.dedup import rebuild_variant_clusters
     init_db(db_path)
