@@ -108,11 +108,18 @@ eight single folds (`harmonix-fold0` … `fold7`) selectable but **not chosen
 without evidence** — the 25 ms timing gate rests on these downbeats, and a fold
 is roughly an eighth of the ensemble's inference cost for an unmeasured loss of
 agreement. **allin1's inference has run on real audio**: 27 tracks of the
-206-track library on 2026-10-24/25 (`harmonix-all`, allin1 1.1.0), 330–1080 s
-of inference a track, mean 662 s. All 27 report `demixed_by = 'allin1'` — the
-library is `legacy_2stem`, so every one of them separated its own four stems
-before the model ran, which is the second Demucs pass the unified pipeline
-exists to remove (§5.3; the hand-over now logs a warning when it happens).
+206-track library on 2026-10-24/25 (`harmonix-all`, allin1 1.1.0), no failures.
+Per track, from `analysis_runs`: the whole stage 330–1080 s, mean **662 s**, of
+which inference 260–871 s (mean 525 s), its own Demucs 67–202 s (mean
+**132 s**), spectrograms 4.5 s and the model load 0.6 s (12.2 s on the first).
+Peak resident 3,280 MB against the 6,000 MB budget. All 27 report
+`demixed_by = 'allin1'` — the library is `legacy_2stem`, so every one of them
+separated its own four stems before the model ran: that mean 132 s, a fifth of
+the stage, is the second Demucs pass the unified pipeline exists to remove
+(§5.3; the hand-over now logs a warning when it happens). **177 of the 206 are
+still `allin1_state = 'queued'`** from that backfill — at 662 s a track, ~33 h
+of CPU still outstanding, and each would pay the self-demix until its track
+moves to the unified pipeline.
 Without allin1 the app works exactly as before; the `allin1` engine is refused
 by the settings API with the reason.
 
@@ -3095,9 +3102,14 @@ driven by the 100-persona browser simulation (§9) against a synthesised
     `features` BPM/key, allin1 for bar lines and sections in its mode; no
     Essentia step is skipped (the comparison needs both).
     **Done since:** a 27-track allin1 backfill ran on the real library
-    (2026-10-24/25, `harmonix-all`, allin1 1.1.0; 330–1080 s of inference a
-    track, mean 662 s; 316 `sections_allin1` rows, 381 allin1 phrases, 27
-    pooled embeddings at ~20 KB each). Every one of the 27 says
+    (2026-10-24/25, `harmonix-all`, allin1 1.1.0, no failures; the stage
+    330–1080 s a track, mean 662 s = inference 525 s + its own Demucs 132 s +
+    spectrograms 4.5 s; peak resident 3,280 MB; 316 `sections_allin1` rows,
+    381 allin1 phrases, 27 pooled embeddings at ~20 KB each). It stopped at 27:
+    **177 tracks are still `allin1_state = 'queued'`**, ~33 h of CPU at that
+    mean. Step 2 below still owes the full `bench_pipelines.py` table, but
+    `BASE_MB` / `MB_PER_AUDIO_SEC` can now be checked against a real peak of
+    3,280 MB on tracks of 330–1080 s. Every one of the 27 says
     `demixed_by = 'allin1'`, i.e. each separated its own four stems first —
     the waste the `unified_4stem` default removes. One separation, the model as
     a live setting and the beat-level activations are built (§5.5).
