@@ -4323,23 +4323,41 @@ git commit -m "Cut sections once and score a track once per set of inputs"
 Three changes, all in service of one run: allin1 never separates again (the unified 4-source pass is its input), its model becomes a live setting so Task 9's benchmark can decide it, and the per-frame activations it computes — currently sampled at the downbeats and otherwise dropped — are kept at beat resolution, which is a few hundred floats.
 
 **Files:**
-- Modify: `config.py` (`current_allin1_model`, `separation_pipeline` default)
-- Modify: `analysis/allin1_runner.py` (`_model`, `run`, `summarise`)
-- Modify: `analysis/registry.py` (`_allin1_params` reads the live model)
-- Modify: `database/alignment.py` (`store_allin1` / `get_allin1` carry the beat-level activations)
-- Test: `tests/test_allin1_stage.py` (extend)
+- Modify: `config.py` (`ALLIN1_MODELS`, `current_allin1_model`, `separation_pipeline` default, `settings_provenance`)
+- Modify: `analysis/allin1_runner.py` (`model_name`, `warn_self_demix`, `hand_over_demix`, `_model`, `run`, `summarise`)
+- Modify: `analysis/registry.py` (`_allin1_params` reads the live model; `allin1.analysis` version)
+- Modify: `database/alignment.py` (`_DDL`, `ADDED_COLUMNS`, `store_allin1` / `get_allin1` / `storage_bytes` carry the beat-level activations)
+- Modify: `database/schema.py` (**migration 6**, `allin1_activations` — CORRECTED, see Step 4)
+- Modify: `api/routes/settings.py` (`allin1_model` among the validated enums)
+- Test: `tests/test_allin1_stage.py` (extend), `tests/test_schema_ledger.py` (migration 6; and its
+  `test_scored_at_arrives_as_migration_five` asserts `schema.apply(conn) == [5]`, the exact-tail
+  assertion the Global Constraints forbid — it breaks the moment migration 6 lands)
 
 **Interfaces:**
 - Consumes: `analysis.allin1_runner.SOURCES`, `summarise`, `to_cache` / `from_cache`.
 - Produces:
   - `config.current_allin1_model() -> str` — `MASHUP_ALLIN1_MODEL` / `allin1_model`, default `"harmonix-all"` until Task 9 measures otherwise.
   - `analysis.allin1_runner.run(full_path, stems, device="cpu", timings=None, threads=None, model=None)` — `model` overrides the setting (the benchmark passes each candidate).
-  - `analysis.allin1_runner.summarise(result, content_hash, demixed_by, ms=None, model=None) -> dict` — now also carries `beat_conf` (per beat), `downbeat_conf_beats` (the downbeat activation at every beat, not only at downbeats) and `segment_label_probs` (per segment, the full label distribution).
+  - `analysis.allin1_runner.summarise(result, content_hash, demixed_by, ms=None, model=None) -> dict` — now also carries `beat_conf` (per beat), `downbeat_conf_beats` (the downbeat activation at every beat, not only at downbeats), `segment_label_probs` (per segment, the full label distribution) and `segment_labels_order` (its column order).
   - `analysis.allin1_runner.SELF_DEMIX_WARNED` — module flag so the "it separated again" warning is logged once per process.
+  - `analysis.allin1_runner.hand_over_demix(stems, out_dir, path, timings) -> "pipeline" | "allin1"` — CORRECTED addition. The plan put `warn_self_demix` in an `else:` inside `run`, which cannot execute on a machine without the weights, so nothing would have proved the warning was wired. Pulling the decision out gives one testable function (both branches run here, `_write_demix` included) and leaves `run` one line; a source assertion pins that `run` calls it and no longer calls `_write_demix` itself.
+  - `config.current_allin1_model()` is also reported by `config.settings_provenance()` (which is what `GET /api/settings` returns — there is no `config.settings_summary`) and validated by `POST /api/settings` against `config.ALLIN1_MODELS`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/test_allin1_stage.py` (it already fakes `allin1_runner.run`; reuse that fixture):
+Append to `tests/test_allin1_stage.py` (it already fakes `allin1_runner.run`; reuse that fixture).
+
+> **CORRECTED (Task 6): there is no `fake_allin1_result` fixture.** The file's only
+> fixture is `env`; the fake is a class, `FakeResult`, at ~line 49. Build it directly, as
+> `test_summary_keeps_grids_and_pools_embeddings_per_bar` already does. Its `activations`
+> carried `"beat"` as `db.copy()` and `"label"` as one constant, so **neither of the two
+> assertions that matter could fail**: a `beat_conf` that copied the downbeat curve and a
+> `segment_label_probs` read in the wrong label order both passed. The fake now gives the
+> beat curve its own values (0.8 on a bar line, 0.5 off it) and label row *i* the constant
+> `(i + 1) / 20`. One more trap: `FakeResult`'s spikes sit on their beat's exact frame, so
+> `_peak_near(radius=2)` and a raw nearest-frame read agree on it — a test built only on
+> this fake cannot pin the convention. A second, off-grid result (peak two frames late) is
+> what discriminates them.
 
 ```python
 def test_model_comes_from_the_live_setting(monkeypatch):
@@ -4419,10 +4437,23 @@ def current_allin1_model() -> str:
     chosen only on the evidence of scripts/bench_allin1_models.py (downbeat
     agreement and segment labels against the ensemble), because the 25 ms
     timing gate rests on these downbeats."""
-    return _resolve_str("MASHUP_ALLIN1_MODEL", "allin1_model", ALLIN1_MODEL)
+    return _live_choice("MASHUP_ALLIN1_MODEL", "allin1_model",
+                        ALLIN1_MODELS, ALLIN1_MODEL)
 ```
 
-Use whichever string resolver `current_essentia_key_profile` uses; copy that line's shape.
+> **CORRECTED (Task 6): `config._resolve_str` does not exist.** The string reader
+> `current_essentia_key_profile` uses is `_live_choice(env, key, allowed_tuple, default)`,
+> which *validates against a tuple* — that is what gives the settings API its "refused,
+> with the reason" path for every other enum setting. So declare the tuple beside the
+> constant and use it:
+>
+> ```python
+> ALLIN1_MODELS = ("harmonix-all",) + tuple(f"harmonix-fold{i}" for i in range(8))
+> ```
+>
+> A checkpoint allin1 does not ship is then refused by `POST /api/settings` with the
+> reason, and falls back to the ensemble if it is set some other way — rather than failing
+> ten minutes into an inference on a name that cannot load.
 
 In `analysis/allin1_runner.py`:
 
@@ -4529,30 +4560,41 @@ In `summarise`, where the downbeat activation is already sampled at the downbeat
     # a few hundred float16s a track, and they are the only record of how sure
     # the model was anywhere but on a downbeat — which is what a timing gate
     # tightened below 25 ms will have to be judged against.
-    beat_idx = _frame_indices(beats, fps=FPS, n=len(beat_act))
-    db_idx = _frame_indices(beats, fps=FPS, n=len(downbeat_act))
-    summary["beat_conf"] = [float(beat_act[i]) for i in beat_idx]
-    summary["downbeat_conf_beats"] = [float(downbeat_act[i]) for i in db_idx]
+    beat_conf = [round(_peak_near(beat_act, t), 4) for t in beats]
+    downbeat_conf_beats = [round(_peak_near(db_act, t), 4) for t in beats]
     # Per segment, the whole label distribution rather than the winner's
     # probability: "chorus 0.41 / verse 0.39" and "chorus 0.95" are different
     # evidence, and the Engines report cannot tell them apart today.
-    summary["segment_label_probs"] = [
-        [round(float(p), 4) for p in row] for row in segment_logits]
-    summary["segment_labels_order"] = list(label_order)
+    segment_label_probs.append(
+        [round(float(lab_act[i, a:b].mean()), 4) for i in range(10)])
+    summary["segment_labels_order"] = list(HARMONIX_LABELS)
 ```
 
-with the small helper beside the other private functions:
-
-```python
-def _frame_indices(times, fps: float, n: int) -> list:
-    """Nearest activation frame for each time, clamped into the array."""
-    import numpy as np
-    idx = np.clip(np.round(np.asarray(times, dtype=float) * fps).astype(int),
-                  0, max(0, n - 1))
-    return idx.tolist()
-```
-
-Name `beat_act`, `downbeat_act`, `segment_logits`, `label_order` and `FPS` from whatever the existing `summarise` body already extracts from the allin1 result — read that function and reuse its own names rather than introducing new ones. If the label distribution is not on the result object, store the winner's probability per segment (already present) and leave `segment_label_probs` out rather than inventing a value; note it in the readme instead.
+> **CORRECTED (Task 6), four things in this step:**
+>
+> 1. **The names.** `summarise` calls them `db_act`, `seg_act` and `lab_act`, not
+>    `downbeat_act` / `segment_logits`; `label_order` does not exist — it is the module
+>    constant `HARMONIX_LABELS` (10 labels). `beat_act` is new and is read the same way
+>    (`acts["beat"]`).
+> 2. **There IS an `acts["beat"]` curve, and `summarise` was throwing it away.** The
+>    activations dict is `{"beat", "downbeat", "segment", "label"}`. So `beat_conf` is the
+>    *beat* activation at each beat — genuinely new information — and
+>    `downbeat_conf_beats` is the *downbeat* activation at each beat. **They are two
+>    different arrays**; making one a copy of the other loses the whole point.
+> 3. **`_frame_indices` must not be written.** It duplicates the existing `_frame(t, n)`
+>    and, worse, samples a raw nearest frame where every stored activation uses
+>    `_peak_near(..., radius=2)` — "a detected event sits on a peak, but its time is
+>    quantised". A per-beat curve on the other convention is not comparable with the
+>    `downbeat_conf` stored beside it: on a real (post-processed) activation the raw read
+>    returns 0.0 for exactly the events that matter. Use `_peak_near`. A test pins
+>    `downbeat_conf_beats` at the downbeats against `downbeat_conf` element by element,
+>    and a second one uses an off-grid peak, which is the only thing that tells the two
+>    conventions apart.
+> 4. **The label distribution is fully derivable, so the escape hatch does not apply.**
+>    `lab_act` is label-major `(10, frames)`, indexed by `HARMONIX_LABELS.index(label)` —
+>    the existing `label_prob` already takes one row's mean over the segment's frames.
+>    Take all ten the same way, in `HARMONIX_LABELS` order, and read the winner's
+>    `label_prob` back out of that row so the two cannot disagree.
 
 In `database/alignment.py`, extend `store_allin1` and `get_allin1`: add three columns to the `allin1_analysis` DDL and carry them through, following the `_f16` / `_arr` pattern already used for `downbeat_conf`:
 
@@ -4572,15 +4614,61 @@ Because `allin1_analysis` already exists in deployed databases, these go in `ADD
     ("allin1_analysis", "segment_labels_order", "TEXT"),
 ```
 
+> **CORRECTED (Task 6): those two places reach a database at `user_version = 0` and no
+> other, so a THIRD is needed — a numbered migration.** `alignment.migrate` (and with it
+> `_DDL` and `ADDED_COLUMNS`) is called from exactly one place, `schema._baseline`, which
+> **is** migration 1; a database at version 1 or above never runs it again, and the live
+> library is at 5 with 27 `allin1_analysis` rows in it. This is the same trap as Task 5's
+> plan error #1 and Task 1's pre-flight catch. So add
+> `Migration(6, "allin1_activations", _allin1_activations)` to `database/schema.py`:
+> idempotent behind `PRAGMA table_info`, statements only, never `executescript` (pinned by
+> `test_no_migration_uses_executescript_after_the_baseline`), and returning early when
+> migration 1 has not created the table yet. Keep the column list in one place —
+> `alignment.ALLIN1_ACTIVATION_COLUMNS`, filtered out of `ADDED_COLUMNS` — so the three
+> sites cannot drift.
+>
+> Two details that only show up when you run it:
+> * **Declare them LAST in `_DDL`, after `created_at`.** `ALTER TABLE` appends, so putting
+>   them mid-table gives a fresh database a different column ORDER from a migrated one,
+>   and `schema.shape` compares columns as an ordered list. Verified identical both ways.
+> * **`get_allin1` must decode them and `storage_bytes` must sum them.** `storage_bytes`
+>   is what the `< 100 KB` per-track ceiling is checked against, so a column it does not
+>   count is a column nobody is watching. Measure it against the same summary with the
+>   four keys emptied — a sum that ignores the columns reports the two rows as the same
+>   size, and an assertion like `analysis > curves + probs` passes anyway because the
+>   grids alone clear it.
+>
+> **And `allin1.analysis` moves to version 2** (readme §7: change what a group returns →
+> bump its version). Evidence first, per the evidence rule: a read-only probe
+> (`sqlite3 ... mode=ro`) of every database on the machine found **27 `allin1.analysis`
+> v1 payloads** in `data/mashup.db`, mean 34 KB each. None of the three new keys is
+> derivable from one — `summarise` drops the 100-fps arrays — so without the bump a cache
+> hit would re-store a v1 payload and leave the four columns NULL on a track that looks
+> analysed, which is the one way the cache serves a stale answer. The bump queues nothing
+> by itself (`bulk_worker._ALLIN1_STALE_SQL` keys on `allin1_state` and the row's
+> existence, not on the group version); it only means an explicit re-run recomputes, at
+> ~662 s a track. Moving the model into `params()` is the separate half and needs no bump.
+
 - [ ] **Step 5: Default the pipeline to one separation**
 
 In `config.py`, change the `separation_pipeline` default to the unified pass and say why:
 
 ```python
-SEPARATION_PIPELINE_DEFAULT = "unified_4stem"
+    return _live_choice("MASHUP_SEPARATION_PIPELINE", "separation_pipeline",
+                        SEPARATION_PIPELINES, "unified_4stem")
 ```
 
-(wire it wherever `current_separation_pipeline` reads its default) and add this to the function's docstring:
+> **CORRECTED (Task 6): `SEPARATION_PIPELINE_DEFAULT` does not exist** and introducing it
+> would put the default in a second place. The default is `_live_choice`'s 4th argument
+> inside `current_separation_pipeline` (`config.py:386-388`) — change it there, and
+> nowhere else. Note what must NOT change with it: every
+> `COALESCE(separation_pipeline, 'legacy_2stem')` in SQL (`bulk_worker` ×3,
+> `models.py`, `downgrade.py`, `match.py`, `engine_compare.py`) and
+> `alignment.LEGACY` are the "a NULL column means legacy" convention, which is about the
+> stored row, not the setting. The readme's §2 table is the only other place that states
+> the default.
+
+and add this to the function's docstring:
 
 > Default `unified_4stem`: one htdemucs 4-source pass is the model allin1 is
 > trained on, so the same separation serves playback, the bass chroma and
@@ -4591,18 +4679,21 @@ SEPARATION_PIPELINE_DEFAULT = "unified_4stem"
 > `scripts/stem_null_test.py` first (readme §2 Rollback), or pin
 > `separation_pipeline: legacy_2stem` in `settings.json`.
 
-**Also pin the old library.** Before committing, write `legacy_2stem` into the existing library's settings so a stray re-separation cannot start:
+**Also pin the old library.** `legacy_2stem` must be in the existing library's settings so
+a stray re-separation cannot start.
 
-```bash
-docker compose exec app python -c "
-import config; config.save_settings({'separation_pipeline': 'legacy_2stem'}); print(config.current_separation_pipeline())"
-```
-Expected: `legacy_2stem`.
+> **CORRECTED (Task 6): this was already true, and it is not the implementer's step.**
+> Both live settings files already carry `"separation_pipeline": "legacy_2stem"` —
+> `%APPDATA%\mashup-engine\settings.json` (the host's, whose `db_path` is the repo-root
+> `mashup.db`) and `data/settings/settings.json` (the container's). Nothing was written.
+> The implementer must not run `docker compose` or touch a live settings file at all; if a
+> future library needs pinning, the controller does it. What IS still owed on this default
+> change is `scripts/stem_null_test.py`, which has never been run (readme §2, §9 item 12).
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests/test_allin1_stage.py tests/test_pipeline_switch.py -q`
-Expected: PASS. `tests/conftest.py` already pins `MASHUP_SEPARATION_PIPELINE=legacy_2stem`, so the changed default does not move the suite; if any test reads the default directly, update it to the new value.
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_allin1_stage.py tests/test_pipeline_switch.py tests/test_schema_ledger.py -q`
+Expected: PASS. `tests/conftest.py` already pins `MASHUP_SEPARATION_PIPELINE=legacy_2stem`, so the changed default does not move the suite; a test that wants the *default* has to `delenv` it and point `config.settings_path` at a file that does not exist, or it reads the developer's own settings.json. One test does break, and not for the pipeline: `test_scored_at_arrives_as_migration_five` asserts `schema.apply(conn) == [5]` twice — the exact-tail assertion the Global Constraints forbid, which migration 6 turns into `[5, 6]`. `5 in schema.apply(conn)`.
 
 - [ ] **Step 7: Run the whole suite**
 
@@ -4612,9 +4703,21 @@ Expected: PASS
 - [ ] **Step 8: Commit**
 
 ```bash
-git add config.py analysis/allin1_runner.py analysis/registry.py database/alignment.py tests/test_allin1_stage.py
+git add config.py analysis/allin1_runner.py analysis/registry.py database/alignment.py \
+        database/schema.py api/routes/settings.py readme.md \
+        tests/test_allin1_stage.py tests/test_schema_ledger.py
 git commit -m "allin1: model as a live setting, a loud self-demix warning, beat-level activations kept"
 ```
+
+Readme, in place (it is the single source): §1's allin1 paragraph (the model setting, and
+that inference HAS now run on real audio — 27 tracks, all of them separating their own
+stems), §2's settings table (`separation_pipeline` default, a new `allin1_model` row) plus
+a paragraph saying the null test is owed **before the first import on the new default**,
+§5.3 (the default and the same gate), §5.5 (what the three new keys measure, the
+`_peak_near` convention, the measured size, the hand-over warning, the v2 cache), §6 (the
+new columns), §7 (a new decision: a column on one of `alignment.py`'s own tables needs a
+numbered migration, and why the DDL declares them last), and §9 item 12 (the 27-track
+backfill recorded as done; the null test moved to the head of the ordered list).
 
 ---
 
