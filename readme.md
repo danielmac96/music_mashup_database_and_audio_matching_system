@@ -2695,6 +2695,7 @@ allin1 and their weights, i.e. Docker; each writes under `<data_dir>/bench/`):
 ```bash
 docker compose exec app python scripts/stem_null_test.py --auto 10   # before switching pipelines
 docker compose exec app python scripts/bench_pipelines.py --auto 5   # time / peak MB / storage, both pipelines
+docker compose exec app python scripts/bench_allin1_models.py --auto 10   # ensemble vs a fold
 docker compose exec app python scripts/check_phrases.py --songs 12,40 --truth truth.csv
 docker compose exec app python scripts/align_debug.py 12 40          # click overlay + grid plot of one pair
 ```
@@ -2706,7 +2707,28 @@ and the residual per track); it exits 1 — stop and listen — above −40 dBFS
 allin1) in a child process on a scratch library of copied downloads (cache
 off), reports per stage the median seconds and the peak resident MB and per
 track the analysis KB and stem MB, and prints the brief's three criteria as
-PASS / FAIL. `check_phrases.py` lists each track's phrase starts and, with a
+PASS / FAIL.
+`bench_allin1_models.py` is the fold question (§9 item 12.6): it separates
+htdemucs's four sources **once per track** — the library is `legacy_2stem`, so
+no track has them on disk, and letting allin1 demix would pay its own
+separation (median 125 s) once per candidate — hands the same four to every
+checkpoint, and reports per track the seconds, the inference ms and the peak
+resident MB, then per candidate against the reference (the first `--models`
+name): the median |Δt| at matched downbeats, the share within 25 / 40 / 70 ms,
+the share a **whole beat or more out** (an off-phase bar line, which moves
+every section and every placement), boundary F at ±0.5 s and ±3 s with the
+`start` / `end` boundaries trimmed, overlap-weighted label agreement and
+|ΔBPM|. A fold replaces `harmonix-all` only at off phase 0, within 25 ms
+≥ 0.95, boundary F ±0.5 s ≥ 0.9 and label agreement ≥ 0.9, and the summary
+prints that verdict. Every candidate is **loaded before any track runs**, so a
+checkpoint name this build does not have fails in the first second rather than
+two hours in, and an unloadable *reference* exits 2 — no fold has ever been
+loaded on any machine here, so the names are unproven and this pre-flight is
+what carries that risk. It needs no scratch library: the song rows are read
+through a read-only connection, the sources go to a temp directory (kept only
+with `--keep`) and the one thing written is
+`<data_dir>/bench/allin1_models/<timestamp>/` (`summary.md`, `results.csv`,
+`results.json`). `check_phrases.py` lists each track's phrase starts and, with a
 `song_id,onset_sec` CSV of the entries you marked by ear, scores them (target:
 90% within a beat). `align_debug.py` renders the placed pair's bar lines as
 stereo clicks (vocal left, bed right — one click is a grid that holds) over
@@ -3190,12 +3212,16 @@ driven by the 100-persona browser simulation (§9) against a synthesised
        beat, pickups within 50 ms).
     5. Rate pairs from both engines in Analysis › Engines; the report then
        says which one your ears prefer.
-    6. `harmonix-all` against a single fold, once there is a
-       `scripts/bench_allin1_models.py` to do it with: `allin1_model` is live
-       and the cache key tracks it, so the comparison costs a re-run and no
-       code. A fold is ~⅛ of the ensemble's 662 s; what it costs in downbeat
-       agreement and segment labels is unmeasured, and the timing gate rests on
-       those downbeats.
+    6. `harmonix-all` against a single fold, with `scripts/bench_allin1_models.py`
+       (§8 — written and unit-tested with allin1 faked, **never run**, because it
+       needs the container): `allin1_model` is live and the cache key tracks it,
+       so the comparison costs a re-run and no code. A fold is ~⅛ of the
+       **inference**, not of the stage — median 468 s of the 594 s stage, so
+       ~410 s a track; its own Demucs (median 125 s) and the spectrograms
+       (4.4 s) do not get cheaper, which is why the script times the stage and
+       the inference separately. What a fold costs in downbeat agreement and
+       segment labels is unmeasured, and the timing gate rests on those
+       downbeats.
     Deferred: the full-resolution embedding research sample (~75 MB a track);
     a GPU path beyond `allin1_device = cuda` (CPU-only image); passing audio
     between Demucs, allin1 and Essentia in memory (each still reads its own
