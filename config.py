@@ -176,6 +176,8 @@ def settings_provenance() -> dict:
             "source": "env" if os.environ.get("MASHUP_SEGMENTATION_ENGINE") else "settings"},
         "allin1_device": {"value": current_allin1_device(),
                           "source": "env" if os.environ.get("MASHUP_ALLIN1_DEVICE") else "settings"},
+        "allin1_model": {"value": current_allin1_model(),
+                         "source": "env" if os.environ.get("MASHUP_ALLIN1_MODEL") else "settings"},
         "keep_analysis_stems": {
             "value": current_keep_analysis_stems(),
             "source": "env" if os.environ.get("MASHUP_KEEP_ANALYSIS_STEMS") else "settings"},
@@ -380,12 +382,42 @@ SEPARATION_PIPELINES = ("legacy_2stem", "unified_4stem")
 SEGMENTATION_ENGINES = ("essentia", "allin1")
 UNIFIED_DIR = AUDIO_DIR / "unified"
 ALLIN1_MODEL = "harmonix-all"         # the 8-fold ensemble allin1 ships
+# What allin1 1.1.0 publishes: the ensemble and its eight individual folds.
+ALLIN1_MODELS = ("harmonix-all",) + tuple(f"harmonix-fold{i}" for i in range(8))
 ALLIN1_DEVICES = ("cpu", "cuda")
 
 
+def current_allin1_model() -> str:
+    """Which allin1 checkpoint to run, re-read live.
+
+    ``harmonix-all`` is the 8-fold ensemble — measured at 330–1080 s of
+    inference a track on this library (27 tracks, 2026-10-24/25, mean 662 s),
+    roughly 8x a single fold's. A fold is chosen only on the evidence of
+    scripts/bench_allin1_models.py (downbeat agreement and segment labels
+    against the ensemble), because the 25 ms timing gate rests on these
+    downbeats. Validated against ALLIN1_MODELS, so a name allin1 does not ship
+    is refused by the settings API rather than failing ten minutes in."""
+    return _live_choice("MASHUP_ALLIN1_MODEL", "allin1_model",
+                        ALLIN1_MODELS, ALLIN1_MODEL)
+
+
 def current_separation_pipeline() -> str:
+    """legacy_2stem | unified_4stem, re-read live.
+
+    Default ``unified_4stem``: one htdemucs 4-source pass is the model allin1
+    is trained on, so the same separation serves playback, the bass chroma and
+    allin1 — measured, ``legacy_2stem`` cost allin1 a second Demucs run per
+    track (all 27 allin1 rows on the live library say ``demixed_by='allin1'``).
+
+    **An existing library does not switch by itself**: its rows stay on
+    whatever ``songs.separation_pipeline`` says, and ``do_stems`` parks them
+    before any other pipeline writes. Only a new separation — a fresh import,
+    a re-run of the stems stage, or Bulk reprocess › ⇄ Switch — reads this.
+    Before moving a library over, run ``scripts/stem_null_test.py`` (readme §2
+    "Rollback"), or pin ``separation_pipeline: legacy_2stem`` in
+    settings.json, which is what the 206-track library does."""
     return _live_choice("MASHUP_SEPARATION_PIPELINE", "separation_pipeline",
-                        SEPARATION_PIPELINES, "legacy_2stem")
+                        SEPARATION_PIPELINES, "unified_4stem")
 
 
 def current_segmentation_engine() -> str:

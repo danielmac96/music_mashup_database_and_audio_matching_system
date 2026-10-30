@@ -3,6 +3,7 @@ its sections measured like the Essentia cut, phrases on its grid, routing and
 failure handling. allin1 itself is faked — the suite runs without torch's
 model weights — at the one seam it has: analysis/allin1_runner.run."""
 import importlib
+import json
 import sys
 from pathlib import Path
 
@@ -59,9 +60,19 @@ class FakeResult:
         db = np.zeros(frames, dtype=np.float32)
         for t in self.downbeats:
             db[int(t * 100)] = 0.9
-        self.activations = {"beat": db.copy(), "downbeat": db,
+        # The beat activation is its own curve: allin1 reports one per beat,
+        # higher on a bar line. Deliberately NOT a copy of the downbeat
+        # activation, so a summary that confuses the two is visible.
+        bt = np.zeros(frames, dtype=np.float32)
+        for t in self.beats:
+            bt[int(t * 100)] = 0.8 if t in self.downbeats else 0.5
+        # Label row i holds (i + 1) / 20, so the stored distribution can be
+        # checked against HARMONIX_LABELS' order rather than a single constant.
+        lab = np.stack([np.full(frames, (i + 1) / 20, np.float32)
+                        for i in range(10)])
+        self.activations = {"beat": bt, "downbeat": db,
                             "segment": np.full(frames, 0.2, np.float32),
-                            "label": np.full((10, frames), 0.1, np.float32)}
+                            "label": lab}
         # (stems, frames, dim, models), as the ensemble stacks them.
         self.embeddings = np.random.default_rng(0).normal(
             size=(4, frames, 24, 8)).astype(np.float32)
@@ -284,3 +295,240 @@ def test_over_the_memory_budget_refuses_instead_of_running(env, monkeypatch):
         stages.do_allin1(song)
     assert calls["run"] == 0
     assert "allin1_mem_budget_mb" in models.get_song(song)["allin1_error"]
+
+
+# ── The model as a live setting (Task 6) ──────────────────────────────────────
+
+def test_model_comes_from_the_live_setting(monkeypatch, tmp_path):
+    """Which checkpoint ran is a setting, so Task 9's benchmark can choose it —
+    and an explicit name (the benchmark's) wins over the setting."""
+    import config
+    from analysis import allin1_runner as runner
+
+    monkeypatch.setattr(config, "settings_path", lambda: tmp_path / "none.json")
+    monkeypatch.delenv("MASHUP_ALLIN1_MODEL", raising=False)
+    assert runner.model_name() == "harmonix-all"
+    monkeypatch.setenv("MASHUP_ALLIN1_MODEL", "harmonix-fold3")
+    assert config.current_allin1_model() == "harmonix-fold3"
+    assert runner.model_name() == "harmonix-fold3"
+    assert runner.model_name("harmonix-all") == "harmonix-all"
+    # Validated against config.ALLIN1_MODELS, like every other enum setting:
+    # a name allin1 does not ship falls back rather than failing a 10-minute
+    # inference on a checkpoint that cannot load.
+    monkeypatch.setenv("MASHUP_ALLIN1_MODEL", "harmonix-fold9")
+    assert runner.model_name() == "harmonix-all"
+
+
+def test_registry_params_track_the_live_model(monkeypatch, tmp_path):
+    """Two models' grids must never share a cache key."""
+    import config
+    from analysis.registry import GROUPS
+
+    monkeypatch.setattr(config, "settings_path", lambda: tmp_path / "none.json")
+    monkeypatch.setenv("MASHUP_ALLIN1_MODEL", "harmonix-all")
+    before = GROUPS["allin1.analysis"].params_hash()
+    before_structure = GROUPS["allin1.structure"].params_hash()
+    monkeypatch.setenv("MASHUP_ALLIN1_MODEL", "harmonix-fold0")
+    assert GROUPS["allin1.analysis"].params_hash() != before
+    assert GROUPS["allin1.structure"].params_hash() != before_structure
+
+
+def test_the_allin1_group_version_moved_with_its_payload():
+    """readme §7: change what a group returns -> bump its version. The summary
+    gained beat_conf / downbeat_conf_beats / segment_label_probs, none of which
+    can be derived from a v1 payload (the 100-fps arrays are long gone), so a
+    v1 cache hit must not be reused. 27 such rows exist on the live library."""
+    from analysis.registry import GROUPS
+
+    assert GROUPS["allin1.analysis"].version == 2
+
+
+# ── The activations, kept at beat resolution (Task 6) ─────────────────────────
+
+def test_summary_keeps_the_beat_level_activations():
+    from analysis.allin1_runner import (HARMONIX_LABELS, from_cache, summarise,
+                                        to_cache)
+    s = summarise(FakeResult(), content_hash="h", demixed_by="pipeline", ms=1.0)
+    assert len(s["beat_conf"]) == len(s["beats"])
+    assert len(s["downbeat_conf_beats"]) == len(s["beats"])
+    assert len(s["segment_label_probs"]) == len(s["segments"])
+    assert s["segment_labels_order"] == list(HARMONIX_LABELS)
+
+    # Two different curves, not one copied twice: the beat activation is high
+    # on every beat, the downbeat activation only on a bar line.
+    assert s["beat_conf"] != s["downbeat_conf_beats"]
+    assert s["beat_conf"][0] == pytest.approx(0.8, abs=1e-3)    # beat 0 = bar 1
+    assert s["beat_conf"][1] == pytest.approx(0.5, abs=1e-3)    # an off-bar beat
+    assert s["downbeat_conf_beats"][0] == pytest.approx(0.9, abs=1e-3)
+    assert s["downbeat_conf_beats"][1] == pytest.approx(0.0, abs=1e-3)
+
+    back = from_cache(to_cache(s))
+    assert back["beat_conf"] == s["beat_conf"]
+    assert back["segment_label_probs"] == s["segment_label_probs"]
+
+
+def test_the_beat_curves_use_the_same_peak_window_as_the_downbeats():
+    """``downbeat_conf`` is sampled with _peak_near (±2 frames, because a
+    detected event sits on a peak whose time is quantised). The per-beat curve
+    stored beside it must use the same window or the two cannot be compared."""
+    from analysis.allin1_runner import summarise
+    s = summarise(FakeResult())
+    at_downbeats = [s["downbeat_conf_beats"][s["beats"].index(t)]
+                    for t in s["downbeats"]]
+    assert at_downbeats == s["downbeat_conf"]
+
+
+def test_a_quantised_event_is_read_from_its_peak_not_its_frame():
+    """Every stored activation is sampled with _peak_near (±2 frames), because
+    a detected event sits on a peak whose TIME is quantised and post-processed.
+    A raw nearest-frame read would report 0.0 for exactly the events that
+    matter. FakeResult's spikes land on their own beat's frame, so only an
+    off-grid result tells the two conventions apart — without this test the
+    per-beat curves could be read either way and nothing would notice."""
+    from analysis.allin1_runner import FPS, summarise
+    secs, beat = 8.0, 0.5
+    beats = [round(i * beat, 2) for i in range(int(secs / beat))]
+    downbeats = beats[::4]
+    frames = int(secs * FPS)
+    db = np.zeros(frames, dtype=np.float32)
+    bt = np.zeros(frames, dtype=np.float32)
+    for t in beats:
+        bt[int(t * FPS) + 2] = 0.7            # the peak is two frames late
+    for t in downbeats:
+        db[int(t * FPS) + 2] = 0.95
+    s = summarise({"bpm": 120.0, "beats": beats, "downbeats": downbeats,
+                   "beat_positions": [(i % 4) + 1 for i in range(len(beats))],
+                   "segments": [],
+                   "activations": {"beat": bt, "downbeat": db},
+                   "embeddings": None})
+    assert s["beat_conf"][0] == pytest.approx(0.7, abs=1e-3)
+    assert s["beat_conf"][1] == pytest.approx(0.7, abs=1e-3)
+    assert s["downbeat_conf_beats"][0] == pytest.approx(0.95, abs=1e-3)
+    assert s["downbeat_conf"][0] == pytest.approx(0.95, abs=1e-3)
+    # An off-bar beat still reads ~0 on the downbeat curve: ±2 frames is a
+    # quantisation window, not a search.
+    assert s["downbeat_conf_beats"][1] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_segment_label_probs_are_the_whole_distribution():
+    """"chorus 0.41 / verse 0.39" and "chorus 0.95" are different evidence."""
+    from analysis.allin1_runner import HARMONIX_LABELS, summarise
+    s = summarise(FakeResult())
+    row = s["segment_label_probs"][2]                 # 16-32 s, labelled chorus
+    assert len(row) == len(HARMONIX_LABELS)
+    # FakeResult gives label row i the constant (i + 1) / 20.
+    assert row == pytest.approx([(i + 1) / 20 for i in range(10)], abs=1e-4)
+    # The winner's own probability still agrees with the distribution.
+    assert s["section_conf"][2]["label_prob"] == pytest.approx(
+        row[HARMONIX_LABELS.index("chorus")], abs=1e-4)
+
+
+def test_activations_survive_the_database(env):
+    models, _stages, _tmp, _calls = env
+    from analysis.allin1_runner import summarise
+    from database import alignment
+    song = models.upsert_song(title="T", artist="A", source_url="http://x/3")
+    s = summarise(FakeResult(), content_hash="h", demixed_by="pipeline", ms=1.0)
+    alignment.store_allin1(song, "legacy_2stem", s)
+    got = alignment.get_allin1(song, "legacy_2stem")
+    assert len(got["beat_conf"]) == len(s["beats"])
+    assert len(got["downbeat_conf_beats"]) == len(s["beats"])
+    assert got["segment_label_probs"] == s["segment_label_probs"]
+    assert got["segment_labels_order"] == s["segment_labels_order"]
+    assert got["model"] == "harmonix-all"
+
+
+def test_the_beat_curves_are_counted_in_the_storage_budget(env):
+    """storage_bytes is what the < 100 KB ceiling is checked against, so a
+    column it does not sum is a column nobody is watching. Measured against the
+    SAME summary with the new keys emptied — a sum that ignores the columns
+    reports the two rows as the same size."""
+    models, _stages, _tmp, _calls = env
+    from analysis.allin1_runner import summarise
+    from database import alignment
+    song = models.upsert_song(title="T", artist="A", source_url="http://x/4")
+    lean_song = models.upsert_song(title="T2", artist="A", source_url="http://x/5")
+    s = summarise(FakeResult(secs=240.0))
+    lean = dict(s)
+    for key in ("beat_conf", "downbeat_conf_beats", "segment_label_probs",
+                "segment_labels_order"):
+        lean[key] = None
+    alignment.store_allin1(song, "legacy_2stem", s)
+    alignment.store_allin1(lean_song, "legacy_2stem", lean)
+
+    sizes = alignment.storage_bytes(song)
+    lean_sizes = alignment.storage_bytes(lean_song)
+    curves = 2 * 2 * len(s["beats"])                  # two float16 arrays
+    probs = len(json.dumps(s["segment_label_probs"]))
+    assert sizes["analysis"] - lean_sizes["analysis"] >= curves + probs
+    assert sum(sizes.values()) < 100_000, sizes
+
+
+# ── The second Demucs run is never silent (Task 6) ────────────────────────────
+
+def test_self_demix_is_logged_not_silent(monkeypatch, caplog):
+    """125 s a track of duplicate Demucs should never be invisible."""
+    import logging
+
+    from analysis import allin1_runner as runner
+
+    monkeypatch.setattr(runner, "SELF_DEMIX_WARNED", False)
+    with caplog.at_level(logging.WARNING):
+        runner.warn_self_demix("/tmp/x.mp3")
+        assert any("separat" in r.message for r in caplog.records)
+        caplog.clear()
+        runner.warn_self_demix("/tmp/y.mp3")          # once per process
+        assert not caplog.records
+
+
+def test_the_demix_hand_over_decides_and_says_which(tmp_path, monkeypatch, caplog):
+    """The one place that knows whether allin1 will separate again."""
+    import logging
+
+    from analysis import allin1_runner as runner
+
+    stems = {s: _wav(tmp_path / f"{s}.wav", secs=2.0) for s in runner.SOURCES}
+    out = tmp_path / "demix" / "htdemucs" / "track"
+    timings: dict = {}
+    assert runner.hand_over_demix(stems, out, tmp_path / "t.wav", timings) == "pipeline"
+    assert sorted(p.name for p in out.glob("*.wav")) == sorted(
+        f"{s}.wav" for s in runner.SOURCES)
+    assert "demix_write" in timings
+
+    monkeypatch.setattr(runner, "SELF_DEMIX_WARNED", False)
+    with caplog.at_level(logging.WARNING):
+        assert runner.hand_over_demix(None, out, tmp_path / "t.wav", {}) == "allin1"
+        assert caplog.records
+    # A partial set is not a hand-over either.
+    monkeypatch.setattr(runner, "SELF_DEMIX_WARNED", False)
+    assert runner.hand_over_demix({"bass": stems["bass"]}, out,
+                                  tmp_path / "t.wav", {}) == "allin1"
+
+
+def test_run_routes_its_demix_through_the_hand_over():
+    """``run`` cannot execute here (no weights), so this pins the wiring: the
+    warning buys nothing if run() still decides for itself."""
+    import inspect
+
+    from analysis import allin1_runner as runner
+
+    src = inspect.getsource(runner.run)
+    assert "hand_over_demix(" in src
+    assert "_write_demix(" not in src        # the decision lives in one place
+    assert "_model(device, model)" in src    # the chosen checkpoint reaches it
+
+
+# ── One separation by default (Task 6) ────────────────────────────────────────
+
+def test_the_separation_pipeline_defaults_to_one_pass(monkeypatch, tmp_path):
+    """The point of the unified pass: allin1's input is the separation playback
+    already uses. tests/conftest.py pins legacy_2stem for the suite, so this
+    test has to unpin it."""
+    import config
+
+    monkeypatch.setattr(config, "settings_path", lambda: tmp_path / "none.json")
+    monkeypatch.delenv("MASHUP_SEPARATION_PIPELINE", raising=False)
+    assert config.current_separation_pipeline() == "unified_4stem"
+    # An existing library pins itself in settings.json and is unaffected.
+    monkeypatch.setenv("MASHUP_SEPARATION_PIPELINE", "legacy_2stem")
+    assert config.current_separation_pipeline() == "legacy_2stem"

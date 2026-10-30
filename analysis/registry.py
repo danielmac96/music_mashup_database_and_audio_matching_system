@@ -122,15 +122,17 @@ def _key_voters() -> list:
 
 
 def _allin1_params() -> dict:
-    """allin1's version, model and pooling: an upgrade or a different
-    ensemble recomputes rather than mixing grids from two models."""
-    from config import ALLIN1_MODEL
+    """allin1's version, the model actually configured, and the pooling: an
+    upgrade or a different checkpoint recomputes rather than mixing two
+    models' grids. The model is read live (config.current_allin1_model), so
+    switching it invalidates these groups by itself."""
+    from config import current_allin1_model
     try:
         from analysis.allin1_runner import POOLING, version
         ver, pooling = version(), POOLING
     except Exception:  # noqa: BLE001
         ver, pooling = None, None
-    return {"allin1": ver, "model": ALLIN1_MODEL, "pooling": pooling}
+    return {"allin1": ver, "model": current_allin1_model(), "pooling": pooling}
 
 
 def _phrase_params() -> dict:
@@ -209,7 +211,12 @@ _GROUPS = (
                  "sections on the Essentia beat grid, cut from the stored "
                  "per-frame chroma and MFCC (analysis/timeseries.py)"),
     # ── allin1 (analysis/allin1_runner.py, readme §5.5) ───────────────────────
-    FeatureGroup("allin1.analysis", 1, "allin1", 2, _allin1_params,
+    # v2: the summary also carries the activations at BEAT resolution
+    # (beat_conf, downbeat_conf_beats) and each segment's full label
+    # distribution. None of the three is derivable from a v1 payload — the
+    # 100-fps arrays are dropped as soon as the summary exists — so a v1 row
+    # must recompute rather than store NULLs for the new columns.
+    FeatureGroup("allin1.analysis", 2, "allin1", 2, _allin1_params,
                  "full mix + the 4 Demucs sources: beats, downbeats, beat-in-bar, "
                  "BPM, labelled segments, activation and embedding summaries"),
     # v2: see librosa.structure v5 — it is the same detect_sections, so the

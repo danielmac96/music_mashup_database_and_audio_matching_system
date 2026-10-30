@@ -145,14 +145,15 @@ def test_scored_at_arrives_as_migration_five(tmp_path):
         cols = {r[1] for r in conn.execute("PRAGMA table_info(songs)")}
         assert "scored_at" not in cols
 
-        assert schema.apply(conn) == [5]
+        # Never the exact tail — a later migration appends to it (constraint).
+        assert 5 in schema.apply(conn)
         assert schema.current_version(conn) == schema.SCHEMA_VERSION
         info = {r[1]: r[2].upper() for r in conn.execute("PRAGMA table_info(songs)")}
         assert info["scored_at"] == "TEXT"
 
         # Replayed (a rollback resets user_version): no second column, no error.
         conn.execute("PRAGMA user_version = 4")
-        assert schema.apply(conn) == [5]
+        assert 5 in schema.apply(conn)
         assert [r[1] for r in conn.execute("PRAGMA table_info(songs)")].count(
             "scored_at") == 1
     finally:
@@ -171,3 +172,67 @@ def test_no_migration_uses_executescript_after_the_baseline():
             continue                    # the baseline IS the pre-ledger path
         src = inspect.getsource(migration.up)
         assert ".executescript(" not in src, migration.name
+
+
+def test_allin1_activations_arrive_as_migration_six(tmp_path):
+    """The four allin1_analysis columns that keep the activations at beat
+    resolution. alignment.migrate only runs inside the baseline, so a database
+    past version 1 — the 206-track library is at 5, with 27 allin1_analysis
+    rows — can only get them from a numbered migration."""
+    from database import alignment, schema
+
+    conn = sqlite3.connect(tmp_path / "v5.db")
+    try:
+        six = [m for m in schema.MIGRATIONS if m.version == 6]
+        assert len(six) == 1 and six[0].name == "allin1_activations"
+        wanted = {c for _t, c, _d in alignment.ALLIN1_ACTIVATION_COLUMNS}
+        assert wanted == {"beat_conf", "downbeat_conf_beats",
+                          "segment_label_probs", "segment_labels_order"}
+
+        # Bring it to exactly version 5, then strip the columns migration 1's
+        # DDL gave it: that is the shape of a database that ran the baseline
+        # before these columns existed.
+        real = schema.MIGRATIONS
+        schema.MIGRATIONS = tuple(m for m in real if m.version <= 5)
+        try:
+            schema.apply(conn)
+        finally:
+            schema.MIGRATIONS = real
+        assert schema.current_version(conn) == 5
+        for col in wanted:
+            conn.execute(f"ALTER TABLE allin1_analysis DROP COLUMN {col}")
+        assert not wanted & {r[1] for r in
+                             conn.execute("PRAGMA table_info(allin1_analysis)")}
+
+        assert 6 in schema.apply(conn)
+        info = {r[1]: (r[2] or "").upper()
+                for r in conn.execute("PRAGMA table_info(allin1_analysis)")}
+        assert info["beat_conf"] == "BLOB"
+        assert info["downbeat_conf_beats"] == "BLOB"
+        assert info["segment_label_probs"] == "TEXT"
+        assert info["segment_labels_order"] == "TEXT"
+
+        # Replayed (a rollback resets user_version): no duplicate column.
+        conn.execute("PRAGMA user_version = 5")
+        assert 6 in schema.apply(conn)
+        names = [r[1] for r in conn.execute("PRAGMA table_info(allin1_analysis)")]
+        assert names.count("beat_conf") == 1
+    finally:
+        conn.close()
+
+
+def test_a_fresh_database_already_has_the_activation_columns(tmp_path):
+    """The other half: `alignment._DDL` declares them, so a database built from
+    scratch has them at migration 1 and migration 6 finds nothing to do. This
+    test does NOT discriminate the mistake above — it passes whether or not
+    migration 6 exists; the version-5 test is the one that bites."""
+    from database import alignment, models
+
+    db = tmp_path / "fresh.db"
+    models.init_db(db_path=db)
+    conn = sqlite3.connect(db)
+    try:
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(allin1_analysis)")}
+        assert {c for _t, c, _d in alignment.ALLIN1_ACTIVATION_COLUMNS} <= cols
+    finally:
+        conn.close()

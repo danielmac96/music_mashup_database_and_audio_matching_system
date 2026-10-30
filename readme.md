@@ -101,11 +101,20 @@ to the model runs (the demix skip and the spectrogram front end on our stems).
 The Docker image builds and imports clean on Python 3.11 (2026-10-23): numpy
 1.26.4 / scipy 1.12.0 / madmom 0.17.dev0 / natten 0.17.3 / allin1 1.1.0 with
 torch 2.5.1+cpu, pins unmoved.
-The model weights (`harmonix-all`, 8 folds) download from HuggingFace on first
-use into `HF_HOME` (`/data/huggingface` in Docker); the sandbox this was built
-in could not reach HuggingFace, so **allin1's own inference is not yet run on
-real audio** (§9 item 12). Without allin1 the app works exactly as before; the
-`allin1` engine is refused by the settings API with the reason.
+The model weights download from HuggingFace on first use into `HF_HOME`
+(`/data/huggingface` in Docker). Which checkpoint runs is a live setting,
+`allin1_model` (§2): `harmonix-all`, the 8-fold ensemble, by default, with the
+eight single folds (`harmonix-fold0` … `fold7`) selectable but **not chosen
+without evidence** — the 25 ms timing gate rests on these downbeats, and a fold
+is roughly an eighth of the ensemble's inference cost for an unmeasured loss of
+agreement. **allin1's inference has run on real audio**: 27 tracks of the
+206-track library on 2026-10-24/25 (`harmonix-all`, allin1 1.1.0), 330–1080 s
+of inference a track, mean 662 s. All 27 report `demixed_by = 'allin1'` — the
+library is `legacy_2stem`, so every one of them separated its own four stems
+before the model ran, which is the second Demucs pass the unified pipeline
+exists to remove (§5.3; the hand-over now logs a warning when it happens).
+Without allin1 the app works exactly as before; the `allin1` engine is refused
+by the settings API with the reason.
 
 **After every `git pull`, rebuild the frontend** (`cd frontend && npm run build`).
 `frontend/dist/` is gitignored, so a pull updates the source and not the bundle.
@@ -155,10 +164,11 @@ Resolution order: **environment variable > `settings.json` > default**.
 | Analyser | `MASHUP_ANALYZER` | `analyzer` | `essentia` (`librosa` / `shadow` = librosa core ± Essentia extras, for tests and comparison only; §5.4) |
 | Essentia model downloads | `MASHUP_ESSENTIA_MODEL_FETCH` | — | on (`0` never downloads; the test suite sets it) |
 | Essentia key profile / rhythm method | `MASHUP_ESSENTIA_KEY_PROFILE` / `MASHUP_ESSENTIA_RHYTHM` | `essentia_key_profile` / `essentia_rhythm_method` | `edma` / `degara` |
-| Separation pipeline | `MASHUP_SEPARATION_PIPELINE` | `separation_pipeline` | `legacy_2stem` (`unified_4stem` = one htdemucs 4-source pass for allin1 and playback; §5.3) |
+| Separation pipeline | `MASHUP_SEPARATION_PIPELINE` | `separation_pipeline` | `unified_4stem` — one htdemucs 4-source pass serving playback, the bass chroma and allin1 (`legacy_2stem` = the two-stem split the app always made; §5.3, and the null-test gate below) |
 | Segmentation engine | `MASHUP_SEGMENTATION_ENGINE` | `segmentation_engine` | `essentia` (`allin1` = allin1 sections, phrase placement, the timing gate; §5.5, §5.7) |
 | Cut with both engines | `MASHUP_DUAL_CUT` | `dual_cut` | off (on = store the Essentia cut beside allin1's, for Analysis › Engines; §5.5) |
 | allin1 device / workers | `MASHUP_ALLIN1_DEVICE` / `MASHUP_ALLIN1_WORKERS` | `allin1_device` / `allin1_workers` | `cpu` / `1` |
+| allin1 checkpoint | `MASHUP_ALLIN1_MODEL` | `allin1_model` | `harmonix-all` (the 8-fold ensemble; `harmonix-fold0`…`fold7` are the single folds — only on the benchmark's evidence, §9 item 12) |
 | allin1 limits | `MASHUP_ALLIN1_MAX_SECS` / `MASHUP_ALLIN1_MEM_BUDGET_MB` | `allin1_max_secs` / `allin1_mem_budget_mb` | `900` (longer is skipped) / `6000` |
 | Keep the unified drums/bass/other | `MASHUP_KEEP_ANALYSIS_STEMS` | `keep_analysis_stems` | on (off deletes them after allin1 stored its result) |
 | Timing gate / weight / phrase gap | `MASHUP_TIMING_TOL_MS` / `MASHUP_TIMING_WEIGHT` / `MASHUP_PHRASE_GAP_SECS` | `timing_tol_ms` / `timing_weight` / `phrase_gap_secs` | `25` ms / `0.30` / `0.6` s |
@@ -182,6 +192,20 @@ The separation pipeline, the segmentation engine and the timing knobs are
 re-read live; asking for the `allin1` engine where allin1 does not import is
 refused by the API with the reason (`GET /api/analysis/status` →
 `segmentation`).
+
+**The separation pipeline defaults to `unified_4stem`, and its null test is
+still owed.** One separation serving playback, the bass chroma and allin1 is the
+decision the whole one-pass pipeline rests on, so it is the default a *new*
+library starts on. But `scripts/stem_null_test.py` — the check that a 4-stem
+instrumental really nulls against the 2-stem `no_vocals` — **has never been
+run** (§9 item 12; the build it was written in had no Demucs weights). So:
+**run it before the first import on the new default**, on ≥ 10 tracks, and
+listen to its A/B pairs. It exits 1 above −40 dBFS, which means stop. Nothing
+is at risk retroactively — an existing library does not move by itself
+(`songs.separation_pipeline` decides per track, and only a new separation reads
+the setting) and the 206-track library pins `separation_pipeline: legacy_2stem`
+in its `settings.json`, which is how to pin any other library that should not
+move.
 
 **Rollback.** Both switches go back with no reprocessing and no data loss:
 
@@ -1124,19 +1148,21 @@ downloaded file with ffprobe and replaces a stale preview, then reprocesses.
   still has a two-stem view. Each `stems` row carries a provenance tag
   (`demucs:htdemucs:4`, `demucs:htdemucs:2`, `mdx:<model>`), and switching
   mode re-separates.
-- **The unified pipeline** (`separation_pipeline = unified_4stem`,
-  `stems/separate.separate(unified=True)`): one htdemucs 4-source pass — the
-  model allin1 is trained on — written to `AUDIO_DIR/unified/…`, never over a
+- **The unified pipeline** (`separation_pipeline = unified_4stem`, **the
+  default**, `stems/separate.separate(unified=True)`): one htdemucs 4-source
+  pass — the model allin1 is trained on — written to `AUDIO_DIR/unified/…`, never over a
   legacy file, tagged `demucs:htdemucs:4:unified`. The vocal stem is Demucs's
   vocals; the instrumental is drums + bass + other summed in float at the
   source rate, written PCM_24, scaled only if the sum would clip. The four
   sources are kept (FLAC) for allin1 unless `keep_analysis_stems` is off.
   Essentia analyses the summed playback stems exactly as before. Before a
   pipeline writes over a track whose live rows are the other pipeline's,
-  `do_stems` parks them (`database/alignment.park_live`). **Before switching
-  a library over, run `scripts/stem_null_test.py`** (§8): it is expected to
+  `do_stems` parks them (`database/alignment.park_live`). **Before the first
+  import on this default, and before switching an existing library over, run
+  `scripts/stem_null_test.py`** (§8, §2): it is expected to
   null against the 2-stem `no_vocals` (Demucs sums the same sources), and it
-  stops you if it does not.
+  stops you if it does not. It has not been run yet (§9 item 12), which is the
+  one thing owed on the default change.
 - **Stem quality** (`analysis/quality.py`), measured after structure is known:
   *bleed* (correlation between a stem and its complement), *HF loss* (top end
   lost relative to the full mix — the classic MDX smear), *noise floor* (RMS
@@ -1282,17 +1308,40 @@ boundaries on downbeats). allin1 cannot read two stems; it normally separates
 its own four. Here the kept sources are written as 16-bit WAV into the exact
 folder its `demix()` checks (`<demix_dir>/htdemucs/<track stem>/`, verified
 against allin1 1.1.0), so it never separates again; in the legacy pipeline,
-with no four sources, it does (timed as `allin1.demix`). The model is loaded
-once per worker and kept. What is stored (`allin1_analysis`, per song and
+with no four sources, it does (timed as `allin1.demix`) — and
+`allin1_runner.hand_over_demix` is the one place that decides, so a second
+Demucs run is logged once per process (`warn_self_demix`) instead of showing up
+only as a slow stage. The checkpoint is `config.current_allin1_model()`, read
+live and recorded on the row; `_model` caches one per (model, device) per
+process, so a benchmark alternating checkpoints pays each load once. What is
+stored (`allin1_analysis`, per song and
 pipeline; a few KB): beats, downbeats, beat positions and BPM (float32),
 segments, the downbeat activation at each downbeat plus the track's mean and
 minimum (float16), each segment's boundary activation and label probability.
+Also, at **beat** resolution (the 100-fps arrays are far too big and are
+dropped): `beat_conf`, the beat activation at each beat, and
+`downbeat_conf_beats`, the downbeat activation at each beat — two different
+curves, and the only record of how sure the model was anywhere but on a bar
+line, which is what a timing gate tightened below 25 ms has to be judged
+against. Plus `segment_label_probs`, each segment's mean probability for **all
+ten** Harmonix labels in `segment_labels_order`: "chorus 0.41 / verse 0.39" and
+"chorus 0.95" are different evidence, and the stored winner's probability alone
+could not tell them apart. Everything sampled from an activation goes through
+`_peak_near` (±2 frames), because a detected event sits on a peak whose time is
+quantised; a raw nearest-frame read of one curve would not be comparable with
+the others. Measured: the three keys add ~2.4 KB to a 4-minute track and ~2.9 KB
+to the library's mean track (413 beats, 14 segments), against the < 100 KB
+per-track ceiling `tests/test_allin1_stage.py` pins (a 4-minute track totals
+~29 KB, 23 KB of it the embedding).
 The embeddings are averaged over the 8 models, then over each bar, per stem:
 `(bars, 4, 24)` float16 (~25 KB for 4 minutes) in `allin1_embeddings`, which
 no ordinary query reads. The 100-fps arrays are dropped as soon as the
 summary exists; visualisations are never stored. Cached as `allin1.analysis`
-over the mix and the four sources, versioned by the allin1 version, model and
-pooling. Its sections are then measured by **the same per-section code as the
+(**version 2** since the beat-level activations landed — they cannot be
+recovered from a v1 payload, so a v1 row recomputes rather than storing NULLs)
+over the mix and the four sources, with the allin1 version, the **live** model
+setting and the pooling in its `params()`, so switching checkpoints invalidates
+the group by itself rather than mixing two models' grids. Its sections are then measured by **the same per-section code as the
 Essentia cut** (`detect_sections(fixed_segments=…)`: no novelty search, no
 phrase snap, allin1's own downbeats as each section's bar lines) and stored in
 `sections_allin1` with indexes from `ALLIN1_SECTION_BASE` (1000; §7). Labels
@@ -2056,7 +2105,10 @@ rebuilds an older table, counting the copy before the swap)
 data) · `section_lines` (a vocal section's lyric cue, anchored to a time in
 the song) · `embeddings` (`song_id`, `kind='effnet'`, `dim`, `vector` float32
 BLOB, `content_hash` of the full mix it describes, `updated_at` — derived,
-refillable; §5.13) · `allin1_analysis`, `allin1_embeddings`, `sections_allin1`,
+refillable; §5.13) · `allin1_analysis` (per song and pipeline: the grids, the
+segments, the activation summaries, and — since schema migration 6 —
+`beat_conf` / `downbeat_conf_beats` / `segment_label_probs` /
+`segment_labels_order`, §5.5), `allin1_embeddings`, `sections_allin1`,
 `vocal_phrases`, `pipeline_parked` (`database/alignment.py`, §5.5, §7; with
 `songs.separation_pipeline` / `allin1_state` / `allin1_at` / `allin1_error`,
 `analysis_runs.peak_mb`, `pair_feedback.engine` / `pipeline`,
@@ -2089,6 +2141,19 @@ Existing databases migrate on start.
   unchanged and a row parked by an older build still restores. A new array
   moved out of `features` must join that capture, or a pipeline swap silently
   leaves one pipeline's scalars beside the other's beat grid.
+- **A new column on one of `database/alignment.py`'s own tables needs a
+  numbered migration.** `alignment.migrate` — and with it `_DDL` and
+  `ADDED_COLUMNS` — is reached from exactly one place, `schema._baseline`,
+  which **is** migration 1, so a database at version 1 or above never runs it
+  again. `_DDL` therefore covers a fresh database, `ADDED_COLUMNS` one still at
+  version 0, and a numbered migration everything else; the four activation
+  columns are in all three (migration 6, `allin1_activations`), because each
+  place covers a different machine and a column in only one of them works on
+  exactly one. `_DDL` declares them **last**, after `created_at`, because
+  `ALTER TABLE` appends: that is what keeps a fresh database and a migrated one
+  on the same column order, which `schema.shape` compares as an ordered list.
+  Nothing backfills them — the 100-fps arrays are gone — so an old row reads
+  back `[]` (unmeasured, never zero) until allin1 runs again.
 - **Section indexes are a namespace per engine.** Essentia's sections are
   numbered from 0, allin1's (`sections_allin1`) from `ALLIN1_SECTION_BASE`
   (1000); allin1 rows' segment ids from `ALLIN1_SEGMENT_ID_BASE`. That is
@@ -3028,20 +3093,41 @@ driven by the 100-persona browser simulation (§9) against a synthesised
     arithmetic is the same either way and `phrase_align.place(conform="vocal")`
     is the switch if it is ever wanted); Essentia stays authoritative for
     `features` BPM/key, allin1 for bar lines and sections in its mode; no
-    Essentia step is skipped (the comparison needs both). **Not yet measured —
-    needs Docker with the model weights**, in this order:
-    1. `stem_null_test.py` on ≥ 10 tracks; switch `separation_pipeline` only
-       if it passes and the A/B pairs sound the same.
+    Essentia step is skipped (the comparison needs both).
+    **Done since:** a 27-track allin1 backfill ran on the real library
+    (2026-10-24/25, `harmonix-all`, allin1 1.1.0; 330–1080 s of inference a
+    track, mean 662 s; 316 `sections_allin1` rows, 381 allin1 phrases, 27
+    pooled embeddings at ~20 KB each). Every one of the 27 says
+    `demixed_by = 'allin1'`, i.e. each separated its own four stems first —
+    the waste the `unified_4stem` default removes. One separation, the model as
+    a live setting and the beat-level activations are built (§5.5).
+    **Not yet measured — needs Docker with the model weights**, in this order:
+    1. **`stem_null_test.py` on ≥ 10 tracks — now owed before the first import
+       on the new default**, not only before switching an existing library
+       over: `separation_pipeline` defaults to `unified_4stem` as of this work
+       (§2, §5.3), and this test has still never been run. It exits 1 above
+       −40 dBFS; listen to its A/B pairs either way. Until it passes, a library
+       that must not move pins `separation_pipeline: legacy_2stem` in
+       `settings.json`, as the 206-track one does.
     2. `bench_pipelines.py` — record the per-stage table here, and replace
        `allin1_runner.BASE_MB` / `MB_PER_AUDIO_SEC` with the measured peaks.
-    3. A ~20-track allin1 backfill (Bulk reprocess › ⟳ allin1); then
-       Analysis › Engines: bar-line agreement, gate pass share. 25 ms may be
-       tight for live-drummed records — report the share passing at 25/40/60
-       ms before settling `timing_tol_ms`.
+    3. Analysis › Engines on the 27 tracks already backfilled: bar-line
+       agreement and the gate's pass share. 25 ms may be tight for
+       live-drummed records — report the share passing at 25/40/60 ms before
+       settling `timing_tol_ms`. A re-run of those tracks also fills the three
+       new activation columns, which are NULL on the existing 27 rows
+       (`allin1.analysis` is at version 2, so the run recomputes rather than
+       reusing the stored payload — ~662 s of inference a track).
     4. `check_phrases.py` against ≥ 10 hand-marked tracks (target 90% within a
        beat, pickups within 50 ms).
     5. Rate pairs from both engines in Analysis › Engines; the report then
        says which one your ears prefer.
+    6. `harmonix-all` against a single fold, once there is a
+       `scripts/bench_allin1_models.py` to do it with: `allin1_model` is live
+       and the cache key tracks it, so the comparison costs a re-run and no
+       code. A fold is ~⅛ of the ensemble's 662 s; what it costs in downbeat
+       agreement and segment labels is unmeasured, and the timing gate rests on
+       those downbeats.
     Deferred: the full-resolution embedding research sample (~75 MB a track);
     a GPU path beyond `allin1_device = cuda` (CPU-only image); passing audio
     between Demucs, allin1 and Essentia in memory (each still reads its own

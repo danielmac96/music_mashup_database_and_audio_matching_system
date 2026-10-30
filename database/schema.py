@@ -210,12 +210,44 @@ def _songs_scored_at(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE songs ADD COLUMN scored_at TEXT")
 
 
+def _allin1_activations(conn: sqlite3.Connection) -> None:
+    """Add the four `allin1_analysis` columns that keep the activations at beat
+    resolution (`analysis/allin1_runner.summarise`): `beat_conf`,
+    `downbeat_conf_beats`, `segment_label_probs`, `segment_labels_order`.
+
+    They are declared in `alignment._DDL` as well, which covers a fresh
+    database, and in `alignment.ADDED_COLUMNS`, which covers a database still at
+    version 0. Neither reaches a database past the baseline — `alignment.migrate`
+    runs only inside `_baseline`, i.e. migration 1 — and the live library is
+    well past it, with 27 `allin1_analysis` rows in it. Hence this migration.
+
+    Nothing backfills: the 100-fps arrays the values come from are dropped as
+    soon as a summary exists, so an existing row's new columns stay NULL
+    (unmeasured, never zero) until allin1 runs again — and `allin1.analysis`
+    moved to version 2, so that run recomputes instead of reusing its payload.
+
+    Idempotent (`PRAGMA table_info` first): a rollback (database/downgrade.py)
+    resets ``user_version`` and replays every migration. Statements only, never
+    ``executescript`` — see `apply`.
+    """
+    from database.alignment import ALLIN1_ACTIVATION_COLUMNS
+
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                        "name='allin1_analysis'").fetchone():
+        return                      # migration 1 has not created it yet
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(allin1_analysis)")}
+    for _table, col, decl in ALLIN1_ACTIVATION_COLUMNS:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE allin1_analysis ADD COLUMN {col} {decl}")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "baseline", _baseline),
     Migration(2, "feature_arrays", _feature_arrays),
     Migration(3, "slim_candidates", _slim_candidates),
     Migration(4, "analysis_frames", _analysis_frames),
     Migration(5, "songs_scored_at", _songs_scored_at),
+    Migration(6, "allin1_activations", _allin1_activations),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

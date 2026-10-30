@@ -72,6 +72,14 @@ CREATE TABLE IF NOT EXISTS allin1_analysis (
     conf_min         REAL,
     ms               REAL,
     created_at       TEXT DEFAULT (datetime('now')),
+    -- Added after this table shipped, so schema migration 6 ALTERs them onto an
+    -- existing database. Declared LAST here on purpose: ALTER TABLE appends, so
+    -- a fresh database and a migrated one end up with the same column order
+    -- (database/schema.shape compares them as ordered lists).
+    beat_conf            BLOB,          -- float16, beat activation at each beat
+    downbeat_conf_beats  BLOB,          -- float16, downbeat activation at each beat
+    segment_label_probs  TEXT,          -- JSON [[p, ...], ...], one row per segment
+    segment_labels_order TEXT,          -- JSON, the column order of the above
     PRIMARY KEY (song_id, pipeline)
 );
 CREATE TABLE IF NOT EXISTS allin1_embeddings (
@@ -116,6 +124,13 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_parked ON pipeline_parked(song_id, pipel
 """
 
 # Columns this feature adds to existing tables: (table, column, declaration).
+#
+# `migrate` is reached from exactly one place — schema._baseline, i.e. migration
+# 1 — so this tuple only ever reaches a database at user_version 0. The four
+# allin1_analysis columns below are also in `_DDL` (a fresh database) and in
+# schema migration 6 (a database already past the baseline, the 206-track
+# library included). Three places, because each covers a different machine; a
+# column in only one of them works on exactly one of them.
 ADDED_COLUMNS = (
     ("songs", "separation_pipeline", "TEXT"),      # pipeline the live rows belong to
     ("songs", "allin1_state", "TEXT"),             # done | failed | skipped | NULL
@@ -135,7 +150,18 @@ ADDED_COLUMNS = (
     ("mashup_candidates", "vocal_phrase_start", "REAL"),
     ("mashup_candidates", "vocal_pickup_ms", "REAL"),
     ("mashup_candidates", "bed_landing_sec", "REAL"),
+    # The activations at beat resolution, and each segment's label
+    # distribution (analysis/allin1_runner.summarise; schema migration 6).
+    ("allin1_analysis", "beat_conf", "BLOB"),
+    ("allin1_analysis", "downbeat_conf_beats", "BLOB"),
+    ("allin1_analysis", "segment_label_probs", "TEXT"),
+    ("allin1_analysis", "segment_labels_order", "TEXT"),
 )
+
+# The subset of ADDED_COLUMNS that schema migration 6 applies — the columns
+# added to this module's OWN tables after `_DDL` had already shipped.
+ALLIN1_ACTIVATION_COLUMNS = tuple(
+    (t, c, d) for t, c, d in ADDED_COLUMNS if t == "allin1_analysis")
 
 
 def _sections_allin1_ddl() -> str:
@@ -262,8 +288,9 @@ def store_allin1(song_id: int, pipeline: str, summary: Dict,
                    (song_id, pipeline, content_hash, model, version, pooling,
                     demixed_by, bpm, beats, downbeats, beat_positions,
                     segments_json, downbeat_conf, section_conf_json,
-                    conf_mean, conf_min, ms)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    conf_mean, conf_min, ms, beat_conf, downbeat_conf_beats,
+                    segment_label_probs, segment_labels_order)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(song_id, pipeline) DO UPDATE SET
                    content_hash=excluded.content_hash, model=excluded.model,
                    version=excluded.version, pooling=excluded.pooling,
@@ -274,7 +301,11 @@ def store_allin1(song_id: int, pipeline: str, summary: Dict,
                    downbeat_conf=excluded.downbeat_conf,
                    section_conf_json=excluded.section_conf_json,
                    conf_mean=excluded.conf_mean, conf_min=excluded.conf_min,
-                   ms=excluded.ms, created_at=datetime('now')""",
+                   ms=excluded.ms, beat_conf=excluded.beat_conf,
+                   downbeat_conf_beats=excluded.downbeat_conf_beats,
+                   segment_label_probs=excluded.segment_label_probs,
+                   segment_labels_order=excluded.segment_labels_order,
+                   created_at=datetime('now')""",
             (song_id, pipeline, summary.get("content_hash"), summary.get("model"),
              summary.get("version"), summary.get("pooling"),
              summary.get("demixed_by"), summary.get("bpm"),
@@ -284,7 +315,13 @@ def store_allin1(song_id: int, pipeline: str, summary: Dict,
              json.dumps(summary.get("segments") or []),
              _f16(summary.get("downbeat_conf")),
              json.dumps(summary.get("section_conf") or []),
-             summary.get("conf_mean"), summary.get("conf_min"), summary.get("ms")))
+             summary.get("conf_mean"), summary.get("conf_min"), summary.get("ms"),
+             _f16(summary.get("beat_conf")),
+             _f16(summary.get("downbeat_conf_beats")),
+             None if summary.get("segment_label_probs") is None else
+             json.dumps(summary["segment_label_probs"]),
+             None if summary.get("segment_labels_order") is None else
+             json.dumps(summary["segment_labels_order"])))
         emb = summary.get("embedding")
         if emb is not None:
             emb = np.asarray(emb, dtype=np.float16)
@@ -327,6 +364,14 @@ def get_allin1(song_id: int, pipeline: Optional[str] = None,
     d["downbeat_conf"] = _arr(d["downbeat_conf"], np.float16)
     d["segments"] = json.loads(d.pop("segments_json") or "[]")
     d["section_conf"] = json.loads(d.pop("section_conf_json") or "[]")
+    # Written since schema migration 6; NULL on a row stored before it, which
+    # reads back as [] (unmeasured, not zero — the arrays it came from are gone,
+    # so a re-run is the only way to fill them, and allin1.analysis v2 makes a
+    # re-run recompute rather than reuse the v1 payload).
+    d["beat_conf"] = _arr(d.get("beat_conf"), np.float16)
+    d["downbeat_conf_beats"] = _arr(d.get("downbeat_conf_beats"), np.float16)
+    d["segment_label_probs"] = json.loads(d.get("segment_label_probs") or "[]")
+    d["segment_labels_order"] = json.loads(d.get("segment_labels_order") or "[]")
     return d
 
 
@@ -381,7 +426,11 @@ def storage_bytes(song_id: int, db_path: Optional[Path] = None) -> Dict[str, int
                                    +COALESCE(LENGTH(beat_positions),0)
                                    +LENGTH(segments_json)
                                    +COALESCE(LENGTH(downbeat_conf),0)
-                                   +LENGTH(section_conf_json))
+                                   +LENGTH(section_conf_json)
+                                   +COALESCE(LENGTH(beat_conf),0)
+                                   +COALESCE(LENGTH(downbeat_conf_beats),0)
+                                   +COALESCE(LENGTH(segment_label_probs),0)
+                                   +COALESCE(LENGTH(segment_labels_order),0))
                                 FROM allin1_analysis WHERE song_id=?"""),
             "embedding": one("SELECT SUM(LENGTH(vector)) FROM allin1_embeddings "
                              "WHERE song_id=?"),
