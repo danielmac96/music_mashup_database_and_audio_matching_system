@@ -5319,7 +5319,109 @@ git commit -m "Benchmark the allin1 checkpoints, one separation for every candid
 
 ## Task 10: The 30-track test library, measured end to end
 
-The deliverable: a fresh ~30-track library, run through the whole pipeline once on `unified_4stem`, with a before/after table from `analysis_runs` proving each stage's cost. This is also the script that proves the "one run" claim — it asserts that no stage ran twice.
+The deliverable: a fresh ~30-track library, run through the whole pipeline once on `unified_4stem`, with a per-stage table from `analysis_runs` proving each stage's cost. This is also the script that proves the "one run" claim — it asserts that no stage ran twice.
+
+> **Corrected after implementation (2026-11-03).** The draft carried **twelve**
+> errors, and the first is load-bearing in the worst way: the "did anything run
+> twice?" check — **the one claim this script exists to make** — could not
+> fail. Pointed at the live 206-track library it would have reported "every
+> stage ran once per track" over **232 `structure` runs for 204 tracks**. The
+> script that shipped is `scripts/bench_one_pass.py`; every part of it,
+> `main()` included, is tested with the pipeline faked at its one seam,
+> `pipeline_worker.run` (`tests/test_bench_one_pass.py`, 26 tests, all run on
+> Windows with no Demucs, Essentia or allin1). **The measurement itself has not
+> been run**: Steps 3–7 need Docker, Demucs, Essentia, allin1 and the user's
+> own audio, and they are the user's to run.
+>
+> 1. **LOAD-BEARING: the twice-check could not fail.**
+>    `ONCE_PER_TRACK = ("stems", "allin1")` left out **`structure`**, and the
+>    separate cut count added `len(by_group.get("allin1.structure", []))` — a
+>    key that is **never written**. `api/workers/stages.py` has two
+>    `_timed("structure", …)` call sites: the Essentia novelty cut's
+>    (`analyzer="essentia"`) and the allin1 cut's (`analyzer="allin1"`), both
+>    filed under the plain grp `structure`; only the per-step rows are
+>    `allin1.structure.*`. Counted read-only against `data/mashup.db`:
+>    **232 `structure` runs for 204 timed songs, 205 essentia + 27 allin1,
+>    27 songs cut more than once, song 1 cut three times, 387.3 min in all** —
+>    the exact waste the single cut (§5.5) exists to remove, and precisely what
+>    the draft's check would have called clean. `structure` is now in
+>    `ONCE_PER_TRACK` (with `download`, `quick`, `analysis`), the dead
+>    `allin1.structure` key is gone, and the finding **names the tracks**
+>    (`song 1×3, song 7×2`) rather than printing a total. Pinned by
+>    `test_findings_names_the_song_cut_twice`, and proved able to fail by
+>    taking `structure` back out.
+> 2. **The output directory was not where its siblings write.** It is
+>    `DATA_DIR / "bench" / "one_pass" / <timestamp>/` holding `one_pass.md` and
+>    `one_pass.csv`, beside `bench/pipelines/` and `bench/stem_null/`.
+> 3. **`SELECT … peak_mb` raises on a downgraded database.** `peak_mb` is added
+>    by `database/alignment.py` and removed again by `database/downgrade.py`,
+>    and SQLite resolves column names when it **prepares** the statement, so no
+>    `COALESCE` can save it — the same class of bug as Task 5's
+>    `sections_allin1` guard (§7). `_has_column` checks
+>    `PRAGMA table_info(analysis_runs)` once and the column is selected only
+>    when it is there; otherwise every row reads `None` and the report says
+>    "unmeasured — no peak_mb column", never 0.
+> 4. **A cached or reused run gets no real-time factor.** The draft divided by
+>    `audio_secs` for every row with one. `stems.reused` is a 20 ms file check
+>    against a 200 s track and `analysis.cached` is 0 ms: these are rows that
+>    say *the work was not done*, so folding them into a median prices a stage
+>    by how often it was skipped. They keep their run counts and their total
+>    time; only the RTF is left out, and the report prints `—`.
+> 5. **`--skip-ingest` read every song in the database.** Pointed at the
+>    206-track library that would re-run the whole pipeline over all of it.
+>    `_library_songs` is bounded by `--limit`, and the database, the data
+>    directory, the pipeline/engine/analyser and the track count are all
+>    printed **before** anything runs. The docstring already said the test
+>    library is a separate `MASHUP_DB_PATH`; the code says it now too.
+> 6. **Nothing warned that the null test is owed.** §2 and §9 item 12 make
+>    `scripts/stem_null_test.py` on ≥ 10 tracks the gate before the first
+>    import on `unified_4stem`, and it has never been run — and this script is
+>    what somebody will reach for first. On `unified_4stem` with no
+>    `<data_dir>/bench/stem_null/*/results.csv` it prints a one-line warning
+>    naming the script and §2/§9, and repeats it in the report. A warning, not
+>    a refusal: the user decides.
+> 7. **`main()` could not be pointed at a database, so none of it was
+>    testable.** It read `config.DB_PATH`, which binds at import — and on the
+>    development host that resolves to the repo-root 30-track `mashup.db`, not
+>    `data/mashup.db`. Redirecting it in a test by `monkeypatch.setenv` would
+>    silently run against whichever library is configured. `main(argv, *,
+>    db_path=None, data_dir=None)` takes both explicitly (defaulting to the
+>    config values), and every helper takes `db_path`, resolving
+>    `db_path if db_path is not None else models.DB_PATH` — never passing
+>    `None` down to a `database/models.py` helper (§7).
+> 8. **The select list omitted `analyzer`,** the only column that says *which
+>    engine* cut a track. With it the cut finding reads "3 cuts for 2 tracks
+>    (1 allin1, 2 essentia)", which names the cause; without it the report can
+>    say a track was cut twice but not by what.
+> 9. **`folder` was a required positional**, yet the plan's own Step 5 invoked
+>    `--skip-ingest` with a folder the script never reads. It is optional now,
+>    with an argparse error when neither a folder nor `--skip-ingest` is given.
+> 10. **The `UPDATE songs SET status='downloaded'` after `upsert_song` is
+>     redundant** — `upsert_song` takes `status=` and its `ON CONFLICT` sets it,
+>     so the one statement does it on insert and on re-run alike.
+> 11. **Echoing the report can end the run in a traceback.** The report
+>     contains `·`, `—` and `×`; cp437 and cp850 cannot encode the em dash and
+>     cp437 cannot encode `×`, so `print` raises `UnicodeEncodeError` on an OEM
+>     console **after both files are written** — the same trap Task 9 hit for
+>     real (its `Δ` and `≥` are not in cp1252 either). `_say` falls back to
+>     ASCII-replace. Proved by test against cp437; cp1252, as it happens, can
+>     encode all three of this script's characters.
+> 12. **`jobs.new_job("pipeline")` carried no `song_id`.** Harmless in a
+>     script, but the registry's job record and `/api/jobs`' `latestJobBySong`
+>     are keyed on it, so it is passed.
+>
+> Two things the draft did not ask for and the report now carries: a **Once per
+> track** table — per stage, how many tracks ran it, the run count and the
+> `.cached`/`.reused` count beside it — because the grp match is **exact**, so
+> an exact count of `stems` reads 0 on a track whose stems were reused, and
+> that is a fact to print rather than a hole to fall into; and the frame
+> sidecars' count and bytes per track, which is the storage half of "no wasted
+> data".
+>
+> One thing the draft got right and is easy to "fix" wrongly:
+> `analysis_frames`' size column really is `bytes`
+> (`song_id, stem_type, pipeline, path, content_hash, version, step_secs,
+> n_frames, matrices, bytes, written_at`), so `row.get("bytes")` stands.
 
 **Two front doors, both ending in the same pipeline.** Either is fine, and you can use both:
 
@@ -5329,228 +5431,75 @@ The deliverable: a fresh ~30-track library, run through the whole pipeline once 
 Step 5 runs whichever one you have; Step 6 measures the result the same way either way.
 
 **Files:**
-- Create: `scripts/bench_one_pass.py`
+- Create: `scripts/bench_one_pass.py` (`.gitignore`'s `/Scripts/` matches `scripts/` on Windows — `git add -f`, then prove it with `git show --stat`)
+- Create: `tests/test_bench_one_pass.py`
 - Modify: `readme.md` (§8, the script's entry)
 
 **Interfaces:**
-- Consumes: `api.workers.pipeline_worker.run`, `api.jobs.new_job`, `database.models.upsert_song/get_conn`, `analysis.timeseries.path_for`, `config.DATA_DIR`.
-- Produces: `scripts/bench_one_pass.py` with `main(argv=None) -> int`, writing `<data_dir>/bench/<timestamp>/one_pass.{md,csv}`.
+- Consumes: `api.workers.pipeline_worker.run`, `api.jobs.new_job`, `database.models.connection` / `upsert_song` / `get_conn` / `get_song`, `database.alignment.get_frames`, `config.DB_PATH` / `DATA_DIR` / `current_separation_pipeline` / `current_segmentation_engine` / `current_analyzer` / `current_allin1_model`.
+- Produces: `scripts/bench_one_pass.py` with `main(argv=None, *, db_path=None, data_dir=None) -> int` (0 measured · 1 nothing to measure) and these testable parts:
+  - `_ingest(folder, limit=0, db_path=None)` → the song ids, one row per audio file, `status='downloaded'`, `raw_path` in place, the batch on one connection.
+  - `_has_column(conn, table, column)`, `_read_runs(conn, song_ids)` → `(by_group, peak_measured)`, `_timings(song_ids, db_path=None)`.
+  - `_stage_records(by_group, song_ids)` → one record per grp, heaviest first; `_did_no_work(grp)`.
+  - `_per_song(rows)`, `_name_songs(counts)`, `_findings(by_group, song_ids)`.
+  - `_out_dir(data_dir)`, `_write_report(out_dir, recs, lines)`, `_report_lines(…)`.
+  - `_null_test_owed(data_dir, pipeline)`, `_library_songs(limit, db_path)`, `_say(text, stream=None)`.
+- Writes: `<data_dir>/bench/one_pass/<timestamp>/{one_pass.md,one_pass.csv}`. Nothing else: the audio is read where it lies and the only database it touches is the one it was pointed at.
 
-- [ ] **Step 1: Write the script**
+- [x] **Step 1: Write the failing tests**
 
-Create `scripts/bench_one_pass.py`:
+`tests/test_bench_one_pass.py`, with the pipeline faked at `pipeline_worker.run`
+and the script loaded by `importlib` (scripts/ is not a package). Every test
+runs on a `tmp_path` database passed explicitly — **never**
+`monkeypatch.setenv("MASHUP_DB_PATH", …)`, which `config.DB_PATH` would have
+bound at import. Twenty-six tests: `_ingest` (one row per audio file, non-audio
+ignored, `--limit`, the `"Artist - Title"` split, `status='downloaded'`,
+`raw_path` in place with nothing copied, one connection for the batch); the
+twice-check (a clean library, the song cut twice named by id, `stems.reused` not
+counted as a second `stems`, `allin1.demix` reported as the second Demucs run);
+`_read_runs` (grouped, the given songs only, `peak_mb` read — and a
+hand-built table **without** `peak_mb` that must not raise); `_stage_records`
+(ordered by total time, no RTF for a cached or reused grp); the report writer
+(both files, the CSV header matching its rows, an empty library); the output
+directory; the null-test warning (owed, not owed on legacy, not owed once
+`results.csv` exists); `_say` against a cp437 console and against a console that
+can; and `main` end to end (each track run once, both files written, the
+database and count printed, 1 on an empty folder, the twice-finding reaching the
+report, `--skip-ingest --limit`, the warning, the echo through `_say`).
 
-```python
-"""scripts/bench_one_pass.py — the whole pipeline over local files, measured.
+- [x] **Step 2: Run the tests to verify they fail**
 
-Builds a library from a folder of audio files (no download, no SoundCloud), runs
-every track through the real pipeline, and prints what each stage cost from
-`analysis_runs` — the same table the Queue screen's typical times come from.
+Run: `.\.venv\Scripts\python.exe -m pytest tests/test_bench_one_pass.py -q`
+Observed, in four waves as the tests were written: 3 errors
+`FileNotFoundError: … scripts\bench_one_pass.py` (the script does not exist),
+then `AttributeError: module 'bench_one_pass' has no attribute '_findings'`,
+`… '_stage_records'`, `… '_out_dir'`, `… '_say'`, and
+`TypeError: main() got an unexpected keyword argument 'db_path'`.
 
-It also checks the claim this exists to test: that each stage ran ONCE per track.
-A second `stems`, `structure` or `allin1` row for one track is a finding, not a
-detail, and the report says so.
+- [x] **Step 3: Write the script**
 
-    docker compose exec app python scripts/bench_one_pass.py /data/incoming
-    docker compose exec app python scripts/bench_one_pass.py /data/incoming --limit 5
+As the Interfaces above, with the twelve corrections applied. Then: 26 passed.
 
-Not part of the test suite: it needs Demucs, Essentia and allin1, i.e. Docker.
-"""
-from __future__ import annotations
+- [x] **Step 4: Mutate, to prove the tests discriminate**
 
-import argparse
-import csv
-import json
-import statistics as st
-import sys
-import time
-from collections import defaultdict
-from pathlib import Path
-from typing import Dict, List
+Six mutations by exact Python string rewrite (never a `sed` anchor — the tree is
+mixed CRLF/LF), each reverted and the tree proved clean:
 
-AUDIO_SUFFIXES = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus"}
+| Mutation | Killed by |
+|---|---|
+| `structure` back out of `ONCE_PER_TRACK` (the draft's own tuple) | `test_findings_names_the_song_cut_twice` and `test_main_reports_the_track_that_was_cut_twice` — the finding no longer names the song |
+| the grp count becomes a prefix count | `test_findings_does_not_count_reused_stems_as_a_second_demucs_run` (and the `allin1.demix` test) — `stems.reused` read as a second `stems` |
+| the `peak_mb` guard dropped | `test_read_runs_survives_a_database_without_peak_mb` — `sqlite3.OperationalError: no such column: peak_mb`, exactly what a downgraded database would have given |
+| `_say` catches `RuntimeError` instead | `test_say_survives_a_console_that_cannot_encode_the_report` |
+| the output directory back to the draft's `bench/<timestamp>` | `test_the_output_directory_is_where_its_siblings_write` and both `main` tests |
+| `--skip-ingest` back to `SELECT id FROM songs ORDER BY id` | `test_skip_ingest_is_bounded_by_limit` — 3 tracks run where 1 was asked for |
 
-# Stages that must appear exactly once per track for "one run" to be true.
-ONCE_PER_TRACK = ("stems", "allin1")
-
-
-def _ingest(folder: Path, limit: int) -> List[int]:
-    """One song row per file, already 'downloaded' — raw_path points at the file
-    in place, so nothing is copied and nothing is fetched. One connection for
-    the batch (models.connection, Task D4)."""
-    from database.models import connection, upsert_song
-
-    files = sorted(p for p in folder.iterdir()
-                   if p.suffix.lower() in AUDIO_SUFFIXES)
-    if limit:
-        files = files[:limit]
-    ids = []
-    with connection() as conn:
-        for path in files:
-            title = path.stem
-            artist = ""
-            if " - " in title:
-                artist, title = (s.strip() for s in title.split(" - ", 1))
-            sid = upsert_song(title=title, artist=artist,
-                              source_url=path.resolve().as_uri(),
-                              raw_path=str(path), source="local", conn=conn)
-            conn.execute("UPDATE songs SET status='downloaded' WHERE id=?", (sid,))
-            ids.append(sid)
-    return ids
-
-
-def _timings(song_ids: List[int]) -> Dict[str, List[dict]]:
-    from database.models import get_conn
-
-    conn = get_conn()
-    try:
-        marks = ",".join("?" * len(song_ids))
-        rows = conn.execute(
-            f"SELECT song_id, grp, stem_type, ms, audio_secs, ok, peak_mb "
-            f"FROM analysis_runs WHERE song_id IN ({marks}) ORDER BY id",
-            song_ids).fetchall()
-    finally:
-        conn.close()
-    by_group: Dict[str, List[dict]] = defaultdict(list)
-    for r in rows:
-        by_group[r["grp"]].append(dict(r))
-    return by_group
-
-
-def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("folder", help="a folder of audio files")
-    ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--skip-ingest", action="store_true",
-                    help="re-measure the tracks already in this library")
-    args = ap.parse_args(argv)
-
-    import config
-    from api import jobs
-    from api.workers import pipeline_worker
-    from analysis import timeseries
-    from database import alignment
-    from database.models import get_conn
-
-    print(f"Database: {config.DB_PATH}")
-    print(f"Pipeline: {config.current_separation_pipeline()} · "
-          f"engine: {config.current_segmentation_engine()} · "
-          f"analyser: {config.current_analyzer()} · "
-          f"allin1 model: {config.current_allin1_model()}")
-
-    if args.skip_ingest:
-        conn = get_conn()
-        try:
-            song_ids = [r["id"] for r in conn.execute("SELECT id FROM songs ORDER BY id")]
-        finally:
-            conn.close()
-    else:
-        song_ids = _ingest(Path(args.folder), args.limit)
-    if not song_ids:
-        print("No audio files found.")
-        return 1
-    print(f"{len(song_ids)} track(s): {song_ids}")
-
-    wall0 = time.perf_counter()
-    for sid in song_ids:
-        job_id = jobs.new_job("pipeline")
-        t0 = time.perf_counter()
-        pipeline_worker.run(job_id, sid)
-        conn = get_conn()
-        try:
-            row = conn.execute("SELECT status, last_error, allin1_state "
-                               "FROM songs WHERE id=?", (sid,)).fetchone()
-        finally:
-            conn.close()
-        print(f"  song {sid}: {row['status']} / allin1 {row['allin1_state']} "
-              f"in {time.perf_counter() - t0:.0f} s"
-              + (f" — {row['last_error']}" if row["last_error"] else ""))
-    wall = time.perf_counter() - wall0
-
-    by_group = _timings(song_ids)
-    out = Path(config.DATA_DIR) / "bench" / time.strftime("%Y%m%d-%H%M%S")
-    out.mkdir(parents=True, exist_ok=True)
-
-    recs = []
-    for grp, rows in sorted(by_group.items(),
-                            key=lambda kv: -sum(r["ms"] or 0 for r in kv[1])):
-        ms = [r["ms"] or 0 for r in rows]
-        rtf = [(r["ms"] / 1000.0) / r["audio_secs"] for r in rows
-               if r["audio_secs"] and r["ms"]]
-        recs.append({"group": grp, "runs": len(rows),
-                     "median_ms": round(st.median(ms)) if ms else 0,
-                     "total_s": round(sum(ms) / 1000.0, 1),
-                     "median_rtf": round(st.median(rtf), 3) if rtf else None,
-                     "runs_per_track": round(len(rows) / len(song_ids), 2),
-                     "failed": sum(1 for r in rows if not r["ok"])})
-    with open(out / "one_pass.csv", "w", newline="", encoding="utf-8") as fh:
-        w = csv.DictWriter(fh, fieldnames=list(recs[0]) if recs else ["group"])
-        w.writeheader()
-        w.writerows(recs)
-
-    # Did anything run twice?
-    findings = []
-    for grp in ONCE_PER_TRACK:
-        per = defaultdict(int)
-        for r in by_group.get(grp, []):
-            per[r["song_id"]] += 1
-        twice = {s: n for s, n in per.items() if n > 1}
-        if twice:
-            findings.append(f"`{grp}` ran more than once for {twice}")
-    if by_group.get("allin1.demix"):
-        findings.append(
-            f"`allin1.demix` ran {len(by_group['allin1.demix'])} time(s) — allin1 "
-            f"separated its own stems, so Demucs ran twice. The library is not on "
-            f"unified_4stem.")
-    cuts = len(by_group.get("structure", [])) + len(by_group.get("allin1.structure", []))
-    if cuts > len(song_ids):
-        findings.append(f"{cuts} section cuts for {len(song_ids)} tracks — "
-                        f"check MASHUP_DUAL_CUT and _wants_essentia_cut.")
-
-    # What was stored.
-    frames_bytes = 0
-    frames_n = 0
-    for sid in song_ids:
-        for row in alignment.get_frames(sid):
-            frames_n += 1
-            frames_bytes += row.get("bytes") or 0
-
-    lines = [f"# One pass over {len(song_ids)} tracks", "",
-             f"- wall clock: {wall / 60:.1f} min "
-             f"({wall / len(song_ids):.0f} s a track)",
-             f"- pipeline: {config.current_separation_pipeline()} · engine "
-             f"{config.current_segmentation_engine()} · allin1 "
-             f"{config.current_allin1_model()}",
-             f"- frame sidecars: {frames_n} files, "
-             f"{frames_bytes / 1e6:.1f} MB "
-             f"({frames_bytes / max(1, len(song_ids)) / 1e6:.2f} MB a track)", ""]
-    if findings:
-        lines += ["## Findings", ""] + [f"- **{f}**" for f in findings] + [""]
-    else:
-        lines += ["## Findings", "", "- none: every stage ran once per track.", ""]
-    lines += ["## Per stage", "",
-              "| group | runs | runs/track | median ms | total s | median RTF | failed |",
-              "|---|---|---|---|---|---|---|"]
-    for r in recs:
-        lines.append(f"| {r['group']} | {r['runs']} | {r['runs_per_track']} | "
-                     f"{r['median_ms']} | {r['total_s']} | {r['median_rtf']} | "
-                     f"{r['failed']} |")
-    (out / "one_pass.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print("\n".join(lines))
-    print(f"\nWrote {out}")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-```
-
-- [ ] **Step 2: Check it parses**
+- [x] **Step 5: Check it parses and lists its options**
 
 Run: `.\.venv\Scripts\python.exe scripts/bench_one_pass.py --help`
-Expected: the argparse help with `folder`, `--limit`, `--skip-ingest`.
+Observed: the help with `folder` (optional), `--limit` and `--skip-ingest`.
 
-- [ ] **Step 3: Point a fresh library at a fresh database**
+- [ ] **Step 6: Point a fresh library at a fresh database** — OWED, and the user's to run
 
 The existing 206-track library must not be touched. Make a separate database and audio root for the test library, and keep the old one pinned to `legacy_2stem` (Task 6 Step 5 already did that):
 
@@ -5566,9 +5515,9 @@ docker compose exec -e MASHUP_DB_PATH=/data/test30/mashup.db \
 ```
 Expected: `/data/test30/mashup.db unified_4stem allin1`
 
-- [ ] **Step 4: Null-test the 4-source separation before trusting it**
+- [ ] **Step 7: Null-test the 4-source separation before trusting it** — OWED
 
-The readme makes this mandatory before a pipeline switch, and it is cheap next to the run:
+The readme makes this mandatory before the first import on `unified_4stem`, and it is cheap next to the run. `bench_one_pass.py` prints a warning if you skip it:
 
 ```bash
 docker compose exec -e MASHUP_DB_PATH=/data/test30/mashup.db \
@@ -5578,7 +5527,7 @@ docker compose exec -e MASHUP_DB_PATH=/data/test30/mashup.db \
 ```
 Expected: exit 0 and residuals below −40 dBFS. **Exit 1 is a stop**: listen to the A/B pairs it wrote before going further. The 4-source instrumental is the sum of the same sources the 2-stem `no_vocals` is, so it is expected to null.
 
-- [ ] **Step 5: Run the pipeline once over the 30 tracks**
+- [ ] **Step 8: Run the pipeline once over the 30 tracks** — OWED
 
 The env block is the same for both doors; put it in a shell variable to avoid retyping it:
 
@@ -5590,9 +5539,9 @@ ENVS="-e MASHUP_DB_PATH=/data/test30/mashup.db -e MASHUP_AUDIO_ROOT=/data/test30
 
 ```bash
 docker compose exec $ENVS app python scripts/ingest_urls.py /data/urls.txt --process
-docker compose exec $ENVS app python scripts/bench_one_pass.py /data/incoming --skip-ingest
+docker compose exec $ENVS app python scripts/bench_one_pass.py --skip-ingest --limit 30
 ```
-The first line ingests and processes; the second only reads `analysis_runs` for the tracks already in that database and writes the report, which is what `--skip-ingest` is for.
+The first line ingests and processes; the second only reads `analysis_runs` for the tracks already in that database and writes the report, which is what `--skip-ingest` is for. `--limit` is not optional there: unbounded it runs every song in whatever database it was pointed at.
 
 **From a folder of local files:**
 
@@ -5600,9 +5549,21 @@ The first line ingests and processes; the second only reads `analysis_runs` for 
 docker compose exec $ENVS app python scripts/bench_one_pass.py /data/incoming
 ```
 
-Expected either way: `## Findings` reads "none: every stage ran once per track." Any other finding is a bug in Tasks 3–6 and is fixed before the numbers are recorded. Keep the machine awake — the host sleeping suspends Docker Desktop's VM and the pipeline with it.
+Expected either way: `## Findings` reads "none: every stage ran once per track."
+Any other finding is a bug in Tasks 3–6 and is fixed before the numbers are
+recorded. In particular, `allin1.demix` rows mean allin1 separated its own
+stems — the library is not really on `unified_4stem`. Keep the machine awake:
+the host sleeping suspends Docker Desktop's VM and the pipeline with it.
 
-- [ ] **Step 6: Score the library and check the pairs**
+What to record here when it has run: the per-stage table from `one_pass.md`
+(runs, runs/track, median ms, total s, median RTF, peak MB), the frame
+sidecars' MB a track, and the wall clock. The live 206-track library cannot
+stand in for any of it — it holds **3 `stems` and 3 `download` timing rows in
+all**, because those tracks were separated before the stage was timed — so this
+run is the only source of the stems and download numbers, and the only
+before/after for them.
+
+- [ ] **Step 9: Score the library and check the pairs** — OWED
 
 ```bash
 docker compose exec -e MASHUP_DB_PATH=/data/test30/mashup.db \
@@ -5614,12 +5575,12 @@ print(score_all_pairs())"
 ```
 Expected: a row count and no error. Then open the app against that database and listen to three pairs: the card's transpose, the loop and Studio must agree (readme §7, one transpose per pair), and the timing pills must place the bed on a bar line.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
-git add -f scripts/bench_one_pass.py
+git add -f scripts/bench_one_pass.py tests/test_bench_one_pass.py
 git add readme.md
-git commit -m "Add the one-pass pipeline benchmark over a folder of local files"
+git commit -m "Measure one pass over a folder, and let the twice-check fail"
 ```
 
 ---
