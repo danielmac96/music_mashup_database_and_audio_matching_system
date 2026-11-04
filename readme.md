@@ -2696,6 +2696,7 @@ allin1 and their weights, i.e. Docker; each writes under `<data_dir>/bench/`):
 docker compose exec app python scripts/stem_null_test.py --auto 10   # before switching pipelines
 docker compose exec app python scripts/bench_pipelines.py --auto 5   # time / peak MB / storage, both pipelines
 docker compose exec app python scripts/bench_allin1_models.py --auto 10   # ensemble vs a fold
+docker compose exec app python scripts/bench_one_pass.py /data/incoming  # one pass over a folder, per stage
 docker compose exec app python scripts/check_phrases.py --songs 12,40 --truth truth.csv
 docker compose exec app python scripts/align_debug.py 12 40          # click overlay + grid plot of one pair
 ```
@@ -2728,7 +2729,38 @@ what carries that risk. It needs no scratch library: the song rows are read
 through a read-only connection, the sources go to a temp directory (kept only
 with `--keep`) and the one thing written is
 `<data_dir>/bench/allin1_models/<timestamp>/` (`summary.md`, `results.csv`,
-`results.json`). `check_phrases.py` lists each track's phrase starts and, with a
+`results.json`).
+`bench_one_pass.py` is the whole pipeline over a folder of local audio, and
+the script that has to be able to say *no* to the one-run claim. It registers
+each file in place (no download, no SoundCloud: one `songs` row at
+`downloaded`, `raw_path` pointing at the file where it lies, the batch on one
+connection), runs every track through `pipeline_worker.run`, and reports from
+`analysis_runs`: per grp the runs, runs per track, median ms, total seconds,
+median real-time factor and peak MB, heaviest first; the frame sidecars'
+count and bytes; and a **Findings** section that names the tracks on which
+`download`, `quick`, `stems`, `analysis`, `structure` or `allin1` ran more
+than once. `structure` is in that list because it is the stage that did: the
+allin1 cut writes a plain `structure` row of its own beside the Essentia
+novelty cut's, and the 206-track library reads **232 `structure` runs for 204
+tracks, 27 songs cut more than once and one cut three times** (387 min) —
+exactly what the unified pipeline and the single cut (§5.5) exist to remove.
+The grp match is exact, so a reused separation (`stems.reused`) and a cached
+analysis (`analysis.cached`) are counted in their own column rather than as a
+second run, and neither is given a real-time factor: a 20 ms file check
+against a 200 s track measures how often the work was skipped, not what it
+costs. `--skip-ingest` re-measures the tracks already in that database and
+needs `--limit` to be bounded; the database, the data directory and the track
+count are printed before anything runs, because the test library is a
+separate `MASHUP_DB_PATH` (§2) and not a flag. On `unified_4stem` with no
+`<data_dir>/bench/stem_null/*/results.csv` it prints a one-line warning that
+`scripts/stem_null_test.py` is owed first (§2, §9 item 12) — a warning, not a
+refusal. Writes `<data_dir>/bench/one_pass/<timestamp>/` (`one_pass.md`,
+`one_pass.csv`). **The ~30-track run itself is owed**: it needs Docker,
+Demucs, Essentia, allin1 and the user's own audio, and the live library
+cannot stand in for it — it holds 3 `stems` and 3 `download` timing rows in
+all, because those tracks were separated before the stage was timed, so a
+fresh library is the only source of those two numbers.
+`check_phrases.py` lists each track's phrase starts and, with a
 `song_id,onset_sec` CSV of the entries you marked by ear, scores them (target:
 90% within a beat). `align_debug.py` renders the placed pair's bar lines as
 stereo clicks (vocal left, bed right — one click is a grid that holds) over
