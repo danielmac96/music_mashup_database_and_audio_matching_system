@@ -36,3 +36,10 @@ print("\nLAYOUT BY VIEWPORT")
 for vp, c in sorted(vp_notes.items()):
     print(" ", vp, [(k, v) for k, v in c.items() if "[layout]" in k])
 print("\nCONSOLE", cons.most_common(10)); print("NET", net.most_common(15))
+# The same numbers as JSON beside the results, for a report to read.
+from pathlib import Path as _P
+_P(sys.argv[1]).with_name("summary.json").write_text(json.dumps(dict(
+    personas=len(rows),
+    tasks={k: dict(ok=a, total=b) for k, (a, b) in task_ok.items()},
+    findings=[dict(note=k, hits=v, personas=len(note_personas[k])) for k, v in notes.most_common()],
+    console=cons.most_common(20), net=net.most_common(20)), indent=1), encoding="utf-8")
