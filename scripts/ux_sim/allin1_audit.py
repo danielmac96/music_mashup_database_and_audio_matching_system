@@ -346,7 +346,7 @@ st, lst = api("/api/mashups?limit=40")
 cands = (lst or {}).get("candidates") or []
 miss = [c.get("id") for c in cands if "engine" not in c or "timing_ok" not in c]
 (find("listing", "high", "listing rows lack engine / timing fields", miss, len(miss), len(cands)) if miss else ok("listing carries engine + timing"))
-lab_none = [(c.get("vocal_section_label"), c.get("inst_section_label")) for c in cands
+lab_none = [(c.get("combo_type"), c.get("engine")) for c in cands
             if not c.get("vocal_section_label") or not c.get("inst_section_label")]
 if lab_none:
     find("listing", "high", "allin1 rows in the dock without section labels", lab_none, len(lab_none), len(cands))
@@ -354,7 +354,7 @@ st, segs = api("/api/segments?role=vocal")
 if st != 200:
     find("segments", "critical", f"/api/segments answered {st}")
 else:
-    cols = segs["columns"]; ids = [r[cols.index("id")] for r in segs["rows"]] if "id" in cols else []
+    cols = segs["columns"]; ids = [r[cols.index("segment_id")] for r in segs["rows"]]
     big = [i for i in ids if i >= 100_000_000]
     ok("segments list", f"{len(ids)} vocal segments, {len(big)} allin1 ids")
     if ids and not big:
