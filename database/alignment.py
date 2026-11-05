@@ -50,7 +50,7 @@ LEGACY = "legacy_2stem"
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 TABLES = ("allin1_analysis", "allin1_embeddings", "sections_allin1",
-          "vocal_phrases", "pipeline_parked")
+          "vocal_phrases", "pipeline_parked", "analysis_frames")
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS allin1_analysis (
@@ -72,6 +72,14 @@ CREATE TABLE IF NOT EXISTS allin1_analysis (
     conf_min         REAL,
     ms               REAL,
     created_at       TEXT DEFAULT (datetime('now')),
+    -- Added after this table shipped, so schema migration 6 ALTERs them onto an
+    -- existing database. Declared LAST here on purpose: ALTER TABLE appends, so
+    -- a fresh database and a migrated one end up with the same column order
+    -- (database/schema.shape compares them as ordered lists).
+    beat_conf            BLOB,          -- float16, beat activation at each beat
+    downbeat_conf_beats  BLOB,          -- float16, downbeat activation at each beat
+    segment_label_probs  TEXT,          -- JSON [[p, ...], ...], one row per segment
+    segment_labels_order TEXT,          -- JSON, the column order of the above
     PRIMARY KEY (song_id, pipeline)
 );
 CREATE TABLE IF NOT EXISTS allin1_embeddings (
@@ -116,6 +124,13 @@ CREATE INDEX IF NOT EXISTS idx_pipeline_parked ON pipeline_parked(song_id, pipel
 """
 
 # Columns this feature adds to existing tables: (table, column, declaration).
+#
+# `migrate` is reached from exactly one place — schema._baseline, i.e. migration
+# 1 — so this tuple only ever reaches a database at user_version 0. The four
+# allin1_analysis columns below are also in `_DDL` (a fresh database) and in
+# schema migration 6 (a database already past the baseline, the 206-track
+# library included). Three places, because each covers a different machine; a
+# column in only one of them works on exactly one of them.
 ADDED_COLUMNS = (
     ("songs", "separation_pipeline", "TEXT"),      # pipeline the live rows belong to
     ("songs", "allin1_state", "TEXT"),             # done | failed | skipped | NULL
@@ -135,7 +150,18 @@ ADDED_COLUMNS = (
     ("mashup_candidates", "vocal_phrase_start", "REAL"),
     ("mashup_candidates", "vocal_pickup_ms", "REAL"),
     ("mashup_candidates", "bed_landing_sec", "REAL"),
+    # The activations at beat resolution, and each segment's label
+    # distribution (analysis/allin1_runner.summarise; schema migration 6).
+    ("allin1_analysis", "beat_conf", "BLOB"),
+    ("allin1_analysis", "downbeat_conf_beats", "BLOB"),
+    ("allin1_analysis", "segment_label_probs", "TEXT"),
+    ("allin1_analysis", "segment_labels_order", "TEXT"),
 )
+
+# The subset of ADDED_COLUMNS that schema migration 6 applies — the columns
+# added to this module's OWN tables after `_DDL` had already shipped.
+ALLIN1_ACTIVATION_COLUMNS = tuple(
+    (t, c, d) for t, c, d in ADDED_COLUMNS if t == "allin1_analysis")
 
 
 def _sections_allin1_ddl() -> str:
@@ -180,6 +206,48 @@ def migrate(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
+# `analysis_frames` is created by schema migration 4, NOT by `_DDL`. `migrate`
+# above is reached from exactly one place -- schema._baseline, which is
+# migration 1 -- so a database already at version 1 or above never runs it
+# again: a table added to `_DDL` alone would exist on every fresh database and
+# on none that predates it, the 206-track library included. The statements live
+# here, beside the accessors that use them, and `schema._analysis_frames`
+# executes them (as `arrays.ensure_schema` does for migration 2).
+#
+# One statement per entry, never an executescript: a migration runs inside
+# schema.apply's explicit BEGIN/COMMIT and executescript would COMMIT early.
+_FRAMES_DDL_STATEMENTS = (
+    """
+    CREATE TABLE IF NOT EXISTS analysis_frames (
+    song_id       INTEGER NOT NULL,
+    stem_type     TEXT NOT NULL,      -- full | vocals | instrumental | bass
+    pipeline      TEXT NOT NULL,
+    path          TEXT NOT NULL,      -- the .npz sidecar
+    content_hash  TEXT,               -- hash of the stem the frames describe
+    version       INTEGER NOT NULL,   -- analysis.timeseries.VERSION
+    step_secs     REAL NOT NULL,
+    n_frames      INTEGER NOT NULL,
+    matrices      TEXT NOT NULL,      -- JSON: {"chroma": 12, "mfcc": 13, ...}
+    bytes         INTEGER,
+    written_at    TEXT DEFAULT (datetime('now')),
+    UNIQUE(song_id, stem_type, pipeline)
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS idx_analysis_frames_song
+        ON analysis_frames(song_id, pipeline)
+    """,
+)
+
+
+def ensure_frames_schema(conn: sqlite3.Connection) -> None:
+    """Create `analysis_frames` and its index on the caller's connection, one
+    statement at a time. Safe to re-run: `database/downgrade.py` resets
+    `user_version` to 0, so every migration replays from 1."""
+    for statement in _FRAMES_DDL_STATEMENTS:
+        conn.execute(statement)
+
+
 # ── Which pipeline a song's live rows belong to ───────────────────────────────
 
 def live_pipeline(song_id: int, db_path: Optional[Path] = None,
@@ -220,8 +288,9 @@ def store_allin1(song_id: int, pipeline: str, summary: Dict,
                    (song_id, pipeline, content_hash, model, version, pooling,
                     demixed_by, bpm, beats, downbeats, beat_positions,
                     segments_json, downbeat_conf, section_conf_json,
-                    conf_mean, conf_min, ms)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    conf_mean, conf_min, ms, beat_conf, downbeat_conf_beats,
+                    segment_label_probs, segment_labels_order)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(song_id, pipeline) DO UPDATE SET
                    content_hash=excluded.content_hash, model=excluded.model,
                    version=excluded.version, pooling=excluded.pooling,
@@ -232,7 +301,11 @@ def store_allin1(song_id: int, pipeline: str, summary: Dict,
                    downbeat_conf=excluded.downbeat_conf,
                    section_conf_json=excluded.section_conf_json,
                    conf_mean=excluded.conf_mean, conf_min=excluded.conf_min,
-                   ms=excluded.ms, created_at=datetime('now')""",
+                   ms=excluded.ms, beat_conf=excluded.beat_conf,
+                   downbeat_conf_beats=excluded.downbeat_conf_beats,
+                   segment_label_probs=excluded.segment_label_probs,
+                   segment_labels_order=excluded.segment_labels_order,
+                   created_at=datetime('now')""",
             (song_id, pipeline, summary.get("content_hash"), summary.get("model"),
              summary.get("version"), summary.get("pooling"),
              summary.get("demixed_by"), summary.get("bpm"),
@@ -242,7 +315,13 @@ def store_allin1(song_id: int, pipeline: str, summary: Dict,
              json.dumps(summary.get("segments") or []),
              _f16(summary.get("downbeat_conf")),
              json.dumps(summary.get("section_conf") or []),
-             summary.get("conf_mean"), summary.get("conf_min"), summary.get("ms")))
+             summary.get("conf_mean"), summary.get("conf_min"), summary.get("ms"),
+             _f16(summary.get("beat_conf")),
+             _f16(summary.get("downbeat_conf_beats")),
+             None if summary.get("segment_label_probs") is None else
+             json.dumps(summary["segment_label_probs"]),
+             None if summary.get("segment_labels_order") is None else
+             json.dumps(summary["segment_labels_order"])))
         emb = summary.get("embedding")
         if emb is not None:
             emb = np.asarray(emb, dtype=np.float16)
@@ -285,6 +364,14 @@ def get_allin1(song_id: int, pipeline: Optional[str] = None,
     d["downbeat_conf"] = _arr(d["downbeat_conf"], np.float16)
     d["segments"] = json.loads(d.pop("segments_json") or "[]")
     d["section_conf"] = json.loads(d.pop("section_conf_json") or "[]")
+    # Written since schema migration 6; NULL on a row stored before it, which
+    # reads back as [] (unmeasured, not zero — the arrays it came from are gone,
+    # so a re-run is the only way to fill them, and allin1.analysis v2 makes a
+    # re-run recompute rather than reuse the v1 payload).
+    d["beat_conf"] = _arr(d.get("beat_conf"), np.float16)
+    d["downbeat_conf_beats"] = _arr(d.get("downbeat_conf_beats"), np.float16)
+    d["segment_label_probs"] = json.loads(d.get("segment_label_probs") or "[]")
+    d["segment_labels_order"] = json.loads(d.get("segment_labels_order") or "[]")
     return d
 
 
@@ -339,7 +426,11 @@ def storage_bytes(song_id: int, db_path: Optional[Path] = None) -> Dict[str, int
                                    +COALESCE(LENGTH(beat_positions),0)
                                    +LENGTH(segments_json)
                                    +COALESCE(LENGTH(downbeat_conf),0)
-                                   +LENGTH(section_conf_json))
+                                   +LENGTH(section_conf_json)
+                                   +COALESCE(LENGTH(beat_conf),0)
+                                   +COALESCE(LENGTH(downbeat_conf_beats),0)
+                                   +COALESCE(LENGTH(segment_label_probs),0)
+                                   +COALESCE(LENGTH(segment_labels_order),0))
                                 FROM allin1_analysis WHERE song_id=?"""),
             "embedding": one("SELECT SUM(LENGTH(vector)) FROM allin1_embeddings "
                              "WHERE song_id=?"),
@@ -499,16 +590,34 @@ def phrases_for_songs(song_ids, db_path: Optional[Path] = None) -> Dict[int, Lis
 
 PARKED_TABLES = ("stems", "features", "sections")
 
+# `features` keeps its beat grid and waveform envelope in `feature_arrays`
+# (database/arrays.py), keyed by (song, stem) rather than by row. They belong to
+# the pipeline whose features they describe, so a parked features row carries
+# them inline under the column names it used to have: parked JSON written
+# before the arrays moved restores through the same path, and nothing new has
+# to be added to the pipeline_parked format.
+_PARKED_ARRAY_COLUMNS = {"beat_times_json": "beat_times",
+                         "waveform_rms_json": "waveform_rms"}
+
 
 def _park(conn: sqlite3.Connection, song_id: int, pipeline: str) -> int:
+    from database import arrays
+
     conn.execute("DELETE FROM pipeline_parked WHERE song_id=? AND pipeline=?",
                  (song_id, pipeline))
     n = 0
     for tbl in PARKED_TABLES:
-        rows = conn.execute(f"SELECT * FROM {tbl} WHERE song_id=?", (song_id,)).fetchall()
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT * FROM {tbl} WHERE song_id=?", (song_id,)).fetchall()]
+        if tbl == "features":
+            for row in rows:
+                for col, name in _PARKED_ARRAY_COLUMNS.items():
+                    values = arrays.get(conn, song_id, row["stem_type"], name)
+                    if values:
+                        row[col] = json.dumps(values)
         conn.executemany(
             "INSERT INTO pipeline_parked(song_id, pipeline, tbl, row_json) VALUES (?,?,?,?)",
-            [(song_id, pipeline, tbl, json.dumps(dict(r))) for r in rows])
+            [(song_id, pipeline, tbl, json.dumps(r)) for r in rows])
         n += len(rows)
     return n
 
@@ -561,6 +670,7 @@ def activate_pipeline(song_id: int, target: str, db_path: Optional[Path] = None)
     """
     if target not in PIPELINES:
         raise ValueError(f"unknown pipeline {target!r}")
+    from database import arrays
     m = _models()
     conn = _conn(db_path)
     try:
@@ -579,15 +689,23 @@ def activate_pipeline(song_id: int, target: str, db_path: Optional[Path] = None)
         _park(conn, song_id, current)
         for tbl in PARKED_TABLES:
             conn.execute(f"DELETE FROM {tbl} WHERE song_id=?", (song_id,))
+            if tbl == "features":
+                arrays.delete_for(conn, song_id)
             live_cols = {r[1] for r in conn.execute(f"PRAGMA table_info({tbl})")}
             for (row_json,) in conn.execute(
                     "SELECT row_json FROM pipeline_parked WHERE song_id=? AND "
                     "pipeline=? AND tbl=? ORDER BY id", (song_id, target, tbl)).fetchall():
-                row = {k: v for k, v in json.loads(row_json).items() if k in live_cols}
+                parked = json.loads(row_json)
+                row = {k: v for k, v in parked.items() if k in live_cols}
                 cols = list(row)
                 conn.execute(
                     f"INSERT INTO {tbl} ({', '.join(cols)}) "
                     f"VALUES ({','.join('?' * len(cols))})", [row[c] for c in cols])
+                if tbl == "features":
+                    for col, name in _PARKED_ARRAY_COLUMNS.items():
+                        if parked.get(col):
+                            arrays.put(conn, song_id, parked["stem_type"], name,
+                                       json.loads(parked[col]))
         conn.execute("DELETE FROM pipeline_parked WHERE song_id=? AND pipeline=?",
                      (song_id, target))
         conn.execute("UPDATE songs SET separation_pipeline=? WHERE id=?",
@@ -609,5 +727,79 @@ def activate_pipeline(song_id: int, target: str, db_path: Optional[Path] = None)
     except Exception:
         conn.rollback()
         raise
+    finally:
+        conn.close()
+
+
+# ── Per-frame analysis matrices (analysis/timeseries.py) ──────────────────────
+
+def put_frames(song_id: int, stem_type: str, pipeline: str, meta: Dict,
+               db_path: Optional[Path] = None) -> None:
+    """Register one stem's .npz sidecar. `meta` is what timeseries.write built:
+    path, content_hash, version, step_secs, n_frames, matrices, bytes."""
+    conn = _conn(db_path)
+    try:
+        conn.execute(
+            """INSERT INTO analysis_frames
+                 (song_id, stem_type, pipeline, path, content_hash, version,
+                  step_secs, n_frames, matrices, bytes, written_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?, datetime('now'))
+               ON CONFLICT(song_id, stem_type, pipeline) DO UPDATE SET
+                 path=excluded.path, content_hash=excluded.content_hash,
+                 version=excluded.version, step_secs=excluded.step_secs,
+                 n_frames=excluded.n_frames, matrices=excluded.matrices,
+                 bytes=excluded.bytes, written_at=excluded.written_at""",
+            (song_id, stem_type, pipeline, str(meta["path"]),
+             meta.get("content_hash"), int(meta["version"]),
+             float(meta["step_secs"]), int(meta["n_frames"]),
+             json.dumps(meta["matrices"]), meta.get("bytes")))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_frames(song_id: int, stem_type: Optional[str] = None,
+               pipeline: Optional[str] = None,
+               db_path: Optional[Path] = None) -> List[Dict]:
+    """The registered sidecars for a song, `matrices` parsed."""
+    conn = _conn(db_path)
+    try:
+        sql = "SELECT * FROM analysis_frames WHERE song_id=?"
+        args: list = [song_id]
+        if stem_type:
+            sql += " AND stem_type=?"
+            args.append(stem_type)
+        if pipeline:
+            sql += " AND pipeline=?"
+            args.append(pipeline)
+        rows = conn.execute(sql + " ORDER BY stem_type", args).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["matrices"] = json.loads(d["matrices"] or "{}")
+        except (TypeError, ValueError):
+            d["matrices"] = {}
+        out.append(d)
+    return out
+
+
+def delete_frames(song_id: int, pipeline: Optional[str] = None,
+                  db_path: Optional[Path] = None) -> int:
+    """Remove a song's registry rows (one pipeline's, or all). The files are
+    `analysis.timeseries.drop`'s business."""
+    conn = _conn(db_path)
+    try:
+        if pipeline:
+            cur = conn.execute(
+                "DELETE FROM analysis_frames WHERE song_id=? AND pipeline=?",
+                (song_id, pipeline))
+        else:
+            cur = conn.execute("DELETE FROM analysis_frames WHERE song_id=?",
+                               (song_id,))
+        conn.commit()
+        return cur.rowcount or 0
     finally:
         conn.close()

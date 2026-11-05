@@ -37,7 +37,16 @@ log = logging.getLogger(__name__)
 
 ProgressCb = Optional[Callable[[Optional[int], str], None]]
 
-_ANALYSIS_STEM_ORDER = ("full", "vocals", "instrumental")
+_ANALYSIS_STEM_ORDER = ("full", "vocals", "instrumental", "bass")
+
+# Stems whose per-frame matrices are kept (analysis/timeseries.py).
+_FRAME_STEMS = ("full", "vocals", "instrumental", "bass")
+
+# Analysed for their frames alone: a bass chroma from the bass stem is both
+# better and ~13x cheaper than band-passing the mix and taking a CQT of it
+# (measured: structure.stem_chroma was 57 s a track). Nothing reads a `features`
+# row for the bass, so none is written.
+_TONAL_ONLY_STEMS = ("bass",)
 
 # Global concurrency gates, sized to the pipeline worker pools. The pipeline
 # queues already bound their own threads, but the Library per-stage buttons run
@@ -51,6 +60,10 @@ _STAGE_GATES = {
     "quick": threading.Semaphore(QUICK_WORKERS),
     "allin1": threading.Semaphore(ALLIN1_WORKERS),
 }
+# Structure is the same librosa-bound work as the analysis, so it counts
+# against the analysis gate rather than adding concurrency of its own — the
+# same object, deliberately. One entry per pipeline_worker.STAGES name.
+_STAGE_GATES["structure"] = _STAGE_GATES["analysis"]
 
 
 class StageError(RuntimeError):
@@ -409,10 +422,18 @@ _ESSENTIA_EXTRA_STEPS = {"vocals": ("melody",), "full": ("effnet",)}
 
 
 def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
-                  on_progress: ProgressCb, extra_steps: tuple = ()) -> tuple[dict, bool]:
+                  on_progress: ProgressCb, extra_steps: tuple = (),
+                  frames_out: Optional[dict] = None,
+                  force_steps: tuple = (),
+                  only_steps: tuple = ()) -> tuple[dict, bool]:
     """Every Essentia group for one stem, cached. Returns (payloads, fully
     cached). Never raises: a failure is an empty result, which leaves the
-    librosa analyser to fill the core."""
+    librosa analyser to fill the core.
+
+    ``frames_out``, when given, collects the per-frame matrices the tonal and
+    spectral groups already compute (analysis/timeseries.py); ``force_steps``
+    re-runs a cached step so they are produced at all; ``only_steps`` narrows
+    the run to the groups a stem is analysed for (the bass: tonal alone)."""
     from analysis.cache import StepCache
     from analysis.essentia_groups import analyze_file_essentia
     from analysis.registry import ESSENTIA_STEP_GROUPS
@@ -420,7 +441,8 @@ def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
     try:
         out = analyze_file_essentia(path, cache=StepCache(key, ESSENTIA_STEP_GROUPS),
                                     timings=timings, on_progress=on_progress,
-                                    extra_steps=extra_steps)
+                                    extra_steps=extra_steps, frames_out=frames_out,
+                                    force_steps=force_steps, only_steps=only_steps)
     except Exception:  # noqa: BLE001
         log.exception("essentia analysis failed for %s/%s", song_id, stem_type)
         out = {}
@@ -470,14 +492,73 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
 
             # Essentia first when it runs at all: in essentia mode it owns the
             # core columns, in shadow mode only the extras (analysis/project.py).
+            tonal_only = stem_type in _TONAL_ONLY_STEMS
             ess: dict = {}
+            frames_out: Optional[dict] = None
             if run_essentia:
+                from analysis import timeseries
+                from config import current_keep_frames
+                from database import alignment
+
+                pipeline = alignment.live_pipeline(song_id)
+                want_frames = (gate != "quick" and stem_type in _FRAME_STEMS
+                               and current_keep_frames())
+                force: tuple = ()
+                if want_frames:
+                    frames_out = {}
+                    if not timeseries.have(song_id, stem_type, pipeline, key):
+                        # The payloads may be cached while the sidecar is not on
+                        # disk (a new install, a cleared ./data, frames switched
+                        # back on). Re-run just the two steps that carry frames;
+                        # everything else still comes from the cache.
+                        force = ("tonal", "spectral")
                 # The quick tier skips the extras (the melody, the tags): it
-                # exists to put BPM and key in the library in seconds.
-                extra = () if gate == "quick" else _ESSENTIA_EXTRA_STEPS.get(stem_type, ())
-                ess, ess_cached = _run_essentia(song_id, stem_type, path, key,
-                                                on_progress, extra)
+                # exists to put BPM and key in the library in seconds. A
+                # tonal-only stem is there for its chroma frames.
+                if gate == "quick" or tonal_only:
+                    extra: tuple = ()
+                else:
+                    extra = _ESSENTIA_EXTRA_STEPS.get(stem_type, ())
+                ess, ess_cached = _run_essentia(
+                    song_id, stem_type, path, key, on_progress, extra,
+                    frames_out=frames_out, force_steps=force,
+                    only_steps=("tonal",) if tonal_only else ())
                 fully_cached = fully_cached and ess_cached
+                if frames_out:
+                    # The sung pitch rides along with the matrices that are
+                    # being written anyway. Melodia costs 6.9 s a track (204
+                    # uncached runs, 23.5 min over the 206-track library) and
+                    # its curve lived only in `feature_cache`, which readme §3
+                    # calls disposable — so a purge destroyed it, and the
+                    # register term (readme §9 item 8.3) is built from the
+                    # curve, not from the sections' summaries. Inside this
+                    # branch, never beside it: when the sidecar is already
+                    # current nothing forces the frame steps, `frames_out` is
+                    # empty, and an f0 added out here would write an f0-only
+                    # sidecar over a good one. Left as a list — frames_from
+                    # makes it a (1, n) float32 and resamples it onto the grid.
+                    if stem_type == "vocals":
+                        mel = (ess or {}).get("melody") or {}
+                        if mel.get("f0") and mel.get("step"):
+                            frames_out["f0"] = [mel["f0"]]
+                            frames_out["f0_step"] = float(mel["step"])
+                    try:
+                        from analysis.essentia_groups import frames_from
+                        built = frames_from(frames_out)
+                        if built is not None:
+                            timeseries.write(song_id, stem_type, pipeline, built, key)
+                    except Exception:  # noqa: BLE001 — frames are an optimisation
+                        log.exception("frames sidecar failed for %s/%s",
+                                      song_id, stem_type)
+            if tonal_only:
+                # Measured for its frames only: no features row, so no half-empty
+                # row for the matcher's library z-scores to average over. In
+                # librosa mode (or when the group failed) nothing ran for it at
+                # all, so it counts as neither analysed nor failed — a track is
+                # fully analysed with or without a bass chroma.
+                if run_essentia and ess:
+                    analysed.append(stem_type)
+                continue
 
             used = "librosa"
             if core_analyzer == "essentia":
@@ -574,7 +655,10 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         update_song_error(song_id, "error_analysis", str(exc))
         raise
 
-    if not analysed:
+    # A tonal-only stem writes no features row, so it cannot be the one stem
+    # that makes a track analysed: `status` means the rows are there (readme
+    # §7), and a track with a bass chroma and nothing else has none of them.
+    if not [s for s in analysed if s not in _TONAL_ONLY_STEMS]:
         update_song_error(song_id, "error_analysis", "Analysis failed for every stem")
         raise StageError("Analysis failed for every stem")
 
@@ -598,12 +682,17 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
         log.exception("embedding sync failed for %s", song_id)
 
     # Near-duplicate grouping (A.2). Needs the mean MFCC this stage just wrote,
-    # so it runs here rather than at download. Never fatal: a track without a
-    # cluster is one that might pair with its own Extended Mix, not a failure.
+    # so it runs here rather than at download. ONE track against the records
+    # that normalise to the same work — not the whole library, which is what
+    # this cost before: 627 rebuilds on the 206-track library at a 982 ms
+    # median but a 5,343 ms mean, 18.4 s p90 and a 34.9 s worst run, 55.8 min
+    # in total, growing with the library while the track does not.
+    # Never fatal: a track without a cluster is one that might pair with its
+    # own Extended Mix, not a failure.
     try:
-        from matcher.dedup import rebuild_variant_clusters
+        from matcher.dedup import assign_variant_cluster
         with _timed("dedup", song_id):
-            rebuild_variant_clusters()
+            assign_variant_cluster(song_id)
     except Exception:  # noqa: BLE001
         log.exception("variant clustering failed for %s", song_id)
 
@@ -653,6 +742,33 @@ def do_quick(song_id: int, on_progress: ProgressCb = None) -> dict:
         result = {"section_count": 0}
     set_quick_state(song_id, "done")
     return {"analysed": analysed, "sections": result.get("section_count", 0)}
+
+
+def _load_frames(song_id: int, pipeline: Optional[str] = None):
+    """(TrackFrames, cache-key fragment) for this song's pipeline (its live
+    one when not named), or (None, None).
+
+    The per-frame matrices the analysis stage kept (analysis/timeseries.py).
+    The fragment is part of the structure cache key: a cut made from decoded
+    librosa transforms and one made from the stored frames are different
+    answers and must not share a row. Without a sidecar for the full mix there
+    is nothing to cut from, so the librosa path runs exactly as before.
+
+    Never raises: frames are an optimisation, and a cut is not worth failing
+    over.
+    """
+    try:
+        from analysis import timeseries
+        from database import alignment
+
+        pipeline = pipeline or alignment.live_pipeline(song_id)
+        loaded = timeseries.load_track(song_id, pipeline)
+        if loaded.stems.get("full") is None:
+            return None, None
+        return loaded, f"{timeseries.VERSION}:" + ",".join(sorted(loaded.stems))
+    except Exception:  # noqa: BLE001
+        log.exception("could not load the frame sidecars for song %s", song_id)
+        return None, None
 
 
 def do_structure(song_id: int, on_progress: ProgressCb = None,
@@ -714,6 +830,15 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
         if mel and mel.get("f0"):
             melody = {"step": mel.get("step"), "f0": mel["f0"]}
             hashes["melody"] = f"{mel_group.version}:{mel_group.params_hash()}"
+    # The stored per-frame matrices, but only with a beat grid to cut them on:
+    # the stored path has no signal to beat-track, so it refuses rather than
+    # decoding, and shadow mode writes sidecars while leaving the core (and the
+    # grid) to librosa. No grid therefore means the librosa path, exactly as
+    # before — and `hashes["frames"]` is absent, so the two never share a row.
+    track_frames, frames_key = (_load_frames(song_id) if use_stems and grid
+                                else (None, None))
+    if frames_key:
+        hashes["frames"] = frames_key
     key = _combo_key(hashes, required=("full",))
 
     timings: dict = {}
@@ -728,6 +853,7 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
                 inputs["full"], inputs["vocals"],
                 inst_path=inputs["instrumental"], bass_path=inputs["bass"],
                 on_progress=on_progress, timings=timings, grid=grid, melody=melody,
+                frames=track_frames,
             ) or None)
             sections = sections or []
             tinfo["audio_secs"] = timings.get("audio_secs")
@@ -969,6 +1095,9 @@ def _allin1_sections(song_id: int, pipeline: str, stem_paths: dict, full: Path,
               "bass": _p("bass")}
     hashes = _hash_inputs(inputs)
     hashes["allin1"] = a1_key
+    track_frames, frames_key = _load_frames(song_id, pipeline)
+    if frames_key:
+        hashes["frames"] = frames_key
     key = _combo_key(hashes, required=("full", "allin1"))
     grid = {"beat_times": summary["beats"], "bpm": summary.get("bpm"),
             "beat_phase": None, "downbeats": summary["downbeats"]}
@@ -977,7 +1106,7 @@ def _allin1_sections(song_id: int, pipeline: str, stem_paths: dict, full: Path,
         sections, hit, _ms = cached("allin1.structure", key, lambda: detect_sections(
             inputs["full"], inputs["vocals"], inst_path=inputs["instrumental"],
             bass_path=inputs["bass"], timings=timings, grid=grid,
-            fixed_segments=summary["segments"]) or None)
+            fixed_segments=summary["segments"], frames=track_frames) or None)
         if hit:
             tinfo["grp"] = "structure.cached"
     _record_steps("allin1.structure", song_id, timings, analyzer="allin1")

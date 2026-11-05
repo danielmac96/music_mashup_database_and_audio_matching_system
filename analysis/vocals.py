@@ -14,7 +14,10 @@ measures activity frame by frame:
     track-level curve stored on the vocal stem's features row;
   * ``span_fraction`` — the active fraction inside one section;
   * ``f0_summary`` — the sung range and centre of a section from a pitch curve
-    (the Essentia analyser's Melodia on the vocal stem).
+    (the Essentia analyser's Melodia on the vocal stem);
+  * ``f0_from_frames`` — the same measurement over the vocals sidecar's ``f0``
+    row (analysis/timeseries.py), which is where that curve is kept on disk
+    rather than in the disposable feature cache.
 
 Pure numpy, no audio stack: every input is an array a caller already has.
 """
@@ -54,11 +57,18 @@ def activity_curve(rms: np.ndarray, sr: int, hop: int,
 
 
 def span_fraction(active: np.ndarray, sr: int, hop: int,
-                  start: float, end: float) -> Optional[float]:
+                  start: float, end: float,
+                  frames_per_sec: Optional[float] = None) -> Optional[float]:
     """Share of frames in [start, end) that are sung; None when the span holds
-    no frame."""
-    f0 = max(0, int(start * sr / hop))
-    f1 = min(active.size, int(end * sr / hop))
+    no frame.
+
+    ``frames_per_sec``, when given, is the envelope's own clock and replaces
+    ``sr / hop``: the stored per-frame curves (analysis/timeseries.py) are on a
+    46.44 ms grid, not the librosa hop, and converting with the wrong one reads
+    the wrong part of the track."""
+    fps = float(frames_per_sec) if frames_per_sec else sr / hop
+    f0 = max(0, int(start * fps))
+    f1 = min(active.size, int(end * fps))
     if f1 <= f0:
         return None
     return round(float(active[f0:f1].mean()), 4)
@@ -90,3 +100,32 @@ def f0_summary(f0_hz: Sequence[float], step_secs: float,
     return {"median_midi": round(float(p50), 2), "p10_midi": round(float(p10), 2),
             "p90_midi": round(float(p90), 2), "range_st": round(float(p90 - p10), 2),
             "voiced": round(float(voiced.size / seg.size), 4)}
+
+
+def f0_from_frames(f0_row, step: float, start: float,
+                   end: float) -> Optional[dict]:
+    """``f0_summary`` for a curve already on a frame grid — the vocals
+    sidecar's ``f0`` row (analysis/timeseries.py) rather than the melody
+    group's own 50 ms list.
+
+    A thin wrapper, deliberately: the gate (``min_voiced``), the percentiles
+    and the rounding stay f0_summary's, so there is one definition of what a
+    section's sung range is (readme §5: one implementation per question).
+
+    THE NUMBERS ARE NOT IDENTICAL to the melody group's. f0_summary indexes a
+    span as ``f0[int(start/step):int(end/step)]``, so the sidecar's 46.44 ms
+    grid takes a different sample set from the 50 ms curve, and the
+    nearest-neighbour resample that put the curve on the grid duplicates about
+    one point in thirteen. Measured over 718 spans of 60 real
+    ``essentia.melody`` payloads: the median agrees exactly 65.7 % of the time,
+    p95 0.20 st, worst 5.70 st, and the voiced share is within 0.0168. So this
+    is the RECOVERY path — ``detect_sections`` prefers the melody argument
+    whenever it has one and reads the sidecar only when the cache no longer
+    holds the curve.
+    """
+    a = np.asarray(f0_row, dtype=float)
+    if a.ndim == 2:
+        a = a[0]
+    if not a.size or not step:
+        return None
+    return f0_summary(a, float(step), float(start), float(end))

@@ -5,11 +5,14 @@ launch a Demucs separation for every track in a playlist at once and thrash the
 machine) — and the old single FIFO, where every queued track waited behind a
 minutes-long Demucs run even for its 10-second download.
 
-One queue + thread pool PER STAGE (download / quick / stems / analysis), sized
-by the config knobs DOWNLOAD_WORKERS / QUICK_WORKERS / STEM_WORKERS /
-ANALYSIS_WORKERS. A track hops queues as its status advances, so several
-downloads, the quick tier on the next downloads, one Demucs separation, and a
-couple of full analyses all run concurrently.
+One queue + thread pool PER STAGE (download / quick / stems / analysis /
+allin1 / structure), sized by the config knobs DOWNLOAD_WORKERS /
+QUICK_WORKERS / STEM_WORKERS / ANALYSIS_WORKERS / ALLIN1_WORKERS; structure
+takes the analysis pool's size and shares its concurrency gate, so the two
+together never run more than ANALYSIS_WORKERS at once. A track hops queues as
+its status advances, so several downloads, the quick tier on the next
+downloads, one Demucs separation, and a couple of full analyses all run
+concurrently.
 
 Each queue is a priority queue (config.PRIORITY_*): a button pressed on one
 track goes ahead of an import, and an import ahead of a bulk backfill of the
@@ -46,6 +49,9 @@ _QUEUES: dict[str, "queue.PriorityQueue[tuple[int, int, str, int]]"] = {
     "stems": queue.PriorityQueue(),
     "analysis": queue.PriorityQueue(),
     "allin1": queue.PriorityQueue(),
+    # The cut, last and on its own queue (pipeline_worker.STAGES): under the
+    # allin1 engine the bar lines it sits on are allin1's.
+    "structure": queue.PriorityQueue(),
 }
 _STAGE_WORKERS = {
     "download": DOWNLOAD_WORKERS,
@@ -53,6 +59,7 @@ _STAGE_WORKERS = {
     "stems": STEM_WORKERS,
     "analysis": ANALYSIS_WORKERS,
     "allin1": ALLIN1_WORKERS,
+    "structure": ANALYSIS_WORKERS,
 }
 _SEQ = itertools.count()
 _STARTED = False
@@ -143,8 +150,8 @@ def _dispatch(job_id: str, song_id: int) -> None:
 
     stage = pipeline_worker.next_stage(song_id)
     if stage is None:
-        # Nothing left to do — still run the trailing non-fatal structure pass
-        # (cheap no-op when sections exist) so re-Process behaves like before.
+        # Nothing left to do: a worker picks it up and completes the job (it
+        # scores the track first if an input changed since its last run).
         _put("analysis", job_id, song_id)
         return
     # Recorded before the put: a free worker can take the item at once, and its

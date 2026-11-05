@@ -184,6 +184,7 @@ class SaveSettingsRequest(BaseModel):
     separation_pipeline: Optional[str] = None    # legacy_2stem | unified_4stem
     segmentation_engine: Optional[str] = None    # essentia | allin1
     allin1_device: Optional[str] = None          # cpu | cuda
+    allin1_model: Optional[str] = None           # harmonix-all | harmonix-fold0..7
     keep_analysis_stems: Optional[bool] = None
     timing_tol_ms: Optional[float] = None
     timing_weight: Optional[float] = None
@@ -265,7 +266,8 @@ def save_settings(req: SaveSettingsRequest) -> dict:
             new[name] = value
     for name, allowed in (("separation_pipeline", config.SEPARATION_PIPELINES),
                           ("segmentation_engine", config.SEGMENTATION_ENGINES),
-                          ("allin1_device", config.ALLIN1_DEVICES)):
+                          ("allin1_device", config.ALLIN1_DEVICES),
+                          ("allin1_model", config.ALLIN1_MODELS)):
         value = getattr(req, name)
         if value is not None:
             if value not in allowed:

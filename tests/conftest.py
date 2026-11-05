@@ -23,3 +23,6 @@ def _pin_librosa_analyzer(monkeypatch):
     # scores (readme §5.5).
     monkeypatch.setenv("MASHUP_SEGMENTATION_ENGINE", "essentia")
     monkeypatch.setenv("MASHUP_SEPARATION_PIPELINE", "legacy_2stem")
+    # One cut per track unless a test opts in: the tests that compare the two
+    # engines on one library need both cuts and set MASHUP_DUAL_CUT themselves.
+    monkeypatch.setenv("MASHUP_DUAL_CUT", "0")

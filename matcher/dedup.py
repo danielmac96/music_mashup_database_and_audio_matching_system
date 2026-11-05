@@ -268,13 +268,22 @@ def rebuild_variant_clusters(db_path=None,
 
     Reads the full-mix feature rows (title, artist and the mean MFCC come back
     in one query via get_all_features), clusters, and writes the column. Returns
-    a summary dict for the job message."""
-    from database.models import DB_PATH, get_all_features, get_conn
+    a summary dict for the job message.
+
+    **This has no production caller.** The analysis stage used to call it after
+    every track and now calls `assign_variant_cluster` instead (see there for
+    the measurement). It stays as the manual repair for the cases one track's
+    assignment cannot see — above all a deleted song, whose former cluster-mates
+    may still name it — and as what tests/test_dedup.py pins."""
+    from database.models import (
+        DB_PATH, FEATURES_SCORING_COLUMNS, get_all_features, get_conn,
+    )
 
     db = db_path or DB_PATH
     if on_progress:
         on_progress(5, "Loading library…")
-    songs = get_all_features(stem_type="full", db_path=db)
+    songs = get_all_features(stem_type="full", columns=FEATURES_SCORING_COLUMNS,
+                             db_path=db)
     # Songs that were never analysed still have a title and artist worth
     # clustering on, so pull them too.
     conn = get_conn(db)
@@ -312,3 +321,159 @@ def rebuild_variant_clusters(db_path=None,
         on_progress(100, f"{len(mapping)} tracks in {n_clusters} variant groups")
     return {"n_songs": len(mapping), "n_clusters": n_clusters,
             "n_changed": len(changes)}
+
+
+# ── One track's cluster, not the library's ───────────────────────────────────
+#
+# WHY A TITLE GROUP IS THE WHOLE CANDIDATE SET, and why reading it is exactly
+# equivalent to the full rebuild:
+#
+# `cluster_variants` indexes the library twice. `by_key` groups on
+# `variant_key(artist, title)` — "artist|title" — and then `by_title` re-indexes
+# those groups on the TITLE half alone (`key.split("|", 1)[1]`), which is the
+# index it actually walks. Every union it makes is therefore between two members
+# of one normalised-title group; the artist half never gates a comparison, it
+# only decides HOW a pair unions (same artist and a non-generic title → straight
+# union, otherwise the audio has to agree). That is deliberate: it is what makes
+# a re-upload whose artist field holds an uploader name a variant of the record.
+#
+# Two consequences:
+#   1. A cluster can never span two title groups. So clustering one group gives
+#      the full rebuild's answer for every member of that group — nothing
+#      outside it could have joined, and nothing inside it could have been
+#      pulled away. (Pinned against the rebuild in
+#      tests/test_dedup_incremental.py.)
+#   2. The candidate set for one track is every song whose `normalise_title`
+#      matches its own — NOT every song whose full `variant_key` matches, which
+#      would drop exactly the re-uploads the title index was written for.
+#
+# The cluster id is order-independent too: `_Union.union` keeps the smaller of
+# the two roots, so a component's root is its minimum id however the pairs are
+# visited, and the incremental walk need not see them in the rebuild's order.
+
+
+def _title_group(conn, work: str) -> set:
+    """Every song id whose title normalises to ``work``.
+
+    The normalisation is Python (regexes), so this is a scan of (id, title) —
+    no features join, no MFCC, no decode. That is the cost that replaces
+    re-clustering the library."""
+    return {int(r["id"]) for r in
+            conn.execute("SELECT id, title FROM songs").fetchall()
+            if normalise_title(r["title"]) == work}
+
+
+def _cluster_ids(conn, db, ids: Sequence[int]) -> Dict[int, int]:
+    """Cluster exactly these songs, with the rows built the way
+    `rebuild_variant_clusters` builds them — same query, same columns, same
+    fall-back shape for a song that was never analysed — so the two callers
+    cannot hand `cluster_variants` different shapes."""
+    from database.models import FEATURES_SCORING_COLUMNS, get_all_features
+
+    songs = get_all_features(stem_type="full", columns=FEATURES_SCORING_COLUMNS,
+                             song_ids=list(ids), db_path=db, conn=conn)
+    known = {s["song_id"] for s in songs}
+    placeholders = ",".join("?" * len(ids))
+    extra = [{"song_id": r["id"], "title": r["title"], "artist": r["artist"]}
+             for r in conn.execute(
+                 f"SELECT id, title, artist FROM songs WHERE id IN ({placeholders})",
+                 list(ids)).fetchall()
+             if r["id"] not in known]
+    return cluster_variants(list(songs) + extra)
+
+
+def _write_clusters(conn, ids: Sequence[int], mapping: Dict[int, int]) -> int:
+    """Store the group's answer, writing only the rows that change.
+
+    A blanket UPDATE would take a write lock on the whole table, and this runs
+    after every track's analysis against the other analysis workers."""
+    placeholders = ",".join("?" * len(ids))
+    current = {r["id"]: r["variant_cluster"] for r in conn.execute(
+        f"SELECT id, variant_cluster FROM songs WHERE id IN ({placeholders})",
+        list(ids)).fetchall()}
+    changes = [(mapping.get(sid), sid) for sid in ids
+               if mapping.get(sid) != current.get(sid)]
+    if changes:
+        conn.executemany("UPDATE songs SET variant_cluster=? WHERE id=?",
+                         changes)
+        conn.commit()
+    return len(changes)
+
+
+def _recompute_group(conn, db, work: str,
+                     include: Sequence[int]) -> Dict[int, int]:
+    """Re-cluster one normalised-title group and store it. ``include`` names
+    songs that must be written even when they are no longer in the group — a
+    track whose title no longer keys on anything has no variant, and its stored
+    cluster has to be cleared."""
+    ids = {int(i) for i in include}
+    if work:
+        ids |= _title_group(conn, work)
+    ordered = sorted(ids)
+    if not ordered:
+        return {}
+    # An un-keyable title ("", e.g. a title that is nothing but "(Extended
+    # Mix)") is never clustered by the rebuild either, so there is nothing to
+    # read: no features query at all.
+    mapping = _cluster_ids(conn, db, ordered) if work else {}
+    _write_clusters(conn, ordered, mapping)
+    return mapping
+
+
+def assign_variant_cluster(song_id: int, db_path=None) -> Optional[int]:
+    """Put ONE track in its variant cluster, without re-clustering the library.
+
+    `rebuild_variant_clusters` ran after every track's analysis. Measured on
+    the 206-track library (`analysis_runs` where `grp='dedup'`, 627 rows): a
+    median of 982 ms but a mean of 5,343 ms, a p90 of ~18.4 s and a worst run
+    34,921 ms — 55.8 minutes in total. The distribution is the argument: each
+    run re-clustered a library that keeps growing while the track that
+    triggered it does not.
+
+    A track can only ever be a variant of the records that normalise to the
+    same work, so that is all this reads — the songs sharing its
+    `normalise_title`, clustered by exactly the same `cluster_variants` the
+    rebuild uses. The equivalence argument is in the comment above
+    `_title_group`; it is pinned against the rebuild in
+    tests/test_dedup_incremental.py.
+
+    Writes `songs.variant_cluster` for every member of the cluster it joined,
+    since the id is the smallest member and a new, lower id renames it — and,
+    when this track has left a cluster (its title changed), for the group it
+    left, whose remaining members would otherwise keep pointing at a song that
+    is no longer one of them. A song *deleted* from the library is the case
+    this cannot see: `rebuild_variant_clusters` is the repair.
+
+    Returns the id now stored for `song_id`, or None when it has no known
+    variant.
+    """
+    from database.models import DB_PATH, get_conn
+
+    db = db_path if db_path is not None else DB_PATH
+    conn = get_conn(db)
+    try:
+        row = conn.execute(
+            "SELECT id, title, variant_cluster FROM songs WHERE id=?",
+            (song_id,)).fetchone()
+        if row is None:
+            return None
+        was = row["variant_cluster"]
+        work = normalise_title(row["title"])
+
+        joined = _recompute_group(conn, db, work, [int(song_id)])
+        now = joined.get(int(song_id))
+
+        # The group it LEFT. Only reachable when the title changed, so the old
+        # group is identified through the mates that still carry the old
+        # cluster id — this track's own title no longer names it.
+        if was is not None and was != now:
+            mates = conn.execute(
+                "SELECT id, title FROM songs WHERE variant_cluster=? AND id!=?",
+                (was, song_id)).fetchall()
+            old_work = next((t for t in (normalise_title(m["title"])
+                                         for m in mates) if t), "")
+            if old_work and old_work != work:
+                _recompute_group(conn, db, old_work, [])
+        return now
+    finally:
+        conn.close()

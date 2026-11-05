@@ -475,15 +475,57 @@ def _sections_stale_sql(song_ref: str) -> str:
 MELODY_VOICED_MIN = 0.1
 
 
+def _allin1_covers_sections_sql(song_ref: str, conn) -> str:
+    """SQL for: this track's sections are allin1's, so the Essentia cut is not
+    owed and the empty `sections` table is not staleness.
+
+    The mirror of `pipeline_worker._wants_essentia_cut`, which is what makes the
+    structure stage skip the novelty cut: under the allin1 engine, with
+    `dual_cut` off, allin1's sections are what every reader asks for and the
+    `sections` table stays empty for good. Asking only about that table would
+    count every allin1-cut track as needing a re-analysis forever, behind a
+    button that re-runs the whole analysis and then skips the cut — which is the
+    failure `sections_are_current` was written to prevent, one engine along.
+
+    "0" (never covers) under the essentia engine, with `dual_cut` on, or where
+    `sections_allin1` does not exist (`database/downgrade.py` drops it, and
+    SQLite resolves a table name at prepare time, so the guard cannot be SQL).
+    The pipeline is matched as `alignment.get_allin1_sections` matches it: the
+    other pipeline's parked sections are not this track's.
+    """
+    from config import current_dual_cut, current_segmentation_engine
+    if current_segmentation_engine() != "allin1" or current_dual_cut():
+        return "0"
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='sections_allin1'").fetchone():
+        return "0"
+    from database.alignment import LEGACY
+    return (f"EXISTS (SELECT 1 FROM sections_allin1 a WHERE a.song_id={song_ref}"
+            f" AND a.pipeline = COALESCE((SELECT separation_pipeline FROM songs"
+            f" WHERE id={song_ref}), '{LEGACY}'))")
+
+
+def _sections_owed_sql(song_ref: str, conn) -> str:
+    """The one question both the badge and the structure gate ask: is this
+    track owed a cut? Stale or absent Essentia sections, unless allin1's cover
+    it (`_allin1_covers_sections_sql`)."""
+    return (f"(({_sections_stale_sql(song_ref)})"
+            f"    AND NOT ({_allin1_covers_sections_sql(song_ref, conn)}))")
+
+
 # One definition of "this track predates a generation of feature we now need".
 # It was duplicated across staleness() and stale_song_ids(), which is exactly how
 # a new column gets counted as stale in the badge but skipped by the button.
-_STALE_ANALYSIS_SQL = f"""
+# A function, not a constant: the section half reads the live segmentation
+# engine and dual_cut (_allin1_covers_sections_sql), which a module-level
+# f-string would freeze at import.
+def _stale_analysis_sql(conn) -> str:
+    return f"""
        NOT EXISTS (SELECT 1 FROM features f
                    WHERE f.song_id=s.id AND f.band_energy_json IS NOT NULL)
     OR NOT EXISTS (SELECT 1 FROM stems st
                    WHERE st.song_id=s.id AND st.quality IS NOT NULL)
-    OR {_sections_stale_sql("s.id")}
+    OR {_sections_owed_sql("s.id", conn)}
 """
 
 
@@ -503,7 +545,7 @@ def sections_are_current(song_id: int, db_path=None) -> bool:
     conn = get_conn(db_path) if db_path else get_conn()
     try:
         row = conn.execute(
-            f"SELECT NOT ({_sections_stale_sql(':song_id')}) AS ok",
+            f"SELECT NOT {_sections_owed_sql(':song_id', conn)} AS ok",
             {"song_id": song_id}).fetchone()
         return bool(row["ok"]) if row else False
     finally:
@@ -546,10 +588,14 @@ def staleness(db_path=None) -> dict:
                    WHERE sec.song_id = s.id AND sec.chroma_json IS NOT NULL)"""
         ).fetchone()[0]
 
+        # Not counted when allin1 cut the track: those sections are the
+        # track's, and no amount of structure detection will fill a table the
+        # engine deliberately leaves empty (_allin1_covers_sections_sql).
         no_sections = conn.execute(
-            """SELECT COUNT(*) FROM songs s
+            f"""SELECT COUNT(*) FROM songs s
                WHERE s.status='analysed' AND NOT EXISTS (
-                   SELECT 1 FROM sections x WHERE x.song_id = s.id)"""
+                   SELECT 1 FROM sections x WHERE x.song_id = s.id)
+                 AND NOT ({_allin1_covers_sections_sql("s.id", conn)})"""
         ).fetchone()[0]
 
         # Phase D: four-stem mode, if that is what is configured now.
@@ -589,7 +635,7 @@ def staleness(db_path=None) -> dict:
 
         needs_analysis = conn.execute(
             f"""SELECT COUNT(*) FROM songs s
-                WHERE s.status='analysed' AND ({_STALE_ANALYSIS_SQL})"""
+                WHERE s.status='analysed' AND ({_stale_analysis_sql(conn)})"""
         ).fetchone()[0]
 
         suspect_audio = conn.execute(
@@ -662,7 +708,7 @@ def stale_song_ids(action: str, db_path=None) -> list[int]:
             return [r[0] for r in rows]
         rows = conn.execute(
             f"""SELECT s.id FROM songs s
-                WHERE s.status='analysed' AND ({_STALE_ANALYSIS_SQL})
+                WHERE s.status='analysed' AND ({_stale_analysis_sql(conn)})
                 ORDER BY s.id""").fetchall()
         return [r[0] for r in rows]
     finally:

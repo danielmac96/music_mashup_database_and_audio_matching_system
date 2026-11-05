@@ -67,6 +67,13 @@ def down_alignment(conn: sqlite3.Connection) -> Dict[str, int]:
         if col in _cols(conn, table):
             conn.execute(f"ALTER TABLE {table} DROP COLUMN {col}")
             dropped_c += 1
+    # alignment is part of the ledger's migration 1 (database/schema.py), so a
+    # database without it is not at version 1 any more. Take the ledger back to
+    # 0 inside this transaction, or the next get_conn trusts the stored version
+    # and never migrates up again. Migration 1 is idempotent, so re-running it
+    # on the rest of the schema is a no-op. (A later migration that touched
+    # these tables would need its own down-step before this one.)
+    conn.execute("PRAGMA user_version = 0")
     return {"tables": dropped_t, "columns": dropped_c}
 
 

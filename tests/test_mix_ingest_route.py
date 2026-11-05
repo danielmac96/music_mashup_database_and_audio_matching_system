@@ -185,18 +185,26 @@ def test_unknown_mix_is_a_404(tmp_path, monkeypatch):
 def test_the_worker_holds_no_write_lock_while_saving(tmp_path, monkeypatch):
     """The root cause, pinned directly.
 
-    While ``upsert_song`` runs, nothing may be holding an open write transaction
-    on another connection — SQLite has one writer, and the second connection
-    waits out busy_timeout and then raises "database is locked". Here a probe
-    inside upsert_song asserts a *separate* connection can still write."""
+    The worker must hand each batch to ``ingest_rows`` holding no open write
+    transaction of its own — SQLite has one writer, and ingest_rows' connection
+    would wait out busy_timeout and raise "database is locked". Here a probe at
+    the entry of every ``ingest_rows`` call asserts a *separate* connection can
+    still write, which also proves ``_point_at_songs`` released the lock after
+    the previous batch.
+
+    This used to probe inside ``upsert_song``, once per row. ingest_rows now
+    saves a batch on one connection (``models.connection``, readme §7), so by
+    design it holds the write lock from its first upsert to its commit: the
+    caller's side of the rule is what is left to pin, and it is the side that
+    broke."""
     mixes, worker, models, _q = _setup(tmp_path, monkeypatch)
     from api.routes import playlists
-    detail = _mk(mixes, _links(5))
+    detail = _mk(mixes, _links(worker.CHUNK + 5))     # two batches
 
-    real_upsert = playlists.upsert_song
+    real_ingest = playlists.ingest_rows
     probes: list[bool] = []
 
-    def probing_upsert(*args, **kwargs):
+    def probing_ingest(*args, **kwargs):
         probe = models.get_conn()
         try:
             probe.execute("UPDATE songs SET updated_at=updated_at")
@@ -204,13 +212,13 @@ def test_the_worker_holds_no_write_lock_while_saving(tmp_path, monkeypatch):
             probes.append(True)
         finally:
             probe.close()
-        return real_upsert(*args, **kwargs)
+        return real_ingest(*args, **kwargs)
 
-    monkeypatch.setattr(playlists, "upsert_song", probing_upsert)
+    monkeypatch.setattr(playlists, "ingest_rows", probing_ingest)
     _out, job = _ingest(mixes, worker, detail["id"])
 
     assert job["status"] == "completed", job.get("error")
-    assert probes == [True] * 5
+    assert probes == [True, True]
 
 
 def test_a_failure_mid_run_keeps_what_was_already_saved(tmp_path, monkeypatch):

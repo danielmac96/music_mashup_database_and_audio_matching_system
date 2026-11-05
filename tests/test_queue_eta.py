@@ -164,15 +164,19 @@ def test_a_waiting_job_adds_the_line_in_front_of_it(env):
     assert body["stages"]["download"]["clears_in_secs"] == pytest.approx(30 / workers)
 
 
-def test_the_analysis_pool_counts_analysis_and_structure(env):
+def test_the_cut_is_its_own_pool_beside_the_analysis(env):
+    """Structure moved after allin1 and became its own stage and pool, so its
+    time is no longer part of the analysis pool's estimate."""
     models, _client = env
     import api.queue_eta as queue_eta
     _history(models)
     rates = queue_eta.stage_rates()
     assert queue_eta.estimate(queue_eta.POOL_GROUPS["analysis"], rates, 200.0) \
-        == pytest.approx(50.0)
+        == pytest.approx(40.0)
     assert queue_eta.estimate(queue_eta.RECORD_GROUPS["analysis"], rates, 200.0) \
         == pytest.approx(40.0)
+    assert queue_eta.estimate(queue_eta.POOL_GROUPS["structure"], rates, 200.0) \
+        == pytest.approx(10.0)
     # No length: fall back to the typical wall time.
     assert queue_eta.estimate(("stems",), rates, None) == pytest.approx(100.0)
 

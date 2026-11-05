@@ -60,7 +60,7 @@ def _step_availability(row: dict) -> dict:
         "key":      row.get("key") is not None and row.get("mode") is not None,
         "dynamics": row.get("loudness_rms") is not None and row.get("energy") is not None,
         "timbre":   bool(row.get("mfcc")) and row.get("spectral_centroid") is not None,
-        "waveform": bool(row.get("waveform_rms_json")),
+        "waveform": bool(row.get("has_waveform")),
     }
 
 # Below this, vocal-stem beat tracking is too unreliable (vocals aren't
@@ -86,9 +86,21 @@ def _stems_by_song() -> dict[int, dict[str, str]]:
 
 
 def _raw_features_by_song(stem_type: str) -> dict[int, dict]:
-    """Every column of each song's features row for one stem, by song id."""
-    return {f["song_id"]: f for f in get_all_features(stem_type=stem_type)
-            if f.get("song_id") is not None}
+    """Every column of each song's features row for one stem, by song id, plus
+    ``has_waveform``. The waveform envelope itself lives in `feature_arrays`
+    (database/arrays.py) and is not loaded here — the list only needs to know
+    whether one was measured, which is one index-only query for the library."""
+    from database import arrays
+    out = {f["song_id"]: f for f in get_all_features(stem_type=stem_type)
+           if f.get("song_id") is not None}
+    conn = get_conn()
+    try:
+        have = arrays.song_ids_with(conn, stem_type, "waveform_rms")
+    finally:
+        conn.close()
+    for sid, f in out.items():
+        f["has_waveform"] = sid in have
+    return out
 
 
 def _features_by_song(stem_type: str, raw: Optional[dict] = None) -> dict[int, dict]:

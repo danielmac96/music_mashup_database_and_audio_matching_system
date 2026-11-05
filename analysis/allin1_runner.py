@@ -17,12 +17,20 @@ and the test suite start without them (``available()`` says why not).
 tested without the model. What it keeps (the brief's "what to keep" table):
   beats / downbeats / beat positions / bpm     in full, float32
   segments (start, end, label)                 in full
-  activations                                  one value per downbeat and per
-                                               segment + track mean / min
+  activations                                  per DOWNBEAT: the downbeat
+                                               activation (+ track mean / min);
+                                               per BEAT: the beat activation
+                                               and the downbeat activation;
+                                               per SEGMENT: the boundary
+                                               activation and the full label
+                                               distribution
   embeddings                                   mean of the 8 ensemble models,
                                                then mean per bar, per stem:
                                                (bars, 4, 24) float16
-The 100-fps arrays are dropped as soon as the summary exists.
+The 100-fps arrays are dropped as soon as the summary exists. Everything
+sampled from them goes through ``_peak_near``: a detected event sits on a peak
+whose time is quantised, so a raw nearest-frame read of one curve would not be
+comparable with the rest.
 """
 from __future__ import annotations
 
@@ -50,6 +58,32 @@ POOLING = "mean8models+bar"
 
 _MODEL_LOCK = threading.Lock()
 _MODELS: Dict[Tuple[str, str], object] = {}
+
+# Logged once per process: a second Demucs run is invisible in the UI and shows
+# up only as a slow stage (``warn_self_demix``).
+SELF_DEMIX_WARNED = False
+
+
+def model_name(explicit: Optional[str] = None) -> str:
+    """The checkpoint to run: an explicit one (the benchmark's), else the live
+    setting (config.current_allin1_model)."""
+    if explicit:
+        return explicit
+    from config import current_allin1_model
+    return current_allin1_model()
+
+
+def warn_self_demix(path) -> None:
+    """allin1 is about to separate its own four stems because this track's
+    pipeline left none — a whole second Demucs run (125–210 s a track on this
+    library) of work the unified pipeline already does. Logged once per
+    process, loudly, because nothing else says so."""
+    global SELF_DEMIX_WARNED
+    if not SELF_DEMIX_WARNED:
+        log.warning("allin1 is separating its own 4 stems for %s — this track is "
+                    "not on the unified_4stem pipeline, so Demucs runs twice. "
+                    "See readme §2 Rollback to switch the pipeline over.", path)
+        SELF_DEMIX_WARNED = True
 
 
 # ── Availability ──────────────────────────────────────────────────────────────
@@ -130,9 +164,9 @@ def pool_embeddings(emb: np.ndarray, downbeats: List[float],
 
 
 def summarise(result, content_hash: Optional[str] = None,
-              demixed_by: str = "pipeline", ms: Optional[float] = None) -> Dict:
+              demixed_by: str = "pipeline", ms: Optional[float] = None,
+              model: Optional[str] = None) -> Dict:
     """allin1 AnalysisResult (or the same fields as a dict) → the stored summary."""
-    from config import ALLIN1_MODEL
     beats = [round(float(t), 4) for t in (_get(result, "beats") or [])]
     downbeats = [round(float(t), 4) for t in (_get(result, "downbeats") or [])]
     positions = [int(p) for p in (_get(result, "beat_positions") or [])]
@@ -141,6 +175,7 @@ def summarise(result, content_hash: Optional[str] = None,
                  str(_get(s, "label"))] for s in raw_segments]
 
     acts = _get(result, "activations") or {}
+    beat_act = np.asarray(acts["beat"], dtype=np.float32) if "beat" in acts else None
     db_act = np.asarray(acts["downbeat"], dtype=np.float32) if "downbeat" in acts else None
     seg_act = np.asarray(acts["segment"], dtype=np.float32) if "segment" in acts else None
     lab_act = np.asarray(acts["label"], dtype=np.float32) if "label" in acts else None
@@ -152,16 +187,34 @@ def summarise(result, content_hash: Optional[str] = None,
         conf_mean = round(float(np.mean(downbeat_conf)), 4)
         conf_min = round(float(np.min(downbeat_conf)), 4)
 
+    # The activations at BEAT resolution — a few hundred floats a track, and the
+    # only record of how sure the model was anywhere but on a downbeat, which is
+    # what a timing gate tightened below 25 ms has to be judged against. Both
+    # sampled with _peak_near, exactly as downbeat_conf above: one per beat of
+    # the beat curve, and one per beat of the downbeat curve (so an off-bar beat
+    # reads ~0 and a bar line reads its downbeat_conf value).
+    beat_conf = ([round(_peak_near(beat_act, t), 4) for t in beats]
+                 if beat_act is not None and len(beat_act) and beats else None)
+    downbeat_conf_beats = ([round(_peak_near(db_act, t), 4) for t in beats]
+                           if db_act is not None and len(db_act) and beats else None)
+
     section_conf = []
+    # Per segment, the whole label distribution rather than only the winner's
+    # probability: "chorus 0.41 / verse 0.39" and "chorus 0.95" are different
+    # evidence, and nothing could tell them apart before.
+    segment_label_probs = [] if (lab_act is not None and lab_act.ndim == 2) else None
     for start, end, label in segments:
         entry = {"boundary": None, "label_prob": None}
         if seg_act is not None and len(seg_act):
             entry["boundary"] = round(_peak_near(seg_act, start), 4)
-        if lab_act is not None and lab_act.ndim == 2 and label in HARMONIX_LABELS:
-            row = lab_act[HARMONIX_LABELS.index(label)]
-            a, b = _frame(start, len(row)), _frame(end, len(row))
-            if b > a:
-                entry["label_prob"] = round(float(row[a:b].mean()), 4)
+        if lab_act is not None and lab_act.ndim == 2:
+            a, b = _frame(start, lab_act.shape[1]), _frame(end, lab_act.shape[1])
+            row = ([round(float(lab_act[i, a:b].mean()), 4)
+                    for i in range(min(lab_act.shape[0], len(HARMONIX_LABELS)))]
+                   if b > a else [None] * len(HARMONIX_LABELS))
+            segment_label_probs.append(row)
+            if label in HARMONIX_LABELS and b > a:
+                entry["label_prob"] = row[HARMONIX_LABELS.index(label)]
         section_conf.append(entry)
 
     n_frames = len(db_act) if db_act is not None else None
@@ -170,7 +223,7 @@ def summarise(result, content_hash: Optional[str] = None,
     bpm = _get(result, "bpm")
     return {
         "content_hash": content_hash,
-        "model": ALLIN1_MODEL,
+        "model": model_name(model),
         "version": version(),
         "pooling": POOLING,
         "demixed_by": demixed_by,
@@ -180,7 +233,11 @@ def summarise(result, content_hash: Optional[str] = None,
         "beat_positions": positions,
         "segments": segments,
         "downbeat_conf": downbeat_conf,
+        "beat_conf": beat_conf,
+        "downbeat_conf_beats": downbeat_conf_beats,
         "section_conf": section_conf,
+        "segment_label_probs": segment_label_probs,
+        "segment_labels_order": list(HARMONIX_LABELS),
         "conf_mean": conf_mean,
         "conf_min": conf_min,
         "embedding": emb,
@@ -292,17 +349,18 @@ def _device(requested: str) -> str:
     return requested
 
 
-def _model(device: str):
-    """The ensemble, loaded once per process and device (a worker keeps it)."""
-    from config import ALLIN1_MODEL
-    key = (ALLIN1_MODEL, device)
+def _model(device: str, name: Optional[str] = None):
+    """The checkpoint, loaded once per process, device and name (a worker keeps
+    it, so a benchmark alternating models pays each load once)."""
+    name = model_name(name)
+    key = (name, device)
     with _MODEL_LOCK:
         m = _MODELS.get(key)
         if m is None:
             from allin1.models import load_pretrained_model
             t0 = time.perf_counter()
-            m = load_pretrained_model(model_name=ALLIN1_MODEL, device=device)
-            log.info("allin1: loaded %s on %s in %.1f s", ALLIN1_MODEL, device,
+            m = load_pretrained_model(model_name=name, device=device)
+            log.info("allin1: loaded %s on %s in %.1f s", name, device,
                      time.perf_counter() - t0)
             _MODELS[key] = m
         return m
@@ -330,12 +388,31 @@ def _write_demix(stems: Dict[str, Path], out_dir: Path) -> Dict[str, float]:
     return {"demix_write": (time.perf_counter() - t0) * 1000.0}
 
 
+def hand_over_demix(stems: Optional[Dict[str, Path]], out_dir: Path, path,
+                    timings: Optional[dict] = None) -> str:
+    """Hand allin1 the four sources this pipeline already separated, or warn
+    that it is about to separate them itself. The one place that decides.
+
+    Returns the ``demixed_by`` value: ``pipeline`` when the stems were written
+    into the folder allin1's ``demix()`` checks (so its separation step finds
+    them and skips), ``allin1`` when it will run its own Demucs."""
+    if stems and all(stems.get(s) for s in SOURCES):
+        written = _write_demix(stems, out_dir)
+        if timings is not None:
+            timings.update(written)
+        return "pipeline"
+    warn_self_demix(path)
+    return "allin1"
+
+
 def run(full_path: Path, stems: Optional[Dict[str, Path]], device: str = "cpu",
-        timings: Optional[dict] = None, threads: Optional[int] = None):
+        timings: Optional[dict] = None, threads: Optional[int] = None,
+        model: Optional[str] = None):
     """Run allin1 on one track and return its AnalysisResult (activations and
     embeddings included). ``stems`` — the four sources — makes it skip its own
     separation; None lets allin1 demix (the legacy pipeline, timed as
-    ``demix``). Temporary WAVs and spectrograms are deleted before returning."""
+    ``demix``). ``model`` overrides the live setting (the benchmark passes each
+    candidate). Temporary WAVs and spectrograms are deleted before returning."""
     import torch
     from allin1.demix import demix
     from allin1.helpers import run_inference
@@ -355,8 +432,8 @@ def run(full_path: Path, stems: Optional[Dict[str, Path]], device: str = "cpu",
         if not track.exists():
             shutil.copyfile(full_path, track)
         demix_root = work / "demix"
-        if stems and all(stems.get(s) for s in SOURCES):
-            timings.update(_write_demix(stems, demix_root / "htdemucs" / track.stem))
+        hand_over_demix(stems, demix_root / "htdemucs" / track.stem, full_path,
+                        timings)
         t0 = time.perf_counter()
         demix_paths = demix([track], demix_root, device)   # skips when present
         timings["demix"] = (time.perf_counter() - t0) * 1000.0
@@ -364,12 +441,13 @@ def run(full_path: Path, stems: Optional[Dict[str, Path]], device: str = "cpu",
         spec_paths = extract_spectrograms(demix_paths, work / "spec", multiprocess=False)
         timings["spectrogram"] = (time.perf_counter() - t0) * 1000.0
         t0 = time.perf_counter()
-        model = _model(device)
+        model_obj = _model(device, model)
         timings["model_load"] = (time.perf_counter() - t0) * 1000.0
         t0 = time.perf_counter()
         with torch.no_grad():
-            result = run_inference(path=track, spec_path=spec_paths[0], model=model,
-                                   device=device, include_activations=True,
+            result = run_inference(path=track, spec_path=spec_paths[0],
+                                   model=model_obj, device=device,
+                                   include_activations=True,
                                    include_embeddings=True)
         timings["inference"] = (time.perf_counter() - t0) * 1000.0
         return result

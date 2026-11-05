@@ -5,10 +5,13 @@ pair_hidden, track_excluded, mixes, mix_tracks, mashup_pairs, datasets, models,
 crates, crate_items, app_prefs.
 """
 from typing import Optional, List, Dict, Sequence, Iterable, Tuple
+import contextlib
 import re
 import sqlite3
 import json
 from pathlib import Path
+
+from database import arrays
 from config import (
     AUTO_LINK_MIN_ARTIST, AUTO_LINK_MIN_DURATION, AUTO_LINK_MIN_SCORE,
     DB_PATH, format_duration,
@@ -498,22 +501,8 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
         # write lock, so every later attempt — including the retry that would fix
         # things — fails with "database is locked" instead of the real error.
         try:
-            conn.executescript(SCHEMA)
-            _migrate_songs_columns(conn)
-            _migrate_features_columns(conn)
-            _migrate_candidates_columns(conn)
-            _migrate_sections_columns(conn)
-            _migrate_candidates_unique_key(conn)
-            _migrate_stems_columns(conn)
-            _migrate_mixtracks_columns(conn)
-            _migrate_mashuppairs_columns(conn)
-            _migrate_crates_columns(conn)
-            _migrate_sets_columns(conn)
-            _migrate_set_items_kinds(conn)
-            _migrate_pair_feedback_key(conn)
-            from database import alignment
-            alignment.migrate(conn)       # allin1 / phrases / pipelines (readme §6)
-            conn.commit()
+            from database import schema
+            schema.apply(conn)            # database/schema.py owns the sequence
         except BaseException:
             conn.rollback()
             conn.close()
@@ -525,6 +514,43 @@ def get_conn(db_path: Path = DB_PATH) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+@contextlib.contextmanager
+def connection(db_path: Path = DB_PATH):
+    """One connection for a whole batch: commits on a clean exit, rolls back on
+    an exception, always closes.
+
+    Every helper here opens and commits its own connection, and that is
+    deliberate — SQLite has one writer, and a caller sitting on an uncommitted
+    UPDATE while a helper opens its own connection is what made ingesting a
+    206-track mix save one track and answer 500 forever (readme §7). This does
+    not change that rule; it gives a batch path a way to be the owner. Pass the
+    yielded connection to the helpers that accept one (`conn=`) and they will
+    use it and leave the commit to this block.
+
+    The convention every such helper follows: given a `conn`, it never commits
+    and never opens another connection — the caller owns the transaction; with
+    `conn=None` it behaves as it always did (open, write, commit, close).
+
+    Measured: opening a connection and its three PRAGMAs costs 1.97 ms against
+    0.03 ms on an open one, so a 200-row import was spending over a second
+    inside sqlite3.connect.
+
+    Never hold one of these across a call that opens its own connection — that
+    is the same deadlock, dressed differently. Everything inside the block
+    commits or rolls back together, so a batch that must keep its finished rows
+    when a later one fails needs a block per unit, not one around the lot.
+    """
+    conn = get_conn(db_path)
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 _SONGS_OPTIONAL_COLUMNS = (
@@ -559,7 +585,8 @@ _SONGS_OPTIONAL_COLUMNS = (
     # NULL means no known variant. Pair scoring drops pairs whose two sides
     # share a non-NULL cluster: they are the same record, so they match
     # perfectly on every sub-score and would otherwise fill the ranked list.
-    # Computed by matcher.dedup.rebuild_variant_clusters.
+    # Written by matcher.dedup.assign_variant_cluster (one track's title group,
+    # after its analysis) and by rebuild_variant_clusters (the manual repair).
     ("variant_cluster", "INTEGER"),
     # Provenance. source_url is where the AUDIO came from, and a download
     # fallback rewrites it; origin_url / origin_duration_secs are the link the
@@ -583,6 +610,26 @@ _PREVIEW_MAX_SECS = 35
 SC_LINK_OVERWRITTEN_SQL = """source = 'youtube' AND (
        (COALESCE(track_id, '') != '' AND track_id NOT GLOB '*[^0-9]*')
     OR COALESCE(thumbnail, '') LIKE '%sndcdn.com%')"""
+
+
+# The `features` values that live in `feature_arrays` (database/arrays.py), not
+# in a column. `upsert_features` pops them; `get_features_for_song` puts them
+# back. The columns they replaced (beat_times_json, waveform_rms_json) still
+# appear in _FEATURES_OPTIONAL_COLUMNS below because that list is migration 1;
+# migration 2 (database/schema.py) moves their contents and drops them.
+_FEATURES_ARRAY_KEYS = ("beat_times", "waveform_rms")
+
+# What the pair scorer, the learned model's features and the dedup pass actually
+# read. Projecting to this instead of `f.*` keeps the scan to the scalar columns
+# (measured on 204 rows: 52.8 ms with the arrays in the row). The three spectral
+# scalars are here for `matcher/features.pair_features`, which the learned-model
+# path and the dataset builder call on these same rows.
+FEATURES_SCORING_COLUMNS = (
+    "song_id", "stem_type", "bpm", "bpm_confidence", "key", "mode", "camelot",
+    "key_confidence", "loudness_rms", "energy", "mfcc_json", "band_energy_json",
+    "beat_phase", "residual_vocal_ratio", "analyzer",
+    "spectral_centroid", "spectral_rolloff", "zero_crossing_rate",
+)
 
 
 _FEATURES_OPTIONAL_COLUMNS = (
@@ -1205,8 +1252,14 @@ def upsert_song(
     origin_url: str = "",
     origin_duration_secs: Optional[float] = None,
     db_path: Path = DB_PATH,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> int:
     """Insert or update a song row. Returns the song id.
+
+    `conn` joins the caller's transaction (`connection()`): the row is written
+    and its id read back on that connection — a fresh row's id is visible
+    before any commit — and nothing is committed or closed. With none, it
+    opens, commits and closes its own, as ever.
 
     `metadata_partial=1` marks rows seeded from a flat playlist enumerate where
     full per-track enrichment failed. On re-upsert, the flag can only be cleared
@@ -1225,75 +1278,82 @@ def upsert_song(
     origin_url = origin_url or source_url
     if origin_duration_secs is None and (duration_secs or 0) > _PREVIEW_MAX_SECS:
         origin_duration_secs = float(duration_secs)
-    conn = get_conn(db_path)
-    cur = conn.execute(
-        """INSERT INTO songs (
-               title, artist, source_url, source, duration_secs, genre, raw_path, status,
-               artist_id, track_id, duration_str, upload_date,
-               likes, reposts, comments, plays, thumbnail, metadata_partial,
-               tags, release_year, origin_url, origin_duration_secs
-           )
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(source_url) DO UPDATE SET
-               origin_url=COALESCE(origin_url, excluded.origin_url),
-               origin_duration_secs=COALESCE(origin_duration_secs,
-                                             excluded.origin_duration_secs),
-               title=excluded.title,
-               artist=excluded.artist,
-               source=CASE WHEN excluded.source != '' THEN excluded.source ELSE source END,
-               duration_secs=excluded.duration_secs,
-               genre=CASE WHEN excluded.genre != '' THEN excluded.genre ELSE genre END,
-               raw_path=CASE WHEN excluded.raw_path != '' THEN excluded.raw_path ELSE raw_path END,
-               status=excluded.status,
-               -- Descriptive metadata is only ever IMPROVED by a re-upsert.
-               -- A sparse row (a flat playlist seed, a legacy crate payload, a
-               -- mix re-ingest) carries '' / 0 for all of this, and an
-               -- unguarded assignment would blank a row a metadata backfill had
-               -- just repaired. Same shape as tags/release_year below.
-               artist_id=CASE WHEN excluded.artist_id != '' THEN excluded.artist_id ELSE artist_id END,
-               track_id=CASE WHEN excluded.track_id != '' THEN excluded.track_id ELSE track_id END,
-               duration_str=excluded.duration_str,
-               upload_date=CASE WHEN excluded.upload_date != '' THEN excluded.upload_date ELSE upload_date END,
-               likes=CASE WHEN excluded.likes > 0 THEN excluded.likes ELSE likes END,
-               reposts=CASE WHEN excluded.reposts > 0 THEN excluded.reposts ELSE reposts END,
-               comments=CASE WHEN excluded.comments > 0 THEN excluded.comments ELSE comments END,
-               plays=CASE WHEN excluded.plays > 0 THEN excluded.plays ELSE plays END,
-               thumbnail=CASE WHEN excluded.thumbnail != '' THEN excluded.thumbnail ELSE thumbnail END,
-               metadata_partial=MIN(metadata_partial, excluded.metadata_partial),
-               tags=CASE WHEN excluded.tags != '' THEN excluded.tags ELSE tags END,
-               release_year=CASE WHEN excluded.release_year > 0
-                                 THEN excluded.release_year ELSE release_year END,
-               updated_at=datetime('now')""",
-        (
-            title,
-            artist,
-            source_url,
-            source,
-            duration_secs,
-            genre,
-            raw_path,
-            status,
-            artist_id,
-            track_id,
-            duration_str,
-            upload_date,
-            likes,
-            reposts,
-            comments,
-            plays,
-            thumbnail,
-            int(bool(metadata_partial)),
-            tags,
-            int(release_year or 0),
-            origin_url,
-            origin_duration_secs,
-        ),
-    )
-    conn.commit()
-    row = conn.execute("SELECT id FROM songs WHERE source_url=?", (source_url,)).fetchone()
-    song_id = row["id"] if row else cur.lastrowid
-    conn.close()
-    return song_id
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
+    try:
+        cur = conn.execute(
+            """INSERT INTO songs (
+                   title, artist, source_url, source, duration_secs, genre, raw_path, status,
+                   artist_id, track_id, duration_str, upload_date,
+                   likes, reposts, comments, plays, thumbnail, metadata_partial,
+                   tags, release_year, origin_url, origin_duration_secs
+               )
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(source_url) DO UPDATE SET
+                   origin_url=COALESCE(origin_url, excluded.origin_url),
+                   origin_duration_secs=COALESCE(origin_duration_secs,
+                                                 excluded.origin_duration_secs),
+                   title=excluded.title,
+                   artist=excluded.artist,
+                   source=CASE WHEN excluded.source != '' THEN excluded.source ELSE source END,
+                   duration_secs=excluded.duration_secs,
+                   genre=CASE WHEN excluded.genre != '' THEN excluded.genre ELSE genre END,
+                   raw_path=CASE WHEN excluded.raw_path != '' THEN excluded.raw_path ELSE raw_path END,
+                   status=excluded.status,
+                   -- Descriptive metadata is only ever IMPROVED by a re-upsert.
+                   -- A sparse row (a flat playlist seed, a legacy crate payload, a
+                   -- mix re-ingest) carries '' / 0 for all of this, and an
+                   -- unguarded assignment would blank a row a metadata backfill had
+                   -- just repaired. Same shape as tags/release_year below.
+                   artist_id=CASE WHEN excluded.artist_id != '' THEN excluded.artist_id ELSE artist_id END,
+                   track_id=CASE WHEN excluded.track_id != '' THEN excluded.track_id ELSE track_id END,
+                   duration_str=excluded.duration_str,
+                   upload_date=CASE WHEN excluded.upload_date != '' THEN excluded.upload_date ELSE upload_date END,
+                   likes=CASE WHEN excluded.likes > 0 THEN excluded.likes ELSE likes END,
+                   reposts=CASE WHEN excluded.reposts > 0 THEN excluded.reposts ELSE reposts END,
+                   comments=CASE WHEN excluded.comments > 0 THEN excluded.comments ELSE comments END,
+                   plays=CASE WHEN excluded.plays > 0 THEN excluded.plays ELSE plays END,
+                   thumbnail=CASE WHEN excluded.thumbnail != '' THEN excluded.thumbnail ELSE thumbnail END,
+                   metadata_partial=MIN(metadata_partial, excluded.metadata_partial),
+                   tags=CASE WHEN excluded.tags != '' THEN excluded.tags ELSE tags END,
+                   release_year=CASE WHEN excluded.release_year > 0
+                                     THEN excluded.release_year ELSE release_year END,
+                   updated_at=datetime('now')""",
+            (
+                title,
+                artist,
+                source_url,
+                source,
+                duration_secs,
+                genre,
+                raw_path,
+                status,
+                artist_id,
+                track_id,
+                duration_str,
+                upload_date,
+                likes,
+                reposts,
+                comments,
+                plays,
+                thumbnail,
+                int(bool(metadata_partial)),
+                tags,
+                int(release_year or 0),
+                origin_url,
+                origin_duration_secs,
+            ),
+        )
+        row = conn.execute("SELECT id FROM songs WHERE source_url=?",
+                           (source_url,)).fetchone()
+        song_id = row["id"] if row else cur.lastrowid
+        if own:
+            conn.commit()
+        return song_id
+    finally:
+        if own:
+            conn.close()
 
 
 def set_quick_state(song_id: int, state: Optional[str],
@@ -1438,57 +1498,94 @@ def mark_pairs_input(conn: sqlite3.Connection, song_id: int) -> None:
                  (song_id,))
 
 
+def mark_scored(song_id: int, db_path: Path = DB_PATH) -> None:
+    """Note that this track's pairs are current for its inputs.
+
+    Its own connection, because the scorer's caller has none open. Deliberately
+    NOT a write of app_prefs.last_score: a per-track run never stands in for
+    Score library (readme §7), so the dock's freshness check — which compares
+    pairs_input_at with that pref — must not see this at all."""
+    conn = get_conn(db_path)
+    try:
+        conn.execute("UPDATE songs SET scored_at=datetime('now') WHERE id=?",
+                     (song_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def needs_scoring(song_id: int, db_path: Path = DB_PATH) -> bool:
+    """True when a scoring input changed since this track was last scored.
+
+    Never scored is True. A track with no pairs_input_at at all — features
+    written before the column existed — is True until it is scored once and
+    then left alone: a full Score library run is what covers it, not every
+    pipeline pass. Both timestamps are SQLite `datetime('now')` text, so the
+    comparison has one-second resolution; api.workers.pipeline_worker's
+    `_wants_scoring` carries the one case that matters."""
+    conn = get_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT scored_at, pairs_input_at FROM songs WHERE id=?",
+            (song_id,)).fetchone()
+    finally:
+        conn.close()
+    if not row or not row["scored_at"]:
+        return True
+    return bool(row["pairs_input_at"] and row["pairs_input_at"] > row["scored_at"])
+
+
 def upsert_features(song_id: int, stem_type: str, features: dict,
                     db_path: Path = DB_PATH):
     mfcc = features.pop("mfcc", None)
     mfcc_json = json.dumps(mfcc) if mfcc is not None else None
-    beat_times = features.pop("beat_times", None)
-    beat_times_json = json.dumps(beat_times) if beat_times is not None else None
-    waveform_rms = features.pop("waveform_rms", None)
-    waveform_rms_json = json.dumps(waveform_rms) if waveform_rms is not None else None
+    # The big arrays go to the BLOB store on this same connection, in this
+    # same transaction (database/arrays.py); None clears a stale one, as the
+    # NULL column used to.
+    array_values = {k: features.pop(k, None) for k in _FEATURES_ARRAY_KEYS}
     band_energy = features.pop("band_energy", None)
     band_energy_json = json.dumps(band_energy) if band_energy is not None else None
     conn = get_conn(db_path)
-    conn.execute(
-        """INSERT INTO features
-               (song_id, stem_type, bpm, bpm_confidence, key, mode, camelot,
-                key_confidence, beat_phase, loudness_rms, energy, mfcc_json,
-                spectral_centroid, spectral_rolloff, zero_crossing_rate,
-                beat_times_json, waveform_rms_json,
-                band_energy_json, residual_vocal_ratio,
-                hook_start, hook_end, hook_role)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-           ON CONFLICT(song_id, stem_type) DO UPDATE SET
-               bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
-               key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
-               key_confidence=excluded.key_confidence,
-               beat_phase=excluded.beat_phase,
-               loudness_rms=excluded.loudness_rms, energy=excluded.energy,
-               mfcc_json=excluded.mfcc_json,
-               spectral_centroid=excluded.spectral_centroid,
-               spectral_rolloff=excluded.spectral_rolloff,
-               zero_crossing_rate=excluded.zero_crossing_rate,
-               beat_times_json=excluded.beat_times_json,
-               waveform_rms_json=excluded.waveform_rms_json,
-               band_energy_json=excluded.band_energy_json,
-               residual_vocal_ratio=excluded.residual_vocal_ratio,
-               hook_start=excluded.hook_start, hook_end=excluded.hook_end,
-               hook_role=excluded.hook_role""",
-        (song_id, stem_type,
-         features.get("bpm"), features.get("bpm_confidence"),
-         features.get("key"), features.get("mode"), features.get("camelot"),
-         features.get("key_confidence"), features.get("beat_phase") or 0,
-         features.get("loudness_rms"), features.get("energy"), mfcc_json,
-         features.get("spectral_centroid"), features.get("spectral_rolloff"),
-         features.get("zero_crossing_rate"),
-         beat_times_json, waveform_rms_json,
-         band_energy_json, features.get("residual_vocal_ratio"),
-         features.get("hook_start"), features.get("hook_end"),
-         features.get("hook_role"))
-    )
-    mark_pairs_input(conn, song_id)
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            """INSERT INTO features
+                   (song_id, stem_type, bpm, bpm_confidence, key, mode, camelot,
+                    key_confidence, beat_phase, loudness_rms, energy, mfcc_json,
+                    spectral_centroid, spectral_rolloff, zero_crossing_rate,
+                    band_energy_json, residual_vocal_ratio,
+                    hook_start, hook_end, hook_role)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(song_id, stem_type) DO UPDATE SET
+                   bpm=excluded.bpm, bpm_confidence=excluded.bpm_confidence,
+                   key=excluded.key, mode=excluded.mode, camelot=excluded.camelot,
+                   key_confidence=excluded.key_confidence,
+                   beat_phase=excluded.beat_phase,
+                   loudness_rms=excluded.loudness_rms, energy=excluded.energy,
+                   mfcc_json=excluded.mfcc_json,
+                   spectral_centroid=excluded.spectral_centroid,
+                   spectral_rolloff=excluded.spectral_rolloff,
+                   zero_crossing_rate=excluded.zero_crossing_rate,
+                   band_energy_json=excluded.band_energy_json,
+                   residual_vocal_ratio=excluded.residual_vocal_ratio,
+                   hook_start=excluded.hook_start, hook_end=excluded.hook_end,
+                   hook_role=excluded.hook_role""",
+            (song_id, stem_type,
+             features.get("bpm"), features.get("bpm_confidence"),
+             features.get("key"), features.get("mode"), features.get("camelot"),
+             features.get("key_confidence"), features.get("beat_phase") or 0,
+             features.get("loudness_rms"), features.get("energy"), mfcc_json,
+             features.get("spectral_centroid"), features.get("spectral_rolloff"),
+             features.get("zero_crossing_rate"),
+             band_energy_json, features.get("residual_vocal_ratio"),
+             features.get("hook_start"), features.get("hook_end"),
+             features.get("hook_role"))
+        )
+        for name, values in array_values.items():
+            arrays.put(conn, song_id, stem_type, name, values)
+        mark_pairs_input(conn, song_id)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def update_features_extras(song_id: int, stem_type: str, extras: Dict,
@@ -1544,22 +1641,31 @@ def get_song(song_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
     return dict(row) if row else None
 
 
-def get_song_by_url(source_url: str, db_path: Path = DB_PATH) -> Optional[Dict]:
+def get_song_by_url(source_url: str, db_path: Path = DB_PATH,
+                    conn: Optional[sqlite3.Connection] = None) -> Optional[Dict]:
     """Look up a song by its exact source_url (used for pre-ingest dedup).
     Callers should pass an already-normalized URL (ingest.sources.normalize_url)
     so trivial variants of the same link collide.
 
     The import link counts too: a track whose audio came from a YouTube
     substitute is still the SoundCloud link you pasted, and pasting it again
-    must not import it twice."""
+    must not import it twice.
+
+    `conn` reads on the caller's connection — and so sees its uncommitted
+    rows — and leaves it open."""
     if not source_url:
         return None
-    conn = get_conn(db_path)
-    row = conn.execute(
-        "SELECT * FROM songs WHERE source_url=? OR origin_url=? "
-        "ORDER BY source_url=? DESC LIMIT 1",
-        (source_url, source_url, source_url)).fetchone()
-    conn.close()
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
+    try:
+        row = conn.execute(
+            "SELECT * FROM songs WHERE source_url=? OR origin_url=? "
+            "ORDER BY source_url=? DESC LIMIT 1",
+            (source_url, source_url, source_url)).fetchone()
+    finally:
+        if own:
+            conn.close()
     return dict(row) if row else None
 
 
@@ -1579,7 +1685,8 @@ def get_song_by_track_id(track_id: str, db_path: Path = DB_PATH) -> Optional[Dic
 
 def songs_by_identity(source_urls: Sequence[str] = (),
                       track_ids: Sequence[str] = (),
-                      db_path: Path = DB_PATH) -> Dict[str, List[Dict]]:
+                      db_path: Path = DB_PATH,
+                      conn: Optional[sqlite3.Connection] = None) -> Dict[str, Dict[str, Dict]]:
     """Which of these SoundCloud tracks are already in the library.
 
     One query for a whole page of Discovery results — the alternative is a round
@@ -1588,7 +1695,10 @@ def songs_by_identity(source_urls: Sequence[str] = (),
 
     Empty track ids are dropped before the query: '' is the default for rows that
     never learned their id, so matching on it would claim every such row is the
-    track being looked at."""
+    track being looked at.
+
+    `conn` reads on the caller's connection (so a batch sees its own
+    uncommitted rows) and leaves it open."""
     urls = [u for u in {str(u) for u in source_urls} if u]
     tids = [t for t in {str(t) for t in track_ids} if t]
     out: Dict[str, Dict[str, Dict]] = {"by_url": {}, "by_track_id": {}}
@@ -1605,11 +1715,16 @@ def songs_by_identity(source_urls: Sequence[str] = (),
         clauses.append(f"(track_id != '' AND track_id IN ({','.join('?' * len(tids))}))")
         params.extend(tids)
 
-    conn = get_conn(db_path)
-    rows = conn.execute(
-        "SELECT id, title, artist, source_url, origin_url, track_id, status, last_error "
-        f"FROM songs WHERE {' OR '.join(clauses)}", params).fetchall()
-    conn.close()
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT id, title, artist, source_url, origin_url, track_id, status, last_error "
+            f"FROM songs WHERE {' OR '.join(clauses)}", params).fetchall()
+    finally:
+        if own:
+            conn.close()
 
     url_set, tid_set = set(urls), set(tids)
     for row in rows:
@@ -1698,6 +1813,7 @@ def delete_song(song_id: int, db_path: Path = DB_PATH) -> Dict:
         if r["file_path"]:
             files.append(r["file_path"])
     conn.execute("DELETE FROM features WHERE song_id=?", (song_id,))
+    arrays.delete_for(conn, song_id)
     conn.execute("DELETE FROM sections WHERE song_id=?", (song_id,))
     conn.execute("DELETE FROM stems WHERE song_id=?", (song_id,))
     conn.execute(
@@ -1903,6 +2019,7 @@ def update_song_url(song_id: int, new_url: str, db_path: Path = DB_PATH,
         if r["file_path"]:
             files.append(r["file_path"])
     conn.execute("DELETE FROM features WHERE song_id=?", (song_id,))
+    arrays.delete_for(conn, song_id)
     conn.execute("DELETE FROM sections WHERE song_id=?", (song_id,))
     conn.execute("DELETE FROM stems WHERE song_id=?", (song_id,))
     conn.execute(
@@ -1956,27 +2073,28 @@ def get_songs_by_status(*statuses: str, db_path: Path = DB_PATH) -> List[Dict]:
 
 def get_features_for_song(song_id: int, stem_type: str = "full",
                            db_path: Path = DB_PATH) -> Optional[Dict]:
+    """One stem's features row, decoded, with its beat grid and waveform
+    envelope put back from `feature_arrays` (absent = unmeasured, so the key is
+    left out rather than set to an empty list)."""
     conn = get_conn(db_path)
-    row = conn.execute(
-        "SELECT * FROM features WHERE song_id=? AND stem_type=?",
-        (song_id, stem_type)
-    ).fetchone()
-    conn.close()
-    if row is None:
-        return None
-    d = dict(row)
+    try:
+        row = conn.execute(
+            "SELECT * FROM features WHERE song_id=? AND stem_type=?",
+            (song_id, stem_type)
+        ).fetchone()
+        if row is None:
+            return None
+        d = dict(row)
+        for name in _FEATURES_ARRAY_KEYS:
+            got = arrays.get(conn, song_id, stem_type, name)
+            if got:
+                d[name] = got
+    finally:
+        conn.close()
     if d.get("mfcc_json"):
         d["mfcc"] = json.loads(d.pop("mfcc_json"))
     else:
         d.pop("mfcc_json", None)
-    if d.get("beat_times_json"):
-        d["beat_times"] = json.loads(d.pop("beat_times_json"))
-    else:
-        d.pop("beat_times_json", None)
-    if d.get("waveform_rms_json"):
-        d["waveform_rms"] = json.loads(d.pop("waveform_rms_json"))
-    else:
-        d.pop("waveform_rms_json", None)
     if d.get("band_energy_json"):
         d["band_energy"] = json.loads(d.pop("band_energy_json"))
     else:
@@ -2084,18 +2202,48 @@ def get_stem_facts(song_ids, db_path: Path = DB_PATH) -> Dict:
     return {(r["song_id"], r["stem_type"]): dict(r) for r in rows}
 
 
-def get_all_features(stem_type: str = "full", db_path: Path = DB_PATH) -> List[Dict]:
-    conn = get_conn(db_path)
-    rows = conn.execute(
-        """SELECT f.*, s.title, s.artist, s.variant_cluster,
-                  st.quality AS stem_quality
-           FROM features f
-           JOIN songs s ON s.id=f.song_id
-           LEFT JOIN stems st ON st.song_id=f.song_id AND st.stem_type=f.stem_type
-           WHERE f.stem_type=?""",
-        (stem_type,)
-    ).fetchall()
-    conn.close()
+def get_all_features(stem_type: str = "full",
+                     columns: Optional[Sequence[str]] = None,
+                     song_ids: Optional[Sequence[int]] = None,
+                     db_path: Path = DB_PATH,
+                     conn: Optional[sqlite3.Connection] = None) -> List[Dict]:
+    """Every row for one stem type, joined with the song's title, artist and
+    variant cluster and the stem's quality.
+
+    `columns` restricts the `features` projection — pass FEATURES_SCORING_COLUMNS
+    on the scoring and dedup paths. None selects every column of `features`,
+    which no longer includes the big arrays (they are in `feature_arrays`; ask
+    for them by name through database/arrays.py).
+
+    `song_ids` limits it to those songs, which is what makes
+    `dedup.assign_variant_cluster` one track's worth of work rather than the
+    library's.
+
+    `conn` reuses the caller's connection (and leaves it open).
+    """
+    own = conn is None
+    conn = conn or get_conn(db_path)
+    try:
+        proj = "f.*" if not columns else ", ".join(f"f.[{c}]" for c in columns)
+        where = ["f.stem_type = ?"]
+        args: list = [stem_type]
+        if song_ids is not None:
+            ids = [int(i) for i in song_ids]
+            if not ids:
+                return []
+            where.append(f"f.song_id IN ({','.join('?' * len(ids))})")
+            args += ids
+        rows = conn.execute(
+            f"""SELECT {proj}, s.title, s.artist, s.variant_cluster,
+                       st.quality AS stem_quality
+                  FROM features f
+                  JOIN songs s ON s.id = f.song_id
+                  LEFT JOIN stems st ON st.song_id = f.song_id
+                                    AND st.stem_type = f.stem_type
+                 WHERE {' AND '.join(where)}""", args).fetchall()
+    finally:
+        if own:
+            conn.close()
     result = []
     for r in rows:
         d = dict(r)
@@ -2451,14 +2599,27 @@ def upsert_candidate(vocal: dict, inst: dict, scores: dict,
     conn.close()
 
 
+# Removed by schema migration 3 (database/schema.py). Kept as a constant so the
+# writer, the migration and the test all name the same list. `inst_energy` is
+# NOT here although the migration's brief listed it: the dock's "bed energy"
+# filter ranks it (`nrg.energy_pct`, PERCENT_RANK over inst_energy), so it is
+# read; the other seven have no reader outside the table's own writer.
+CANDIDATE_DROPPED_COLUMNS = (
+    "vocal_mode", "inst_mode",                      # 0 readers
+    "vocal_energy",                                 # 0 readers
+    "vocal_loudness_rms", "inst_loudness_rms",      # a test, nothing else
+    "reason",        # rebuilt by matcher.recipe.alignment_reason
+    "scored_at",     # one timestamp a run; app_prefs.last_score has it
+)
+
+
 _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        combo_type,
        vocal_song_id, vocal_title, vocal_artist,
-       vocal_bpm, vocal_key, vocal_mode, vocal_camelot,
-       vocal_loudness_rms, vocal_energy,
+       vocal_bpm, vocal_key, vocal_camelot,
        inst_song_id, inst_title, inst_artist,
-       inst_bpm, inst_key, inst_mode, inst_camelot,
-       inst_loudness_rms, inst_energy,
+       inst_bpm, inst_key, inst_camelot,
+       inst_energy,
        score_total, score_bpm, score_key, score_energy, score_timbre,
        score_collision, scorer, model_version,
        vocal_section_idx, inst_section_idx,
@@ -2471,18 +2632,16 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_label, score_duration, score_voice,
        score_room_section, score_coverage, score_energy_match,
        alignment_downbeat, alignment_offset, target_bpm,
-       tempo_adjustment, pitch_adjustment, reason,
+       tempo_adjustment, pitch_adjustment,
        score_effort, effort_stretch, effort_pitch,
        effort_tempo_fold, effort_grid, effort_key_certainty,
        harmonic_shift, harmonic_confidence, bass_clash,
        score_timing, timing_ok, timing_err_mean_ms, timing_err_max_ms,
        vocal_phrase_start, vocal_pickup_ms, bed_landing_sec,
-       engine, engine_version, pipeline,
-       scored_at
+       engine, engine_version, pipeline
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,datetime('now'))
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -2514,7 +2673,6 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        target_bpm=excluded.target_bpm,
        tempo_adjustment=excluded.tempo_adjustment,
        pitch_adjustment=excluded.pitch_adjustment,
-       reason=excluded.reason,
        score_effort=excluded.score_effort,
        effort_stretch=excluded.effort_stretch,
        effort_pitch=excluded.effort_pitch,
@@ -2542,17 +2700,11 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        model_version=excluded.model_version,
        vocal_bpm=excluded.vocal_bpm,
        vocal_key=excluded.vocal_key,
-       vocal_mode=excluded.vocal_mode,
        vocal_camelot=excluded.vocal_camelot,
-       vocal_loudness_rms=excluded.vocal_loudness_rms,
-       vocal_energy=excluded.vocal_energy,
        inst_bpm=excluded.inst_bpm,
        inst_key=excluded.inst_key,
-       inst_mode=excluded.inst_mode,
        inst_camelot=excluded.inst_camelot,
-       inst_loudness_rms=excluded.inst_loudness_rms,
-       inst_energy=excluded.inst_energy,
-       scored_at=datetime('now')"""
+       inst_energy=excluded.inst_energy"""
 
 
 # Bind order for the section-pair block. MUST match the column list and the
@@ -2569,7 +2721,7 @@ SECTION_PAIR_COLUMNS = (
     "score_label", "score_duration", "score_voice",
     "score_room_section", "score_coverage", "score_energy_match",
     "alignment_downbeat", "alignment_offset", "target_bpm",
-    "tempo_adjustment", "pitch_adjustment", "reason",
+    "tempo_adjustment", "pitch_adjustment",
 )
 
 
@@ -2584,11 +2736,11 @@ TIMING_COLUMNS = (
 
 
 # The column each candidate_row value binds to, read off the insert itself so
-# the two cannot drift (scored_at is the statement's own datetime('now')).
+# the two cannot drift.
 CANDIDATE_COLUMNS = tuple(
     c.strip() for c in
     _CANDIDATE_INSERT_SQL.split("(", 1)[1].split(")", 1)[0].split(",")
-    if c.strip() and c.strip() != "scored_at")
+    if c.strip())
 
 
 def candidate_dict(vocal: dict, inst: dict, scores: dict,
@@ -2620,11 +2772,10 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
     return (
         combo_type,
         vocal["song_id"], vocal.get("title"), vocal.get("artist"),
-        vocal.get("bpm"), vocal.get("key"), vocal.get("mode"), vocal.get("camelot"),
-        vocal.get("loudness_rms"), vocal.get("energy"),
+        vocal.get("bpm"), vocal.get("key"), vocal.get("camelot"),
         inst["song_id"], inst.get("title"), inst.get("artist"),
-        inst.get("bpm"), inst.get("key"), inst.get("mode"), inst.get("camelot"),
-        inst.get("loudness_rms"), inst.get("energy"),
+        inst.get("bpm"), inst.get("key"), inst.get("camelot"),
+        inst.get("energy"),
         scores["total"], scores["bpm_score"], scores["key_score"],
         scores["energy_score"], scores["timbre_score"],
         scores.get("collision_score"), scorer, model_version,
@@ -3623,7 +3774,11 @@ def pairs_freshness(db_path: Path = DB_PATH) -> Dict:
     the last successful "Score library" run started (songs.pairs_input_at).
     never_scored is true when no run has finished and there is something to
     pair; a library scored before this was recorded counts as scored, with no
-    change known."""
+    change known.
+
+    `last_scored_at` is the run's `app_prefs.last_score.started_at`. It was
+    MAX(mashup_candidates.scored_at), a full scan of a 31 MB table on a route
+    the dock polls every 20 s, for a value one pref row already holds."""
     last = get_pref("last_score", db_path=db_path) or {}
     started = last.get("started_at")
     conn = get_conn(db_path)
@@ -3632,8 +3787,6 @@ def pairs_freshness(db_path: Path = DB_PATH) -> Dict:
             "SELECT COUNT(*) FROM songs WHERE status='analysed'").fetchone()[0]
         has_pairs = conn.execute(
             "SELECT EXISTS(SELECT 1 FROM mashup_candidates)").fetchone()[0]
-        last_scored = conn.execute(
-            "SELECT MAX(scored_at) FROM mashup_candidates").fetchone()[0]
         changed = 0
         if started:
             changed = conn.execute(
@@ -3644,7 +3797,7 @@ def pairs_freshness(db_path: Path = DB_PATH) -> Dict:
         conn.close()
     return {
         "last_score_started_at": started,
-        "last_scored_at": last_scored,
+        "last_scored_at": started,
         "changed_tracks": int(changed),
         "never_scored": bool(not started and not has_pairs and analysed >= 2),
         "analysed_tracks": int(analysed),
@@ -3911,15 +4064,21 @@ def reorder_crate(crate_id: int, item_ids: Sequence[int],
         conn.close()
 
 
-def relink_crate_songs(crate_id: Optional[int] = None, db_path: Path = DB_PATH) -> int:
+def relink_crate_songs(crate_id: Optional[int] = None, db_path: Path = DB_PATH,
+                       conn: Optional[sqlite3.Connection] = None) -> int:
     """Point crate items at library songs that now exist, matching on source_url.
     Returns how many items gained a song_id.
 
     ``crate_id=None`` relinks every crate, which is what the shared ingest path
     runs: a track imported from the Library paste bar can be the same record a
     crate has been holding for a week, and that crate only becomes a library
-    group once the item knows its song."""
-    conn = get_conn(db_path)
+    group once the item knows its song.
+
+    `conn` joins the caller's transaction: the update runs on it, nothing is
+    committed and it is left open."""
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
     try:
         cur = conn.execute(
             """UPDATE crate_items
@@ -3930,10 +4089,12 @@ def relink_crate_songs(crate_id: Optional[int] = None, db_path: Path = DB_PATH) 
                   AND EXISTS (SELECT 1 FROM songs s
                                WHERE s.source_url = crate_items.source_url)""",
             (crate_id, crate_id))
-        conn.commit()
+        if own:
+            conn.commit()
         return cur.rowcount
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
 def crate_payloads(crate_id: int, only_unlinked: bool = True,

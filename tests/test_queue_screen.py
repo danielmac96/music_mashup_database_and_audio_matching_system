@@ -82,8 +82,9 @@ def test_busy_is_counted_from_running_stages_not_job_status(env):
 
     stages = client.get("/api/jobs/queue").json()["stages"]
     assert stages["download"]["running"] == 0
-    # Structure is the trailing pass of the analysis pool.
-    assert stages["analysis"]["running"] == 1
+    # The cut is its own stage and its own pool (it runs after allin1).
+    assert stages["structure"]["running"] == 1
+    assert stages["analysis"]["running"] == 0
 
 
 def test_job_snapshots_do_not_share_stage_records(env):

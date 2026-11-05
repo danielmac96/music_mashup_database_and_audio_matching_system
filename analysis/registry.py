@@ -89,6 +89,13 @@ def _essentia_params(**extra) -> Callable[[], dict]:
     return _p
 
 
+def _frames_params() -> dict:
+    """The sidecar's own format: its grid, its matrices and its layout version.
+    A change to any of them recomputes the frames and nothing else."""
+    from analysis.timeseries import ROWS, STEP_SECS, VERSION
+    return {"step": round(STEP_SECS, 9), "rows": dict(ROWS), "fmt": VERSION}
+
+
 def _key_profile() -> str:
     from config import current_essentia_key_profile
     return current_essentia_key_profile()
@@ -115,15 +122,17 @@ def _key_voters() -> list:
 
 
 def _allin1_params() -> dict:
-    """allin1's version, model and pooling: an upgrade or a different
-    ensemble recomputes rather than mixing grids from two models."""
-    from config import ALLIN1_MODEL
+    """allin1's version, the model actually configured, and the pooling: an
+    upgrade or a different checkpoint recomputes rather than mixing two
+    models' grids. The model is read live (config.current_allin1_model), so
+    switching it invalidates these groups by itself."""
+    from config import current_allin1_model
     try:
         from analysis.allin1_runner import POOLING, version
         ver, pooling = version(), POOLING
     except Exception:  # noqa: BLE001
         ver, pooling = None, None
-    return {"allin1": ver, "model": ALLIN1_MODEL, "pooling": pooling}
+    return {"allin1": ver, "model": current_allin1_model(), "pooling": pooling}
 
 
 def _phrase_params() -> dict:
@@ -154,7 +163,10 @@ _GROUPS = (
     # occupancy and, given a melody, the sung range. v3: track and section
     # BPM fitted through the beats. v4: a voiceless section is a drop or a
     # breakdown, never a verse (label_segments).
-    FeatureGroup("librosa.structure", 4, "librosa", 1, _structure_params,
+    # v5: chroma and MFCC come from Essentia's own per-frame output
+    # (analysis/timeseries.py) instead of a second librosa CQT/STFT pass, and
+    # the bass chroma is the bass stem's rather than a band-passed mix.
+    FeatureGroup("librosa.structure", 5, "librosa", 1, _structure_params,
                  "sections: boundaries, labels, per-section measurements "
                  "(mix + vocal/instrumental/bass stems)"),
     # ── Essentia (analysis/essentia_groups.py) ────────────────────────────────
@@ -184,15 +196,32 @@ _GROUPS = (
                  "full mix only: Discogs-EffNet genre (400 styles) and tags — "
                  "voice, gender, danceable, tonal, bright, seven moods, "
                  "mood/theme and instrument top-5", step="effnet"),
+    # Not a step: nothing in analyze_file_essentia serves it. Its payload is the
+    # sidecar's metadata (shape, content hash); the arrays are a .npz beside the
+    # audio. essentia.tonal / essentia.spectral are unchanged by it.
+    FeatureGroup("essentia.frames", 1, "essentia", 1,
+                 _essentia_params(frames=_frames_params),
+                 "per-frame chroma / MFCC / 8-band power / centroid-rolloff-flux-"
+                 "zcr-rms for one stem, on the shared 46.44 ms grid. The payload "
+                 "is the sidecar's metadata; the arrays live in a .npz beside "
+                 "the audio (analysis/timeseries.py)"),
     # v3: section BPM fitted through the beats.
-    FeatureGroup("essentia.structure", 4, "essentia", 1, _structure_params,
-                 "sections on the Essentia beat grid (the librosa segmenter fed "
-                 "essentia.rhythm's beats and phase)"),
+    # v5: see librosa.structure v5 — the frames are Essentia's now.
+    FeatureGroup("essentia.structure", 5, "essentia", 1, _structure_params,
+                 "sections on the Essentia beat grid, cut from the stored "
+                 "per-frame chroma and MFCC (analysis/timeseries.py)"),
     # ── allin1 (analysis/allin1_runner.py, readme §5.5) ───────────────────────
-    FeatureGroup("allin1.analysis", 1, "allin1", 2, _allin1_params,
+    # v2: the summary also carries the activations at BEAT resolution
+    # (beat_conf, downbeat_conf_beats) and each segment's full label
+    # distribution. None of the three is derivable from a v1 payload — the
+    # 100-fps arrays are dropped as soon as the summary exists — so a v1 row
+    # must recompute rather than store NULLs for the new columns.
+    FeatureGroup("allin1.analysis", 2, "allin1", 2, _allin1_params,
                  "full mix + the 4 Demucs sources: beats, downbeats, beat-in-bar, "
                  "BPM, labelled segments, activation and embedding summaries"),
-    FeatureGroup("allin1.structure", 1, "allin1", 2,
+    # v2: see librosa.structure v5 — it is the same detect_sections, so the
+    # frames are Essentia's here too.
+    FeatureGroup("allin1.structure", 2, "allin1", 2,
                  lambda: {**_structure_params(), **_allin1_params()},
                  "sections on allin1's segments and downbeats, measured by the "
                  "same per-section code as the Essentia cut"),

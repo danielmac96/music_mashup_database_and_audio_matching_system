@@ -1,0 +1,332 @@
+"""
+database/schema.py — the numbered migration ledger.
+
+Before this, the schema was whatever ``models.SCHEMA`` plus twelve
+``_migrate_*`` functions and ``alignment.migrate`` happened to produce, each
+re-deriving what it needed from ``PRAGMA table_info`` on the first open of a
+path. Every one of them is idempotent and they all work; what they could not do
+is answer "which schema is this database at", which is the question a library
+built from scratch has to be able to answer against one that grew.
+
+So the ledger does not rewrite them. Migration 1 **is** that code: on a
+database with ``user_version = 0`` — a blank file or any database that existed
+before this file — it runs the whole pre-ledger path, which lands on the same
+shape either way (pinned in tests/test_schema_ledger.py). Everything after it
+is numbered, forward-only, and runs exactly once.
+
+Adding a migration: append a ``Migration`` with the next version, a name that
+says what it does, and an ``up`` that is safe to run on a database holding real
+rows. Never edit a migration that has shipped — a database that already ran it
+will not run it again, so an edit only changes what *new* databases get, which
+is precisely the divergence this file exists to prevent. The same goes for
+``models.SCHEMA`` and the ``_migrate_*`` functions: they are migration 1 now,
+and a change to them reaches only databases that have not run it yet.
+"""
+from __future__ import annotations
+
+import logging
+import sqlite3
+from dataclasses import dataclass
+from typing import Callable, Dict, List
+
+log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Migration:
+    version: int
+    name: str
+    up: Callable[[sqlite3.Connection], None]
+
+
+def _baseline(conn: sqlite3.Connection) -> None:
+    """Every table and column the app had before the ledger existed.
+
+    Written against a bare connection (positional ``PRAGMA table_info`` rows,
+    no ``sqlite3.Row``), which is how the legacy functions already read."""
+    from database import alignment, models
+
+    conn.executescript(models.SCHEMA)
+    models._migrate_songs_columns(conn)
+    models._migrate_features_columns(conn)
+    models._migrate_candidates_columns(conn)
+    models._migrate_sections_columns(conn)
+    models._migrate_candidates_unique_key(conn)
+    models._migrate_stems_columns(conn)
+    models._migrate_mixtracks_columns(conn)
+    models._migrate_mashuppairs_columns(conn)
+    models._migrate_crates_columns(conn)
+    models._migrate_sets_columns(conn)
+    models._migrate_set_items_kinds(conn)
+    models._migrate_pair_feedback_key(conn)
+    alignment.migrate(conn)
+
+
+def _feature_arrays(conn: sqlite3.Connection) -> None:
+    """Move `features`' two big JSON arrays into `feature_arrays`.
+
+    beat_times_json and waveform_rms_json were 4.5 MB of the table's 5.6 MB and
+    are read by nothing on the scoring or listing path, while `SELECT f.*`
+    carried them into every scan. Copied value for value as float32, then the
+    columns are dropped — neither appears in an index or a view, so SQLite can
+    drop them in place.
+
+    Idempotent, because a rollback (database/downgrade.py) resets
+    ``user_version`` and replays every migration: migration 1 puts the two
+    (empty) columns back, this one finds nothing to move and drops them again.
+    Only statements, never ``executescript`` — see `apply`.
+    """
+    import json
+
+    from database import arrays
+
+    # The caller's factory is whatever it set: `get_conn` uses sqlite3.Row, a
+    # bare `sqlite3.connect` does not. This reads columns by name.
+    previous = conn.row_factory
+    conn.row_factory = sqlite3.Row
+    try:
+        arrays.ensure_schema(conn)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(features)")}
+        moves = [("beat_times_json", "beat_times"),
+                 ("waveform_rms_json", "waveform_rms")]
+        present = [(col, name) for col, name in moves if col in cols]
+        if present:
+            select = ", ".join(col for col, _ in present)
+            for row in conn.execute(
+                    f"SELECT song_id, stem_type, {select} FROM features").fetchall():
+                for col, name in present:
+                    raw = row[col]
+                    if not raw:
+                        continue
+                    try:
+                        values = json.loads(raw)
+                    except (TypeError, ValueError):
+                        log.warning("features.%s for song %s/%s is not JSON; dropped",
+                                    col, row["song_id"], row["stem_type"])
+                        continue
+                    arrays.put(conn, int(row["song_id"]), row["stem_type"], name,
+                               values)
+        for col, _name in moves:
+            if col in cols:
+                conn.execute(f"ALTER TABLE features DROP COLUMN {col}")
+        # The scorer and dedup read every full-mix row; give that the index it
+        # never had (`features` was only indexed on bpm and (key, mode)).
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_features_stem "
+                     "ON features(stem_type, song_id)")
+    finally:
+        conn.row_factory = previous
+
+
+def _slim_candidates(conn: sqlite3.Connection) -> None:
+    """Drop what nothing reads from `mashup_candidates`, and index what does.
+
+    Measured on a 206-track library: the table was 31.6 MB over 63,918 rows.
+    `reason` was 4.42 MB of a sentence rebuilt from the row's own numbers
+    (matcher.recipe.alignment_reason), and `scored_at` 1.21 MB of one timestamp
+    repeated — the run's, which `app_prefs.last_score` already holds. The
+    other five (`models.CANDIDATE_DROPPED_COLUMNS`) have no reader outside the
+    table's own writer. None of the seven is in an index, view or trigger, so
+    SQLite drops them in place.
+
+    Then the indexes. `idx_candidates_type` is on a column with two distinct
+    values, so the dock's query scanned half the table and sorted it in a temp
+    B-tree: 119 ms scoped to one track, at 63,918 rows, against a cap of
+    200,000. Each index below serves one access path the app actually takes.
+
+    Also drops `idx_feature_arrays_song` (migration 2): it is a strict prefix
+    of that table's PRIMARY KEY autoindex (song_id, stem_type, name), so SQLite
+    never chooses it and it costs a b-tree write on every `arrays.put`. Dropped
+    here rather than edited out of migration 2, which has shipped.
+
+    Idempotent: a rollback resets ``user_version`` and replays every migration,
+    and migration 1 puts the columns and the old indexes back. Statements only,
+    never ``executescript`` — see `apply`.
+    """
+    from database.models import CANDIDATE_DROPPED_COLUMNS
+
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(mashup_candidates)")}
+    for col in CANDIDATE_DROPPED_COLUMNS:
+        if col in cols:
+            conn.execute(f"ALTER TABLE mashup_candidates DROP COLUMN {col}")
+    for statement in (
+            # the dock scoped to a track, each side
+            "CREATE INDEX IF NOT EXISTS idx_candidates_vocal_score "
+            "ON mashup_candidates(combo_type, vocal_song_id, score_total DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_candidates_inst_score "
+            "ON mashup_candidates(combo_type, inst_song_id, score_total DESC)",
+            # the dock library-wide, and every "best in library" order
+            "CREATE INDEX IF NOT EXISTS idx_candidates_combo_score "
+            "ON mashup_candidates(combo_type, score_total DESC)",
+            # the stepper's pairings of two songs, and the per-row
+            # pairing_count / pairing_rank subqueries the listing runs per row
+            "CREATE INDEX IF NOT EXISTS idx_candidates_pair "
+            "ON mashup_candidates(combo_type, vocal_song_id, inst_song_id, "
+            "score_total DESC)",
+            # superseded: combo_type has two distinct values, and score_total
+            # alone cannot serve a filtered order
+            "DROP INDEX IF EXISTS idx_candidates_type",
+            "DROP INDEX IF EXISTS idx_candidates_score",
+            # a strict prefix of feature_arrays' primary key (migration 2)
+            "DROP INDEX IF EXISTS idx_feature_arrays_song",
+    ):
+        conn.execute(statement)
+
+
+def _analysis_frames(conn: sqlite3.Connection) -> None:
+    """Create `analysis_frames`, the registry for the per-frame .npz sidecars
+    (analysis/timeseries.py).
+
+    It lives in `database/alignment.py` with the rest of the allin1 / pipeline
+    storage, and in that module's `TABLES`, so `database/downgrade.py` drops it
+    with the others. It is created here rather than in `alignment._DDL` because
+    `_DDL` only ever runs inside `_baseline`, i.e. migration 1, which a database
+    at version 1 or above never runs again.
+
+    Idempotent (`IF NOT EXISTS`): a rollback resets ``user_version`` and replays
+    every migration. Statements only, never ``executescript`` -- see `apply`.
+    """
+    from database import alignment
+    alignment.ensure_frames_schema(conn)
+
+
+def _songs_scored_at(conn: sqlite3.Connection) -> None:
+    """Add `songs.scored_at`: when this track's pairs were last scored.
+
+    Compared with `songs.pairs_input_at` (`models.needs_scoring`), it is what
+    stops the pipeline scoring one track three times — once after the quick
+    tier, once after the sections, once on finalise — each of which is a
+    library-wide scan.
+
+    Deliberately NOT in `models._SONGS_OPTIONAL_COLUMNS`: those functions are
+    migration 1 now, and a column added there reaches only databases that have
+    never run it (see this module's docstring). A new column is a new migration.
+
+    Idempotent (`PRAGMA table_info` first): a rollback (database/downgrade.py)
+    resets ``user_version`` and replays every migration. Statements only, never
+    ``executescript`` — see `apply`.
+    """
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(songs)")}
+    if "scored_at" not in cols:
+        conn.execute("ALTER TABLE songs ADD COLUMN scored_at TEXT")
+
+
+def _allin1_activations(conn: sqlite3.Connection) -> None:
+    """Add the four `allin1_analysis` columns that keep the activations at beat
+    resolution (`analysis/allin1_runner.summarise`): `beat_conf`,
+    `downbeat_conf_beats`, `segment_label_probs`, `segment_labels_order`.
+
+    They are declared in `alignment._DDL` as well, which covers a fresh
+    database, and in `alignment.ADDED_COLUMNS`, which covers a database still at
+    version 0. Neither reaches a database past the baseline — `alignment.migrate`
+    runs only inside `_baseline`, i.e. migration 1 — and the live library is
+    well past it, with 27 `allin1_analysis` rows in it. Hence this migration.
+
+    Nothing backfills: the 100-fps arrays the values come from are dropped as
+    soon as a summary exists, so an existing row's new columns stay NULL
+    (unmeasured, never zero) until allin1 runs again — and `allin1.analysis`
+    moved to version 2, so that run recomputes instead of reusing its payload.
+
+    Idempotent (`PRAGMA table_info` first): a rollback (database/downgrade.py)
+    resets ``user_version`` and replays every migration. Statements only, never
+    ``executescript`` — see `apply`.
+    """
+    from database.alignment import ALLIN1_ACTIVATION_COLUMNS
+
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND "
+                        "name='allin1_analysis'").fetchone():
+        return                      # migration 1 has not created it yet
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(allin1_analysis)")}
+    for _table, col, decl in ALLIN1_ACTIVATION_COLUMNS:
+        if col not in cols:
+            conn.execute(f"ALTER TABLE allin1_analysis ADD COLUMN {col} {decl}")
+
+
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(1, "baseline", _baseline),
+    Migration(2, "feature_arrays", _feature_arrays),
+    Migration(3, "slim_candidates", _slim_candidates),
+    Migration(4, "analysis_frames", _analysis_frames),
+    Migration(5, "songs_scored_at", _songs_scored_at),
+    Migration(6, "allin1_activations", _allin1_activations),
+)
+
+SCHEMA_VERSION = MIGRATIONS[-1].version
+
+
+def current_version(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+
+def apply(conn: sqlite3.Connection) -> List[int]:
+    """Run every migration above the stored version. Returns the versions
+    applied, in order.
+
+    Each runs in its own transaction with ``user_version`` set inside it, so a
+    failure rolls that migration back and leaves the stored version on the last
+    one that succeeded — the next start retries exactly the one that broke. The
+    error names the failed version and chains the original exception. Only an
+    ``Exception`` is wrapped that way; a ``KeyboardInterrupt`` or ``SystemExit``
+    rolls back and propagates as itself.
+
+    Why not SAVEPOINTs: Python's sqlite3 opens implicit transactions of its own
+    and ``executescript`` (migration 1 uses it) COMMITs whatever is pending,
+    which silently ends a savepoint and makes ``ROLLBACK TO`` fail with "no such
+    savepoint". So ``isolation_level`` is switched off for the duration and the
+    transaction is explicit. A migration that itself uses ``executescript``
+    commits early and is not atomic — which is safe only because it is
+    idempotent, as migration 1 is; a later migration should avoid it.
+
+    ``PRAGMA user_version`` cannot be parameterised, which is why it is
+    formatted; the value is an int from this module's own table.
+    """
+    at = current_version(conn)
+    done: List[int] = []
+    previous = conn.isolation_level
+    conn.isolation_level = None
+    try:
+        for migration in MIGRATIONS:
+            if migration.version <= at:
+                continue
+            log.info("schema: applying %d (%s)", migration.version, migration.name)
+            conn.execute("BEGIN")
+            try:
+                migration.up(conn)
+                conn.execute(f"PRAGMA user_version = {int(migration.version)}")
+                if conn.in_transaction:      # an executescript may have committed
+                    conn.execute("COMMIT")
+            except Exception as exc:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise RuntimeError(
+                    f"schema migration {migration.version} ({migration.name}) "
+                    f"failed: {exc}") from exc
+            except BaseException:
+                # Ctrl-C or SystemExit part-way through a long migration: undo
+                # it, but do not rename it "migration N failed" — it did not.
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+            done.append(migration.version)
+    finally:
+        conn.isolation_level = previous
+    return done
+
+
+def shape(conn: sqlite3.Connection) -> Dict[str, dict]:
+    """The database's shape, normalised for comparison: every table's columns
+    with their declared type, NOT NULL and primary-key flags, and every named
+    index's SQL with whitespace collapsed. SQLite's own auto-indexes and
+    internal tables are left out — they follow from the declarations."""
+    tables: Dict[str, list] = {}
+    for (name,) in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall():
+        tables[name] = [
+            (r[1], (r[2] or "").upper(), int(r[3]), int(r[5]))
+            for r in conn.execute(f"PRAGMA table_info([{name}])")]
+    indexes: Dict[str, str] = {}
+    for name, sql in conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' "
+            "AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY name").fetchall():
+        indexes[name] = " ".join((sql or "").split())
+    return {"tables": tables, "indexes": indexes}

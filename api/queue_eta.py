@@ -22,14 +22,15 @@ log = logging.getLogger(__name__)
 # rows api/workers/stages._timed writes). ".cached" / ".reused" runs are left
 # out: they are what an unchanged file costs, not what the next new track will.
 POOL_GROUPS = {"download": ("download",), "quick": ("quick",), "stems": ("stems",),
-               "analysis": ("analysis", "structure"), "allin1": ("allin1",)}
-# The groups one stage RECORD covers while it runs. Structure is its own record
-# on the analysis pool.
+               "analysis": ("analysis",), "allin1": ("allin1",),
+               "structure": ("structure",)}
+# The groups one stage RECORD covers while it runs. The cut is its own stage and
+# its own pool now, so the two maps are the same shape.
 RECORD_GROUPS = {"download": ("download",), "quick": ("quick",), "stems": ("stems",),
-                 "analysis": ("analysis",), "structure": ("structure",),
-                 "allin1": ("allin1",)}
+                 "analysis": ("analysis",), "allin1": ("allin1",),
+                 "structure": ("structure",)}
 POOL_OF = {"download": "download", "quick": "quick", "stems": "stems",
-           "analysis": "analysis", "structure": "analysis", "allin1": "allin1"}
+           "analysis": "analysis", "allin1": "allin1", "structure": "structure"}
 
 _DOING = {"download": "Downloading", "quick": "Quick analysis",
           "stems": "Separating vocals", "analysis": "Analysing",
@@ -40,7 +41,9 @@ _WAITING_FOR = {"download": "download", "quick": "quick analysis",
 _FAILED = {"download": "downloading", "quick": "in quick analysis",
            "stems": "separating stems", "analysis": "analysing",
            "structure": "finding sections", "allin1": "finding downbeats (allin1)"}
-_STAGE_ORDER = ("download", "quick", "stems", "analysis", "structure", "allin1")
+# Lifecycle order, the same tuple as api.workers.pipeline_worker.STAGES: the
+# cut runs after allin1, whose bar lines it sits on.
+_STAGE_ORDER = ("download", "quick", "stems", "analysis", "allin1", "structure")
 
 
 def _parse(ts: Optional[str]) -> Optional[datetime]:
