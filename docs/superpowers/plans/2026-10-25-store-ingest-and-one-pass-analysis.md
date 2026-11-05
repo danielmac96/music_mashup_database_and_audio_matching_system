@@ -5589,19 +5589,30 @@ git commit -m "Measure one pass over a folder, and let the twice-check fail"
 
 `readme.md` is the single source; this plan file is scaffolding. This task writes what was built and measured into the readme's own sections and deletes the plan.
 
+**This section is corrected against what actually shipped in Tasks D1–D7 and 1–10, and against what was and was not measured.** Nineteen corrections are marked **[C1]**–**[C19]** below; `[C1]` is load-bearing, because the drafted Step 8 asked item 13 to state three numbers that do not exist. The plan is deleted in the same commit as the readme, so these corrections exist only in the git history of this commit — which is why they are written down rather than silently applied.
+
 **Files:**
 - Modify: `readme.md`
-- Delete: `docs/superpowers/plans/2026-10-25-one-pass-analysis.md`
+- Delete: `docs/superpowers/plans/2026-10-25-store-ingest-and-one-pass-analysis.md` **[C2]** — the drafted Files list named `docs/superpowers/plans/2026-10-25-one-pass-analysis.md`, which does not exist. `git ls-files docs/superpowers/plans/` returns the one real file and nothing else, so Step 10's `git rm -r docs/superpowers/plans` is right as written.
 
 **Interfaces:**
-- Consumes: the measured tables from Tasks 9 and 10 (`data/test30/bench/*/one_pass.md`, `allin1_models.md`).
+- Consumes: the per-task reports under `.superpowers/sdd/` (`task-1-report.md` … `task-10-report.md`) and `analysis_runs` read `mode=ro`. **[C3]** It does **not** consume `data/test30/bench/*/one_pass.md` or `allin1_models.md`: Task 9 built `scripts/bench_allin1_models.py` and Task 10 built `scripts/bench_one_pass.py`, and **neither has ever been run** — each needs Docker, Demucs, Essentia, allin1's weights and the user's own audio. No such file exists on any machine here.
 - Produces: nothing in code — documentation only.
 
 - [ ] **Step 0: Phase D — the store, the schema and the ingest**
 
-Four edits, before the analysis ones:
+**[C4] Read before adding.** Several Phase D edits already landed with the task that made the change, because an incomplete load-bearing rule is a hazard for whoever reads it in the meantime. Audited against `readme.md` at `69e5006`:
 
-*§5.1 Ingest* — add two bullets, in that section's own voice:
+| Drafted edit | State |
+|---|---|
+| §7 — the parking decision's second limb (`feature_arrays`, `_park`'s inline capture) | **already there**, §7 "Two separation pipelines, one set of live rows" |
+| §2 — which database is live | the first sentence of §2's prose already says it; **add only** the clause that a test library is a different `MASHUP_DB_PATH` / `MASHUP_AUDIO_ROOT` / `MASHUP_DATA_DIR`, not a flag |
+| §6 — `database/schema.py`, `database/arrays.py`, the ledger, `PRAGMA user_version` | **missing** (Task 5's report flags it: "readme has no section on `database/schema.py` at all") — add |
+| §6 Tables — `feature_arrays`, what `mashup_candidates` lost, the new indexes | **missing** — add |
+| §5.1 — the three ingest bullets | **missing** — add |
+| §5.7 / §7 — `reason` is two sentences; `pairs_freshness.last_scored_at` changed meaning | **missing**, and §5.7 still says a candidate row stores "a one-line `reason`", which migration 3 dropped — correct it |
+
+*§5.1 Ingest* — add three bullets, in that section's own voice:
 
 > - **The library is asked before the network.** `ingest_rows` checks every row
 >   against the library first (`_existing_ids`, one query for the batch) and
@@ -5619,24 +5630,32 @@ Four edits, before the analysis ones:
 >   with the pipeline queued after the commit. A job that starts against an
 >   uncommitted row reads a song that does not exist.
 
+**[C5]** A fourth thing belongs with them and is not in the draft: ingest re-checks identity **after** enrichment as well (`_existing_ids([merged], conn)`, on the batch's own connection so it sees its uncommitted rows). Without it a record repeated inside one import, or whose enriched canonical link is already owned, reaches `upsert_song`'s `ON CONFLICT`, which sets `status = queued` and would rewind an analysed track through download → Demucs → analysis. Task D5's report, deviation 1.
+
 *§6 Repo map* — add `database/schema.py` (the migration ledger) and
 `database/arrays.py` (the float-array store) to the table, and a line saying
 the schema now carries `PRAGMA user_version`, that `database/schema.py`'s
 `MIGRATIONS` is the only place a shape change belongs, that a shipped
 migration is never edited, that each one must be idempotent (a rollback
-replays from 1) and must not call `executescript`.
+replays from 1) and must not call `executescript`. **[C6]** Also add
+`analysis/timeseries.py` to the `analysis/` row (the draft defers this to
+Step 5) and the four scripts the earlier tasks added to the `scripts/` row:
+`db_report.py` (D6), `ingest_urls.py` (D7), `bench_allin1_models.py` (Task 9)
+and `bench_one_pass.py` (Task 10).
 
-*§7 Data and scoring* — the parking decision's second limb was already written
-into the readme when D2 landed, because an incomplete load-bearing rule is a
-hazard for anyone reading it in the meantime. Check it still reads true, and
-add the two migration rules above as their own decision bullet if §6's line
-does not carry them.
+*§7 Data and scoring* — the parking decision's second limb is already written
+(see the audit above). Add the migration rules as their own decision bullet.
 
 *§6 Tables* — add `feature_arrays` (`song_id`, `stem_type`, `name`, `dtype`,
 `dim`, `data` — `beat_times` and `waveform_rms` as float32 BLOBs, out of
 `features` because `SELECT f.*` dragged 4.5 MB of JSON into every scan), note
 that `mashup_candidates` lost `reason`, `scored_at` and the six unread side
-columns, and list the four new candidate indexes.
+columns, and list the four new candidate indexes. **[C7]** Seven columns were
+dropped, not eight: `inst_energy` was kept, because `models.py`'s `nrg` CTE
+ranks the dock's "bed energy" filter on it (Task D3's report). And the live
+table measures **69** columns today, read `mode=ro` — the drafted Expected
+result's "70 columns → 62" is not what shipped and the after-count is not
+62; quote what the database says.
 
 *§2 Settings* — a sentence under the table: which database is live is decided
 by `settings.json`, and a library built from scratch for testing is a different
@@ -5659,21 +5678,28 @@ by `settings.json`, and a library built from scratch for testing is a different
   which deliberately never writes it) now reports `null` where it used to
   report a timestamp.
 
-- [ ] **Step 1: §2 Settings — the new rows**
+- [ ] **Step 1: §2 Settings — the new row**
 
-Add to the settings table, in the block beside the other pipeline settings:
+**[C8] Three of the drafted four rows are already in §2's table**, audited line by line against `readme.md` at `69e5006`. **A duplicate row is worse than a missing one**, because two rows can then disagree and nothing says which is live:
+
+| Drafted row | State |
+|---|---|
+| `MASHUP_KEEP_ANALYSIS_FRAMES` / `keep_analysis_frames` | **missing — add it.** `config.current_keep_frames()` reads it; §2 lists only `keep_analysis_stems`, a different setting |
+| `MASHUP_DUAL_CUT` / `dual_cut` | already there (Task 5) |
+| `MASHUP_ALLIN1_MODEL` / `allin1_model` | already there (Task 6), already saying the folds are chosen "only on the benchmark's evidence, §9 item 12" |
+| `separation_pipeline` default → `unified_4stem`, with the null-test sentence | already there (Task 6), with a paragraph of its own above **Rollback** |
+
+So add one row, in the block beside the other pipeline settings:
 
 | Setting | Env var | settings.json key | Default |
 |---|---|---|---|
 | Keep the per-frame matrices | `MASHUP_KEEP_ANALYSIS_FRAMES` | `keep_analysis_frames` | on |
-| Cut with both section engines | `MASHUP_DUAL_CUT` | `dual_cut` | off |
-| allin1 checkpoint | `MASHUP_ALLIN1_MODEL` | `allin1_model` | the value Task 9 measured |
 
-and change the `separation_pipeline` row's default to `unified_4stem`, with a sentence saying an existing library does not switch on its own and that `scripts/stem_null_test.py` comes first.
+**[C9]** The drafted row said the checkpoint default is "the value Task 9 measured". Nothing was measured: `bench_allin1_models.py` has never been run and no allin1 checkpoint has ever been loaded on any machine here. `allin1_model` stays **`harmonix-all`**, which is what §2 already says.
 
 - [ ] **Step 2: §3 Workflow and architecture — the stage list and the sharing bullet**
 
-Change the workflow diagram's step 2 line to put structure last:
+**[C10] The stage order already landed with Task 5**, which rewrote §3's diagram, the job timeline, the allin1 bullet and a "cut once / score once" bullet, plus §4's six pool cards. What is left of this step is the frames: name them in the diagram's `analyse` step and add the frame-store paragraph.
 
 ```
                 download → quick (mix: BPM, key, provisional sections) → stems
@@ -5681,7 +5707,7 @@ Change the workflow diagram's step 2 line to put structure last:
                 → structure (one cut, on the engine's own grid) → hooks
 ```
 
-Replace the "Each file is decoded once; each feature group is computed once" bullet's last sentence with a paragraph on the frame store:
+Add, beside the "Each file is decoded once; each feature group is computed once" bullet:
 
 > **Each file is decoded once; each per-frame array is computed once.** Above
 > the feature cache sits `analysis_frames` (`analysis/timeseries.py`): the
@@ -5689,18 +5715,11 @@ Replace the "Each file is decoded once; each feature group is computed once" bul
 > Essentia's `TonalExtractor` and `essentia.spectral` already compute for every
 > stem, kept as a compressed `.npz` beside the audio instead of averaged to a
 > handful of numbers and dropped. `detect_sections` reads them, so the structure
-> stage decodes nothing and calls no librosa transform: it was 88.6 s a track
-> (57.1 s of it CQT chroma on the stems) for numbers that already existed.
+> stage decodes nothing and calls no librosa transform.
 
-Add a bullet on the single cut and the single score:
+**[C11] The "88.6 s a track (57.1 s of it CQT chroma on the stems)" needs labelling, not correcting.** Read `mode=ro` from the live 206-track `analysis_runs` on 2026-11-04: `structure` is **88.49 s median** over 232 runs (mean 100.16 s, 387.3 min in all) and `structure.stem_chroma` is **56.21 s median** over 205 runs (mean 61.08 s, 208.7 min). Task 4's report re-derived the same medians at 88.6 / 57.1 over 231 and 204 rows. These are the **medians**, they moved by a run or two since, and the drafted figures were not wrong. Quote one statistic and name it. The after-figure is **one track, not a median**: Task 4 measured the cut at **0.156 s** on song 1 (232 s, in the container), with `structure.stem_chroma` 0.013 s and no `structure.load` row at all.
 
-> - **One cut and one score a track.** Under the allin1 engine the sections sit
->   on allin1's downbeats, so `structure` is the last stage and the Essentia
->   novelty cut runs only as the fallback (allin1 failed, skipped, or found
->   nothing) or when `dual_cut` is on for the Engines comparison. `_score_track`
->   scores only when `songs.pairs_input_at` is newer than `songs.scored_at`, so
->   the quick tier's provisional pass, the sections and the finalise step no
->   longer each trigger a library-wide scan.
+The "one cut and one score a track" bullet the draft adds here is **already in §3** (Task 5). Do not write a second one.
 
 - [ ] **Step 3: §5.4 Methodology — the frames row in the group table**
 
@@ -5710,11 +5729,13 @@ Add a row to the Essentia group table:
 |---|---|---|
 | `essentia.frames` | the per-frame arrays `essentia.tonal` and `essentia.spectral` already produce: chroma (HPCP folded to 12 bins, per frame, L2-normalised), MFCC, 8-band power, centroid/rolloff/flux/zcr/rms, and on the vocal stem the sung-pitch curve — all on one 46.44 ms grid, because `TonalExtractor`'s hop (2048 @ 44.1 kHz) and the spectral loop's (512 @ 22.05 kHz, decimated by 2) are the same interval | an `.npz` sidecar per (song, stem, pipeline) registered in `analysis_frames`; the payload in `feature_cache` is only its metadata |
 
-and a sentence under the table: the bass stem is analysed for its tonal group alone, so the bass chroma is the bass stem's rather than a band-passed CQT of the mix — better, and ~13× cheaper.
+and a sentence under the table: the bass stem is analysed for its tonal group alone, so the bass chroma is the bass stem's rather than a band-passed CQT of the mix. **[C12] Drop the "~13× cheaper".** It is unverified: no measurement of the bass-chroma pair exists. The nearest measured comparison is a different one — `allin1.structure.stem_chroma` at 7.89 s median against `structure.stem_chroma` at 56.21 s, ~7× — so say "cheaper" with the reason (one stem's tonal group instead of a band-passed CQT of the mix) and nothing more.
+
+Also record the measured sidecar size here, naming the measurement: Task 3's Step 7 ran `do_analyze` on song 1 in the container (232 s, legacy 2-stem) and wrote **three sidecars totalling 1,089,494 bytes — ~355 KB a stem**, 4,999 frames each on one grid, ~1.5 KB per audio second. That is one track, not a library median; the live 206-track library holds exactly those three `analysis_frames` rows and no others.
 
 - [ ] **Step 4: §5.5 — the cut, and what allin1 now keeps**
 
-In the structure subsection, say that a cut reads the stored frames and what that cost before. In the allin1 subsection, add the activations: `beat_conf` and `downbeat_conf_beats` (the activations at every beat, not only at downbeats) and `segment_label_probs` (the whole label distribution per segment), each a few hundred float16s, and that the 100 fps arrays are still dropped.
+In the structure subsection, say that a cut reads the stored frames and what that cost before (Step 2's figures, labelled). **[C13] The allin1 half of this step already landed with Task 6**: §5.5 already documents `beat_conf`, `downbeat_conf_beats`, `segment_label_probs` and `segment_labels_order`, the `_peak_near` sampling, the measured ~2.4 KB a 4-minute track, the version-2 cache bump and that the 100 fps arrays are dropped. Write nothing there.
 
 - [ ] **Step 5: §6 — the tables and the repo map**
 
@@ -5725,12 +5746,11 @@ Add to the table list:
 > per-frame matrices live on disk; derived and refillable, dropped by
 > `database/downgrade.py` with the rest of `database/alignment.py`'s tables)
 
-add `songs.scored_at` beside `pairs_input_at`, the four new `allin1_analysis`
-columns, and add `analysis/timeseries.py` to the repo map's `analysis/` row.
+add `songs.scored_at` beside `pairs_input_at` **[C14] — already there (Task 5)** — the four new `allin1_analysis` columns **— already there (Task 6)** — and add `analysis/timeseries.py` to the repo map's `analysis/` row.
 
 - [ ] **Step 6: §7 — the load-bearing decisions**
 
-Add three:
+Add two, not three:
 
 > - **One frame grid, and `detect_sections` never decodes when it is given
 >   one.** `analysis/timeseries.STEP_SECS` is 2048/44100 because that is
@@ -5745,44 +5765,59 @@ Add three:
 >   returned; `frames_out` is a side channel, and `essentia.frames` caches only
 >   the sidecar's metadata. Put `frames_out` in a group's `params()` and the
 >   whole library's tonal and spectral cache invalidates for nothing.
-> - **`_score_track` is idempotent, and `songs.scored_at` is what makes it so.**
->   Every writer of a scoring input already bumps `pairs_input_at`
->   (`models.mark_pairs_input`); `score_song_pairs` now stamps `scored_at`. A
->   new writer that skips the first leaves the pipeline refusing to re-score a
->   track whose sections changed — the same failure mode as the dock claiming
->   the pairs are current, and the same fix.
 
-- [ ] **Step 7: §8 — the two scripts**
+**[C15]** The third — "`_score_track` is idempotent, and `songs.scored_at` is what makes it so" — **is already in §7** (Task 5 added three bullets there: both runs stamping `scored_at`, neither writing `app_prefs.last_score`; the once-per-set-of-inputs rule with its same-second provisional guard; and the structure stage being terminal). Do not write a fourth copy.
 
-Add `scripts/bench_allin1_models.py` and `scripts/bench_one_pass.py` to the
-"not part of the suite" block, with their commands and what each reports.
+**[C16] One §7 bullet now contradicts the ingest change and must be amended, which the draft does not mention.** Operations' "Never hold an open write transaction across a call that opens its own connection" is still the rule for a *route*, but `ingest_rows` now deliberately holds one transaction for a whole batch. Name `models.connection()` as the one sanctioned exception and its condition: nothing inside the block may open its own connection, every `database/models.py` helper in it takes `conn=`, and `queue_runner.enqueue_song` goes strictly after the commit (`tests/test_ingest_dedup.py` parses the block and enforces exactly that).
+
+- [ ] **Step 7: §8 — the scripts**
+
+**[C17] All three are already in §8's "not part of the suite" block**, added by the task that wrote each: `bench_allin1_models.py` (Task 9), `bench_one_pass.py` (Task 10) and `run.py --allin1` (the allin1 persona simulation, merged from master). Check before adding, as Step 1 demands for the settings table; `db_report.py` and `ingest_urls.py` are owner scripts with no §8 entry and belong in §6's `scripts/` row instead.
 
 - [ ] **Step 8: §9 — the record**
 
-Add a numbered item 13, with the measured before/after from Task 10's report and the fold decision from Task 9's. Give it the same shape as item 12: what was built, what was decided, what was measured, and what is still open. At minimum it must state:
+**[C1] LOAD-BEARING. Three of the drafted "at minimum it must state" figures do not exist, and item 13 must not state them.** "The per-stage medians … and after", "the sidecar storage per track in MB" and "the allin1 checkpoint chosen and the agreement numbers that chose it" all come from runs that need Docker, Demucs, Essentia, allin1 and the user's own audio. `bench_one_pass.py` and `bench_allin1_models.py` are written and unit-tested with the pipeline and allin1 faked; **neither has been run**, anywhere. No checkpoint was chosen and `allin1_model` stays `harmonix-all`.
 
-- the per-stage medians before (the table at the top of this plan) and after,
-- the sidecar storage per track in MB,
-- the allin1 checkpoint chosen and the agreement numbers that chose it,
-- that the 206-track library is still on `legacy_2stem` and un-backfilled, and what switching it would take,
-- what is still open: the EffNet dedup check (§9's existing finding), `rhythm`/`tonal` on the vocal and instrumental stems still computed for the stem beat grids while the matcher uses the mix's (readme §5.4 `_with_full_bpm`) — measure whether the waveform route's stem beats are worth 6.9 s a track before removing them, and the per-bar embeddings in `allin1_embeddings` still having no reader (phrase matching, §9 item 5).
+So: write item 13 in **item 12's own shape — built / decided / measured / what is owed, in that order**. Put the before-numbers in the measured part and name the statistic each time (median or mean, and over how many runs). Put the three missing figures in the owed part, each naming the script that produces it. Do not invent a number.
+
+Measured, available, read `mode=ro` on 2026-11-04 from the live 206-track `data/mashup.db` (204 songs with timings):
+
+| grp | runs | median | mean | total |
+|---|---|---|---|---|
+| `structure` | 232 | 88.49 s | 100.16 s | 387.3 min |
+| `structure.stem_chroma` | 205 | 56.21 s | 61.08 s | 208.7 min |
+| `allin1` | 27 | 593.78 s | 662.02 s | 297.9 min |
+| `allin1.inference` | 27 | 467.71 s | 524.59 s | 236.1 min |
+| `allin1.demix` | 27 | 125.12 s | 131.89 s | 59.3 min |
+| `analysis` | 205 | 7.72 s | 8.34 s | 28.5 min |
+
+232 `structure` runs over 204 songs is the before-number for the one-cut claim: 27 songs were cut more than once and song 1 three times. **Only 3 `stems` rows and 3 `download` rows exist in the whole library** — those 206 tracks were separated and downloaded before either stage was timed — so nothing may present them as a baseline for either stage; the fresh run is the only source of a stems or download figure.
+
+The store's before/after is measurable and is not owed: the live file is 84.2 MB at 206 tracks against the plan's measured 93.7 MB; `mashup_candidates` 23.8 MB of column bytes over the same 63,918 rows against 31.6 MB, at 69 columns with `reason` and `scored_at` gone; `features` 1.1 MB with both array columns gone, their 4.5 MB of JSON now 2.0 MB of float32 BLOBs over 1,224 `feature_arrays` rows.
+
+Item 13 must also state: that the 206-track library is still on `legacy_2stem`, un-backfilled (177 tracks `allin1_state = 'queued'`) **and still at schema version 4 of 6** — migrations 5 and 6 reach it on the next open by a rebuilt container; and what is still open — the EffNet dedup check (§9's existing finding); `rhythm` / `tonal` on the vocal and instrumental stems still computed for the stem beat grids while the matcher uses the mix's (§5.4 `_with_full_bpm`), so measure whether the waveform route's stem beats are worth their cost before removing them; and the per-bar embeddings in `allin1_embeddings` still having no reader (phrase matching, §9 item 5).
+
+**[C18] Do not restate item 12's own open list.** `origin/master` merged in an allin1 persona simulation whose eight ranked findings sit in item 12, the first of them a real defect in shipped code. They are somebody's measured output: item 13 points at them, and does not rewrite, renumber, summarise or move them. The same holds for item 12's six-step "not yet measured" list, whose head — `scripts/stem_null_test.py`, still never run — is the gate before the first import on the `unified_4stem` default. Update that list in place rather than starting a second one, and do not let item 13 imply any of it is done.
 
 - [ ] **Step 9: Verify the readme is consistent**
 
-Run: `.\.venv\Scripts\python.exe -m pytest tests -q -k readme`
-Expected: PASS — some frontend contract tests read the readme or the JSX for names. If none match that selector, instead confirm by hand that every setting named in §2 exists in `config.py`:
+**[C19] The drafted verification proves nothing about this readme.** `pytest tests -q -k readme` collects exactly two tests — `tests/test_session_export.py::test_readme_carries_the_recipe` and `tests/test_session_lanes.py::test_the_readme_says_what_was_baked_and_what_is_left` — and both are about the `README.txt` written into an exported FL session folder, not `readme.md`. Use the fallback instead, extended: walk §2's table and confirm every `MASHUP_*` env var and every settings.json key it names resolves to something in `config.py`, and report any row naming a setting that no longer exists.
 
 ```bash
 .\.venv\Scripts\python.exe -c "import config; [print(n, getattr(config, n)()) for n in ('current_keep_frames','current_dual_cut','current_allin1_model','current_separation_pipeline','current_segmentation_engine')]"
 ```
-Expected: five lines, no `AttributeError`.
+Expected: five lines, no `AttributeError`. Then the whole suite in ONE invocation from the repo root, in the background: a readme-only change must move nothing, since some frontend contract tests read the JSX and CSS.
 
 - [ ] **Step 10: Delete this plan and commit**
 
+Two commits, in this order, so the corrections above survive in the history even though the file does not:
+
 ```bash
+git add docs/superpowers/plans
+git commit -m "Plan: nineteen Task 11 corrections, the owed numbers load-bearing"
 git rm -r docs/superpowers/plans
 git add readme.md
-git commit -m "Document the one-pass analysis pipeline in readme and drop the plan file"
+git commit -m "Document the one-pass pipeline in the readme and drop the plan file"
 ```
 
 ---
