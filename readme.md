@@ -125,11 +125,19 @@ downloads.
 ### One track, start to finish
 
 ```
- import ──► download ──► quick ──► stems ──► analysis ──► allin1 ──► structure ──► score
-            (yt-dlp)    (mix only) (htdemucs  (Essentia,   (beats,     (FALLBACK      (pairs
-                                    4 stems)   per stem)    downbeats,   only: Essentia  against the
-                                                            sections)    novelty cut)    library)
+ import ──► download ──► quick ──► stems ──► analysis ──► structure ──► score ═══► allin1 ──► re-score
+            (yt-dlp)    (mix only) (htdemucs  (Essentia,   (first cut:     (pairs    (refinement: its own
+                                    4 stems)   per stem)    Essentia,       on the    job, backfill priority:
+                                                            stored frames)  stems)    beats, downbeats, sections)
 ```
+
+**Pairs first, refinement after.** A track's pipeline job ends once it has
+real (stem-based) pairs: the analysis, then the Essentia cut from the stored
+frames (~0.2 s, no decode), then a score. allin1 then runs as a job of its own
+at backfill priority (`songs.allin1_state = 'queued'`), waits while the
+import still has separations queued, and re-scores the track on its sections.
+So every song in an import has usable pairs minutes after its download,
+instead of waiting behind every earlier song's allin1 run.
 
 | Stage | What it does | Code | Writes |
 |---|---|---|---|
@@ -137,10 +145,10 @@ downloads.
 | **download** | Anonymous SoundCloud download; a *verified* YouTube substitute when SoundCloud refuses or serves a 30 s preview | `downloader/download.py`, `stages.do_download` | `songs.raw_path`, `audio_provenance` |
 | **quick** | Essentia on the full mix only, plus provisional sections: BPM, key, waveform and a first structure within seconds, and provisional pairs | `stages.do_quick` | `features` (full), `sections` (provisional), `mashup_candidates` (`scorer=provisional`) |
 | **stems** | One htdemucs pass → vocals, drums, bass, other, plus the summed instrumental | `stems/separate.py`, `stages.do_stems` | `stems` (FLAC under `audio/stems/…`) |
-| **analysis** | Essentia per stem (mix, vocals, instrumental; the bass for its chroma only); per-frame matrices kept as `.npz` sidecars; stem quality; variant clustering | `stages.do_analyze`, `analysis/essentia_groups.py` | `features`, `feature_arrays`, `analysis_frames`, `feature_cache`, `stems.quality` |
-| **allin1** | One neural pass over the four stems: beats, downbeats, labelled sections, vocal phrases | `stages.do_allin1`, `analysis/allin1_runner.py` | `allin1_analysis`, `sections_allin1`, `vocal_phrases`, `allin1_embeddings` |
-| **structure** | **Only when allin1 produced no sections** (failed, skipped, found none): the Essentia/librosa novelty cut | `stages.do_structure`, `analysis/structure.py` | `sections` |
+| **analysis** | Essentia: the mix in full (rhythm, key, loudness, timbre, tags); the vocals and instrumental for loudness, timbre and per-frame chroma only — their tempo, grid and key are the mix's; the bass for its chroma; per-frame matrices kept as `.npz` sidecars; variant clustering | `stages.do_analyze`, `analysis/essentia_groups.py` | `features`, `feature_arrays`, `analysis_frames`, `feature_cache` |
+| **structure** | The first cut: the Essentia novelty cut from the stored frames, then stem quality and the preview hooks on those sections. Skipped once allin1 has cut the track, so it is also the fallback when allin1 fails | `stages.do_structure`, `analysis/structure.py` | `sections`, `stems.quality`, hooks |
 | **score** | This track against the library, both roles; replaces its provisional rows | `matcher/match.score_song_pairs` | `mashup_candidates` |
+| **allin1** | The refinement, its own job at backfill priority: one neural pass over the four stems (one fold of the model by default) — beats, downbeats, labelled sections, vocal phrases; then quality and hooks on its sections, and a re-score | `stages.do_allin1`, `analysis/allin1_runner.py` | `allin1_analysis`, `sections_allin1`, `vocal_phrases`, `allin1_embeddings` |
 
 A track's `status` walks `queued → downloaded → stemmed → analysed`, or stops at
 an `error_*` status with `songs.last_error` and waits for **Retry**. The quick
@@ -186,7 +194,7 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
 - **Stages are shared.** `api/workers/stages.py` `do_download / do_quick /
   do_stems / do_analyze / do_allin1 / do_structure` serve both the auto-chain
   and the per-track buttons. A semaphore keeps Demucs (and allin1, which takes
-  the same gate) to one run at a time.
+  the same gate unless `allin1_parallel` is on) to one run at a time.
 - **Priority queues.** Every stage queue orders by `(priority, arrival)`: a
   button on one track, then the selected track and its likeliest partners
   (`POST /api/tracks/{id}/prefetch`), then imports, then bulk reprocessing.
@@ -386,8 +394,10 @@ Resolution order: **environment variable > `settings.json` > default.**
 | Feature cache | `MASHUP_ANALYSIS_CACHE` | `analysis_cache` | on |
 | Essentia key profile / rhythm method | `MASHUP_ESSENTIA_KEY_PROFILE` / `MASHUP_ESSENTIA_RHYTHM` | `essentia_key_profile` / `essentia_rhythm_method` | `edma` / `degara` |
 | Essentia model downloads | `MASHUP_ESSENTIA_MODEL_FETCH` | — | on (`0` never downloads) |
-| allin1 checkpoint | `MASHUP_ALLIN1_MODEL` | `allin1_model` | `harmonix-all` (8-fold ensemble; single folds `harmonix-fold0…7` only on benchmark evidence, §9) |
-| allin1 device | `MASHUP_ALLIN1_DEVICE` | `allin1_device` | `cpu` |
+| allin1 checkpoint | `MASHUP_ALLIN1_MODEL` | `allin1_model` | `harmonix-fold0` (one fold, ~⅛ of the ensemble's inference); `harmonix-all` is the 8-fold ensemble (§9) |
+| Torch device (allin1 and Demucs) | `MASHUP_ALLIN1_DEVICE` | `allin1_device` | `cpu` (`cuda` uses a GPU when torch sees one, else falls back to cpu) |
+| Demucs window overlap | `MASHUP_DEMUCS_OVERLAP` | `demucs_overlap` | `0.25` (Demucs' default; 0.1 is ~15 % less separation work — listen before moving it) |
+| allin1 beside Demucs | `MASHUP_ALLIN1_PARALLEL` / `MASHUP_ALLIN1_THREADS` | `allin1_parallel` / `allin1_threads` | off / `DEMUCS_THREADS` (on: allin1 takes its own gate; split the cores between the two and check memory first) |
 | allin1 limits | `MASHUP_ALLIN1_MAX_SECS` / `MASHUP_ALLIN1_MEM_BUDGET_MB` | `allin1_max_secs` / `allin1_mem_budget_mb` | `900` s (longer is skipped) / `6000` |
 | Keep drums/bass/other after allin1 | `MASHUP_KEEP_ANALYSIS_STEMS` | `keep_analysis_stems` | on |
 | Keep the per-frame `.npz` sidecars | `MASHUP_KEEP_ANALYSIS_FRAMES` | `keep_analysis_frames` | on (off puts the fallback cut on librosa transforms) |
@@ -472,9 +482,10 @@ with ffprobe and replaces a stale preview.
 ### 5.3 Stem separation
 
 - **One htdemucs pass, four sources** (`stems/separate.py`): vocals, drums,
-  bass, other, written as FLAC (24-bit) under `audio/stems/`, plus
+  bass, other, written as 16-bit FLAC (Demucs' own output depth) under
+  `audio/stems/`, each read once, plus
   `instrumental` = drums + bass + other summed in float at the source rate,
-  scaled only if the sum would clip. Every `stems` row carries the tag
+  scaled only if the sum would clip and stored at 24-bit. Every `stems` row carries the tag
   `demucs:htdemucs:4:unified`; a row with any other tag is re-separated by
   `do_stems`.
 - The vocal stem and the summed instrumental are what playback, analysis, the
@@ -485,31 +496,45 @@ with ffprobe and replaces a stale preview.
 - **Stem quality** (`analysis/quality.py`): *bleed* (correlation between a
   stem and its complement), *HF loss* (top end lost against the mix), *noise
   floor* (RMS where the vocal should be silent), rolled into one 0–1 `quality`.
-  Stems below `STEM_QUALITY_MIN = 0.35` are not offered.
+  Stems below `STEM_QUALITY_MIN = 0.35` are not offered. Measured for the
+  vocals and instrumental only (nothing reads the others), once a track's final
+  sections exist — the noise floor is read in the sections with no voice, which
+  the quick tier's provisional sections cannot say — and cached
+  (`librosa.quality`) over the stems, the mix and the quiet windows.
 - The subprocess runs with `OMP/MKL_NUM_THREADS = DEMUCS_THREADS`
   (`separate.thread_env`), so the quick tier is never starved by torch.
 
 ### 5.4 Track analysis (Essentia)
 
-`analysis/essentia_groups.py` runs per stem (full, vocals, instrumental; the
-bass stem for its tonal group only). One decode per file (FFmpeg for anything
-compressed — **MP3 never goes through libsndfile**, which is ~10× slower), and
-each unit is a cached feature group:
+`analysis/essentia_groups.py` runs on the full mix (rhythm, tonal, loudness,
+spectral, effnet), on the vocals and instrumental (loudness, spectral and
+chroma; melody on the vocals) and on the bass (chroma only). One decode per
+file (FFmpeg for anything compressed — **MP3 never goes through libsndfile**,
+which is ~10× slower), and each unit is a cached feature group:
 
 | Group | Measures | Projects onto |
 |---|---|---|
-| `essentia.rhythm` | `RhythmExtractor2013` (degara); grid confidence as steadiness × salience; **beat phase** from kick-band `BeatsLoudness`; alternative BPM votes; onset rate; danceability | bpm, bpm_confidence, beat_times, beat_phase · extras |
-| `essentia.tonal` | `KeyExtractor` per profile (edma primary; others vote on confidence); tuning; chords; HPCP | key, mode, camelot, key_confidence · extras |
+| `essentia.rhythm` | **full mix only**: `RhythmExtractor2013` (degara); grid confidence as steadiness × salience; **beat phase** from kick-band `BeatsLoudness`; alternative BPM votes; onset rate; danceability | bpm, bpm_confidence, beat_times, beat_phase · extras |
+| `essentia.tonal` | **full mix only**: `KeyExtractor` per profile (edma primary; others vote on confidence); tuning; chords; HPCP | key, mode, camelot, key_confidence · extras |
+| `essentia.chroma` | **stems only**: `TonalExtractor`'s per-frame HPCP and its mean — the tonal group without the four key profiles, tuning and chords | the stem's chroma frames (sidecar) |
 | `essentia.loudness` | EBU R128 integrated + LRA, true peak, ReplayGain, dynamic complexity, crest, stereo width | loudness_rms · extras |
 | `essentia.spectral` | per-frame MFCC, centroid, rolloff, ZCR, flux, flatness, 8/3-band energy; contrast, complexity, dissonance | mfcc, spectral_*, energy, band_energy, waveform_rms · extras |
 | `essentia.melody` | **vocal stem only**: `PitchMelodia` → a 50 ms f0 curve | `melody_json` (sung range) + the vocal sidecar's `f0` row |
 | `essentia.frames` | the per-frame arrays the tonal and spectral groups already compute — chroma, MFCC, 8-band power, centroid/rolloff/flux/zcr/rms (+ f0 on the vocal) — on one 46.44 ms grid | an `.npz` sidecar per (song, stem) registered in `analysis_frames` |
 | `essentia.effnet` | **full mix, analysis stage only**: Discogs-EffNet → 15 heads (genre, styles, voice, gender, danceable, moods, instruments), models fetched on first use | `tags_json` · the mean embedding (→ `embeddings`) |
 
-- **Tempo and key for matching come from the full mix** and are copied onto
-  the stem rows (`_with_full_bpm`): separation adds octave errors to stem beat
-  tracking, and a key estimate over an isolated acapella is near noise.
-  Timbre, loudness and bands stay stem-derived.
+- **A stem's tempo, beat grid and key are the mix's.** The stems are
+  sample-aligned with the mix, separation adds octave errors to stem beat
+  tracking, and a key estimate over an isolated acapella is near noise — so the
+  vocals and instrumental run no rhythm group and no key panel, and their
+  `features` rows take the mix's (`stages._FROM_MIX`; the matcher's
+  `_with_full_bpm` does the same). Timbre, loudness and bands stay
+  stem-derived, because that is what is heard layered.
+- **The quick tier keeps the mix's frame sidecar**, so the full analysis
+  serves the mix's tonal and spectral groups from the cache instead of
+  decoding the mix and running them again, and the quick tier's provisional
+  cut reads the stored frames (on the mix's Essentia beat grid) rather than
+  taking a librosa CQT pass.
 - **Residual vocal ratio** on the instrumental — how much topline a bed still
   carries — is a cached librosa group (`librosa.residual`).
 - **The per-frame sidecars** (`analysis/timeseries.py`) are why the fallback
@@ -517,6 +542,11 @@ each unit is a cached feature group:
   second). `essentia.frames` is not a step of its own but a side channel the
   tonal and spectral steps fill when asked, so no other group's version moved
   when it was added (§7).
+- **Cost.** On a 220 s song (synthetic, real Essentia, a 4-core VM,
+  2026-11-06): quick tier ~8.7 s, analysis ~11.8 s, first cut with quality and
+  hooks ~3.1 s — 23.6 s against 43.7 s before the stems stopped running rhythm
+  and the key panel and the quick tier kept the mix's frames. Real records and
+  the Docker host will differ; `scripts/bench_one_pass.py` measures them.
 - `analysis/analyze.py` holds the shared helpers both Essentia and the cut use:
   Camelot table, bar-1 phase pick, grid confidence, BPM fitted through the
   beats (`bpm_from_beats` — never a tempogram bin), Krumhansl key from chroma.
@@ -526,8 +556,12 @@ each unit is a cached feature group:
 ### 5.5 Sections: allin1, the fallback cut, phrases and hooks
 
 **allin1** (`analysis/allin1_runner.py`, `stages.do_allin1`) runs after the
-analysis, on its own pool (`ALLIN1_WORKERS`, 1) and behind the stems gate so it
-never runs beside Demucs. One neural pass over the four sources gives beats,
+track's first cut and its pairs, as a job of its own at backfill priority, on
+its own pool (`ALLIN1_WORKERS`, 1). It shares the stems gate so it never runs
+beside Demucs (unless `allin1_parallel` is on), and a queued refinement waits
+while separations are waiting, so an import reaches its pairs first. It runs
+one fold of the model by default (`harmonix-fold0`; `harmonix-all` is the
+8-fold ensemble, one setting away). One neural pass over the four sources gives beats,
 downbeats, beat-in-bar and labelled segments (`intro / verse / chorus / bridge /
 inst / solo / break / outro`). The kept sources are written as 16-bit WAV into
 the exact folder allin1's `demix()` checks, so it never separates again
@@ -548,11 +582,16 @@ the exact folder allin1's `demix()` checks, so it never separates again
   reason; a track longer than `allin1_max_secs` is `skipped`; a run whose
   estimated memory exceeds `allin1_mem_budget_mb` is refused.
 - Measured on real audio (27 tracks, `harmonix-all`, CPU): the stage 330–1080 s
-  a track (mean 662 s, ~525 s of it inference), peak resident 3,280 MB.
+  a track (mean 662 s, ~525 s of it inference — median 468 s), peak resident
+  3,280 MB. A single fold is ~⅛ of that inference; its accuracy against the
+  ensemble is what `scripts/bench_allin1_models.py` measures (§9).
+- After its sections land: stem quality and the preview hooks on them, then a
+  re-score of the track.
 
-**The fallback cut** (`analysis/structure.detect_sections`) runs **only when
-allin1 produced no sections** (`pipeline_worker._wants_essentia_cut`) and on
-the quick tier's provisional pass:
+**The Essentia cut** (`analysis/structure.detect_sections`) runs on the quick
+tier's provisional pass, and straight after the analysis as the track's first
+cut — **unless allin1 has already cut it** (`pipeline_worker._wants_essentia_cut`),
+which also makes it the fallback when allin1 fails:
 
 1. Beat-synchronous chroma + MFCC → self-similarity → checkerboard novelty →
    peaks are boundaries. Read from the stored frame sidecars and the Essentia
@@ -848,6 +887,11 @@ Each shape below is pinned by a contract test.
   would count every allin1-cut track as needing re-analysis forever. Add the
   next section column to `_SECTION_CURRENT_COLUMNS` or bulk re-analysis silently
   skips it.
+- **A stem's features row takes the mix's tempo, grid and key**
+  (`stages._STEM_STEPS`, `_FROM_MIX`): the stems run no rhythm group and no key
+  panel. Anything that reads a stem's beat grid (the waveform route, hook
+  snapping, the FL export) reads the mix's — the stems are sample-aligned. A
+  stem's extras are its own measurements only.
 - **Change what a feature group returns → bump its version** in
   `analysis/registry.py`. The cache reuses a result while the audio bytes, the
   group version and its `params()` are unchanged, so an edit without a bump is
@@ -910,14 +954,22 @@ Each shape below is pinned by a contract test.
 
 ### Pipeline and scoring
 
-- **Structure is the last queue stage, and the only terminal one.**
-  `run_stage` finishes the job after it: `detect_sections` falls back to the
-  track BPM, so a section it could not measure would re-queue the track for
-  ever. Every stage in `pipeline_worker.STAGES` needs a queue and worker count in
+- **Structure ends the pipeline job; allin1 is a job of its own.** `run_stage`
+  finishes the job after the structure stage, whatever it found:
+  `detect_sections` falls back to the track BPM, so a section it could not
+  measure would otherwise re-queue the track for its own stage for ever. It
+  then queues allin1 by setting `allin1_state = 'queued'` and enqueueing a
+  backfill-priority job (`_queue_allin1_refinement`); `next_stage` routes a
+  `queued` track straight to allin1 before asking about sections, and
+  `queue_runner.resume_pending` re-enqueues `queued` tracks after a restart.
+  A track's first pairs therefore never wait for allin1. Every stage in
+  `pipeline_worker.STAGES` needs a queue and worker count in
   `api/queue_runner.py`, a gate in `stages._STAGE_GATES`, a pool in
   `api/routes/jobs._POOL_OF` and `api/queue_eta.POOL_OF`/`POOL_GROUPS`, a card in
   `QueueScreen.POOLS`, and its place in `useQueue.js` `STAGES` (pinned by a test).
-- **A track is scored once per set of inputs.** `_wants_scoring` is
+- **A track is scored once per set of inputs** — provisionally after the quick
+  tier, after its first cut, and again after allin1 (whose writes bump
+  `pairs_input_at`). `_wants_scoring` is
   `pairs_input_at > scored_at` OR "analysed and still carrying provisional
   rows" (both stamps are `datetime('now')` and can tie). **A per-track run never
   stands in for Score library**: it never writes `app_prefs.last_score`, so the
@@ -1062,7 +1114,7 @@ factor and peak MB, the sidecar storage, and a **Findings** section naming any
 stage that ran more than once on a track. `bench_allin1_models.py` separates
 once per track, hands the same four sources to every checkpoint, and reports
 downbeat agreement (within 25/40/70 ms, off by a beat), boundary F and label
-agreement against the ensemble; a fold replaces `harmonix-all` only at off-phase
+agreement against the ensemble; the fold default holds only at off-phase
 0, within-25 ms ≥ 0.95, boundary F ±0.5 s ≥ 0.9 and labels ≥ 0.9.
 
 ---
@@ -1073,10 +1125,15 @@ agreement against the ensemble; a fold replaces `harmonix-all` only at off-phase
    ~30 tracks in Docker: the per-stage medians, the sidecar storage per track,
    and proof that every stage ran once per track. Nothing has run the one-pass
    pipeline from download on real audio yet (Demucs 4-stem, Essentia, allin1
-   all in one go).
-2. **Which allin1 checkpoint** — run `scripts/bench_allin1_models.py`. No single
-   fold has ever been loaded here; `harmonix-all` is the default on that absence,
-   not on evidence. A fold is ~⅛ of the inference cost.
+   all in one go). The 2026-11-06 runtime pass (fold default, trimmed stem
+   analysis, pairs first) was measured on synthetic audio only.
+2. **Check the allin1 fold against the ensemble** — run
+   `scripts/bench_allin1_models.py`. `harmonix-fold0` became the default on
+   2026-11-06 for ~⅛ of the inference cost, *without* the benchmark: no fold has
+   been loaded on real audio yet. If it fails the bar (off-phase 0, within-25 ms
+   ≥ 0.95, boundary F ≥ 0.9, labels ≥ 0.9), set `allin1_model = harmonix-all`.
+   Then measure `allin1_parallel` (half the cores each) and `demucs_overlap =
+   0.1` (with an A/B listen) on the same machine.
 3. **Timing gate tolerance** — report the share of pairs passing at 25 / 40 /
    60 ms on real records before settling `timing_tol_ms`; 25 ms may be tight for
    live-drummed material. Check vocal phrase starts against ≥ 10 hand-marked
@@ -1100,17 +1157,22 @@ agreement against the ensemble; a fold replaces `harmonix-all` only at off-phase
    gate.
 9. **Check suspect attributes before they feed the matcher**: `dissonance` is
    near-constant, `tonal` says nearly every track is atonal, tuning medians at
-   434 Hz. Essentia's rhythm and tonal groups also run on the vocal and
-   instrumental stems for beat grids the matcher does not use — measure before
-   removing.
+   434 Hz.
 10. **Studio and sets:** auto-arrange; a set's moves as automation (crossfades,
     echo tails) rather than overlapping clips; tempo ramps between mashups;
     effort re-priced at the curve tempo; a native `.flp` export (PyFLP needs a
     template saved from the user's FL version).
-11. **Foundations as they hurt:** server-side Studio projects (snapshots are
+11. **Compute, not yet done:** cap TensorFlow's threads for EffNet (today
+    uncapped beside Demucs/allin1 at cores − 1; unverified here because the
+    model host is not reachable from the build sandbox); a CUDA Docker image
+    (Demucs and allin1 already follow `allin1_device = cuda`; natten needs a
+    CUDA build); phrases read from the vocal sidecar's RMS instead of a decode
+    (the sidecar's 46 ms grid halves pickup precision, so it waits for a
+    finer row).
+12. **Foundations as they hurt:** server-side Studio projects (snapshots are
     per-browser `localStorage`), multi-resolution waveform peaks, job
     persistence across restarts, automatic lyrics for section lines.
-12. Segments: hidden pairs still appear in live matches; with a learned model
+13. Segments: hidden pairs still appear in live matches; with a learned model
     active, live and stored rows are ranked on two scales.
 
 Not worth doing: raising the `rhythm` or `structure` section weights (`rhythm`
