@@ -10,7 +10,7 @@ import {
 import { toast } from "../../toast";
 import { TIERS } from "../../theme";
 
-// Segments — the matchup playground (readme §4 Segments).
+// Segments — the matchup playground (readme §3 Segments).
 //
 // Every row is one section of one song: vocals on the left, beds on the right,
 // a mini studio across the bottom. Select a segment and the OTHER table turns

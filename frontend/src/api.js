@@ -192,18 +192,11 @@ export const api = {
   getJobTimings: (since = "") =>
     jsonFetch(`/api/jobs/timings${since ? `?since=${encodeURIComponent(since)}` : ""}`),
 
-  // Which analyser is configured and effective, model coverage, per-group
-  // cache coverage and librosa ↔ Essentia agreement.
+  // Whether Essentia and allin1 can run here, model coverage and per-group
+  // cache coverage.
   getAnalysisStatus: () => jsonFetch("/api/analysis/status"),
 
-  // One track under both segmentation engines (Analysis › Engines): sections,
-  // bar lines, vocal phrases and each engine's pairs, ranked live.
-  getEngines: (songId, limit = 10) =>
-    jsonFetch(`/api/analysis/engines/${songId}?limit=${limit}`),
-  // Library-wide: downbeat agreement, the timing gate, ratings per engine.
-  getEngineReport: () => jsonFetch("/api/analysis/engine-report"),
-
-  // Whether ffmpeg/ffprobe/yt-dlp/demucs/librosa are available on the server.
+  // Whether ffmpeg/ffprobe/yt-dlp/demucs/librosa/essentia/allin1 are available.
   getDeps: () => jsonFetch("/api/health/deps"),
 
   // pip install -U yt-dlp on the server (stale yt-dlp breaks SoundCloud).
@@ -227,13 +220,12 @@ export const api = {
     }),
 
   // Pass only the keys you are changing. Paths and worker counts need a
-  // restart; the separator, the stem mode and every scoring knob are re-read on
-  // use, so they apply to the next separation / re-score.
+  // restart; every scoring knob is re-read on use, so it applies to the next
+  // re-score.
   saveSettings: (patch = {}) => {
     const map = {
       audioRoot: "audio_root", dbPath: "db_path",
-      pipelineWorkers: "pipeline_workers", stemSeparator: "stem_separator",
-      stemMode: "stem_mode",
+      pipelineWorkers: "pipeline_workers",
     };
     const body = {};
     for (const [k, v] of Object.entries(patch)) {
@@ -349,11 +341,6 @@ export const api = {
   getBestBedPerVocal: ({ limit = 40, perVocal = 1, minScore = 0 } = {}) =>
     jsonFetch(`/api/mashups/by-vocal?limit=${limit}&per_vocal=${perVocal}`
       + `&min_score=${minScore}`),
-
-  // Render one candidate's two sections, conformed, to a WAV server-side —
-  // the same maths the FL export uses, as a file you can keep or send.
-  startCandidatePreview: (candidateId) =>
-    jsonFetch(`/api/mashups/${candidateId}/preview`, { method: "POST" }),
 
   // Export the top N pairs (under the given filters) as one zip of FL session
   // folders. Body keys are the list route's: top_n, min_score, max_effort, …
@@ -637,8 +624,6 @@ export const api = {
       body: JSON.stringify({ rows, group_name: groupName || null }),
     }),
 
-  discoveryStatus: () => jsonFetch("/api/discovery/status"),
-
   // Your profile. This IDENTIFIES a public account rather than logging in —
   // the write layer needs a registered app (Artist Pro) and is dormant, so only
   // public sets, likes and uploads are readable, and the UI says as much.
@@ -753,14 +738,6 @@ export const api = {
 
   crateExportUrl: (id, format = "urls") =>
     `/api/crates/${id}/export?format=${format}`,
-
-  // Dormant until SoundCloud app credentials exist — answers 501 with setup
-  // instructions, which the UI shows as the tooltip on the disabled button.
-  pushCrate: (id, sharing = "private") =>
-    jsonFetch(`/api/crates/${id}/push`, {
-      method: "POST",
-      body: JSON.stringify({ sharing }),
-    }),
 
   getDbTables: () => jsonFetch("/api/db/tables"),
 

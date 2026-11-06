@@ -47,16 +47,13 @@ export function BulkReprocess({ onQueued }) {
   if (!stale || dismissed) return null;
 
   const needsAnalysis = stale.needs_analysis || 0;
-  const needsSeparate = stale.missing_four_stems || 0;
+  const needsSeparate = stale.wrong_separation || 0;
   const suspect = stale.suspect_audio || 0;
   const noMeta = stale.missing_metadata || 0;
-  // allin1 (readme §5.5): owed in the allin1 engine; offered either way so
-  // the Engines comparison can have both analyses.
+  // allin1 (readme §5.5): the section engine. A track without it is cut by
+  // the Essentia fallback.
   const noAllin1 = stale.missing_allin1 || 0;
-  const allin1On = stale.segmentation_engine === "allin1";
-  const wrongPipeline = stale.wrong_pipeline || 0;
-  if (!needsAnalysis && !needsSeparate && !suspect && !noMeta && !noAllin1
-      && !wrongPipeline) return null;
+  if (!needsAnalysis && !needsSeparate && !suspect && !noMeta && !noAllin1) return null;
 
   const run = async (action, scope) => {
     setBusy(true);
@@ -133,29 +130,6 @@ export function BulkReprocess({ onQueued }) {
         </div>
       )}
 
-      {wrongPipeline > 0 && (
-        <div className="bulk-bar">
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, fontWeight: 600 }}>
-              {wrongPipeline} track{wrongPipeline === 1 ? " is" : "s are"} not on
-              the {stale.separation_pipeline} pipeline yet
-            </div>
-            <div className="faint" style={{ fontSize: 11, lineHeight: 1.45 }}>
-              Tracks whose stems for it already exist are swapped in place — no
-              separation, no analysis, nothing deleted. The rest are queued for
-              separation. Switching back later is the same swap.
-            </div>
-          </div>
-          {badge("switch_pipeline") || (
-            <button className="btn" disabled={busy || !!job}
-              title="Swap each track's stems, features and sections to the configured pipeline, queueing only those never separated that way"
-              onClick={() => run("switch_pipeline", "stale")}>
-              ⇄ Switch {wrongPipeline}
-            </button>
-          )}
-        </div>
-      )}
-
       {noAllin1 > 0 && (
         <div className="bulk-bar">
           <div style={{ flex: 1, minWidth: 0 }}>
@@ -163,9 +137,8 @@ export function BulkReprocess({ onQueued }) {
               {noAllin1} track{noAllin1 === 1 ? " has" : "s have"} no allin1 analysis
             </div>
             <div className="faint" style={{ fontSize: 11, lineHeight: 1.45 }}>
-              {allin1On
-                ? "The allin1 engine is on: until a track has run, its pairs use its Essentia sections (marked essentia_fallback). "
-                : "Only needed for the allin1 engine, or to compare the two engines in Analysis › Engines. "}
+              Until a track has run, its pairs use its Essentia fallback
+              sections (marked essentia_fallback).{" "}
               allin1 finds downbeats and labelled sections — about a minute or
               more a track on CPU, in the background, never beside Demucs.
             </div>
@@ -213,7 +186,7 @@ export function BulkReprocess({ onQueued }) {
             <div style={{ fontSize: 12, fontWeight: 600 }}>
               {needsAnalysis > 0
                 ? `${needsAnalysis} of ${stale.total_analysed} tracks were analysed before the latest features`
-                : `${needsSeparate} tracks still have two stems`}
+                : `${needsSeparate} tracks have stems from an older separator`}
             </div>
             <div className="faint" style={{ fontSize: 11, lineHeight: 1.45 }}>
               {missing.length > 0 && <>{missing.join(" · ")}. </>}
@@ -233,7 +206,7 @@ export function BulkReprocess({ onQueued }) {
               )}
               {needsSeparate > 0 && (
                 <button className="btn" disabled={busy || !!job}
-                  title="Re-separate into four stems (drums / bass / other / vocals), then re-analyse. This is the slow one — hours for a large library."
+                  title="Re-separate with htdemucs (four stems), then re-analyse. This is the slow one — hours for a large library."
                   onClick={() => run("separate", "stale")}>
                   ⟳ Re-separate {needsSeparate}
                 </button>
