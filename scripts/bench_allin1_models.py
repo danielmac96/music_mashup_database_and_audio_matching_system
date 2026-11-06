@@ -1,7 +1,7 @@
 """scripts/bench_allin1_models.py — which allin1 checkpoint is worth its time.
 
 `harmonix-all` is an 8-fold ensemble, and it is where the allin1 stage's time
-goes. Measured on the 27 real tracks of this library (readme §1, §9 item 12;
+goes. Measured on the 27 real tracks of this library (readme §5.5, §9 item 2;
 MEDIANS of `analysis_runs`): the whole stage 593.8 s a track, of which
 inference 467.7 s, allin1's own Demucs 125.1 s and the spectrograms 4.4 s.
 (The means of the same 27 runs: stage 662 s, inference 525 s, own Demucs 132 s,
@@ -29,18 +29,16 @@ For each candidate checkpoint this runs the real inference on the same tracks
 
 **Two things this does on purpose.**
 
-1. It separates the four Demucs sources ITSELF, once per track, and hands the
-   same four to every candidate. The library this exists to measure is
-   `legacy_2stem` — no track has four sources on disk — so a picker that
-   required them would select nothing; and letting allin1 demix per candidate
-   would pay its own 125 s separation N times over, which is the exact waste
-   the unified pipeline exists to remove. One separation also means every
-   checkpoint is judged on identical input, which is what makes this a
-   comparison. Its seconds are reported on their own, never as a model's.
+1. It separates the four Demucs sources ITSELF, once per track, into a temp
+   directory, and hands the same four to every candidate: letting allin1 demix
+   per candidate would pay a ~125 s separation N times over, and one separation
+   means every checkpoint is judged on identical input, which is what makes
+   this a comparison. Its seconds are reported on their own, never as a
+   model's.
 2. It touches nothing live: the song rows are read through a READ-ONLY
    connection, the separation goes to a temp directory (deleted unless
    `--keep`), and the only thing written is the output directory. It needs no
-   scratch library, unlike scripts/bench_pipelines.py — do not add one.
+   scratch library — do not add one.
 
 Not part of the test suite: it needs allin1, its weights and Demucs, i.e.
 Docker. Every part of it is unit-tested with allin1 faked
@@ -76,8 +74,8 @@ sys.path.insert(0, str(ROOT))
 # `loadable_models` checks every one of them before a single track runs.
 DEFAULT_MODELS = ("harmonix-all", "harmonix-fold0")
 
-# The 25 ms timing gate (config.timing_tol_ms), the 40 ms readme §9 item 12.3
-# asks to report, and the 70 ms the Engines report already uses.
+# The 25 ms timing gate (config.timing_tol_ms), the 40 ms readme §9 item 3
+# asks to report, and 70 ms.
 BEAT_TOLERANCES_MS = (25.0, 40.0, 70.0)
 
 # A bar line this far from the reference's is not jitter, it is off phase.
@@ -114,8 +112,8 @@ def pick_songs(limit: int, db_path: Optional[Path] = None) -> List[int]:
     the BPM range so a fold is not judged on one tempo.
 
     Deliberately NOT "tracks with four sources on disk": the four sources are
-    something this script produces (see the module docstring), and every track
-    of the library it exists to measure is on `legacy_2stem`.
+    something this script produces (see the module docstring), so the picker
+    does not depend on what is on disk.
     """
     conn = _ro_conn(_db(db_path))
     try:
@@ -155,7 +153,7 @@ def separate_four(audio_path: Path, out_dir: Path, threads: Optional[int] = None
     """htdemucs's four sources into ``out_dir``, as a {source: path} dict.
 
     A plain `python -m demucs` subprocess into a directory of its own: never
-    `stems.separate.separate(unified=True)`, which writes under the live audio
+    `stems.separate.separate`, which writes under the live audio
     root. Returns {} when Demucs failed or a source is missing.
     """
     from analysis.allin1_runner import SOURCES

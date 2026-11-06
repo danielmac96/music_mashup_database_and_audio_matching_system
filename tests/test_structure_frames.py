@@ -262,16 +262,7 @@ def test_librosa_path_is_untouched_when_no_frames():
 
 # ── Real Essentia frames (container only) ────────────────────────────────────
 
-def _has_essentia() -> bool:
-    try:
-        from analysis.essentia_groups import available
-        return available()
-    except Exception:  # noqa: BLE001
-        return False
-
-
-needs_essentia = pytest.mark.skipif(not _has_essentia(),
-                                    reason="essentia not installed")
+needs_essentia = pytest.mark.real_essentia
 
 
 @needs_essentia
@@ -398,12 +389,12 @@ def _seed_for_structure(models, tmp_path, db, monkeypatch):
                                  raw_path=paths["full"], duration_secs=140,
                                  db_path=db)
     for stem, p in paths.items():
-        models.upsert_stem(song_id, stem, p, separator="demucs:htdemucs:2",
+        models.upsert_stem(song_id, stem, p, separator="demucs:htdemucs:4:unified",
                            db_path=db)
     for i, stem in enumerate(("full", "vocals", "instrumental")):
-        ts.write(song_id, stem, "legacy_2stem", _frames(seed=3 + i), f"h{i}",
+        ts.write(song_id, stem, "unified_4stem", _frames(seed=3 + i), f"h{i}",
                  db_path=db)
-    ts.write(song_id, "bass", "legacy_2stem",
+    ts.write(song_id, "bass", "unified_4stem",
              _frames(chroma_only=True, seed=9), "hb", db_path=db)
     return song_id, paths
 
@@ -425,8 +416,6 @@ def test_the_stage_cuts_from_the_frames_and_the_gate_says_current(
     from analysis.registry import GROUPS
 
     bt = _beat_times()
-    monkeypatch.setattr(stages, "effective_analyzer",
-                        lambda: ("essentia", "essentia"))
     monkeypatch.setattr(
         cache, "lookup",
         lambda grp, h: ({"beat_times": bt, "bpm": 128.0, "beat_phase": 0}
@@ -470,14 +459,15 @@ def test_the_stage_cuts_from_the_frames_and_the_gate_says_current(
     assert "structure.frames" in grps, grps
 
 
-def test_shadow_mode_keeps_the_librosa_path(env, tmp_path, monkeypatch):
-    """Sidecars exist in shadow mode too, but the core — and the beat grid —
-    are librosa's. Without a grid the stored path has nothing to cut on, so the
-    stage must not hand it the frames."""
+def test_without_a_beat_grid_the_stored_frames_are_not_offered(env, tmp_path, monkeypatch):
+    """Sidecars may exist before the Essentia beat grid is cached. Without a
+    grid the stored path has nothing to cut on, so the stage must not hand it
+    the frames — the librosa path cuts instead."""
     models, stages, _bulk, db = env
     song_id, _paths = _seed_for_structure(models, tmp_path, db, monkeypatch)
 
-    monkeypatch.setattr(stages, "effective_analyzer", lambda: ("shadow", "librosa"))
+    import analysis.cache as cache
+    monkeypatch.setattr(cache, "lookup", lambda grp, h: None)
     seen: dict = {}
     real = stages._load_frames
     monkeypatch.setattr(stages, "_load_frames",

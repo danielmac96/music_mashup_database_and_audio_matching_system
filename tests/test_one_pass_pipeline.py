@@ -28,16 +28,7 @@ sys.path.insert(0, str(ROOT))
 _PATH_VARS = ("MASHUP_AUDIO_ROOT", "MASHUP_DB_PATH", "MASHUP_SETTINGS_DIR")
 
 
-def _has_essentia() -> bool:
-    try:
-        from analysis.essentia_groups import available
-        return available()
-    except Exception:  # noqa: BLE001
-        return False
-
-
-needs_essentia = pytest.mark.skipif(not _has_essentia(),
-                                    reason="essentia not installed")
+needs_essentia = pytest.mark.real_essentia
 
 
 @pytest.fixture
@@ -144,8 +135,6 @@ def _fake_essentia(captured: dict, fill_frames: bool = True):
 def _essentia_mode(stages, monkeypatch, captured, fill_frames=True):
     monkeypatch.setattr(stages, "_run_essentia",
                         _fake_essentia(captured, fill_frames))
-    monkeypatch.setattr(stages, "effective_analyzer",
-                        lambda: ("essentia", "essentia"))
     monkeypatch.setattr(stages, "require_analyzer", lambda: None)
 
 
@@ -165,7 +154,7 @@ def test_analysis_writes_a_sidecar_per_stem(monkeypatch, seeded_song, env):
 
     assert captured["stems"] == list(stages._ANALYSIS_STEM_ORDER)
     for stem in ("full", "vocals", "instrumental", "bass"):
-        assert ts.read(song_id, stem, "legacy_2stem") is not None, stem
+        assert ts.read(song_id, stem, "unified_4stem") is not None, stem
     # The bass stem is analysed for its chroma only — no features row.
     assert models.get_features_for_song(song_id, "bass", db_path=db) is None
     assert models.get_features_for_song(song_id, "full", db_path=db) is not None
@@ -209,7 +198,7 @@ def test_a_missing_sidecar_forces_the_two_steps_that_carry_frames(monkeypatch,
     _essentia_mode(stages, monkeypatch, captured)
     stages._analyze_stems(song_id, stem_paths, ("full",), None)
     assert captured["calls"]["full"]["force_steps"] == ("tonal", "spectral")
-    assert ts.read(song_id, "full", "legacy_2stem") is not None
+    assert ts.read(song_id, "full", "unified_4stem") is not None
 
     captured.clear()
     stages._analyze_stems(song_id, stem_paths, ("full",), None)
@@ -230,7 +219,7 @@ def test_the_quick_tier_writes_no_sidecars(monkeypatch, seeded_song, env):
 
     assert captured["calls"]["full"]["frames"] is False
     assert captured["calls"]["full"]["extra_steps"] == ()
-    assert ts.read(song_id, "full", "legacy_2stem") is None
+    assert ts.read(song_id, "full", "unified_4stem") is None
 
 
 def test_keep_frames_off_writes_no_sidecars(monkeypatch, seeded_song, env):
@@ -244,7 +233,7 @@ def test_keep_frames_off_writes_no_sidecars(monkeypatch, seeded_song, env):
     stages._analyze_stems(song_id, stem_paths, ("full",), None)
 
     assert captured["calls"]["full"]["frames"] is False
-    assert ts.read(song_id, "full", "legacy_2stem") is None
+    assert ts.read(song_id, "full", "unified_4stem") is None
 
 
 def test_keep_frames_defaults_on():
@@ -338,7 +327,7 @@ def test_the_bass_stem_gets_a_chroma_sidecar_and_no_features_row(monkeypatch,
     analysed, failed = stages._analyze_stems(song_id, stem_paths, ("bass",), None)
 
     assert analysed == ["bass"] and failed == []
-    frames = ts.read(song_id, "bass", "legacy_2stem")
+    frames = ts.read(song_id, "bass", "unified_4stem")
     assert frames is not None
     assert frames.matrices() == {"chroma": 12}        # spectral never ran
     assert frames.step == pytest.approx(ts.STEP_SECS)
@@ -361,7 +350,6 @@ def test_a_bass_chroma_alone_is_not_an_analysed_track(seeded_song, env, monkeypa
         return {"tonal": {}}, False                 # incomplete core: the stem fails
 
     monkeypatch.setattr(stages, "_run_essentia", fake)
-    monkeypatch.setattr(stages, "effective_analyzer", lambda: ("essentia", "essentia"))
     monkeypatch.setattr(stages, "require_analyzer", lambda: None)
 
     analysed, failed = stages._analyze_stems(song_id, paths,
@@ -591,38 +579,17 @@ def test_an_analysed_track_with_provisional_rows_is_always_rescored(seeded_song,
     assert pw._wants_scoring(song_id) is True
 
 
-def test_essentia_cut_is_skipped_under_the_allin1_engine(monkeypatch, seeded_song,
+def test_the_essentia_cut_runs_only_when_allin1_found_no_sections(monkeypatch, seeded_song,
                                                          env):
     from api.workers import pipeline_worker as pw
 
     song_id, _ = seeded_song
-    monkeypatch.setattr("config.current_segmentation_engine", lambda: "allin1")
-    monkeypatch.setattr("config.current_dual_cut", lambda: False)
     monkeypatch.setattr(pw, "_allin1_section_count", lambda sid: 7)
     assert pw._wants_essentia_cut(song_id) is False
 
     # allin1 found nothing: the Essentia cut is the fallback, not an option.
     monkeypatch.setattr(pw, "_allin1_section_count", lambda sid: 0)
     assert pw._wants_essentia_cut(song_id) is True
-
-    # The Engines comparison needs both cuts.
-    monkeypatch.setattr(pw, "_allin1_section_count", lambda sid: 7)
-    monkeypatch.setattr("config.current_dual_cut", lambda: True)
-    assert pw._wants_essentia_cut(song_id) is True
-
-    # The essentia engine: the novelty cut IS the engine.
-    monkeypatch.setattr("config.current_segmentation_engine", lambda: "essentia")
-    monkeypatch.setattr("config.current_dual_cut", lambda: False)
-    assert pw._wants_essentia_cut(song_id) is True
-
-
-def test_dual_cut_defaults_off(monkeypatch):
-    import config
-
-    monkeypatch.delenv("MASHUP_DUAL_CUT", raising=False)
-    assert config.current_dual_cut() is False
-    monkeypatch.setenv("MASHUP_DUAL_CUT", "1")
-    assert config.current_dual_cut() is True
 
 
 def test_the_structure_stage_is_terminal(monkeypatch, seeded_song, env):
@@ -634,9 +601,11 @@ def test_the_structure_stage_is_terminal(monkeypatch, seeded_song, env):
     from api.workers import bulk_worker
     from api.workers import pipeline_worker as pw
 
+    from database import alignment
     models, _stages, _db = env
     song_id, _ = seeded_song
     models.update_song_status(song_id, "analysed")
+    alignment.set_allin1_state(song_id, "failed", "test")   # allin1 has run
     monkeypatch.setattr(bulk_worker, "sections_are_current", lambda *a, **k: False)
     monkeypatch.setattr(pw.stages, "do_structure", lambda sid, cb=None: {})
     monkeypatch.setattr(pw, "_score_track", lambda *a, **k: None)
@@ -713,8 +682,6 @@ def _essentia_mode_with_melody(stages, monkeypatch, curve,
         return payload, cached
 
     monkeypatch.setattr(stages, "_run_essentia", fake)
-    monkeypatch.setattr(stages, "effective_analyzer",
-                        lambda: ("essentia", "essentia"))
     monkeypatch.setattr(stages, "require_analyzer", lambda: None)
     return captured
 
@@ -735,7 +702,7 @@ def test_the_sung_pitch_curve_lands_in_the_vocals_sidecar(monkeypatch,
                                [0.0, 220.0, 220.0, 0.0, 330.0] * 4)
     stages._analyze_stems(song_id, stem_paths, stages._ANALYSIS_STEM_ORDER, None)
 
-    vocals = ts.read(song_id, "vocals", "legacy_2stem")
+    vocals = ts.read(song_id, "vocals", "unified_4stem")
     assert vocals is not None and vocals.f0 is not None
     assert vocals.f0.shape == (1, vocals.chroma.shape[1])
     assert float(vocals.f0.max()) == pytest.approx(330.0, rel=0.01)
@@ -743,9 +710,9 @@ def test_the_sung_pitch_curve_lands_in_the_vocals_sidecar(monkeypatch,
     assert float(vocals.f0.min()) == 0.0
     # The vocal stem alone sings (readme §5.4: the melody group is the vocal
     # stem's). A bass row holds chroma only and has no sidecar key at all.
-    assert ts.read(song_id, "full", "legacy_2stem").f0 is None
-    assert ts.read(song_id, "instrumental", "legacy_2stem").f0 is None
-    assert ts.read(song_id, "bass", "legacy_2stem").f0 is None
+    assert ts.read(song_id, "full", "unified_4stem").f0 is None
+    assert ts.read(song_id, "instrumental", "unified_4stem").f0 is None
+    assert ts.read(song_id, "bass", "unified_4stem").f0 is None
 
 
 def test_the_curve_never_replaces_a_current_sidecar_on_its_own(monkeypatch,
@@ -759,11 +726,11 @@ def test_the_curve_never_replaces_a_current_sidecar_on_its_own(monkeypatch,
 
     _essentia_mode_with_melody(stages, monkeypatch, _sung_curve(10.0))
     stages._analyze_stems(song_id, stem_paths, ("vocals",), None)
-    first = ts.read(song_id, "vocals", "legacy_2stem")
+    first = ts.read(song_id, "vocals", "unified_4stem")
     assert first is not None and first.chroma is not None
 
     stages._analyze_stems(song_id, stem_paths, ("vocals",), None)
-    again = ts.read(song_id, "vocals", "legacy_2stem")
+    again = ts.read(song_id, "vocals", "unified_4stem")
     assert again.chroma is not None, "an f0-only sidecar replaced a current one"
     assert again.f0 is not None
 

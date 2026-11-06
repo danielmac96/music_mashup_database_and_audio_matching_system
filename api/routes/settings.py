@@ -120,7 +120,7 @@ def new_library(req: NewLibraryRequest) -> dict:
     # Create folders + probe writability before touching anything permanent.
     try:
         root.mkdir(parents=True, exist_ok=True)
-        for sub in ("full_song", "vocals", "instrumentals", "previews"):
+        for sub in ("full_song", "stems", "previews"):
             (audio_root / sub).mkdir(parents=True, exist_ok=True)
         probe = root / ".mashup-write-test"
         probe.write_text("ok", encoding="utf-8")
@@ -155,8 +155,6 @@ class SaveSettingsRequest(BaseModel):
     audio_root: Optional[str] = None
     db_path: Optional[str] = None
     pipeline_workers: Optional[int] = None
-    stem_separator: Optional[str] = None  # "demucs" (quality) | "mdx" (fast)
-    stem_mode: Optional[str] = None       # "two" | "four" (four needs demucs)
     # Scoring knobs — all live-read, so saving one applies to the next re-score
     # rather than the next restart.
     effort_weight: Optional[float] = None
@@ -175,14 +173,11 @@ class SaveSettingsRequest(BaseModel):
     # Live-read (config.current_firecrawl_api_key). Written by the Mixes tab when
     # a 1001tracklists import 501s; GET reports presence only, never the value.
     firecrawl_api_key: Optional[str] = None
-    # The analyser (readme §9). All live-read.
-    analyzer: Optional[str] = None               # librosa | shadow | essentia
+    # The Essentia analyser (readme §5.4). All live-read.
     essentia_key_profile: Optional[str] = None
     essentia_rhythm_method: Optional[str] = None
     analysis_cache: Optional[bool] = None
-    # allin1 and the unified pipeline (readme §2, §5.5). All live-read.
-    separation_pipeline: Optional[str] = None    # legacy_2stem | unified_4stem
-    segmentation_engine: Optional[str] = None    # essentia | allin1
+    # allin1 (readme §5.5). All live-read.
     allin1_device: Optional[str] = None          # cpu | cuda
     allin1_model: Optional[str] = None           # harmonix-all | harmonix-fold0..7
     keep_analysis_stems: Optional[bool] = None
@@ -228,20 +223,6 @@ def save_settings(req: SaveSettingsRequest) -> dict:
         raise HTTPException(status_code=400, detail="nothing to save")
     if req.pipeline_workers is not None and req.pipeline_workers < 1:
         raise HTTPException(status_code=400, detail="pipeline_workers must be >= 1")
-    if req.stem_separator is not None and req.stem_separator not in ("demucs", "mdx"):
-        raise HTTPException(status_code=400,
-                            detail="stem_separator must be 'demucs' or 'mdx'")
-    if req.stem_mode is not None and req.stem_mode not in ("two", "four"):
-        raise HTTPException(status_code=400,
-                            detail="stem_mode must be 'two' or 'four'")
-    # Four stems is a Demucs-only capability. Saving the pair together would
-    # otherwise leave the user with a setting that silently does nothing.
-    separator = req.stem_separator or config.current_stem_separator()
-    if req.stem_mode == "four" and separator == "mdx":
-        raise HTTPException(
-            status_code=400,
-            detail="Four-stem separation needs the 'demucs' separator — MDX is a "
-                   "two-stem model. Switch the separator first.")
 
     new: dict = {}
     if req.audio_root:
@@ -250,13 +231,8 @@ def save_settings(req: SaveSettingsRequest) -> dict:
         new["db_path"] = str(Path(os.path.expanduser(req.db_path)))
     if req.pipeline_workers is not None:
         new["pipeline_workers"] = str(req.pipeline_workers)
-    if req.stem_separator is not None:
-        new["stem_separator"] = req.stem_separator
-    if req.stem_mode is not None:
-        new["stem_mode"] = req.stem_mode
 
-    for name, allowed in (("analyzer", config.ANALYZERS),
-                          ("essentia_key_profile", config.ESSENTIA_KEY_PROFILES),
+    for name, allowed in (("essentia_key_profile", config.ESSENTIA_KEY_PROFILES),
                           ("essentia_rhythm_method", config.ESSENTIA_RHYTHM_METHODS)):
         value = getattr(req, name)
         if value is not None:
@@ -264,9 +240,7 @@ def save_settings(req: SaveSettingsRequest) -> dict:
                 raise HTTPException(status_code=400,
                                     detail=f"{name} must be one of {', '.join(allowed)}")
             new[name] = value
-    for name, allowed in (("separation_pipeline", config.SEPARATION_PIPELINES),
-                          ("segmentation_engine", config.SEGMENTATION_ENGINES),
-                          ("allin1_device", config.ALLIN1_DEVICES),
+    for name, allowed in (("allin1_device", config.ALLIN1_DEVICES),
                           ("allin1_model", config.ALLIN1_MODELS)):
         value = getattr(req, name)
         if value is not None:
@@ -274,23 +248,8 @@ def save_settings(req: SaveSettingsRequest) -> dict:
                 raise HTTPException(status_code=400,
                                     detail=f"{name} must be one of {', '.join(allowed)}")
             new[name] = value
-    if req.segmentation_engine == "allin1":
-        from analysis.allin1_runner import missing
-        why = missing()
-        if why:
-            raise HTTPException(
-                status_code=400,
-                detail=f"allin1 cannot run here — {why} Keep the essentia engine, "
-                       "or use the Docker image.")
     if req.keep_analysis_stems is not None:
         new["keep_analysis_stems"] = True if req.keep_analysis_stems else "off"
-    if req.analyzer in ("shadow", "essentia"):
-        from analysis.essentia_groups import available
-        if not available():
-            raise HTTPException(
-                status_code=400,
-                detail="Essentia is not installed here (it has no Windows wheels) — "
-                       "run the Docker image or WSL2, or keep the librosa analyser.")
     if req.analysis_cache is not None:
         # save_settings drops falsy values, so False is stored as the string
         # the reader understands.
@@ -338,28 +297,12 @@ def save_settings(req: SaveSettingsRequest) -> dict:
 
     path = config.save_settings(new)
 
-    # A new separation pipeline is applied at once: every track whose stems
-    # for it already exist is swapped (no audio work), the rest are queued.
-    pipeline_job = None
-    if "separation_pipeline" in new:
-        import threading
-        from api import jobs
-        from api.workers import bulk_worker
-        ids = bulk_worker.stale_song_ids("switch_pipeline")
-        if ids:
-            pipeline_job = jobs.new_job(
-                kind="bulk", message=f"Switching {len(ids)} tracks to "
-                                     f"{new['separation_pipeline']}")
-            threading.Thread(target=bulk_worker.run,
-                             args=(pipeline_job, "switch_pipeline", ids),
-                             name="pipeline-switch", daemon=True).start()
-
     # Best-effort: create the newly chosen library folders right away so the
     # wizard's "done" state is real even before the restart.
     if "audio_root" in new:
         root = Path(new["audio_root"])
         try:
-            for sub in ("full_song", "vocals", "instrumentals", "previews"):
+            for sub in ("full_song", "stems", "previews"):
                 (root / sub).mkdir(parents=True, exist_ok=True)
         except OSError:
             pass
@@ -367,13 +310,10 @@ def save_settings(req: SaveSettingsRequest) -> dict:
     return {
         "saved": True,
         "settings_path": str(path),
-        # stem_separator is re-read on every separation, so it applies live;
-        # paths/worker counts bind at import and need a restart.
-        # Paths and worker counts bind at import. Everything else — the
-        # separator, the stem mode and every scoring knob — is re-read on use.
+        # Paths and worker counts bind at import; everything else is re-read
+        # on use.
         "restart_required": any(
             k in new for k in ("audio_root", "db_path", "pipeline_workers")),
         "saved_keys": sorted(new),
-        "pipeline_job": pipeline_job,
         "settings": _provenance_live(),
     }

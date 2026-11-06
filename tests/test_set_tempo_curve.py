@@ -189,28 +189,6 @@ def test_the_set_api_carries_the_curve_and_the_moves(client):
     assert s["tempo_plan"] is None and s["flow"]["landings"][0]["bpm"] == 120
 
 
-def test_migration_adds_the_set_columns_to_an_old_database(tmp_path, monkeypatch):
-    import sqlite3
-    db = tmp_path / "old.db"
-    conn = sqlite3.connect(db)
-    conn.executescript("""
-        CREATE TABLE sets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-            note TEXT DEFAULT '', created_at TEXT, updated_at TEXT, UNIQUE(name));
-        CREATE TABLE set_items (id INTEGER PRIMARY KEY AUTOINCREMENT, set_id INTEGER NOT NULL,
-            position INTEGER NOT NULL, vocal_song_id INTEGER NOT NULL, inst_song_id INTEGER NOT NULL,
-            vocal_section INTEGER, inst_section INTEGER, payload_json TEXT, added_at TEXT);
-        INSERT INTO sets(name) VALUES ('kept');
-    """)
-    conn.commit(); conn.close()
-    monkeypatch.setenv("MASHUP_DB_PATH", str(db))
-    import database.models as models
-    models.init_db(db)
-    conn = sqlite3.connect(db)
-    assert "tempo_plan_json" in {r[1] for r in conn.execute("PRAGMA table_info(sets)")}
-    assert "transition_json" in {r[1] for r in conn.execute("PRAGMA table_info(set_items)")}
-    assert conn.execute("SELECT name FROM sets").fetchone()[0] == "kept"
-
-
 # ── the screen ───────────────────────────────────────────────────────────────
 
 def test_the_screen_offers_exactly_the_servers_moves():

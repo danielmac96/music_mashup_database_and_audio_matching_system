@@ -4,15 +4,14 @@ analysis/project.py — turn an analyser's cached group payloads into the
 
 Two kinds of column:
 
-  * **core** — the columns both analysers fill (bpm, beat grid, key, loudness,
+  * **core** — the columns every row has (bpm, beat grid, key, loudness,
     MFCC, spectral shape, band occupancy, waveform). Exactly one analyser owns
     them for a given row; ``features.analyzer`` says which. The matcher ranks
     several of them *against the library* (timbre z-scores, confidence
-    percentiles), so a library must not mix analysers in the core — the switch
-    to Essentia happens for every track at once (readme §9).
+    percentiles), so a library must not mix analysers in the core — Essentia
+    owns them, always (readme §7).
   * **extras** — what only Essentia measures (LUFS, true peak, tuning, chords,
-    danceability, …). They are written whenever Essentia ran, whichever
-    analyser owns the core, so shadow mode already fills them.
+    danceability, …). They are written whenever Essentia ran.
 """
 from __future__ import annotations
 

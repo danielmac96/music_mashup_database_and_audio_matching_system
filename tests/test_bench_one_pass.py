@@ -17,10 +17,9 @@ What these pin, and why each matters:
   * ``stems.reused`` is its own grp, so an exact-match count of ``stems``
     reads zero on a track whose stems were reused — a fact to print, not a
     hole to fall into;
-  * ``peak_mb`` is added by ``database/alignment.py`` and removed again by
-    ``database/downgrade.py``, and SQLite resolves column names when it
-    prepares the statement, so selecting it unguarded raises on a downgraded
-    database (the same class of bug as the ``sections_allin1`` guard, §7);
+  * ``peak_mb`` may be absent from a database the script is pointed at, and
+    SQLite resolves column names when it prepares the statement, so selecting
+    it unguarded would raise;
   * nothing is copied: ``raw_path`` points at the file where it lies.
 """
 import csv
@@ -203,8 +202,8 @@ def test_read_runs_groups_the_rows_of_the_given_songs_only(bench, db):
 
 
 def test_read_runs_survives_a_database_without_peak_mb(bench, tmp_path):
-    """database/downgrade.py removes peak_mb, and SQLite resolves column names
-    when it prepares the statement — so an unguarded SELECT raises here."""
+    """A database without peak_mb: SQLite resolves column names when it
+    prepares the statement — so an unguarded SELECT raises here."""
     path = tmp_path / "downgraded.db"
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -302,22 +301,6 @@ def test_the_output_directory_is_where_its_siblings_write(bench, tmp_path):
 
 # ── The null test is owed before the first import on unified_4stem ────────────
 
-def test_warns_when_the_stem_null_test_has_never_been_run(bench, tmp_path):
-    warning = bench._null_test_owed(tmp_path, "unified_4stem")
-    assert warning and "stem_null_test.py" in warning and "§2" in warning
-
-
-def test_no_null_test_warning_on_the_legacy_pipeline(bench, tmp_path):
-    assert bench._null_test_owed(tmp_path, "legacy_2stem") is None
-
-
-def test_no_null_test_warning_once_it_has_results(bench, tmp_path):
-    results = tmp_path / "bench" / "stem_null" / "20261103-120000" / "results.csv"
-    results.parent.mkdir(parents=True)
-    results.write_text("song_id,residual_dbfs\n1,-62.0\n", encoding="utf-8")
-    assert bench._null_test_owed(tmp_path, "unified_4stem") is None
-
-
 # ── main(), with the pipeline faked at its one seam ───────────────────────────
 
 def _fake_pipeline(db, stages=("download", "stems", "analysis", "structure",
@@ -398,18 +381,6 @@ def test_skip_ingest_is_bounded_by_limit(bench, db, tmp_path, monkeypatch, capsy
     assert rc == 0
     assert len(calls) == 1, "pointed at a real library it must not re-run all of it"
     assert "3 track(s) in the database" in capsys.readouterr().out
-
-
-def test_main_warns_that_the_null_test_is_owed(
-        bench, db, tmp_path, monkeypatch, capsys):
-    from api.workers import pipeline_worker
-    monkeypatch.setenv("MASHUP_SEPARATION_PIPELINE", "unified_4stem")
-    run, _calls = _fake_pipeline(db)
-    monkeypatch.setattr(pipeline_worker, "run", run)
-
-    bench.main([str(_folder(tmp_path))], db_path=db, data_dir=tmp_path / "data")
-
-    assert "stem_null_test.py" in capsys.readouterr().out
 
 
 # ── Echoing the report must not end the run in a traceback ────────────────────

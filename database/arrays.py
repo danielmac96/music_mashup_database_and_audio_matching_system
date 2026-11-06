@@ -1,15 +1,11 @@
 """
 database/arrays.py — the float arrays that have no business in a hot row.
 
-``features`` was 5.63 MB over 612 rows, and 4.5 MB of it was two columns:
-``beat_times_json`` (2.55 MB) and ``waveform_rms_json`` (1.95 MB). Neither is
-read by the pair scorer, the library listing or the dedup pass, and all three
-go through ``SELECT f.*`` — which is why asking for 204 rows of eight numbers
-was a 52.8 ms full table scan.
-
-They live here instead, as float32 BLOBs keyed by (song, stem, name): a third
-of the bytes of the same values as JSON text, and out of the way of every query
-that does not ask for them. A reader that wants one asks for it by name.
+A stem's beat grid and waveform envelope are long arrays that the pair scorer,
+the library listing and the dedup pass never read. Kept in ``features`` they
+made every ``SELECT f.*`` scan megabytes for a handful of numbers, so they live
+here (table ``feature_arrays``) as float32 BLOBs keyed by (song, stem, name).
+A reader that wants one asks for it by name.
 
 Absence means unmeasured. Writing ``None`` deletes the row rather than storing a
 zero-length blob, so "no beat grid" and "a beat grid of nothing" cannot be
@@ -31,39 +27,8 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-# The arrays moved out of `features`. A reader checks this tuple before
-# reaching for a legacy JSON column.
+# The arrays kept here rather than in `features`.
 NAMES: Tuple[str, ...] = ("beat_times", "waveform_rms")
-
-# One statement per entry, never an executescript: a migration runs inside
-# schema.apply's explicit BEGIN/COMMIT, and executescript COMMITs early, which
-# would silently make the migration non-atomic (database/alignment.py's migrate
-# carries the same note).
-_DDL_STATEMENTS = (
-    """
-    CREATE TABLE IF NOT EXISTS feature_arrays (
-        song_id    INTEGER NOT NULL,
-        stem_type  TEXT NOT NULL,
-        name       TEXT NOT NULL,      -- database.arrays.NAMES
-        dtype      TEXT NOT NULL,      -- 'float32' | 'float16'
-        dim        INTEGER NOT NULL,
-        data       BLOB NOT NULL,
-        PRIMARY KEY (song_id, stem_type, name)
-    )
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_feature_arrays_song
-        ON feature_arrays(song_id, stem_type)
-    """,
-)
-
-
-def ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the table and its index on the caller's connection, statement by
-    statement. Safe to re-run: a rollback (database/downgrade.py) replays every
-    migration from 1."""
-    for statement in _DDL_STATEMENTS:
-        conn.execute(statement)
 
 
 def pack(values, dtype: str = "float32") -> Optional[bytes]:

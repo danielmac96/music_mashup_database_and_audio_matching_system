@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
-from analysis.registry import GROUPS, STEP_GROUPS, FeatureGroup
+from analysis.registry import ESSENTIA_STEP_GROUPS, GROUPS, FeatureGroup
 
 log = logging.getLogger(__name__)
 
@@ -144,13 +144,12 @@ def cached(group_name: str, key: Optional[str],
 class StepCache:
     """An analyser's view of the cache for one file: ``get(step)`` /
     ``put(step, result, ms)`` over the step's registry group. ``groups`` maps
-    step names to groups — the librosa steps (analyze_file) by default, or
-    ESSENTIA_STEP_GROUPS for analyze_file_essentia."""
+    step names to groups (default: ESSENTIA_STEP_GROUPS)."""
 
     def __init__(self, key: Optional[str],
                  groups: Optional[Dict[str, FeatureGroup]] = None):
         self.key = key
-        self.groups = STEP_GROUPS if groups is None else groups
+        self.groups = ESSENTIA_STEP_GROUPS if groups is None else groups
 
     def get(self, step: str) -> Optional[dict]:
         group = self.groups.get(step)

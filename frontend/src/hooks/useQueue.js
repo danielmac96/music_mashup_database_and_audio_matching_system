@@ -18,10 +18,9 @@ export const STAGES = [
   ["stems", "Stems"],
   ["analysis", "Analyse"],
   // allin1 (readme §5.5): downbeats and labelled sections, after the analysis.
-  // Only owed in the allin1 engine or after a backfill — "off" otherwise.
   ["allin1", "allin1"],
-  // The cut, LAST: under the allin1 engine the bar lines and segments it sits
-  // on are allin1's. Same order as pipeline_worker.STAGES, so the Timeline
+  // The cut, LAST, and only the fallback when allin1 made no sections. Same
+  // order as pipeline_worker.STAGES, so the Timeline
   // reads left to right in the order the stages actually run.
   ["structure", "Structure"],
 ];
@@ -121,11 +120,10 @@ function resolveCell(key, track, rec, job, positions, pending) {
     return { state: "failed", error: track.last_error, earlier: true };
   }
   if (key === "allin1" && track.allin1_state === "failed") {
-    // Non-fatal: the track kept its Essentia sections.
+    // Non-fatal: the track is cut by the Essentia fallback.
     return { state: "failed", error: track.allin1_error, earlier: true };
   }
   if (DONE_ON_TRACK[key](track)) return { state: "done", earlier: true };
-  if (key === "allin1" && !track.allin1_state) return { state: "off" };
   return { state: pending ? "pending" : "todo" };
 }
 

@@ -116,7 +116,7 @@ def test_the_full_analysis_reuses_the_quick_tiers_mix_analysis(env):
     grps = [r["grp"] for r in conn.execute(
         "SELECT grp FROM analysis_runs WHERE stem_type='full'")]
     conn.close()
-    assert "analysis.tempo.cached" in grps and "analysis.tempo" not in grps
+    assert "essentia.rhythm.cached" in grps and "essentia.rhythm" not in grps
 
 
 def test_a_new_download_runs_the_quick_tier_again(env, monkeypatch):
@@ -232,9 +232,9 @@ def test_the_quick_tier_never_cuts_with_stems_already_on_disk(env):
 
 
 def test_sections_without_a_sung_range_are_stale_once_a_melody_exists(env):
-    """Sections cut under the librosa analyser have vocal activity but no f0;
-    switching to shadow measures the melody, and the sections must then be
-    re-cut to carry it."""
+    """Sections cut before the vocal melody was measured have vocal activity
+    but no f0; once the melody exists the sections must be re-cut to carry
+    it."""
     from api.workers.bulk_worker import sections_are_current
     models, stages, _pw, _q, tmp = env
     song = _downloaded(models, tmp)

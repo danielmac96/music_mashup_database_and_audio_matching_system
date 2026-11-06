@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { fmtAttr } from "../attributes";
 import { PairCard } from "./PairCard";
-import { EngineCompare } from "./EngineCompare";
 import { KeyChip } from "./ui/primitives";
 import { camelotColor } from "../theme";
 
@@ -21,10 +20,6 @@ import { camelotColor } from "../theme";
 // pair cards (or why it was never scored); then every attribute side by side,
 // differing rows marked, each number placed on a dot strip of where A and B sit
 // in the library's range. `c` on a pair in the dock lands here with it loaded.
-//
-// ENGINES — the two segmentation engines (Essentia, allin1) side by side
-// (components/EngineCompare.jsx): bar-line agreement, the timing gate and
-// ratings per engine; for one track, both cuts, phrases and pairs to rate.
 
 const BINS = 24;
 const pct = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))))];
@@ -56,12 +51,12 @@ function libraryStats(tracks, catalogue) {
 
 const covColor = (p) => (p > 0.95 ? "var(--ok)" : p < 0.6 ? "var(--warn)" : "var(--muted)");
 
-export function AnalysisScreen({ attributes, onRailSlot, tracks = [], ratings = null,
+export function AnalysisScreen({ attributes, onRailSlot, tracks = [],
                                 onPlayPair = null, onOpenPair = null, compareSeed = null }) {
   const { catalogue, categories, visibility, toggle, refresh } = attributes;
   const [tab, setTab] = useState("attrs");
-  // Which analyser is running, whether its models are installed, and how often
-  // librosa and Essentia agree where both measured (GET /api/analysis/status).
+  // Whether Essentia and allin1 can run here and whether the models are
+  // installed (GET /api/analysis/status).
   const [status, setStatus] = useState(null);
   const [statusError, setStatusError] = useState(null);
   const loadStatus = useCallback(() => {
@@ -80,7 +75,7 @@ export function AnalysisScreen({ attributes, onRailSlot, tracks = [], ratings = 
       <header className="an-head">
         <h1>Analysis</h1>
         <div className="an-tabs" role="tablist" aria-label="Analysis view">
-          {[["attrs", "Attributes"], ["compare", "Compare"], ["engines", "Engines"]].map(([id, label]) => (
+          {[["attrs", "Attributes"], ["compare", "Compare"]].map(([id, label]) => (
             <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "on" : ""}
               onClick={() => setTab(id)}>{label}</button>
           ))}
@@ -88,9 +83,7 @@ export function AnalysisScreen({ attributes, onRailSlot, tracks = [], ratings = 
         <span className="muted small">
           {tab === "attrs"
             ? `${catalogue.length} attributes · coverage is tracks measured / ${analysed.toLocaleString()} analysed`
-            : tab === "engines"
-              ? "Essentia and allin1: bar lines, phrases and the pairs each builds"
-              : "Two tracks, both ways round, and every measurement side by side"}
+            : "Two tracks, both ways round, and every measurement side by side"}
         </span>
         <span className="grow" />
         <button className="ui-btn an-refresh" onClick={() => { refresh(); loadStatus(); }}
@@ -102,29 +95,21 @@ export function AnalysisScreen({ attributes, onRailSlot, tracks = [], ratings = 
       {tab === "attrs"
         ? <Attributes catalogue={catalogue} categories={categories} visibility={visibility}
             toggle={toggle} stats={stats} />
-        : tab === "engines"
-        ? <EngineCompare tracks={tracks} ratings={ratings}
-            onPlayPair={onPlayPair} onOpenPair={onOpenPair} />
         : <TrackCompare tracks={tracks} catalogue={catalogue} categories={categories}
             stats={stats} onPlayPair={onPlayPair} onOpenPair={onOpenPair} seed={compareSeed} />}
     </div>
   );
 }
 
-// The analyser, its models and cache, and librosa ↔ Essentia agreement.
+// Essentia, allin1, the models and the cache: what can run here.
 function AnalyzerStatus({ status, error }) {
   if (error) return <div className="an-status"><div className="an-stat"><span className="caps">Status</span><span className="mono muted">unavailable: {error}</span></div></div>;
   if (!status) return null;
-  const { analyzer: az, essentia, models, agreement } = status;
+  const { analyzer: az, essentia, models } = status;
   const missing = models?.missing?.length || 0;
   const stems = status.analysed_stems || {};
-  const tallies = (t) => Object.entries(t || {}).sort((a, b) => b[1] - a[1])
-    .map(([k, n]) => `${k} ${n}`).join(" · ");
   const emb = status.embeddings_coverage;
   const items = [
-    ["Analyser", `${az.effective}${az.configured !== az.effective ? ` (set: ${az.configured})` : ""}`,
-      "The analyser that fills the features table. Essentia is the analyser; librosa and shadow are for tests and comparison.",
-      az.blocked ? "var(--fail)" : null],
     ["Essentia", essentia.available ? (essentia.version || "yes") : "not installed",
       essentia.available ? `Key profile ${essentia.key_profile}, rhythm ${essentia.rhythm_method}` : "Essentia does not import here — analysis needs Docker or WSL2",
       essentia.available ? null : "var(--warn)"],
@@ -135,15 +120,14 @@ function AnalyzerStatus({ status, error }) {
     ["Analysed stems", String(Object.values(stems).reduce((a, n) => a + n, 0)),
       `Stems with a stored analysis: ${Object.entries(stems).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}`],
     ...(emb ? [["Embeddings", `${emb.with}/${emb.total}`, "Analysed tracks with an EffNet embedding (the 'sounds like' neighbours)"]] : []),
-    ...(status.segmentation ? [["Sections", `${status.segmentation.engine} · ${status.segmentation.pipeline}`,
+    ...(status.segmentation ? [["allin1",
       status.segmentation.allin1?.available
-        ? `allin1 ${status.segmentation.allin1.version || ""} on ${status.segmentation.allin1.device}`
-        : `allin1 cannot run here: ${status.segmentation.allin1?.missing || "not installed"}`,
+        ? `${status.segmentation.allin1.model || ""} · ${status.segmentation.allin1.device}`
+        : "not installed",
+      status.segmentation.allin1?.available
+        ? `allin1 ${status.segmentation.allin1.version || ""} cuts the sections`
+        : `allin1 cannot run here (${status.segmentation.allin1?.missing || "not installed"}) — every track is cut by the Essentia fallback`,
       status.segmentation.blocked ? "var(--warn)" : null]] : []),
-    ...((agreement?.tracks_compared?.bpm > 0 || agreement?.tracks_compared?.key > 0)
-      ? [["librosa ↔ Essentia",
-        `BPM ${tallies(agreement.bpm)}${agreement.bpm_mean_abs_diff_when_same != null ? ` (±${agreement.bpm_mean_abs_diff_when_same})` : ""} — key ${tallies(agreement.key)}`,
-        "Where librosa and Essentia both measured the same full mix: how their tempo and key relate", null, 2]] : []),
   ];
   return (
     <div className={`an-status${az.blocked ? " blocked" : ""}`}>

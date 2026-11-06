@@ -11,8 +11,7 @@ client_id machinery from it and add nothing to it.
 Auth is the same anonymous scrape ``soundcloud_api`` already does: SoundCloud
 embeds a working ``client_id`` in its public JS bundles. Sharing that module-level
 cache means one scrape serves both layers. Nothing here can write — every request
-is a GET with no Authorization header. See ``ingest.soundcloud_oauth`` for the
-(dormant) write path.
+is a GET with no Authorization header.
 
 Politeness is not optional. Both layers share one scraped client_id, so getting it
 rate-limited would break the frozen mixes resolver too. Hence the minimum interval

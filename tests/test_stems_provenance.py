@@ -37,12 +37,11 @@ def test_upsert_stem_separator_roundtrip_and_none_preserves(db):
     assert _tag(models, p, sid, "vocals") == "demucs:htdemucs"
 
     # A real re-separation overwrites the tag.
-    models.upsert_stem(sid, "vocals", "/f/v.wav", separator="mdx:UVR-MDX-NET-Inst_HQ_3",
+    models.upsert_stem(sid, "vocals", "/f/v.wav", separator="demucs:htdemucs:2",
                        db_path=p)
-    assert _tag(models, p, sid, "vocals") == "mdx:UVR-MDX-NET-Inst_HQ_3"
+    assert _tag(models, p, sid, "vocals") == "demucs:htdemucs:2"
 
 
 def test_separator_tag_helper():
     from stems.separate import separator_tag
-    assert separator_tag("demucs").startswith("demucs:")
-    assert separator_tag("mdx").startswith("mdx:")
+    assert separator_tag() == "demucs:htdemucs:4:unified"

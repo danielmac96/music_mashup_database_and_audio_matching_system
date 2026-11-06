@@ -564,7 +564,7 @@ export default function App() {
         {route === "analysis" && (
           <AnalysisScreen attributes={attributes} onRailSlot={setRailSlot}
             compareSeed={compareSeed}
-            tracks={library.tracks} ratings={ratings}
+            tracks={library.tracks}
             onPlayPair={dock.play} onOpenPair={pairToStudio} />
         )}
         {route === "discovery" && (

@@ -60,60 +60,6 @@ def _import(env, content=PASTE, url="https://example.com/test-mix"):
 
 # ── schema migration (Checkpoint 2) ───────────────────────────────────────────
 
-def test_migration_upgrades_pre_matching_db(tmp_path, monkeypatch):
-    """A DB created with the pre-matching mix schema gains the new columns,
-    the vocal-uniqueness index, and keeps its rows."""
-    db = tmp_path / "old.db"
-    conn = sqlite3.connect(db)
-    conn.executescript("""
-        CREATE TABLE mixes (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT,
-            source_url TEXT UNIQUE, dj TEXT, import_method TEXT,
-            raw_snapshot_path TEXT, imported_at TEXT DEFAULT (datetime('now')));
-        CREATE TABLE mix_tracks (id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mix_id INTEGER NOT NULL, entry_index INTEGER,
-            position INTEGER NOT NULL, is_overlay INTEGER DEFAULT 0,
-            artist TEXT, title TEXT, cue_secs REAL, link_url TEXT,
-            link_platform TEXT, resolve_status TEXT DEFAULT 'unresolved',
-            song_id INTEGER, UNIQUE(mix_id, entry_index, position));
-        CREATE TABLE mashup_pairs (id INTEGER PRIMARY KEY AUTOINCREMENT,
-            mix_id INTEGER NOT NULL, inst_mix_track_id INTEGER NOT NULL,
-            vocal_mix_track_id INTEGER NOT NULL, cue_secs REAL,
-            UNIQUE(inst_mix_track_id, vocal_mix_track_id));
-        INSERT INTO mixes (title, source_url) VALUES ('old', 'u://m');
-        INSERT INTO mix_tracks (mix_id, position, artist, title) VALUES (1, 0, 'A', 'B');
-        INSERT INTO mashup_pairs (mix_id, inst_mix_track_id, vocal_mix_track_id)
-            VALUES (1, 1, 2);
-        -- a historically double-assigned vocal: migration must dedupe it
-        INSERT INTO mashup_pairs (mix_id, inst_mix_track_id, vocal_mix_track_id)
-            VALUES (1, 3, 2);
-    """)
-    conn.commit()
-    conn.close()
-
-    monkeypatch.setenv("MASHUP_DB_PATH", str(db))
-    monkeypatch.setenv("MASHUP_AUDIO_ROOT", str(tmp_path / "audio"))
-    import config
-    import database.models as models
-    for mod in (config, models):
-        importlib.reload(mod)
-    conn = models.get_conn()
-
-    track_cols = {r[1] for r in conn.execute("PRAGMA table_info(mix_tracks)")}
-    assert {"raw_label", "is_id", "remixer", "mashup_parts",
-            "parse_confidence", "role", "role_assigned_at"} <= track_cols
-    pair_cols = {r[1] for r in conn.execute("PRAGMA table_info(mashup_pairs)")}
-    assert {"origin", "created_at"} <= pair_cols
-
-    # data survived; duplicate-vocal pair deduped to the earliest; index exists
-    assert conn.execute("SELECT COUNT(*) FROM mix_tracks").fetchone()[0] == 1
-    pairs = conn.execute(
-        "SELECT inst_mix_track_id FROM mashup_pairs").fetchall()
-    assert [p[0] for p in pairs] == [1]
-    idx = {r[1] for r in conn.execute("PRAGMA index_list(mashup_pairs)")}
-    assert "ux_mashuppairs_vocal" in idx
-    conn.close()
-
-
 # ── import persists the new parser fields ─────────────────────────────────────
 
 def test_import_persists_parser_fields(env):

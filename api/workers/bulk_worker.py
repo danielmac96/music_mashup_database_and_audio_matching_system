@@ -56,10 +56,6 @@ ACTIONS = {
     # allin1_state='queued' and the pipeline routes it to the allin1 stage.
     # Resumable for free: what is left is re-derived from the database.
     "allin1": {"status": "", "label": "allin1 analysis"},
-    # Make every track live on the configured separation pipeline: a row swap
-    # where that pipeline's stems already exist (no audio work), a
-    # re-separation queued where they never did.
-    "switch_pipeline": {"status": "", "label": "switching separation pipeline"},
 }
 
 
@@ -86,10 +82,6 @@ def run(job_id: str, action: str, song_ids: list[int]) -> None:
 
     if action == "allin1":
         _queue_allin1(job_id, spec, song_ids)
-        return
-
-    if action == "switch_pipeline":
-        switch_pipeline(job_id, song_ids)
         return
 
     # Imported here, not at module scope: get_conn's default db_path binds at
@@ -129,13 +121,20 @@ def _done(job_id: str, action: str, spec: dict, queued: int, failed: int,
     })
 
 
-# ── allin1 and the separation pipeline (readme §5.5, §2 "Rollback") ──────────
+# ── allin1 (readme §5.5) ───────────────────────────────────────────────────────
 
 _ALLIN1_STALE_SQL = """s.status='analysed' AND (
         COALESCE(s.allin1_state, '') IN ('', 'failed', 'queued')
      OR NOT EXISTS (SELECT 1 FROM allin1_analysis a WHERE a.song_id = s.id
-                    AND a.pipeline = COALESCE(s.separation_pipeline, 'legacy_2stem')))
+                    AND a.pipeline = COALESCE(s.separation_pipeline, 'unified_4stem')))
      AND COALESCE(s.allin1_state, '') != 'skipped'"""
+
+
+def _wrong_separation_sql() -> str:
+    from stems.separate import separator_tag
+    return f"""s.status='analysed' AND NOT EXISTS (
+        SELECT 1 FROM stems st WHERE st.song_id = s.id AND st.stem_type='vocals'
+           AND st.separator = '{separator_tag()}')"""
 
 
 def _queue_allin1(job_id: str, spec: dict, song_ids: list[int]) -> None:
@@ -153,61 +152,6 @@ def _queue_allin1(job_id: str, spec: dict, song_ids: list[int]) -> None:
             jobs.update(job_id, progress=int(100 * n / len(song_ids)),
                         message=f"Queued {n}/{len(song_ids)} for allin1…")
     _done(job_id, "allin1", spec, queued, failed)
-
-
-def switch_pipeline(job_id: str, song_ids: list[int]) -> dict:
-    """Activate the configured separation pipeline for each track. Swapped
-    tracks need nothing else (their pairs go stale; Score library refreshes
-    them); the rest are rewound to 'downloaded' and queued for separation.
-    One failing track never stops the batch, and a failed swap leaves the
-    track exactly as it was (activate_pipeline is one transaction)."""
-    from config import current_separation_pipeline
-    from database.alignment import activate_pipeline
-    from database.models import update_song_status
-    target = current_separation_pipeline()
-    counts = {"swapped": 0, "queued": 0, "already": 0, "failed": 0}
-    for n, song_id in enumerate(song_ids, start=1):
-        try:
-            outcome = activate_pipeline(song_id, target)
-            if outcome == "needs_processing":
-                update_song_status(song_id, "downloaded")
-                queue_runner.enqueue_song(song_id, priority=PRIORITY_BACKFILL)
-                counts["queued"] += 1
-            else:
-                counts[outcome] += 1
-        except Exception:  # noqa: BLE001
-            log.exception("pipeline switch failed for song %s", song_id)
-            counts["failed"] += 1
-        if n % 10 == 0 or n == len(song_ids):
-            jobs.update(job_id, progress=int(100 * n / len(song_ids)),
-                        message=f"Switched {n}/{len(song_ids)} to {target}…")
-    jobs.done(job_id, {
-        "action": "switch_pipeline", "pipeline": target, **counts,
-        "summary": (f"{counts['swapped']} swapped to {target} with no reprocessing"
-                    + (f" · {counts['queued']} queued for separation"
-                       if counts["queued"] else "")
-                    + (f" · {counts['failed']} failed" if counts["failed"] else "")),
-    })
-    return counts
-
-
-def _engine_now() -> str:
-    from config import current_segmentation_engine
-    return current_segmentation_engine()
-
-
-def _pipeline_mismatch_ids(db_path=None) -> list[int]:
-    from config import current_separation_pipeline
-    from database.models import get_conn
-    conn = get_conn(db_path) if db_path else get_conn()
-    try:
-        rows = conn.execute(
-            """SELECT id FROM songs WHERE status IN ('downloaded','stemmed','analysed')
-                 AND COALESCE(separation_pipeline, 'legacy_2stem') != ?
-               ORDER BY id""", (current_separation_pipeline(),)).fetchall()
-        return [r[0] for r in rows]
-    finally:
-        conn.close()
 
 
 # ── Suspect audio ─────────────────────────────────────────────────────────────
@@ -457,8 +401,8 @@ def _sections_stale_sql(song_ref: str) -> str:
         f"AND st.stem_type='vocals')\n"
         f"        AND NOT EXISTS (SELECT 1 FROM sections sec "
         f"WHERE sec.song_id={song_ref} AND sec.vocal_activity IS NOT NULL))")
-    # The vocal stem's melody was measured (shadow/essentia) but no section
-    # carries a sung range: cut under librosa, or before the melody existed.
+    # The vocal stem's melody was measured but no section carries a sung
+    # range: cut before the melody existed.
     # Only a melody that really sings counts — f0_summary needs voiced points
     # inside a section, and a track that can never get one must not stay stale.
     sung_range = (
@@ -479,30 +423,14 @@ def _allin1_covers_sections_sql(song_ref: str, conn) -> str:
     """SQL for: this track's sections are allin1's, so the Essentia cut is not
     owed and the empty `sections` table is not staleness.
 
-    The mirror of `pipeline_worker._wants_essentia_cut`, which is what makes the
-    structure stage skip the novelty cut: under the allin1 engine, with
-    `dual_cut` off, allin1's sections are what every reader asks for and the
-    `sections` table stays empty for good. Asking only about that table would
-    count every allin1-cut track as needing a re-analysis forever, behind a
-    button that re-runs the whole analysis and then skips the cut — which is the
-    failure `sections_are_current` was written to prevent, one engine along.
-
-    "0" (never covers) under the essentia engine, with `dual_cut` on, or where
-    `sections_allin1` does not exist (`database/downgrade.py` drops it, and
-    SQLite resolves a table name at prepare time, so the guard cannot be SQL).
-    The pipeline is matched as `alignment.get_allin1_sections` matches it: the
-    other pipeline's parked sections are not this track's.
+    The mirror of `pipeline_worker._wants_essentia_cut`: allin1's sections are
+    what every reader asks for, and the `sections` table is filled only when
+    allin1 produced none (the fallback). Asking only about that table would
+    count every allin1-cut track as needing a re-analysis forever.
     """
-    from config import current_dual_cut, current_segmentation_engine
-    if current_segmentation_engine() != "allin1" or current_dual_cut():
-        return "0"
-    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
-                        "AND name='sections_allin1'").fetchone():
-        return "0"
-    from database.alignment import LEGACY
     return (f"EXISTS (SELECT 1 FROM sections_allin1 a WHERE a.song_id={song_ref}"
             f" AND a.pipeline = COALESCE((SELECT separation_pipeline FROM songs"
-            f" WHERE id={song_ref}), '{LEGACY}'))")
+            f" WHERE id={song_ref}), 'unified_4stem'))")
 
 
 def _sections_owed_sql(song_ref: str, conn) -> str:
@@ -516,9 +444,6 @@ def _sections_owed_sql(song_ref: str, conn) -> str:
 # One definition of "this track predates a generation of feature we now need".
 # It was duplicated across staleness() and stale_song_ids(), which is exactly how
 # a new column gets counted as stale in the badge but skipped by the button.
-# A function, not a constant: the section half reads the live segmentation
-# engine and dual_cut (_allin1_covers_sections_sql), which a module-level
-# f-string would freeze at import.
 def _stale_analysis_sql(conn) -> str:
     return f"""
        NOT EXISTS (SELECT 1 FROM features f
@@ -598,17 +523,9 @@ def staleness(db_path=None) -> dict:
                  AND NOT ({_allin1_covers_sections_sql("s.id", conn)})"""
         ).fetchone()[0]
 
-        # Phase D: four-stem mode, if that is what is configured now.
-        from config import current_stem_mode
-        four = current_stem_mode() == "four"
-        wrong_stem_mode = 0
-        if four:
-            wrong_stem_mode = conn.execute(
-                """SELECT COUNT(*) FROM songs s
-                   WHERE s.status='analysed' AND NOT EXISTS (
-                       SELECT 1 FROM stems st
-                       WHERE st.song_id = s.id AND st.stem_type='drums')"""
-            ).fetchone()[0]
+        # Stems made by an older separator (any tag but separator_tag()).
+        wrong_separation = conn.execute(
+            f"SELECT COUNT(*) FROM songs s WHERE {_wrong_separation_sql()}").fetchone()[0]
 
         # P2.1: sections carrying no measured tempo/grid of their own.
         no_section_grid = conn.execute(
@@ -648,16 +565,8 @@ def staleness(db_path=None) -> dict:
             "SELECT COUNT(*) FROM songs WHERE metadata_partial=1").fetchone()[0]
         missing_allin1 = conn.execute(
             f"SELECT COUNT(*) FROM songs s WHERE {_ALLIN1_STALE_SQL}").fetchone()[0]
-        from config import current_separation_pipeline
-        wrong_pipeline = conn.execute(
-            """SELECT COUNT(*) FROM songs WHERE status IN ('downloaded','stemmed','analysed')
-                 AND COALESCE(separation_pipeline, 'legacy_2stem') != ?""",
-            (current_separation_pipeline(),)).fetchone()[0]
         return {
             "missing_allin1": missing_allin1,
-            "wrong_pipeline": wrong_pipeline,
-            "separation_pipeline": current_separation_pipeline(),
-            "segmentation_engine": _engine_now(),
             "total_analysed": total,
             "needs_analysis": needs_analysis,
             "missing_band_energy": no_bands,
@@ -666,8 +575,7 @@ def staleness(db_path=None) -> dict:
             "missing_section_grid": no_section_grid,
             "missing_section_stem_measures": no_stem_measures,
             "missing_sections": no_sections,
-            "missing_four_stems": wrong_stem_mode,
-            "stem_mode": "four" if four else "two",
+            "wrong_separation": wrong_separation,
             "suspect_audio": suspect_audio,
             "missing_metadata": missing_metadata,
         }
@@ -686,8 +594,6 @@ def stale_song_ids(action: str, db_path=None) -> list[int]:
     if action == "metadata":
         from database.models import partial_metadata_song_ids
         return partial_metadata_song_ids(db_path)
-    if action == "switch_pipeline":
-        return _pipeline_mismatch_ids(db_path)
     from database.models import get_conn
     conn = get_conn(db_path) if db_path else get_conn()
     try:
@@ -696,15 +602,8 @@ def stale_song_ids(action: str, db_path=None) -> list[int]:
                                 "ORDER BY s.id").fetchall()
             return [r[0] for r in rows]
         if action == "separate":
-            from config import current_stem_mode
-            if current_stem_mode() != "four":
-                return []
-            rows = conn.execute(
-                """SELECT s.id FROM songs s
-                   WHERE s.status='analysed' AND NOT EXISTS (
-                       SELECT 1 FROM stems st
-                       WHERE st.song_id = s.id AND st.stem_type='drums')
-                   ORDER BY s.id""").fetchall()
+            rows = conn.execute(f"SELECT s.id FROM songs s WHERE {_wrong_separation_sql()} "
+                                "ORDER BY s.id").fetchall()
             return [r[0] for r in rows]
         rows = conn.execute(
             f"""SELECT s.id FROM songs s
@@ -726,8 +625,6 @@ def all_song_ids(action: str, db_path=None) -> list[int]:
         # round trip that changes nothing, so "all" means every partial row.
         from database.models import partial_metadata_song_ids
         return partial_metadata_song_ids(db_path)
-    if action == "switch_pipeline":
-        return _pipeline_mismatch_ids(db_path)
     from database.models import get_conn
     conn = get_conn(db_path) if db_path else get_conn()
     try:

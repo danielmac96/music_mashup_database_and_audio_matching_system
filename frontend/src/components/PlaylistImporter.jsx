@@ -22,7 +22,6 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
   const [updatingYtdlp, setUpdatingYtdlp] = useState(false);
   const [previewId, setPreviewId] = useState(null);   // hydration session
   const [hydration, setHydration] = useState(null);   // { done, hydrated_count, count }
-  const [separator, setSeparator] = useState(null);   // "demucs" | "mdx" (null = loading)
   // Save this import as a named library group as well. Prefilled from the
   // playlist's own name, which came back in the same yt-dlp JSON as the tracks,
   // and defaulted ON for a playlist: a set you imported as a set is one you
@@ -37,24 +36,7 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
   // One-time dependency check so a missing ffmpeg/demucs is visible before a run.
   useEffect(() => {
     api.getDeps().then(setDeps).catch(() => setDeps(null));
-    api.getSettings()
-      .then((s) => setSeparator(s.stem_separator?.value || "demucs"))
-      .catch(() => setSeparator("demucs"));
   }, []);
-
-  const changeSeparator = async (value) => {
-    const prev = separator;
-    setSeparator(value); // optimistic
-    try {
-      await api.saveSettings({ stemSeparator: value });
-      toast(value === "mdx"
-        ? "Stem separation set to Fast (MDX-Net) — applies to new separations"
-        : "Stem separation set to Quality (Demucs) — applies to new separations");
-    } catch (err) {
-      setSeparator(prev);
-      toast(`Could not save setting: ${err.message}`);
-    }
-  };
 
   const keptCount = useMemo(
     () => tracks.filter((_, i) => selected[i] !== false).length,
@@ -256,25 +238,6 @@ export function PlaylistImporter({ onIngested, embedded = false }) {
         <span style={{ flex: 1 }}>
           Playlists (SoundCloud …/sets/… or a YouTube …?list=… link) import every track at once.
         </span>
-        <label
-          title="How vocals/instrumentals are split. Quality = Demucs (best, slower). Fast = MDX-Net (~2-4x quicker on CPU, slightly lower quality). Each track is tagged with the engine that split it."
-          style={{ display: "flex", alignItems: "center", gap: 6 }}
-        >
-          Stem separation
-          <select
-            value={separator || "demucs"}
-            disabled={separator === null}
-            onChange={(e) => changeSeparator(e.target.value)}
-            style={{
-              background: "var(--panel)", color: "var(--fg)",
-              border: "1px solid var(--line-2)", borderRadius: 6,
-              padding: "3px 6px", fontSize: 11,
-            }}
-          >
-            <option value="demucs">Quality (Demucs)</option>
-            <option value="mdx">Fast (MDX-Net)</option>
-          </select>
-        </label>
       </div>
 
       {error && <div className="error-text" style={{ marginBottom: 12 }}>{error}</div>}

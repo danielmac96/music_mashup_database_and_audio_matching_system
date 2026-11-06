@@ -74,15 +74,16 @@ def model_name(explicit: Optional[str] = None) -> str:
 
 
 def warn_self_demix(path) -> None:
-    """allin1 is about to separate its own four stems because this track's
-    pipeline left none — a whole second Demucs run (125–210 s a track on this
-    library) of work the unified pipeline already does. Logged once per
-    process, loudly, because nothing else says so."""
+    """allin1 is about to separate its own four stems because the track's
+    four sources are missing from disk (deleted, or keep_analysis_stems off
+    before a re-run) — a whole second Demucs run (125–210 s a track) of work
+    the stems stage already did. Logged once per process, loudly, because
+    nothing else says so."""
     global SELF_DEMIX_WARNED
     if not SELF_DEMIX_WARNED:
-        log.warning("allin1 is separating its own 4 stems for %s — this track is "
-                    "not on the unified_4stem pipeline, so Demucs runs twice. "
-                    "See readme §2 Rollback to switch the pipeline over.", path)
+        log.warning("allin1 is separating its own 4 stems for %s — its four "
+                    "sources are not on disk, so Demucs runs twice. Re-run the "
+                    "stems stage to restore them.", path)
         SELF_DEMIX_WARNED = True
 
 
@@ -282,9 +283,9 @@ def rss_mb() -> Optional[float]:
 # A run's resident memory, roughly: torch + the 8-model ensemble, plus what
 # grows with the track — the 4-stem spectrogram and, mostly, the per-frame
 # embeddings (4 stems × 24 dims × 8 models × 4 bytes at 100 fps ≈ 0.3 MB/s) and
-# activations. Deliberately generous; scripts/bench_pipelines.py measures the
-# real peaks (analysis_runs.peak_mb) to replace these numbers with this
-# machine's.
+# activations. Deliberately generous; analysis_runs.peak_mb records the real
+# peaks (scripts/bench_one_pass.py reports them) to replace these numbers with
+# this machine's.
 BASE_MB = 1500.0
 MB_PER_AUDIO_SEC = 1.5
 

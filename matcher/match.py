@@ -1399,14 +1399,14 @@ def song_pipelines(db) -> Dict[int, str]:
     from database.models import get_conn
     conn = get_conn(db)
     try:
-        return {r[0]: r[1] or "legacy_2stem" for r in conn.execute(
+        return {r[0]: r[1] or "unified_4stem" for r in conn.execute(
             "SELECT id, separation_pipeline FROM songs")}
     finally:
         conn.close()
 
 
 def pair_pipeline(pipelines: Dict[int, str], a: int, b: int) -> str:
-    pa, pb = pipelines.get(a, "legacy_2stem"), pipelines.get(b, "legacy_2stem")
+    pa, pb = pipelines.get(a, "unified_4stem"), pipelines.get(b, "unified_4stem")
     return pa if pa == pb else f"{pa}+{pb}"
 
 

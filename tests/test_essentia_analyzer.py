@@ -1,5 +1,5 @@
 """Phase 2 of the analysis overhaul: the Essentia analyser's groups, how they
-project into the features table, and the librosa | shadow | essentia switch.
+project into the features table, and analysis refusing to run without it.
 
 Tests that need Essentia itself skip where it is not installed (native Windows,
 and the Windows CI leg); the projection, key/chroma conventions and the
@@ -18,15 +18,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 
-def _has_essentia() -> bool:
-    try:
-        from analysis.essentia_groups import available
-        return available()
-    except Exception:  # noqa: BLE001
-        return False
-
-
-needs_essentia = pytest.mark.skipif(not _has_essentia(), reason="essentia not installed")
+needs_essentia = pytest.mark.real_essentia
 
 
 def _track(path: Path, secs: float = 50.0, bpm: float = 120.0, sr: int = 44100,
@@ -112,17 +104,15 @@ def _payloads():
     }
 
 
-def test_essentia_projects_onto_exactly_the_librosa_columns(tmp_path):
-    """core_from_essentia must fill every key analyze_file (+ band occupancy)
-    fills, and nothing else: upsert_features writes whatever it is given."""
-    from analysis.analyze import analyze_file
+def test_essentia_projects_onto_exactly_the_core_columns():
+    """core_from_essentia must fill every core column the matcher reads, and
+    nothing else: upsert_features writes whatever it is given."""
     from analysis.project import core_from_essentia
-    import soundfile as sf
-    p = tmp_path / "t.wav"
-    sf.write(str(p), (np.random.default_rng(1).standard_normal(22050 * 6) * 0.1)
-             .astype(np.float32), 22050)
-    librosa_keys = set(analyze_file(p)) | {"band_energy"}
-    assert set(core_from_essentia(_payloads())) == librosa_keys
+    assert set(core_from_essentia(_payloads())) == {
+        "bpm", "bpm_confidence", "beat_times", "beat_phase", "key", "mode",
+        "camelot", "key_confidence", "loudness_rms", "energy", "mfcc",
+        "spectral_centroid", "spectral_rolloff", "zero_crossing_rate",
+        "waveform_rms", "band_energy"}
 
 
 def test_extras_are_unmeasured_when_essentia_did_not_run():
@@ -135,7 +125,7 @@ def test_extras_are_unmeasured_when_essentia_did_not_run():
     assert all(v is None for k, v in none.items() if k != "analyzer")
 
 
-# ── The switch ────────────────────────────────────────────────────────────────
+# ── The analysis stage ────────────────────────────────────────────────────────────────
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
@@ -175,14 +165,8 @@ def _full_row(models, song):
     return models.get_features_for_song(song, "full")
 
 
-def test_config_reads_the_analyzer_live(env, monkeypatch):
+def test_config_reads_the_essentia_settings_live(env, monkeypatch):
     import config
-    monkeypatch.delenv("MASHUP_ANALYZER", raising=False)
-    assert config.current_analyzer() == "essentia"        # the default
-    monkeypatch.setenv("MASHUP_ANALYZER", "Shadow")
-    assert config.current_analyzer() == "shadow"
-    monkeypatch.setenv("MASHUP_ANALYZER", "nonsense")
-    assert config.current_analyzer() == "essentia"
     assert config.current_essentia_key_profile() == "edma"
     assert config.current_essentia_rhythm_method() == "degara"
 
@@ -191,8 +175,6 @@ def test_without_essentia_analysis_is_refused_not_degraded(env, monkeypatch):
     models, stages, client, tmp = env
     import analysis.essentia_groups as eg
     monkeypatch.setattr(eg, "available", lambda: False)
-    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
-    assert stages.effective_analyzer() == ("essentia", "essentia")
     song = _song(models, tmp)
     with pytest.raises(stages.StageError, match="Docker or WSL2"):
         stages.do_analyze(song)
@@ -202,15 +184,6 @@ def test_without_essentia_analysis_is_refused_not_degraded(env, monkeypatch):
     status = client.get("/api/analysis/status").json()
     assert status["analyzer"]["blocked"] is True
     assert status["models"]["available"] is False       # and says why tags are missing
-
-    monkeypatch.setenv("MASHUP_ANALYZER", "librosa")       # comparison mode still works
-    stages.do_analyze(song)
-    assert _full_row(models, song)["analyzer"] == "librosa"
-
-    monkeypatch.delenv("MASHUP_ANALYZER")
-    r = client.post("/api/settings", json={"analyzer": "shadow"})
-    assert r.status_code == 400 and "Essentia" in r.json()["detail"]
-    assert client.post("/api/settings", json={"analyzer": "bogus"}).status_code == 400
 
 
 def test_the_analysis_cache_switch_can_be_saved_off(env):
@@ -239,27 +212,9 @@ def test_groups_measure_a_known_track(tmp_path):
 
 
 @needs_essentia
-def test_shadow_keeps_librosa_in_the_core_and_fills_the_extras(env, monkeypatch):
-    models, stages, _client, tmp = env
-    song = _song(models, tmp)
-    monkeypatch.setenv("MASHUP_ANALYZER", "shadow")
-    stages.do_analyze(song)
-    row = _full_row(models, song)
-    assert row["analyzer"] == "librosa"
-    assert row["lufs"] is not None and row["tuning_hz"] is not None
-    # The core is librosa's, byte for byte: same as a pure librosa run.
-    monkeypatch.setenv("MASHUP_ANALYZER", "librosa")
-    stages.do_analyze(song)
-    pure = _full_row(models, song)
-    assert pure["bpm"] == row["bpm"] and pure["mfcc"] == row["mfcc"]
-    assert pure["lufs"] is None            # extras reflect the latest run
-
-
-@needs_essentia
 def test_essentia_owns_the_core_and_the_section_grid(env, monkeypatch):
     models, stages, _client, tmp = env
     song = _song(models, tmp)
-    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
     stages.do_analyze(song)
     stages.do_structure(song)
     row = _full_row(models, song)
@@ -273,25 +228,21 @@ def test_essentia_owns_the_core_and_the_section_grid(env, monkeypatch):
     assert beats
 
 
-@needs_essentia
-def test_status_reports_coverage_and_agreement(env, monkeypatch):
+def test_status_reports_coverage(env, monkeypatch):
     models, stages, client, tmp = env
     song = _song(models, tmp)
-    monkeypatch.setenv("MASHUP_ANALYZER", "shadow")
     stages.do_analyze(song)
     body = client.get("/api/analysis/status").json()
-    assert body["analyzer"]["configured"] == "shadow" and body["essentia"]["available"]
+    assert body["analyzer"]["blocked"] is False
     assert body["coverage"]["essentia.rhythm"]["full"] == 1
-    assert body["coverage"]["librosa.tempo"]["full"] == 1
-    assert body["agreement"]["tracks_compared"]["bpm"] == 1
-    assert sum(body["agreement"]["bpm"].values()) == 1
+    assert "agreement" not in body
+    assert "allin1" in body["segmentation"]
 
 
-@needs_essentia
-def test_a_second_shadow_run_is_served_from_the_cache(env, monkeypatch):
+def test_a_second_run_is_served_from_the_cache(env, monkeypatch):
     models, stages, _client, tmp = env
+    monkeypatch.setenv("MASHUP_KEEP_ANALYSIS_FRAMES", "0")   # the stand-in writes none
     song = _song(models, tmp)
-    monkeypatch.setenv("MASHUP_ANALYZER", "shadow")
     stages.do_analyze(song)
     conn = models.get_conn()
     conn.execute("DELETE FROM analysis_runs")
@@ -305,13 +256,12 @@ def test_a_second_shadow_run_is_served_from_the_cache(env, monkeypatch):
     assert "essentia.rhythm.cached" in grps and "essentia.rhythm" not in grps
 
 
-@needs_essentia
 def test_an_incomplete_essentia_result_fails_the_stem(env, monkeypatch):
-    """An Essentia library never gets a librosa-filled row: the core columns
-    would mix analysers (readme §7). The stem fails and Retry re-runs it."""
+    """A library never gets a half-filled or librosa-filled row: the core
+    columns are ranked against the library (readme §7). The stem fails and
+    Retry re-runs it."""
     models, stages, _client, tmp = env
     song = _song(models, tmp)
-    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
     monkeypatch.setattr(stages, "_run_essentia", lambda *a, **k: ({}, False))
     with pytest.raises(stages.StageError):
         stages.do_analyze(song)
@@ -337,7 +287,6 @@ def test_the_analysis_stage_tags_the_mix_but_the_quick_tier_does_not(env, monkey
     monkeypatch.setattr(eg, "group_effnet",
                         lambda sig: calls.append(1) or {"tags": {"genre_parent": "Electronic"},
                                                          "embedding_mean": [0.0]})
-    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
     song = _song(models, tmp)
     models.update_song_status(song, "downloaded")
     stages.do_quick(song)
@@ -353,7 +302,6 @@ def test_missing_models_skip_the_tags_without_failing(env, monkeypatch):
     models, stages, _client, tmp = env
     import analysis.essentia_groups as eg
     monkeypatch.setattr(eg, "group_effnet", lambda sig: None)
-    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
     song = _song(models, tmp)
     stages.do_analyze(song)
     row = _full_row(models, song)
@@ -763,6 +711,7 @@ def _stand_in_signals(secs=12.0):
     return Signals(np.stack([y, y], axis=1))
 
 
+@pytest.mark.real_analyzer_code
 def test_groups_hand_out_frames_on_one_grid_and_keep_their_payloads(monkeypatch):
     from analysis import timeseries as ts
     from analysis.essentia_groups import frames_from, group_spectral, group_tonal
@@ -808,6 +757,7 @@ def test_groups_hand_out_frames_on_one_grid_and_keep_their_payloads(monkeypatch)
     ts._payload(frames)
 
 
+@pytest.mark.real_analyzer_code
 def test_force_steps_runs_a_cached_step_and_keeps_the_stored_payload_on_failure(
         monkeypatch, tmp_path):
     from analysis import essentia_groups as eg

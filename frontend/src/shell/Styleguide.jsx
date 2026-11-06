@@ -188,7 +188,7 @@ export function Styleguide() {
           </div>
           <div className="sg-prim">
             <span className="mono muted">Disclosure · toast · status readout</span>
-            <Disclosure title="Stems & quality" meta="Demucs 2-stem · bleed 4%">
+            <Disclosure title="Stems & quality" meta="htdemucs 4-stem · bleed 4%">
               <span className="muted">Disclosure body.</span>
             </Disclosure>
             <div className="toast sg-static"><span className="dot">●</span>Pair hidden

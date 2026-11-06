@@ -7,8 +7,8 @@ fakes it) and ``allin1_runner._model`` (the checkpoint load the pre-flight
 does) — plus the script's own Demucs call.
 
 What these pin, and why each matters:
-  * the picker does NOT require the four unified sources on disk (nothing on the
-    206-track library has them — it is legacy_2stem, readme §9 item 12);
+  * the picker does NOT require the four sources on disk (the script makes
+    them itself, once per track);
   * the downbeat maths tells a 30 ms lag from a bar line a whole beat out;
   * the pre-flight drops a checkpoint that will not load and refuses to run at
     all when the reference will not;

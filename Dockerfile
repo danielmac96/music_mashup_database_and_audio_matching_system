@@ -1,5 +1,5 @@
 # Mashup Engine — single-process image (FastAPI + built React UI).
-# See readme.md "Quick start (Docker)".
+# See readme.md §1 "Run it".
 
 # ── Stage 1: build the frontend ────────────────────────────────────────────────
 FROM node:20-slim AS frontend-build
@@ -14,27 +14,22 @@ FROM python:3.11-slim AS runtime
 WORKDIR /app
 
 # ffmpeg/ffprobe: audio extraction (yt-dlp) + duration checks.
-# libsndfile1: required by soundfile/librosa. libsamplerate0: audio-separator's
-# samplerate binding. build-essential: diffq (a Demucs dep on non-Windows)
-# compiles a C extension at install time.
+# libsndfile1: required by soundfile/librosa. build-essential: diffq (a Demucs
+# dep on non-Windows) and natten (allin1, below) compile at install time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg libsndfile1 libsamplerate0 build-essential \
+        ffmpeg libsndfile1 build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
     # CPU-only PyTorch wheels — the default PyPI build pulls multi-GB CUDA
     # deps that are useless (and mostly broken) in a CPU-only container.
-    && pip install --no-cache-dir torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+    && pip install --no-cache-dir torch==2.5.1 torchaudio==2.5.1 \
         --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir -r requirements.txt \
-    # Optional fast MDX-Net separator (the "Fast" toggle in Stems); no release
-    # resolves against this pin set, so it's installed dep-less on top — see
-    # the note above `onnxruntime` in requirements.txt.
-    && pip install --no-cache-dir audio-separator==0.30.0 --no-deps
+    && pip install --no-cache-dir -r requirements.txt
 
-# The Essentia analyser (optional, benchmarked by scripts/bench_analyzers.py):
-# its own layer so changing requirements.txt does not re-download ~290 MB.
+# The Essentia analyser — the only analyser: its own layer so changing
+# requirements.txt does not re-download ~290 MB.
 COPY requirements-essentia.txt ./
 RUN pip install --no-cache-dir -r requirements-essentia.txt \
     && python -c "import numpy; assert numpy.__version__.startswith('1.'), numpy.__version__"
@@ -64,7 +59,7 @@ COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 RUN find frontend/dist -exec touch {} +
 
 # Docker always sets these, so the Setup Wizard's folder step is skipped
-# (readme.md "Settings & configuration"). ./data is the compose volume mount.
+# (readme §2 "Settings"). ./data is the compose volume mount.
 # TF_CPP_MIN_LOG_LEVEL: essentia-tensorflow logs CUDA probing on import, and
 # this is a CPU image. HF_HOME: allin1's model weights persist with the data.
 ENV MASHUP_AUDIO_ROOT=/data/audio \

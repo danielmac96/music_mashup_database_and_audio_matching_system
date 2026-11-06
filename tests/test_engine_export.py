@@ -25,7 +25,7 @@ def _allin1(db_path, sid):
                      "vocal_presence": vp, "repetition": 2, "confidence": 0.9,
                      "bar_count": (b - a) / 2.0,
                      "downbeats": [a + 2.0 * k for k in range(int((b - a) / 2.0))]})
-    alignment.replace_allin1_sections(sid, "legacy_2stem", secs, db_path=db_path)
+    alignment.replace_allin1_sections(sid, "unified_4stem", secs, db_path=db_path)
 
 
 def test_allin1_export_hangs_off_the_phrase_and_keeps_the_pickup(env, monkeypatch):
@@ -40,7 +40,7 @@ def test_allin1_export_hangs_off_the_phrase_and_keeps_the_pickup(env, monkeypatc
     _allin1(db_path, vocal)
     _allin1(db_path, inst)
     # The chorus is sung from a beat (0.5 s) before its second bar.
-    alignment.replace_vocal_phrases(vocal, "legacy_2stem", "allin1", [
+    alignment.replace_vocal_phrases(vocal, "unified_4stem", "allin1", [
         {"onset_sec": 9.5, "downbeat_sec": 10.0, "pickup_sec": -0.5,
          "end_sec": 22.0, "bars": 8}], db_path=db_path)
 

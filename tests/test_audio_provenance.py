@@ -74,28 +74,6 @@ def test_a_preview_length_is_not_the_records_length(tmp_path, monkeypatch):
     assert m.get_song(sid)["origin_duration_secs"] is None
 
 
-def test_migration_backfills_every_link_a_fallback_did_not_overwrite(tmp_path, monkeypatch):
-    m = _setup(tmp_path, monkeypatch)
-    sc = _raw_song(m, title="SC", source_url="https://soundcloud.com/a/b",
-                   source="soundcloud", duration_secs=200, track_id="123", thumbnail=SC_ART)
-    yt = _raw_song(m, title="YT", source_url="https://youtube.com/watch?v=dQw4w9WgXcQ",
-                   source="youtube", duration_secs=212, track_id="dQw4w9WgXcQ",
-                   thumbnail="https://i.ytimg.com/vi/x.jpg")
-    bug = _massive_as_the_bug_left_it(m)
-
-    conn = m.get_conn()
-    m._migrate_songs_columns(conn)
-    conn.commit()
-    conn.close()
-
-    assert m.get_song(sc)["origin_url"] == "https://soundcloud.com/a/b"
-    assert m.get_song(sc)["origin_duration_secs"] == pytest.approx(200)
-    assert m.get_song(yt)["origin_url"] == "https://youtube.com/watch?v=dQw4w9WgXcQ"
-    # Guessing here would record the remix as what was asked for.
-    assert m.get_song(bug)["origin_url"] is None
-    assert m.get_song(bug)["origin_duration_secs"] is None
-
-
 def test_dedup_finds_a_track_by_the_link_it_was_imported_from(tmp_path, monkeypatch):
     m = _setup(tmp_path, monkeypatch)
     sid = m.upsert_song(title="Massive", source_url=SC_URL, duration_secs=LENGTH)

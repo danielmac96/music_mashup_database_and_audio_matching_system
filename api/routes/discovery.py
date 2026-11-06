@@ -1,9 +1,7 @@
 """Discovery: search and browse SoundCloud, then pull finds into the library.
 
-The read half of the Discovery tab. Everything here is anonymous GETs through
-``ingest.soundcloud_browse``; the write half (pushing a crate up as a real
-SoundCloud playlist) lives in ``ingest.soundcloud_oauth`` and stays dormant until
-credentials exist.
+Everything here is anonymous GETs through ``ingest.soundcloud_browse``; the app
+never logs in to SoundCloud and never writes to it.
 
 Two things this layer adds on top of the browse module:
 
@@ -220,17 +218,9 @@ def import_rows(req: ImportRequest) -> dict:
     return ingest_rows(rows, group_name=req.group_name)
 
 
-@router.get("/status")
-def status() -> dict:
-    """What Discovery can do right now. Read always works; write needs an app."""
-    return {"read_enabled": True, "account": _account_status(),
-            "write_enabled": bool(_account_status().get("authorized"))}
-
-
 # ── your profile ─────────────────────────────────────────────────────────────
-# "Connect" here means IDENTIFY, not authenticate. There is no login to offer:
-# soundcloud_oauth is dormant because registering an app needs an Artist Pro
-# subscription, so all we can do is remember whose public pages to open. Public sets, public
+# "Connect" here means IDENTIFY, not authenticate: the app never logs in, so all
+# it can do is remember whose public pages to open. Public sets, public
 # likes and public uploads are reachable; private ones are not, and the UI says
 # so rather than showing an empty shelf and letting you conclude it is broken.
 
@@ -434,165 +424,7 @@ def recommend_from(req: RecommendRequest, background: BackgroundTasks) -> dict:
     return {"job_id": job_id, "seed_count": len(seeds), "offered": len(candidates)}
 
 
-# ── account (dormant until credentials exist) ────────────────────────────────
-# Every one of these answers 501 with a plain explanation rather than 500 or a
-# silent no-op, so the UI can grey the affected controls and say why.
-
-def _account_status() -> dict:
-    try:
-        from ingest import soundcloud_oauth
-        return soundcloud_oauth.status()
-    except Exception:  # noqa: BLE001 — the write layer is optional by design
-        log.debug("soundcloud_oauth unavailable", exc_info=True)
-        return {"configured": False, "authorized": False, "username": "",
-                "reason": "SoundCloud write support is not installed."}
-
-
-def _oauth():
-    from ingest import soundcloud_oauth
-    return soundcloud_oauth
-
-
-def guard_write(fn, *args, **kwargs):
-    """Run a write, mapping "not set up" to 501 and a rejection to 502.
-
-    Shared with the crates router so a dormant push and a dormant like explain
-    themselves the same way."""
-    oauth = _oauth()
-    try:
-        return fn(*args, **kwargs)
-    except oauth.NotConfigured as exc:
-        raise HTTPException(status_code=501, detail=str(exc)) from exc
-    except oauth.SoundCloudAuthError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-class AuthStartRequest(BaseModel):
-    redirect_uri: str
-
-
-class AuthCallbackRequest(BaseModel):
-    code: str
-    verifier: str
-    redirect_uri: str
-
-
-@router.get("/account")
-def account() -> dict:
-    return _account_status()
-
-
-@router.post("/account/authorize")
-def account_authorize(req: AuthStartRequest) -> dict:
-    """Begin the OAuth flow. The verifier comes back to the caller and is handed
-    to /account/callback — it never goes over the wire, which is the point of PKCE."""
-    return guard_write(_oauth().authorize_url, req.redirect_uri)
-
-
-@router.post("/account/callback")
-def account_callback(req: AuthCallbackRequest) -> dict:
-    return guard_write(_oauth().exchange_code, req.code, req.verifier, req.redirect_uri)
-
-
-@router.post("/account/disconnect")
-def account_disconnect() -> dict:
-    _oauth().disconnect()
-    return _account_status()
-
-
-@router.post("/tracks/{track_id}/like")
-def like(track_id: str) -> dict:
-    return {"liked": True, "result": guard_write(_oauth().like_track, track_id)}
-
-
-@router.delete("/tracks/{track_id}/like")
-def unlike(track_id: str) -> dict:
-    return {"liked": False, "result": guard_write(_oauth().unlike_track, track_id)}
-
-
 # ── where the library is thin ────────────────────────────────────────────────
-
-# ── finds for one library track ──────────────────────────────────────────────
-
-FOR_TRACK_ROLES = ("acapella", "instrumental", "any")
-
-
-def for_track_queries(song: dict, bpm: Optional[float], role: str) -> list[str]:
-    """The searches worth running for one library track.
-
-    The record is named as it is searched everywhere else (search_credit:
-    featured artists and DJ-tool asides dropped, rework credits kept). `any`
-    looks for its official acapella and instrumental and for neighbours in its
-    genre and tempo; a role looks for that cut of it, and for that kind of
-    track in its genre and tempo (the Library-gaps query)."""
-    from ingest.tracklist_parse import search_credit
-    artist, title = search_credit(song.get("artist") or "", song.get("title") or "")
-    if artist.strip().lower() == "unknown":
-        artist = ""
-    credit = " ".join(x for x in (artist, title) if x).strip()
-    genre = (song.get("genre") or "").strip()
-    tempo = f"{round(bpm)} bpm" if bpm else ""
-    words = ("acapella", "instrumental") if role == "any" else (role,)
-    queries = [f"{credit} {w}" for w in words] if credit else []
-    if genre or tempo:
-        queries.append(" ".join(x for x in (
-            genre, "" if role == "any" else role, tempo) if x))
-    return list(dict.fromkeys(q for q in queries if q.strip()))
-
-
-@router.get("/for-track/{song_id}")
-def for_track(song_id: int,
-              role: str = Query("any", pattern="^(acapella|instrumental|any)$"),
-              limit: int = Query(20, ge=1, le=50)) -> dict:
-    """SoundCloud finds for one library track: its acapella / instrumental and
-    tracks in its genre and tempo, merged across the searches, deduplicated by
-    URL, with what you already own removed. Rows are /search rows — canonical,
-    with `fit_hint`, `in_library` and `is_snip` (the Go+ preview flag).
-
-    Every search goes through the browse layer (its throttle, cache and
-    breaker). One failed search does not cost the others; if all of them fail
-    the answer is the usual 502/503."""
-    from database.models import get_features_for_song
-    song = get_song(song_id)
-    if not song:
-        raise HTTPException(status_code=404, detail="track not found")
-    try:
-        bpm = (get_features_for_song(song_id, "full") or {}).get("bpm")
-    except Exception:  # noqa: BLE001 — the tempo only sharpens one query
-        bpm = None
-    queries = for_track_queries(song, bpm, role)
-    if not queries:
-        return {"rows": [], "queries": []}
-
-    pages: list[list[dict]] = []
-    last_error: Optional[HTTPException] = None
-    for q in queries:
-        try:
-            pages.append(_guard(browse.search, "tracks", q, limit=limit).get("items") or [])
-        except HTTPException as exc:
-            log.warning("for-track search %r failed: %s", q, exc.detail)
-            last_error = exc
-            pages.append([])
-            if exc.status_code == 503:
-                break          # the breaker is open: the rest would fail the same way
-    if last_error is not None and not any(pages):
-        raise last_error
-
-    # Round-robin, so each search gets its share of the page.
-    merged, seen = [], set()
-    for rank in range(max((len(p) for p in pages), default=0)):
-        for page in pages:
-            if rank < len(page):
-                row = page[rank]
-                url = row.get("source_url")
-                if url and not row.get("kind") and url not in seen:
-                    seen.add(url)
-                    merged.append(row)
-    own = {u for u in (song.get("source_url"), song.get("origin_url")) if u}
-    rows = [r for r in _annotate(merged)
-            if not r.get("in_library") and r["source_url"] not in own]
-    return {"rows": rows[:limit], "queries": queries}
-
 
 @router.get("/gaps")
 def library_gaps(max_partners: int = Query(2, ge=0, le=10)) -> dict:

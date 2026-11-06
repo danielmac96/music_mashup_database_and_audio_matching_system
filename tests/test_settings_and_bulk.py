@@ -51,7 +51,7 @@ def client(tmp_path, monkeypatch):
 
 def _add(db_path, k, *, analysed=True, bands=False, quality=False,
          chroma=False, grid=False, sections=True, drums=False,
-         stem_measures=None):
+         stem_measures=None, separator="demucs:htdemucs:4:unified"):
     """A song with selectable generations of feature data present.
 
     Each flag is one generation the staleness check knows about, so a test can
@@ -73,7 +73,8 @@ def _add(db_path, k, *, analysed=True, bands=False, quality=False,
         if bands:
             feats["band_energy"] = [0.125] * 8
         upsert_features(sid, stem, feats, db_path=db_path)
-        upsert_stem(sid, stem, f"/x/{k}_{stem}.flac", db_path=db_path)
+        upsert_stem(sid, stem, f"/x/{k}_{stem}.flac",
+                    separator=None if stem == "full" else separator, db_path=db_path)
         if quality and stem != "full":
             update_stem_quality(sid, stem, {"quality": 0.8}, db_path=db_path)
     if drums:
@@ -102,7 +103,7 @@ def test_every_tunable_knob_is_reported(client):
     well not exist."""
     c, _ = client
     got = c.get("/api/settings").json()
-    for key in ("stem_mode", "stem_separator", "effort_weight", "section_weight",
+    for key in ("effort_weight", "section_weight",
                 "stem_quality_min", "bpm_max_diff", "key_min_score",
                 "bpm_max_diff_model", "max_section_pairs", "match_weights",
                 "section_weights"):
@@ -184,19 +185,6 @@ def test_section_weights_round_trip(client):
 def test_invalid_settings_are_rejected(client, payload):
     c, _ = client
     assert c.post("/api/settings", json=payload).status_code == 400
-
-
-def test_four_stem_needs_demucs(client):
-    """MDX is a two-stem model. Saving the pair together would leave the user
-    with a setting that silently does nothing."""
-    c, _ = client
-    c.post("/api/settings", json={"stem_separator": "mdx"})
-    r = c.post("/api/settings", json={"stem_mode": "four"})
-    assert r.status_code == 400
-    assert "demucs" in r.json()["detail"].lower()
-    # Switching both at once is fine.
-    assert c.post("/api/settings", json={"stem_mode": "four",
-                                         "stem_separator": "demucs"}).status_code == 200
 
 
 def test_env_pinned_knobs_report_their_source(client, monkeypatch):
@@ -311,17 +299,16 @@ def test_tracks_with_no_sections_are_counted_separately(client):
     assert got["missing_section_chroma"] == 0
 
 
-def test_four_stem_staleness_only_counts_when_four_stem_is_on(client):
-    """A user who does not want four-stem must not be told their library needs
-    hours of work."""
+def test_stems_from_an_older_separator_are_counted_for_re_separation(client):
+    """Only htdemucs four-stem stems are current; anything else made by an
+    older build is offered for re-separation, and nothing else is."""
     c, db = client
-    _add(db, 1, bands=True, quality=True, chroma=True, grid=True, drums=False)
-    assert c.get("/api/tracks/staleness").json()["missing_four_stems"] == 0
-
-    c.post("/api/settings", json={"stem_mode": "four", "stem_separator": "demucs"})
-    got = c.get("/api/tracks/staleness").json()
-    assert got["stem_mode"] == "four"
-    assert got["missing_four_stems"] == 1
+    _add(db, 1, bands=True, quality=True, chroma=True, grid=True)
+    old = _add(db, 2, bands=True, quality=True, chroma=True, grid=True,
+               separator="demucs:htdemucs:2")
+    assert c.get("/api/tracks/staleness").json()["wrong_separation"] == 1
+    from api.workers import bulk_worker
+    assert bulk_worker.stale_song_ids("separate", db_path=db) == [old]
 
 
 # ── Bulk reprocessing ────────────────────────────────────────────────────────
@@ -401,18 +388,13 @@ def test_bulk_rejects_a_bad_action_or_scope(client):
                   json={"action": "analyze", "scope": "sideways"}).status_code == 400
 
 
-def test_an_allin1_cut_track_is_not_owed_the_essentia_cut(client, monkeypatch):
-    """Under the allin1 engine, allin1's sections ARE the track's sections.
+def test_an_allin1_cut_track_is_not_owed_the_essentia_cut(client):
+    """allin1's sections ARE the track's sections.
 
-    Task 5 made the structure stage skip the novelty cut when allin1 already cut
-    the track (pipeline_worker._wants_essentia_cut), but left this predicate
-    asking only about the `sections` table — which is then empty for good. That
-    is the exact failure test_badge_and_structure_gate_share_one_definition
-    exists to prevent, one engine along: the badge counts every allin1 track as
-    needing a re-analysis forever, and the button that answers it re-runs the
-    whole analysis and then skips the cut, so the count never drops.
-
-    With dual_cut on both cuts are wanted, so the Essentia one is owed again.
+    The structure stage skips the novelty cut when allin1 already cut the track
+    (pipeline_worker._wants_essentia_cut), so the `sections` table stays empty
+    for good. A predicate asking only about that table would count every
+    allin1 track as needing a re-analysis forever.
     """
     c, db = client
     sid = _add(db, 1, bands=True, quality=True, sections=False)
@@ -422,27 +404,19 @@ def test_an_allin1_cut_track_is_not_owed_the_essentia_cut(client, monkeypatch):
     conn.execute(
         "INSERT INTO sections_allin1 (song_id, pipeline, section_index, label,"
         " start_sec, end_sec) VALUES (?,?,?,?,?,?)",
-        (sid, "legacy_2stem", 1000, "chorus", 0.0, 30.0))
+        (sid, "unified_4stem", 1000, "chorus", 0.0, 30.0))
     conn.commit()
     conn.close()
 
-    monkeypatch.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
     from api.workers.bulk_worker import sections_are_current
     assert sections_are_current(sid, db_path=db) is True
     got = c.get("/api/tracks/staleness").json()
     assert got["needs_analysis"] == 0
     assert got["missing_sections"] == 0
 
-    monkeypatch.setenv("MASHUP_DUAL_CUT", "1")
-    assert sections_are_current(sid, db_path=db) is False
-    assert c.get("/api/tracks/staleness").json()["missing_sections"] == 1
-    monkeypatch.delenv("MASHUP_DUAL_CUT")
-
-    # The other pipeline's parked sections are not this track's, so they cover
-    # nothing (alignment.get_allin1_sections matches the pipeline too).
+    # allin1 sections under another pipeline key are not this track's.
     conn = get_conn(db)
-    conn.execute("UPDATE sections_allin1 SET pipeline='unified_4stem' "
-                 "WHERE song_id=?", (sid,))
+    conn.execute("UPDATE sections_allin1 SET pipeline='other' WHERE song_id=?", (sid,))
     conn.commit()
     conn.close()
     assert sections_are_current(sid, db_path=db) is False

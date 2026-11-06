@@ -30,9 +30,6 @@ export function CratePanel({ refreshKey, onChanged, onOpenLibrary,
   const [crate, setCrate] = useState(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  // The dormant push explains itself through the 501 the server sends, rather
-  // than the UI hard-coding a second copy of the reason.
-  const [account, setAccount] = useState(null);
   // "Import links": a crate built from a pasted list — the other half of the
   // crate's URL export, so a crate file is an interchange format, not a dead end.
   const [importing, setImporting] = useState(false);
@@ -42,10 +39,6 @@ export function CratePanel({ refreshKey, onChanged, onOpenLibrary,
   const sensors = useSensors(useSensor(PointerSensor, {
     activationConstraint: { distance: 4 },
   }));
-
-  useEffect(() => {
-    api.discoveryStatus().then((s) => setAccount(s.account)).catch(() => setAccount(null));
-  }, []);
 
   useEffect(() => {
     api.getCrates()
@@ -126,18 +119,6 @@ export function CratePanel({ refreshKey, onChanged, onOpenLibrary,
     finally { setBusy(""); }
   };
 
-  const push = async () => {
-    if (!crate) return;
-    setBusy("push");
-    try {
-      await api.pushCrate(crate.id);
-      toast("Pushed to SoundCloud");
-      reload();
-    } catch (e) {
-      toast(e.message);   // carries the 501's setup instructions verbatim
-    } finally { setBusy(""); }
-  };
-
   const importLinks = async () => {
     const urls = importText.split(/\s+/).map((u) => u.trim()).filter(Boolean);
     if (!importName.trim() || !urls.length) return;
@@ -154,7 +135,6 @@ export function CratePanel({ refreshKey, onChanged, onOpenLibrary,
   };
 
   const pending = crate ? crate.items.filter((i) => !i.song_id).length : 0;
-  const canPush = Boolean(account?.authorized);
 
   return (
     <aside className="crate-panel">
@@ -257,14 +237,6 @@ export function CratePanel({ refreshKey, onChanged, onOpenLibrary,
               title="Download a plain list of links">↧ URLs</a>
             <a className="btn ghost" href={api.crateExportUrl(crate.id, "json")}
               title="Download the full rows — re-importable into another crate">↧ JSON</a>
-            <button className="btn ghost" disabled={!canPush || busy === "push"}
-              onClick={push}
-              title={canPush
-                ? "Create this crate as a private playlist on your SoundCloud account"
-                : (account?.reason
-                   || "Needs SoundCloud app credentials — add them in Settings")}>
-              ↗ Push to SoundCloud
-            </button>
           </div>
         </div>
       )}

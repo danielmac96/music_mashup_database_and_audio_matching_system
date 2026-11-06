@@ -44,22 +44,9 @@ class FeatureGroup:
         return hashlib.blake2b(blob.encode("utf-8"), digest_size=8).hexdigest()
 
 
-def _analysis_params(**extra) -> Callable[[], dict]:
-    def _p() -> dict:
-        from config import BEAT_TRIM_SECS, HOP_LENGTH, SAMPLE_RATE
-        return {"sr": SAMPLE_RATE, "hop": HOP_LENGTH, "trim_secs": BEAT_TRIM_SECS,
-                **{k: (v() if callable(v) else v) for k, v in extra.items()}}
-    return _p
-
-
 def _n_mfcc() -> int:
     from config import N_MFCC
     return N_MFCC
-
-
-def _quality_params() -> dict:
-    from analysis.quality import BAND_EDGES, MAX_SECS, QUALITY_SR
-    return {"sr": QUALITY_SR, "edges": list(BAND_EDGES), "max_secs": MAX_SECS}
 
 
 def _residual_params() -> dict:
@@ -144,19 +131,6 @@ def _phrase_params() -> dict:
 
 
 _GROUPS = (
-    # v2: BPM fitted through the beats, not librosa's tempogram bin.
-    FeatureGroup("librosa.tempo", 2, "librosa", 1, _analysis_params(),
-                 "BPM, grid confidence, beat times, beat phase", step="tempo"),
-    FeatureGroup("librosa.key", 1, "librosa", 1, _analysis_params(),
-                 "Krumhansl key, mode, Camelot, key confidence", step="key"),
-    FeatureGroup("librosa.dynamics", 1, "librosa", 1, _analysis_params(),
-                 "mean RMS loudness, mean spectral energy", step="dynamics"),
-    FeatureGroup("librosa.timbre", 1, "librosa", 1, _analysis_params(n_mfcc=_n_mfcc),
-                 "mean MFCC, spectral centroid/rolloff, ZCR", step="timbre"),
-    FeatureGroup("librosa.waveform", 1, "librosa", 1, _analysis_params(),
-                 "360-point normalised RMS envelope", step="waveform"),
-    FeatureGroup("librosa.bands", 1, "librosa", 1, _quality_params,
-                 "8-band energy occupancy (analysis/quality.band_energy)"),
     FeatureGroup("librosa.residual", 1, "librosa", 2, _residual_params,
                  "residual vocal ratio of a bed (vocals + mix)"),
     # v2 (phase 4): sections also carry vocal_activity, per-stem band
@@ -232,10 +206,7 @@ _GROUPS = (
 
 GROUPS: Dict[str, FeatureGroup] = {g.name: g for g in _GROUPS}
 
-# analyze_file step name -> its librosa group; analyze_file_essentia step -> its
-# Essentia group. The two share step names only by accident, so they are kept apart.
-STEP_GROUPS: Dict[str, FeatureGroup] = {
-    g.step: g for g in _GROUPS if g.step and g.analyzer == "librosa"}
+# analyze_file_essentia step name -> its Essentia group.
 ESSENTIA_STEP_GROUPS: Dict[str, FeatureGroup] = {
     g.step: g for g in _GROUPS if g.step and g.analyzer == "essentia"}
 

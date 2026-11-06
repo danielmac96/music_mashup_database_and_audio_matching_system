@@ -125,8 +125,6 @@ def health_deps() -> dict:
     import shutil
     import importlib.util
 
-    import config
-
     def _on_path(binary: str) -> bool:
         return shutil.which(binary) is not None
 
@@ -147,15 +145,22 @@ def health_deps() -> dict:
          "detail": "SoundCloud/YouTube metadata + download (required)", "required": True,
          "version": ytdlp_version, "stale": ytdlp_stale},
         {"name": "demucs", "ok": _importable("demucs"),
-         "detail": "stem separation (required to split vocals/instrumental)", "required": True},
+         "detail": "stem separation: htdemucs, four sources (required)", "required": True},
         {"name": "librosa", "ok": _importable("librosa"),
-         "detail": "audio feature analysis (required for BPM/key/structure)", "required": True},
-        # The analyser (readme §9). Linux/macOS wheels only: on native Windows it
-        # is missing, and required unless analyzer=librosa (tests/comparison).
+         "detail": "audio helpers: decoding, renders, the fallback cut (required)",
+         "required": True},
+        # The analyser. Linux/macOS wheels only: on native Windows it is
+        # missing, so that machine can run the app but not analyse.
         {"name": "essentia", "ok": _importable("essentia"),
          "detail": "the analyser: BPM/key/loudness/timbre + ML tags "
                    "(Docker/WSL2 — requirements-essentia.txt)",
-         "required": config.current_analyzer() != "librosa"},
+         "required": True},
+        # The section engine. Without it every track is cut by the Essentia
+        # fallback (readme §5.5), so it is not required to run.
+        {"name": "allin1", "ok": _importable("allin1"),
+         "detail": "beats, downbeats and labelled sections "
+                   "(Docker — requirements-allin1.txt; without it the fallback cut runs)",
+         "required": False},
         {"name": "rubberband", "ok": _ffmpeg_has_filter("rubberband"),
          "detail": "ffmpeg's Rubber Band filter for export time-stretch (optional)",
          "required": False},
