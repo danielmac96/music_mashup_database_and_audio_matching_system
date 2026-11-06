@@ -14,7 +14,7 @@ tracks it happened to.
     docker compose exec app python scripts/bench_one_pass.py --skip-ingest --limit 30
 
 The test library is a separate MASHUP_DB_PATH / MASHUP_AUDIO_ROOT /
-MASHUP_DATA_DIR (readme §2), not a flag — so the database, the data directory
+MASHUP_DATA_DIR (readme §4), not a flag — so the database, the data directory
 and the track count are printed before anything runs.
 
 The run itself needs Demucs, Essentia and allin1, i.e. Docker, so it is not
@@ -203,18 +203,18 @@ def _findings(by_group: Dict[str, List[dict]], song_ids: List[int]) -> List[str]
         split = ", ".join(f"{n} {a}" for a, n in sorted(by_analyzer.items()))
         findings.append(
             f"{len(cuts)} cuts for {len(song_ids)} tracks ({split}) — check "
-            f"MASHUP_DUAL_CUT and pipeline_worker._wants_essentia_cut")
+            f"pipeline_worker._wants_essentia_cut")
     demix = by_group.get("allin1.demix", [])
     if demix:
         findings.append(
             f"`allin1.demix` ran {len(demix)} time(s) — allin1 separated its own "
-            f"stems, so Demucs ran twice. The library is not on unified_4stem.")
+            f"stems, so Demucs ran twice — the four sources were not handed "
+            f"over (analysis/allin1_runner.hand_over_demix).")
     return findings
 
 
 def _out_dir(data_dir: Path) -> Path:
-    """`<data_dir>/bench/one_pass/<timestamp>`, beside bench/pipelines and
-    bench/stem_null."""
+    """`<data_dir>/bench/one_pass/<timestamp>`."""
     return Path(data_dir) / "bench" / "one_pass" / time.strftime("%Y%m%d-%H%M%S")
 
 
@@ -229,28 +229,12 @@ def _write_report(out_dir: Path, recs: List[dict], lines: List[str]) -> None:
     (out_dir / "one_pass.md").write_text(text, encoding="utf-8")
 
 
-def _null_test_owed(data_dir: Path, pipeline: str) -> Optional[str]:
-    """The 4-source null test is the gate before the first import on
-    `unified_4stem` (readme §2, §9 item 12) and it has never been run. A
-    warning, not a refusal — the user decides."""
-    if pipeline != "unified_4stem":
-        return None
-    if any((Path(data_dir) / "bench" / "stem_null").glob("*/results.csv")):
-        return None
-    return ("WARNING: this library is on unified_4stem and "
-            "scripts/stem_null_test.py has never been run here "
-            "(no <data_dir>/bench/stem_null/*/results.csv). readme §2 and §9 "
-            "item 12 make it the gate before the first import on this "
-            "pipeline: run `python scripts/stem_null_test.py --auto 10` and "
-            "listen to its A/B pairs.")
-
-
 def _library_songs(limit: int, db_path: Optional[Path]) -> List[int]:
     """The tracks already in THIS database, bounded by --limit.
 
     Unbounded this is a loaded gun: pointed at the 206-track library it would
     re-run the whole pipeline over all of it. The test library is a separate
-    MASHUP_DB_PATH (readme §2), and the caller is told which one it got before
+    MASHUP_DB_PATH (readme §4), and the caller is told which one it got before
     anything runs."""
     from database import models
 
@@ -275,14 +259,11 @@ def _song_state(song_id: int, db_path: Path) -> dict:
 
 
 def _report_lines(*, song_ids, recs, findings, wall, frames_n, frames_bytes,
-                  peak_measured, by_group, pipeline, config,
-                  owed: Optional[str]) -> List[str]:
+                  peak_measured, by_group, pipeline, config) -> List[str]:
     tracks = max(1, len(song_ids))
     lines = [f"# One pass over {len(song_ids)} tracks", "",
              f"- wall clock: {wall / 60:.1f} min ({wall / tracks:.0f} s a track)",
-             f"- pipeline: {pipeline} · engine "
-             f"{config.current_segmentation_engine()} · analyser "
-             f"{config.current_analyzer()} · allin1 "
+             f"- pipeline: {pipeline} · allin1 "
              f"{config.current_allin1_model()}",
              f"- frame sidecars: {frames_n} files, {frames_bytes / 1e6:.1f} MB "
              f"({frames_bytes / tracks / 1e6:.2f} MB a track)",
@@ -290,8 +271,6 @@ def _report_lines(*, song_ids, recs, findings, wall, frames_n, frames_bytes,
                                        if peak_measured else
                                        "unmeasured — no peak_mb column"),
              ""]
-    if owed:
-        lines += [f"- **{owed}**", ""]
     lines += ["## Findings", ""]
     lines += ([f"- **{f}**" for f in findings] if findings
               else ["- none: every stage ran once per track."])
@@ -323,7 +302,7 @@ def main(argv=None, *, db_path: Optional[Path] = None,
          data_dir: Optional[Path] = None) -> int:
     """`db_path` / `data_dir` are for the tests, which pass them explicitly:
     `config.DB_PATH` binds at import, so a test that redirected it by env var
-    would run against whichever library is configured (readme §2, §7)."""
+    would run against whichever library is configured (readme §4, §7)."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("folder", nargs="?", default=None,
                     help="a folder of audio files (registered in place)")
@@ -346,13 +325,8 @@ def main(argv=None, *, db_path: Optional[Path] = None,
 
     print(f"Database: {db}")
     print(f"Data dir: {data}")
-    print(f"Pipeline: {pipeline} · engine: "
-          f"{config.current_segmentation_engine()} · analyser: "
-          f"{config.current_analyzer()} · allin1 model: "
+    print(f"Pipeline: {pipeline} · allin1 model: "
           f"{config.current_allin1_model()}")
-    owed = _null_test_owed(data, pipeline)
-    if owed:
-        print(owed)
 
     if args.skip_ingest:
         song_ids = _library_songs(args.limit, db)
@@ -389,7 +363,7 @@ def main(argv=None, *, db_path: Optional[Path] = None,
                           wall=wall, frames_n=frames_n,
                           frames_bytes=frames_bytes,
                           peak_measured=peak_measured, by_group=by_group,
-                          pipeline=pipeline, config=config, owed=owed)
+                          pipeline=pipeline, config=config)
     out = _out_dir(data)
     _write_report(out, recs, lines)
     _say("\n".join(lines))

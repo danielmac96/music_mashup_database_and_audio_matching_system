@@ -87,9 +87,7 @@ def main(argv=None) -> int:
 
     print(f"database: {config.DB_PATH}")
     print(f"audio:    {config.AUDIO_DIR}")
-    print(f"pipeline: {config.current_separation_pipeline()} · engine "
-          f"{config.current_segmentation_engine()} · analyser "
-          f"{config.current_analyzer()}")
+    print(f"allin1:   {config.current_allin1_model()}")
     print(f"{len(urls)} URL(s)\n")
 
     t0 = time.perf_counter()
