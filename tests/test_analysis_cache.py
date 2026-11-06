@@ -313,11 +313,11 @@ def test_a_version_bump_recomputes_that_group_only(env, decode, monkeypatch):
     models, stages, song = env
     stages.do_analyze(song)
 
-    bumped = dataclasses.replace(registry.GROUPS["essentia.tonal"],
-                                 version=registry.GROUPS["essentia.tonal"].version + 1)
-    monkeypatch.setitem(registry.GROUPS, "essentia.tonal", bumped)
-    monkeypatch.setitem(registry.ESSENTIA_STEP_GROUPS, "tonal", bumped)
-    monkeypatch.setitem(cache_mod.ESSENTIA_STEP_GROUPS, "tonal", bumped)
+    bumped = dataclasses.replace(registry.GROUPS["essentia.loudness"],
+                                 version=registry.GROUPS["essentia.loudness"].version + 1)
+    monkeypatch.setitem(registry.GROUPS, "essentia.loudness", bumped)
+    monkeypatch.setitem(registry.ESSENTIA_STEP_GROUPS, "loudness", bumped)
+    monkeypatch.setitem(cache_mod.ESSENTIA_STEP_GROUPS, "loudness", bumped)
     conn = models.get_conn()
     conn.execute("DELETE FROM analysis_runs")
     conn.commit()
@@ -325,8 +325,8 @@ def test_a_version_bump_recomputes_that_group_only(env, decode, monkeypatch):
 
     stages.do_analyze(song)
     grps = _grps(models)
-    assert grps.count("essentia.tonal") == 3         # once per stem
-    assert "essentia.rhythm" not in grps and grps.count("essentia.rhythm.cached") == 3
+    assert grps.count("essentia.loudness") == 3      # once per stem
+    assert "essentia.spectral" not in grps and grps.count("essentia.spectral.cached") == 3
     assert "analysis.cached" not in grps             # a real analysis ran
 
 
@@ -352,6 +352,6 @@ def test_a_re_separated_stem_recomputes_its_groups_and_structure(env, decode, tm
     stages.do_analyze(song)
     stages.do_structure(song)
     grps = _grps(models)
-    assert "essentia.rhythm.cached" in grps         # the mix and bed
-    assert any(g == "essentia.rhythm" for g in grps)  # the new vocal
+    assert "essentia.spectral.cached" in grps       # the mix and bed
+    assert any(g == "essentia.spectral" for g in grps)  # the new vocal
     assert "structure.cached" not in grps

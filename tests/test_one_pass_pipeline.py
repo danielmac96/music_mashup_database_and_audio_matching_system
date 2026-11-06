@@ -127,7 +127,12 @@ def _fake_essentia(captured: dict, fill_frames: bool = True):
             frames_out["bands"] = np.ones((8, 20), dtype=np.float32)
             frames_out["curves"] = np.zeros((5, 20), dtype=np.float32)
             frames_out["spectral_step"] = ts.STEP_SECS
-        return _essentia_payload(stem_type), False
+        payload = {**_essentia_payload(stem_type), "chroma": {"hpcp": [0.0] * 12}}
+        if only_steps:
+            payload = {k: v for k, v in payload.items() if k in only_steps}
+        else:
+            payload.pop("chroma")
+        return payload, False
 
     return fake
 
@@ -167,10 +172,12 @@ def test_bass_is_analysed_tonal_only():
     assert stages._TONAL_ONLY_STEMS == ("bass",)
 
 
-def test_a_tonal_only_stem_asks_for_the_tonal_group_alone(monkeypatch,
-                                                          seeded_song, env):
-    """`only_steps` is what keeps the bass's rhythm, loudness, spectral and
-    effnet groups from running for a row nothing reads."""
+def test_each_stem_asks_only_for_the_groups_it_is_read_for(monkeypatch,
+                                                            seeded_song, env):
+    """`only_steps` keeps a stem from paying for groups nothing reads: the bass
+    is measured for its chroma alone, the vocals and instrumental for loudness,
+    timbre and chroma (their tempo and key are the mix's), and only the mix
+    runs rhythm, the full tonal group and the tags."""
     _models, stages, _db = env
     song_id, stem_paths = seeded_song
 
@@ -178,11 +185,32 @@ def test_a_tonal_only_stem_asks_for_the_tonal_group_alone(monkeypatch,
     _essentia_mode(stages, monkeypatch, captured)
     stages._analyze_stems(song_id, stem_paths, stages._ANALYSIS_STEM_ORDER, None)
 
-    assert captured["calls"]["bass"]["only_steps"] == ("tonal",)
-    assert captured["calls"]["bass"]["extra_steps"] == ()
-    assert captured["calls"]["full"]["only_steps"] == ()
-    assert captured["calls"]["full"]["extra_steps"] == ("effnet",)
-    assert captured["calls"]["vocals"]["extra_steps"] == ("melody",)
+    calls = captured["calls"]
+    assert calls["bass"]["only_steps"] == ("chroma",)
+    assert calls["bass"]["extra_steps"] == ("chroma",)
+    assert calls["full"]["only_steps"] == ()
+    assert calls["full"]["extra_steps"] == ("effnet",)
+    assert calls["vocals"]["only_steps"] == ("loudness", "spectral", "chroma", "melody")
+    assert calls["vocals"]["extra_steps"] == ("chroma", "melody")
+    assert calls["instrumental"]["only_steps"] == ("loudness", "spectral", "chroma")
+    for stem in ("vocals", "instrumental", "bass"):
+        assert "rhythm" not in calls[stem]["only_steps"]
+        assert "tonal" not in calls[stem]["only_steps"]
+
+
+def test_a_stem_row_carries_the_mix_tempo_grid_and_key(monkeypatch, seeded_song, env):
+    """The stems run no rhythm or key group: their features rows take the
+    mix's, so every reader of a stem row sees the mix's grid."""
+    models, stages, db = env
+    song_id, stem_paths = seeded_song
+    _essentia_mode(stages, monkeypatch, {})
+    stages._analyze_stems(song_id, stem_paths, stages._ANALYSIS_STEM_ORDER, None)
+    full = models.get_features_for_song(song_id, "full", db_path=db)
+    for stem in ("vocals", "instrumental"):
+        row = models.get_features_for_song(song_id, stem, db_path=db)
+        assert row is not None, stem
+        assert row["bpm"] == full["bpm"] and row["camelot"] == full["camelot"]
+        assert row["key_strength"] is None          # the mix's extras stay the mix's
 
 
 def test_a_missing_sidecar_forces_the_two_steps_that_carry_frames(monkeypatch,
@@ -205,9 +233,11 @@ def test_a_missing_sidecar_forces_the_two_steps_that_carry_frames(monkeypatch,
     assert captured["calls"]["full"]["force_steps"] == ()
 
 
-def test_the_quick_tier_writes_no_sidecars(monkeypatch, seeded_song, env):
+def test_the_quick_tier_keeps_the_mix_frames_and_no_extras(monkeypatch, seeded_song, env):
     """The quick tier exists to put BPM and key in the library in seconds: no
-    frames, and no extras either."""
+    extras. It does keep the mix's frames — they depend on the mix alone, so
+    the full analysis then serves tonal and spectral from the cache instead of
+    decoding the mix and running both again."""
     from analysis import timeseries as ts
     _models, stages, _db = env
     song_id, stem_paths = seeded_song
@@ -217,9 +247,14 @@ def test_the_quick_tier_writes_no_sidecars(monkeypatch, seeded_song, env):
     stages._analyze_stems(song_id, stem_paths, ("full",), None,
                           stage_grp="quick", gate="quick")
 
-    assert captured["calls"]["full"]["frames"] is False
+    assert captured["calls"]["full"]["frames"] is True
     assert captured["calls"]["full"]["extra_steps"] == ()
-    assert ts.read(song_id, "full", "unified_4stem") is None
+    assert ts.read(song_id, "full", "unified_4stem") is not None
+
+    # The full analysis then forces nothing on the mix.
+    captured.clear()
+    stages._analyze_stems(song_id, stem_paths, ("full",), None)
+    assert captured["calls"]["full"]["force_steps"] == ()
 
 
 def test_keep_frames_off_writes_no_sidecars(monkeypatch, seeded_song, env):
@@ -364,11 +399,14 @@ def test_a_bass_chroma_alone_is_not_an_analysed_track(seeded_song, env, monkeypa
 
 # ── One cut, one score (Task 5) ───────────────────────────────────────────────
 
-def test_structure_is_the_last_stage_so_allin1_cuts_once():
+def test_the_first_cut_comes_before_allin1_so_pairs_come_first():
+    """Pairs first: the Essentia cut (from stored frames, no decode) right
+    after the analysis, so a track is scored on its stems at once; allin1
+    refines afterwards as a job of its own."""
     from api.workers import pipeline_worker as pw
 
-    assert pw.STAGES[-1] == "structure"
-    assert pw.STAGES.index("allin1") < pw.STAGES.index("structure")
+    assert pw.STAGES[-1] == "allin1"
+    assert pw.STAGES.index("structure") < pw.STAGES.index("allin1")
 
 
 def test_every_stage_has_a_queue_a_pool_and_a_gate():
@@ -836,3 +874,26 @@ def test_the_sung_range_staleness_rule_is_unchanged(seeded_song, env):
     without = dict(current, f0=None)
     models.replace_sections(song_id, [without], db_path=db)
     assert bulk_worker.sections_are_current(song_id, db_path=db) is False
+
+
+def test_stem_quality_waits_for_the_final_sections(seeded_song, env):
+    """The noise floor is read in the sections with no voice, which the quick
+    tier's provisional sections cannot say: quality is measured once the final
+    sections exist, for the vocals and instrumental only."""
+    models, stages, db = env
+    song_id, _paths = seeded_song
+    sec = {"start_sec": 0.0, "end_sec": 2.0, "label": "drop", "energy": 0.5,
+           "vocal_presence": 0.05, "repetition": 1, "confidence": 0.5}
+    models.replace_sections(song_id, [{**sec, "provisional": True}], db_path=db)
+    assert stages._measure_stem_quality(song_id) is False
+
+    models.replace_sections(song_id, [{**sec, "provisional": False}], db_path=db)
+    assert stages._measure_stem_quality(song_id) is True
+    conn = models.get_conn(db)
+    try:
+        measured = {r["stem_type"] for r in conn.execute(
+            "SELECT stem_type FROM stems WHERE song_id=? AND quality IS NOT NULL",
+            (song_id,))}
+    finally:
+        conn.close()
+    assert measured == {"vocals", "instrumental"}

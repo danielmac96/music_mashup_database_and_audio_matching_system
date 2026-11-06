@@ -164,7 +164,9 @@ def test_analysis_records_each_step_per_stem_and_marks_failed_steps(env, monkeyp
     assert runs["essentia.rhythm"]["audio_secs"] == 1.0
     assert "essentia.loudness.cached" in runs
     grps = {r["grp"] for r in _runs(models)}
-    assert {"analysis", "quality"} <= grps
+    assert "analysis" in grps
+    # Stem quality waits for the track's final sections (none yet here).
+    assert "quality" not in grps
 
 
 def test_structure_records_the_stage_and_its_phases(env, monkeypatch):
@@ -191,7 +193,13 @@ def test_structure_records_the_stage_and_its_phases(env, monkeypatch):
     runs = {r["grp"]: r for r in _runs(models)}
     assert runs["structure.beats"]["ms"] == 7.0
     assert runs["structure"]["audio_secs"] == 1.0
-    assert "hooks" in runs
+    # No vocal stem: provisional sections, so no stem hooks or quality yet.
+    assert "hooks" not in runs and "quality" not in runs
+
+    vocals = _wav(tmp / "vocals.wav", 1.0)
+    models.upsert_stem(song, "vocals", str(vocals))
+    stages.do_structure(song)               # final sections: hooks are cut
+    assert "hooks" in {r["grp"] for r in _runs(models)}
 
 
 # ── The analysers fill the timing dict for real ───────────────────────────────

@@ -422,6 +422,9 @@ def test_the_stage_cuts_from_the_frames_and_the_gate_says_current(
                         if grp is GROUPS["essentia.rhythm"] else None))
     monkeypatch.setattr(stages, "warm_hooks", lambda *a, **k: 0, raising=False)
 
+    # Stem quality runs after the cut (_after_final_sections) and reads the
+    # stems by design; this test is about what the CUT decodes.
+    monkeypatch.setattr(stages, "_measure_stem_quality", lambda *a, **k: False)
     from analysis import decode
     calls: list = []
     real_load = decode.load_mono
