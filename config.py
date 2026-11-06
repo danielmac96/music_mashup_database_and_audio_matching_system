@@ -83,13 +83,7 @@ _audio_val, AUDIO_ROOT_SOURCE = _resolve(
     "MASHUP_AUDIO_ROOT", "audio_root", str(BASE_DIR / "audio"))
 AUDIO_DIR         = Path(_audio_val)
 RAW_DIR           = AUDIO_DIR / "full_song"
-VOCALS_DIR        = AUDIO_DIR / "vocals"
-INSTRUMENTALS_DIR = AUDIO_DIR / "instrumentals"
-# Four-stem separation (Phase D). `instrumental` is still written as the sum of
-# these three, so every existing consumer keeps working unchanged.
-DRUMS_DIR         = AUDIO_DIR / "drums"
-BASS_DIR          = AUDIO_DIR / "bass"
-OTHER_DIR         = AUDIO_DIR / "other"
+STEMS_DIR         = AUDIO_DIR / "stems"      # stems/separate.py: vocals, instrumentals, drums, bass, other
 PREVIEWS_DIR      = AUDIO_DIR / "previews"   # rendered Studio mixdowns (render/mixdown.py)
 HOOKS_DIR         = AUDIO_DIR / "hooks"      # 16-bar preview clips (api/workers/hook_worker.py)
 
@@ -102,7 +96,6 @@ DB_PATH = Path(_db_val)
 # to the database by default, so a single volume mount persists everything.
 _data_val, _ = _resolve("MASHUP_DATA_DIR", "data_dir", str(DB_PATH.parent))
 DATA_DIR      = Path(_data_val)
-SNAPSHOTS_DIR = DATA_DIR / "snapshots"   # saved 1001tracklists HTML (Phase 3)
 DATASETS_DIR  = DATA_DIR / "datasets"    # exported training sets (Phase 4)
 MODELS_DIR    = DATA_DIR / "models"      # learned pairwise models (Phase 5)
 
@@ -114,9 +107,8 @@ CONFIGURED = AUDIO_ROOT_SOURCE in ("env", "settings")
 def ensure_dirs() -> None:
     """Create all working directories. Called at import (best-effort) and again
     after the wizard saves settings, so a freshly-chosen library folder exists."""
-    for d in (RAW_DIR, VOCALS_DIR, INSTRUMENTALS_DIR, DRUMS_DIR, BASS_DIR,
-              OTHER_DIR, PREVIEWS_DIR, HOOKS_DIR,
-              SNAPSHOTS_DIR, DATASETS_DIR, MODELS_DIR):
+    for d in (RAW_DIR, STEMS_DIR, PREVIEWS_DIR, HOOKS_DIR,
+              DATASETS_DIR, MODELS_DIR):
         d.mkdir(parents=True, exist_ok=True)
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -154,12 +146,6 @@ def settings_provenance() -> dict:
         "db_path":    {"value": str(DB_PATH),   "source": DB_PATH_SOURCE},
         "pipeline_workers": {"value": PIPELINE_WORKERS, "source": PIPELINE_WORKERS_SOURCE},
         # Live-read: these apply without a restart.
-        "stem_separator": {"value": current_stem_separator(),
-                           "source": STEM_SEPARATOR_SOURCE},
-        "stem_mode": {"value": current_stem_mode(), "source": STEM_MODE_SOURCE},
-        # Analyser (readme §9 overhaul) — live-read.
-        "analyzer": {"value": current_analyzer(),
-                     "source": "env" if os.environ.get("MASHUP_ANALYZER") else "settings"},
         "essentia_key_profile": {
             "value": current_essentia_key_profile(),
             "source": "env" if os.environ.get("MASHUP_ESSENTIA_KEY_PROFILE") else "settings"},
@@ -168,12 +154,6 @@ def settings_provenance() -> dict:
             "source": "env" if os.environ.get("MASHUP_ESSENTIA_RHYTHM") else "settings"},
         "analysis_cache": {"value": current_analysis_cache(),
                            "source": "env" if os.environ.get("MASHUP_ANALYSIS_CACHE") else "settings"},
-        "separation_pipeline": {
-            "value": current_separation_pipeline(),
-            "source": "env" if os.environ.get("MASHUP_SEPARATION_PIPELINE") else "settings"},
-        "segmentation_engine": {
-            "value": current_segmentation_engine(),
-            "source": "env" if os.environ.get("MASHUP_SEGMENTATION_ENGINE") else "settings"},
         "allin1_device": {"value": current_allin1_device(),
                           "source": "env" if os.environ.get("MASHUP_ALLIN1_DEVICE") else "settings"},
         "allin1_model": {"value": current_allin1_model(),
@@ -192,12 +172,7 @@ def settings_provenance() -> dict:
            for name, spec in _TUNABLE_INTS.items()},
         "match_weights": {"value": current_match_weights(), "source": "settings"},
         "section_weights": {"value": current_section_weights(), "source": "settings"},
-        # Presence only, never the values — this response goes to the browser.
-        # The secret must not leave the server, and neither must the token.
-        "soundcloud_client_id": {"value": bool(SOUNDCLOUD_CLIENT_ID),
-                                 "source": SOUNDCLOUD_CLIENT_ID_SOURCE},
-        "soundcloud_client_secret": {"value": bool(SOUNDCLOUD_CLIENT_SECRET),
-                                     "source": SOUNDCLOUD_CLIENT_SECRET_SOURCE},
+        # Presence only, never the value — this response goes to the browser.
         "firecrawl_api_key": {"value": bool(current_firecrawl_api_key()),
                               "source": current_firecrawl_key_source()},
         "stem_format": {"value": STEM_FORMAT, "source": "code"},
@@ -205,8 +180,7 @@ def settings_provenance() -> dict:
         "settings_path": str(settings_path()),
         "paths": {
             "downloads":     str(RAW_DIR),
-            "vocals":        str(VOCALS_DIR),
-            "instrumentals": str(INSTRUMENTALS_DIR),
+            "stems":         str(STEMS_DIR),
             "previews":      str(PREVIEWS_DIR),
             "data_dir":      str(DATA_DIR),
         },
@@ -225,30 +199,8 @@ YTDLP_POSTARGS = [
 ]
 
 # ── Stem separation ───────────────────────────────────────────────────────────
-# "htdemucs" = Hybrid Transformer Demucs (best quality, slower)
-# "mdx_extra" = MDX-Net extra (faster, slightly lower quality)
+# htdemucs: Hybrid Transformer Demucs, four sources (drums/bass/other/vocals).
 DEMUCS_MODEL = "htdemucs"
-
-# Which separator new stem jobs use: "demucs" (quality, slower) or "mdx"
-# (audio-separator / UVR MDX-Net ONNX — ~2-4x faster on CPU, slightly lower
-# quality). Every stems row is tagged with the separator that produced it.
-MDX_MODEL = "UVR-MDX-NET-Inst_HQ_3.onnx"
-_SEPARATORS = ("demucs", "mdx")
-_, STEM_SEPARATOR_SOURCE = _resolve(
-    "MASHUP_STEM_SEPARATOR", "stem_separator", "demucs")
-
-
-# How many stems to split into (Phase D).
-#   "two"  — vocals + instrumental. What the app shipped with; MDX only does this.
-#   "four" — drums / bass / other / vocals, PLUS a summed instrumental so every
-#            existing consumer is unchanged. Demucs only.
-# Four stems are what make the two arrangement problems visible: a bed that
-# still contains its own topline, and which frequency bands each side occupies.
-# They also unlock the real producer move — drop the bed's bass, keep the
-# vocal track's; swap the drums.
-_STEM_MODES = ("two", "four")
-_mode_val, STEM_MODE_SOURCE = _resolve("MASHUP_STEM_MODE", "stem_mode", "two")
-STEM_MODE = str(_mode_val).lower() if str(_mode_val).lower() in _STEM_MODES else "two"
 
 # Stems are written as FLAC: lossless, and roughly half the size of WAV. At
 # ~900 tracks x 4 stems that is the difference between ~160 GB and ~80 GB.
@@ -258,31 +210,6 @@ STEM_FORMAT = "flac"
 DEMUCS_SOURCES = ("drums", "bass", "other", "vocals")
 INSTRUMENTAL_SOURCES = ("drums", "bass", "other")
 
-
-def current_stem_mode() -> str:
-    """The stem mode to use RIGHT NOW, re-reading settings.json like
-    current_stem_separator. MDX cannot do four stems, so an mdx run is always
-    two regardless of this setting."""
-    env = os.environ.get("MASHUP_STEM_MODE")
-    if env and env.lower() in _STEM_MODES:
-        return env.lower()
-    val = _load_settings().get("stem_mode")
-    if isinstance(val, str) and val.lower() in _STEM_MODES:
-        return val.lower()
-    return STEM_MODE
-
-
-def current_stem_separator() -> str:
-    """The separator to use RIGHT NOW. Unlike the import-time constant, this
-    re-reads settings.json so the UI toggle applies to the next separation
-    without a server restart. Env var still wins (Docker/CI pinning)."""
-    env = os.environ.get("MASHUP_STEM_SEPARATOR")
-    if env and env.lower() in _SEPARATORS:
-        return env.lower()
-    saved = str(_load_settings().get("stem_separator") or "").lower()
-    if saved in _SEPARATORS:
-        return saved
-    return "demucs"
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 SAMPLE_RATE      = 22050
@@ -318,17 +245,6 @@ def current_analysis_cache() -> bool:
     return True
 
 
-# Which analyser fills the features table (readme §9, the analysis overhaul).
-#   essentia — the analyser (default, decided 2026-09-30): Essentia fills the
-#              core columns and the extras. Docker/WSL2 only — Essentia has no
-#              Windows wheels, and where it does not import analysis is
-#              refused (stages.require_analyzer), never degraded to librosa:
-#              library-relative scores (timbre z-scores, confidence ranks)
-#              must not mix analysers.
-#   shadow   — comparison only: librosa fills the core columns, Essentia the
-#              columns librosa never measured (GET /api/analysis/status).
-#   librosa  — tests and comparison only (the suite pins it, tests/conftest.py).
-ANALYZERS = ("librosa", "shadow", "essentia")
 ESSENTIA_RHYTHM_METHODS = ("degara", "multifeature")
 ESSENTIA_KEY_PROFILES = ("edma", "edmm", "bgate", "braw", "krumhansl", "temperley",
                          "shaath", "diatonic", "noland", "tonictriad",
@@ -341,14 +257,6 @@ def _live_choice(env_name: str, key: str, allowed: tuple, default: str) -> str:
         return env
     val = str(_load_settings().get(key) or "").strip().lower()
     return val if val in allowed else default
-
-
-def current_analyzer() -> str:
-    """essentia | shadow | librosa, re-read live. Essentia is the analyser;
-    librosa and shadow remain for the test suite and for comparison. Asking
-    for Essentia where it does not import is refused by the pipeline
-    (stages.require_analyzer), not answered here."""
-    return _live_choice("MASHUP_ANALYZER", "analyzer", ANALYZERS, "essentia")
 
 
 def current_essentia_key_profile() -> str:
@@ -365,22 +273,13 @@ def current_essentia_rhythm_method() -> str:
                         ESSENTIA_RHYTHM_METHODS, "degara")
 
 
-# ── Separation pipeline and segmentation engine (allin1, readme §5.5) ─────────
-# Two independent switches, both re-read live.
-#   separation_pipeline  legacy_2stem — the stems the app has always made
-#                                       (stem_separator / stem_mode decide how).
-#                        unified_4stem — one htdemucs 4-source pass whose stems
-#                                       feed allin1 AND are summed into the
-#                                       playback vocal/instrumental. Written to
-#                                       AUDIO_DIR/unified, never over legacy files.
-#   segmentation_engine  essentia — sections cut on the Essentia beat grid.
-#                        allin1   — allin1's downbeats and labelled sections,
-#                                   phrase placement and the timing gate.
-# Flipping either back is a row swap or a re-score, never a re-analysis
-# (models.activate_pipeline; readme §2 "Rollback").
-SEPARATION_PIPELINES = ("legacy_2stem", "unified_4stem")
-SEGMENTATION_ENGINES = ("essentia", "allin1")
-UNIFIED_DIR = AUDIO_DIR / "unified"
+# ── The one pipeline (readme §2) ─────────────────────────────────────────────
+# Every track is separated once by htdemucs into four sources; the vocal stem
+# and the summed instrumental are what playback reads, the four sources are what
+# allin1 reads. allin1 cuts the sections; the Essentia novelty cut runs only
+# when allin1 produced none (failed, skipped or found nothing).
+PIPELINE = "unified_4stem"
+ENGINE = "allin1"
 ALLIN1_MODEL = "harmonix-all"         # the 8-fold ensemble allin1 ships
 # What allin1 1.1.0 publishes: the ensemble and its eight individual folds.
 ALLIN1_MODELS = ("harmonix-all",) + tuple(f"harmonix-fold{i}" for i in range(8))
@@ -402,48 +301,15 @@ def current_allin1_model() -> str:
 
 
 def current_separation_pipeline() -> str:
-    """legacy_2stem | unified_4stem, re-read live.
-
-    Default ``unified_4stem``: one htdemucs 4-source pass is the model allin1
-    is trained on, so the same separation serves playback, the bass chroma and
-    allin1 — measured, ``legacy_2stem`` cost allin1 a second Demucs run per
-    track (all 27 allin1 rows on the live library say ``demixed_by='allin1'``).
-
-    **An existing library does not switch by itself**: its rows stay on
-    whatever ``songs.separation_pipeline`` says, and ``do_stems`` parks them
-    before any other pipeline writes. Only a new separation — a fresh import,
-    a re-run of the stems stage, or Bulk reprocess › ⇄ Switch — reads this.
-    Before moving a library over, run ``scripts/stem_null_test.py`` (readme §2
-    "Rollback"), or pin ``separation_pipeline: legacy_2stem`` in
-    settings.json, which is what the 206-track library does."""
-    return _live_choice("MASHUP_SEPARATION_PIPELINE", "separation_pipeline",
-                        SEPARATION_PIPELINES, "unified_4stem")
+    """The separation pipeline: always ``unified_4stem``. Kept as a function
+    because ~20 readers ask; there is no other pipeline to choose."""
+    return PIPELINE
 
 
 def current_segmentation_engine() -> str:
-    return _live_choice("MASHUP_SEGMENTATION_ENGINE", "segmentation_engine",
-                        SEGMENTATION_ENGINES, "essentia")
-
-
-def current_dual_cut() -> bool:
-    """Cut sections with BOTH engines on every track.
-
-    Off (the default): under the allin1 engine a track is cut once, by allin1,
-    and the Essentia novelty cut runs only as the fallback when allin1 failed or
-    skipped — the sections it would otherwise produce are thrown away by every
-    query that reads the allin1 namespace. On: both cuts are stored, which is
-    what Analysis › Engines compares."""
-    # No config._resolve_bool exists; this is current_keep_analysis_stems' and
-    # current_keep_frames' inline env -> settings -> default walk, with the
-    # default the other way round.
-    raw = os.environ.get("MASHUP_DUAL_CUT")
-    if raw is None:
-        raw = _load_settings().get("dual_cut")
-    if raw is None or str(raw).strip() == "":
-        return False
-    if isinstance(raw, bool):
-        return raw
-    return str(raw).strip().lower() not in ("0", "false", "off", "no")
+    """The section engine: always ``allin1``, with the Essentia novelty cut as
+    the per-track fallback (pipeline_worker._wants_essentia_cut)."""
+    return ENGINE
 
 
 def current_allin1_device() -> str:
@@ -554,30 +420,10 @@ AUTO_LINK_MIN_DURATION = 60.0   # seconds; guards against preview-length mislink
 AUTO_LINK_MIN_ARTIST   = 0.5
 
 # ── SoundCloud ────────────────────────────────────────────────────────────────
-# READING SoundCloud needs no credentials at all: ingest/soundcloud_api.py scrapes
-# a working client_id out of SoundCloud's own public JS bundles, and that is what
-# both the mixes auto-resolver and the Discovery browse layer use.
-#
-# WRITING (creating a playlist on your account, liking, reposting) needs OAuth 2.1
-# against a *registered* app — a client id AND secret from developers.soundcloud.com.
-# Registration is open and self-serve but requires an Artist Pro subscription, so
-# these are empty for almost everyone and the write layer stays dormant: see
-# ingest/soundcloud_oauth.py, which reports `configured: false` and makes every
-# write endpoint answer 501 with an explanation rather than failing obscurely.
-#
-# Set them and the "Push to SoundCloud" action on a crate lights up. SC_CLIENT_ID
-# is kept as an env alias for the older name.
-_sc_id_val, SOUNDCLOUD_CLIENT_ID_SOURCE = _resolve(
-    "SOUNDCLOUD_CLIENT_ID", "soundcloud_client_id", os.getenv("SC_CLIENT_ID", ""))
-SOUNDCLOUD_CLIENT_ID = _sc_id_val
-_sc_secret_val, SOUNDCLOUD_CLIENT_SECRET_SOURCE = _resolve(
-    "SOUNDCLOUD_CLIENT_SECRET", "soundcloud_client_secret", "")
-SOUNDCLOUD_CLIENT_SECRET = _sc_secret_val
-
-# The OAuth token lives in its own file, NOT settings.json — GET /api/settings is
-# read by the browser and must never carry a bearer token.
-def soundcloud_token_path() -> Path:
-    return _settings_dir() / "soundcloud_token.json"
+# Reading SoundCloud needs no credentials: ingest/soundcloud_api.py scrapes a
+# working client_id out of SoundCloud's own public JS bundles, and both the
+# mixes auto-resolver and the Discovery browse layer use it. The app never
+# logs in and never writes to SoundCloud.
 
 # ── Firecrawl (1001tracklists structured scrape) ──────────────────────────────
 # Firecrawl's hosted stealth proxy renders + bypasses the Cloudflare Turnstile
@@ -645,7 +491,7 @@ QUICK_WORKERS    = _resolve_int("MASHUP_QUICK_WORKERS", "quick_workers", 2)
 # and it shares the stems gate so it never runs beside Demucs (both want every
 # core on CPU).
 ALLIN1_WORKERS   = _resolve_int("MASHUP_ALLIN1_WORKERS", "allin1_workers", 1)
-# Threads a Demucs / MDX run may use. Left alone, torch takes every core and the
+# Threads a Demucs run may use. Left alone, torch takes every core and the
 # quick tier stalls behind it; one core is kept back for it by default.
 DEMUCS_THREADS   = _resolve_int("MASHUP_DEMUCS_THREADS", "demucs_threads",
                                 max(1, (os.cpu_count() or 2) - 1))

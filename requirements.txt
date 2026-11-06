@@ -14,32 +14,15 @@ yt-dlp>=2026.7.4           # SoundCloud/YouTube metadata + audio. SoundCloud
 # ── Stem separation (Demucs + PyTorch) ────────────────────────────────────────
 torch==2.5.1
 torchaudio==2.5.1
-torchvision==0.20.1        # must match torch minor version (pulled by onnx2torch)
-demucs==4.0.1              # htdemucs; downloads ~400MB model weights on first run
-
-# ── Fast stem separation (UVR MDX-Net via ONNX) — the "Fast" toggle ──────────
-# audio-separator itself is NOT listed here because no release resolves against
-# this file's pins (new releases need numpy>=2, which breaks librosa; 0.30.0 —
-# the last numpy<2 release — pins torch<2.5). Install it dep-less on top:
-#   pip install audio-separator==0.30.0 --no-deps
-# Its actual runtime deps are declared below so `pip install -r` provides them.
-onnxruntime==1.19.2        # MDX-Net inference (CPU); numpy<2 compatible
-onnx>=1.16,<1.18
-onnx2torch>=1.5
-resampy>=0.4
-samplerate==0.1.0
-ml_collections
-diffq-fixed>=0.2 ; sys_platform == "win32"
+demucs==4.0.1              # htdemucs, four sources; ~400MB weights on first run
+diffq-fixed>=0.2 ; sys_platform == "win32"   # a Demucs dependency
 diffq>=0.2 ; sys_platform != "win32"
-rotary-embedding-torch>=0.6.1,<0.7.0
-beartype>=0.18.5
-pydub>=0.25
 
 # ── Audio analysis ────────────────────────────────────────────────────────────
 numpy==1.26.4              # pinned <2 for librosa
 scipy==1.12.0
 soundfile==0.12.1
-librosa==0.10.1            # BPM, key, MFCC, spectral features, structure
+librosa==0.10.1            # helpers: decode, renders, the fallback section cut
 setuptools==80.10.2        # librosa 0.10.1 imports pkg_resources, which newer
                            # setuptools (84 in a clean CI install) no longer ships
 audioread>=3.0.0           # MP3 decode fallback for librosa

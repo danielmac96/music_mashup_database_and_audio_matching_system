@@ -1,5 +1,5 @@
-"""Auto-chaining pipeline worker: run download → stems → analyse → structure
-for a single track under ONE job, resuming from wherever the track currently is.
+"""Auto-chaining pipeline worker: run download → quick → stems → analysis →
+allin1 → structure for a single track under ONE job, resuming from wherever the track currently is.
 
 This is what makes the web app's "Save to library & auto-process" honest — the
 user imports a playlist and every track walks the whole pipeline on its own,
@@ -38,18 +38,14 @@ _RANK = {
     "analysed": 3,
 }
 
-# Queue stages in lifecycle order. "quick" is the quick tier (readme §9, phase
-# 3): the downloaded mix analysed and cut into provisional sections before
-# Demucs, so a track has BPM, key and a structure within seconds of its
-# download instead of after its separation.
-# "allin1" (readme §5.5) follows the analysis when the allin1 engine is on, or
-# when a bulk backfill asked for it (songs.allin1_state = 'queued'): beats,
-# downbeats and labelled sections from one neural pass.
-# "structure" is LAST, and its own stage. Under the allin1 engine the bar lines
-# and segments a cut sits on are allin1's, so cutting before it ran meant
-# cutting the track twice — the librosa/Essentia novelty pass and then allin1's
-# — and scoring twice on top. It stays non-status-bearing: matching works
-# without sections, so a failure here never fails the track.
+# Queue stages in lifecycle order (readme §2).
+#   quick     the downloaded mix analysed and cut into provisional sections
+#             before Demucs, so BPM, key and a first structure land in seconds.
+#   allin1    follows the analysis: beats, downbeats and labelled sections from
+#             one neural pass over the four stems (readme §5.5).
+#   structure LAST, and only the fallback: the Essentia novelty cut runs when
+#             allin1 produced no sections. Non-status-bearing — matching works
+#             without sections, so a failure here never fails the track.
 STAGES = ("download", "quick", "stems", "analysis", "allin1", "structure")
 
 _STAGE_MIN_RANK = {"download": 1, "stems": 2, "analysis": 3}
@@ -94,16 +90,11 @@ def next_stage(song_id: int) -> Optional[str]:
 
 
 def _wants_allin1(row) -> bool:
-    """allin1 is owed for the current audio: asked for by a backfill, or the
-    allin1 engine is on and it has not run (done / failed / skipped all count
-    as having run — a failure waits for Retry, a skip for a setting change)."""
+    """allin1 is owed for the current audio: it has not run, or a backfill
+    asked for it again (done / failed / skipped all count as having run — a
+    failure waits for Retry, a skip for a setting change)."""
     state = row["allin1_state"] if row else None
-    if state == "queued":
-        return True
-    if state:
-        return False
-    from config import current_segmentation_engine
-    return current_segmentation_engine() == "allin1"
+    return state in (None, "", "queued")
 
 
 def _wants_structure(song_id: int) -> bool:
@@ -122,19 +113,10 @@ def _allin1_section_count(song_id: int) -> int:
 
 
 def _wants_essentia_cut(song_id: int) -> bool:
-    """Whether the librosa/Essentia novelty cut is worth running on this track.
-
-    Under the essentia engine: always, it IS the engine. Under allin1: only when
-    dual_cut is on (Analysis › Engines compares the two) or allin1 produced no
+    """Whether the Essentia novelty cut is owed: only when allin1 produced no
     sections — a failure, a skip (a DJ set over allin1_max_secs) or a track it
-    found nothing in, where these sections are what every reader falls back to
-    (`essentia_fallback`)."""
-    from config import current_dual_cut, current_segmentation_engine
-
-    if current_segmentation_engine() != "allin1":
-        return True
-    if current_dual_cut():
-        return True
+    found nothing in. Those sections are what every reader then falls back to
+    (`essentia_fallback`). This is the fallback gate; keep it."""
     return _allin1_section_count(song_id) == 0
 
 
@@ -150,8 +132,8 @@ def _structure_pass(job_id: str, song_id: int) -> None:
     library as stale. sections_are_current shares its definition with that
     badge, so the two can no longer disagree.
 
-    Under the allin1 engine the track's sections are allin1's, measured in its
-    own stage; this pass is then the fallback only (_wants_essentia_cut).
+    A track's sections are allin1's, measured in its own stage; this pass is
+    the fallback only (_wants_essentia_cut).
     """
     # Imported here rather than at module scope: bulk_worker resolves get_conn
     # per call so its db_path is not frozen at import, and this module's own

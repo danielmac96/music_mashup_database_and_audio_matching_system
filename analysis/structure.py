@@ -587,7 +587,7 @@ def detect_sections(full_path: Path, vocals_path: Optional[Path] = None,
     log.info(f"Detecting structure: {full_path.name}")
     # Deliberately NOT called "load" on the stored path: `structure.load` in
     # analysis_runs is the decode, and its absence is how a stored-frame cut is
-    # told from one that quietly fell back to decoding (readme §3).
+    # told from one that quietly fell back to decoding (readme §2).
     _phase("frames" if use_stored else "load",
            "Reading stored frames…" if use_stored else "Loading full mix…")
     sr = SAMPLE_RATE

@@ -39,7 +39,7 @@ BAND_EDGES = (0.0, 60.0, 150.0, 400.0, 1000.0, 2500.0, 5000.0, 8000.0, 11025.0)
 N_BANDS = len(BAND_EDGES) - 1
 
 # Above this fraction of the full mix's high-band energy, a stem has not been
-# smeared. MDX in particular tends to lose the top octave.
+# smeared. Lossy separators tend to lose the top octave.
 HF_BAND_HZ = 6000.0
 
 
@@ -174,7 +174,7 @@ def _bleed(stem: np.ndarray, other: np.ndarray) -> Optional[float]:
 def _hf_loss(stem: np.ndarray, full: np.ndarray, sr: int = QUALITY_SR) -> Optional[float]:
     """How much of the mix's top end the stem lost, 0 (none) to 1 (all).
 
-    The classic MDX artefact is a smeared or missing top octave. Measured
+    The classic separation artefact is a smeared or missing top octave. Measured
     against the full mix so a genuinely dark record is not mistaken for a
     damaged stem.
     """

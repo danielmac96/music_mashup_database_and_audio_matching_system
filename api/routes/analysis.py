@@ -1,24 +1,14 @@
-"""Analyser status: which analyser is on, how much of the library each has
-covered, and — where both have measured the same audio — how often they agree.
-
-This is what the switch from librosa to Essentia is decided on (readme §9):
-run in shadow mode, let Essentia cover the library, read the agreement here,
-and flip only when coverage is complete.
-"""
+"""Analysis status (is Essentia installed, the models, per-group coverage),
+the attribute catalogue the Analysis panel and Library columns read, and the
+embeddings backfill."""
 from __future__ import annotations
 
-import json
-from typing import Optional
+
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 router = APIRouter()
-
-# The groups whose answers are compared, per question.
-_TEMPO = ("librosa.tempo", "essentia.rhythm")
-_KEY = ("librosa.key", "essentia.tonal")
-
 
 def _current(rows: list[dict]) -> list[dict]:
     """Only rows written by the group's current version and params."""
@@ -27,48 +17,16 @@ def _current(rows: list[dict]) -> list[dict]:
     return [r for r in rows if want.get(r["grp"]) == (r["version"], r["params_hash"])]
 
 
-def _agreement(rows: list[dict]) -> dict:
-    """Relation tallies on each full-mix stem both analysers measured."""
-    from analysis.compare import bpm_relation, key_relation, tally
-    by_hash: dict[str, dict] = {}
-    for r in rows:
-        by_hash.setdefault(r["content_hash"], {})[r["grp"]] = json.loads(r["payload_json"])
-
-    bpm_rel, key_rel, bpm_diffs = [], [], []
-    for groups in by_hash.values():
-        lt, et = groups.get(_TEMPO[0]), groups.get(_TEMPO[1])
-        if lt and et:
-            rel = bpm_relation(et.get("bpm"), lt.get("bpm"))
-            bpm_rel.append(rel)
-            if rel == "same":
-                bpm_diffs.append(abs(float(et["bpm"]) - float(lt["bpm"])))
-        lk, ek = groups.get(_KEY[0]), groups.get(_KEY[1])
-        if lk and ek:
-            key_rel.append(key_relation(ek.get("key"), ek.get("mode"),
-                                        lk.get("key"), lk.get("mode")))
-    return {
-        "tracks_compared": {"bpm": len([x for x in bpm_rel if x]),
-                            "key": len([x for x in key_rel if x])},
-        "bpm": tally(bpm_rel),
-        "bpm_mean_abs_diff_when_same": (round(sum(bpm_diffs) / len(bpm_diffs), 3)
-                                        if bpm_diffs else None),
-        "key": tally(key_rel),
-    }
-
-
 @router.get("/status")
-def analysis_status(stem_type: Optional[str] = "full") -> dict:
-    """The analyser setting, whether Essentia is installed, per-group coverage
-    of the current library at the current version, and librosa ↔ Essentia
-    agreement on the full mix (``stem_type`` to compare another stem)."""
+def analysis_status() -> dict:
+    """Whether Essentia is installed (and so whether analysis can run here),
+    the models, and per-group coverage of the library at the current version."""
     import config
     from analysis import essentia_groups, ml_models
     from analysis.registry import GROUPS, describe
-    from api.workers.stages import effective_analyzer
     from database.models import (analysed_stem_count, embeddings_coverage,
                                  feature_cache_for_stems)
 
-    configured, core = effective_analyzer()
     rows = _current(feature_cache_for_stems(list(GROUPS)))
     coverage: dict[str, dict] = {}
     for r in rows:
@@ -76,10 +34,8 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
         c[r["stem_type"]] = c.get(r["stem_type"], 0) + 1
 
     return {
-        "analyzer": {"configured": config.current_analyzer(), "effective": configured,
-                     "core": core,
-                     # The analyser cannot run here: every analysis is refused.
-                     "blocked": configured != "librosa" and not essentia_groups.available()},
+        # Essentia cannot run here: every analysis is refused.
+        "analyzer": {"blocked": not essentia_groups.available()},
         "essentia": {"available": essentia_groups.available(),
                      "version": essentia_groups.version(),
                      "key_profile": config.current_essentia_key_profile(),
@@ -92,11 +48,8 @@ def analysis_status(stem_type: Optional[str] = "full") -> dict:
         # GET /api/tracks/{id}/neighbors?mode=sound can answer for.
         "embeddings_coverage": embeddings_coverage(),
         "coverage": coverage,
-        "agreement": _agreement([r for r in rows
-                                 if not stem_type or r["stem_type"] == stem_type]),
         "groups": describe(),
-        # The segmentation engine and separation pipeline (readme §5.5): what
-        # is on, and whether allin1 can run here at all.
+        # Whether allin1 can run here (readme §5.5).
         "segmentation": _segmentation_status(),
     }
 
@@ -105,14 +58,13 @@ def _segmentation_status() -> dict:
     import config
     from analysis import allin1_runner
     why = allin1_runner.missing()
-    return {"engine": config.current_segmentation_engine(),
-            "pipeline": config.current_separation_pipeline(),
-            "allin1": {"available": why is None, "missing": why,
+    return {"allin1": {"available": why is None, "missing": why,
                        "version": allin1_runner.version(),
-                       "device": config.current_allin1_device()},
-            # allin1 mode with allin1 unable to run: tracks keep their
-            # Essentia sections, rows say essentia_fallback.
-            "blocked": config.current_segmentation_engine() == "allin1" and why is not None}
+                       "device": config.current_allin1_device(),
+                       "model": config.current_allin1_model()},
+            # allin1 unable to run: tracks are cut by the Essentia fallback,
+            # rows say essentia_fallback.
+            "blocked": why is not None}
 
 
 # ── Embeddings ───────────────────────────────────────────────────────────────
@@ -138,31 +90,6 @@ def backfill_embeddings(background: BackgroundTasks) -> dict:
     job_id = jobs.new_job(kind="embeddings", message="Queued embeddings backfill")
     background.add_task(_run_embeddings_backfill, job_id)
     return {"job_id": job_id}
-
-
-# ── The Analysis dashboard ───────────────────────────────────────────────────
-
-@router.get("/library-stats")
-def library_stats(group: Optional[int] = None, genre: str = "", style: str = "",
-                  bpm_min: Optional[float] = None, bpm_max: Optional[float] = None,
-                  year_min: Optional[int] = None, year_max: Optional[int] = None,
-                  camelot: str = "", vocal_forward: Optional[bool] = None) -> dict:
-    """Distributions over the library (or the tracks passing the filters):
-    tempo, the Camelot wheel, genre / style / mood, years, energy, loudness,
-    sung share, an energy × loudness scatter and the pair counts. One pass per
-    table over stored rows (analysis/library_stats.py)."""
-    from analysis import library_stats as L
-    try:
-        filters = L.clean_filters(group=group, genre=genre, style=style,
-                                  bpm_min=bpm_min, bpm_max=bpm_max,
-                                  year_min=year_min, year_max=year_max,
-                                  camelot=camelot, vocal_forward=vocal_forward)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    out = L.library_stats(filters)
-    if out is None:
-        raise HTTPException(status_code=404, detail="group not found")
-    return out
 
 
 # ── The Analysis panel (readme §9, C) ────────────────────────────────────────
@@ -205,25 +132,3 @@ def save_attribute_visibility(req: VisibilityRequest) -> dict:
            "detail": list(dict.fromkeys(req.detail))}
     set_pref("attribute_visibility", vis)
     return vis
-
-
-# ── The segmentation engines side by side (readme §4 Analysis › Engines) ──────
-
-@router.get("/engines/{song_id}")
-def engines(song_id: int, limit: int = 10) -> dict:
-    """One track under both segmentation engines: sections, bar lines, vocal
-    phrases and the pairs each would build from its best vocal section
-    (matcher/engine_compare.engines_view), plus how far the two grids agree."""
-    from matcher.engine_compare import engines_view
-    out = engines_view(song_id, limit=max(1, min(int(limit), 50)))
-    if out is None:
-        raise HTTPException(status_code=404, detail="track not found")
-    return out
-
-
-@router.get("/engine-report")
-def engine_report() -> dict:
-    """Library-wide evidence for choosing an engine: downbeat agreement, the
-    timing gate's pass share and error spread, and ratings per engine."""
-    from matcher.engine_compare import engine_report as _report
-    return _report()

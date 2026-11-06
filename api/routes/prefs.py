@@ -1,7 +1,7 @@
 """View preferences: the Library's columns/order/sort and saved filter presets.
 
 Both live in app_prefs, not settings.json: `config.save_settings` ignores empty
-values, so nothing written there can be cleared (readme §2). Columns are keyed
+values, so nothing written there can be cleared (readme §4). Columns are keyed
 by id, never position — an index re-points every stored width the first time a
 column moves (readme §7).
 """
@@ -91,7 +91,7 @@ def clean_library_view(body: Any, strict: bool = True) -> dict:
     if sdir is not None and sdir not in _SORT_DIRS:
         fail(f"sort dir must be one of {list(_SORT_DIRS)} or null")
     # A direction with nothing to sort is no sort; unsorted is a real state
-    # (import order is a meaningful order, readme §4).
+    # (import order is a meaningful order, readme §3).
     if sid is None or sdir is None:
         sid = sdir = None
     out["sort"] = {"id": sid, "dir": sdir}

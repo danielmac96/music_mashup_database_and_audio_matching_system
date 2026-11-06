@@ -2,7 +2,7 @@
 
 Both used to run inside their HTTP request. Neither could: a 200-track ingest is
 ~200 yt-dlp metadata fetches, and a Firecrawl scrape of a heavy tracklist can
-hold a connection for minutes. Everything slow is a job (readme §3), so they are
+hold a connection for minutes. Everything slow is a job (readme §2), so they are
 jobs now — poll the returned job_id.
 
 ``run_ingest`` also fixes the bug that made a 206-track mix ingest exactly one

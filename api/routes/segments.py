@@ -1,4 +1,4 @@
-"""Segments: the section-level playground (readme §4 Segments, §5.13).
+"""Segments: the section-level playground (readme §3 Segments, §5.13).
 
 GET /api/segments?role=vocal|bed lists every offered section on one side;
 GET /api/segments/{id}/matches?role= scores one section against every section

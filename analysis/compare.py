@@ -1,22 +1,21 @@
 """
 analysis/compare.py — How far apart two analyses of the same track are.
 
-Pure python (no numpy, no audio stack), so the benchmark script, the shadow
-analyser and the tests all share one definition of "agree":
+Pure python (no numpy, no audio stack). Used by the Essentia key normaliser
+(pitch_class) and by scripts/bench_allin1_models.py:
 
-  * bpm_relation      — same tempo, or a metrical fold of it (×2, ×½, ×3/2, ×2/3)
-  * key_relation      — same key, relative major/minor, a fifth apart, parallel
-  * mirex_key_score   — the MIREX weighting of key_relation (1 / .5 / .3 / .2)
-  * boundary_prf      — section-boundary precision / recall / F within a window
+  * pitch_class         — 0-11 for a key name in either spelling
+  * bpm_relation        — same tempo, or a metrical fold of it (×2, ×½, ×3/2, ×2/3)
+  * boundary_prf        — section-boundary precision / recall / F within a window
+  * downbeat_agreement  — how closely two downbeat grids agree
 
-Tempo folds and relative keys are named rather than counted as misses because
-they are different failures: a ×2 reading is a free fix (the matcher already
-reads the other side at half or double time), a relative major/minor needs no
-transpose at all, while "other" is a wrong answer.
+Tempo folds are named rather than counted as misses because a ×2 reading is a
+free fix (the matcher already reads the other side at half or double time),
+while "other" is a wrong answer.
 """
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, Optional, Sequence, Tuple
 
 # Relative tolerance for "the same tempo". 2% is ~2.5 BPM at 128 — inside what
 # a beat tracker's quantisation produces, well outside a real tempo difference.
@@ -37,10 +36,6 @@ _PITCH_CLASS = {
     "A#": 10, "BB": 10, "B": 11, "CB": 11,
 }
 
-MIREX_WEIGHTS = {"same": 1.0, "fifth": 0.5, "relative": 0.3, "parallel": 0.2,
-                 "other": 0.0}
-
-
 def bpm_relation(a: Optional[float], b: Optional[float],
                  tolerance: float = BPM_TOLERANCE) -> Optional[str]:
     """How tempo ``a`` relates to tempo ``b``: one of the BPM_FOLDS names, or
@@ -59,46 +54,6 @@ def pitch_class(key: Optional[str]) -> Optional[int]:
     if not key:
         return None
     return _PITCH_CLASS.get(str(key).strip().upper().replace("♯", "#").replace("♭", "B"))
-
-
-def _norm_mode(mode: Optional[str]) -> Optional[str]:
-    m = (mode or "").strip().lower()
-    if m in ("major", "maj", "ionian"):
-        return "major"
-    if m in ("minor", "min", "aeolian"):
-        return "minor"
-    return None
-
-
-def key_relation(key_a: Optional[str], mode_a: Optional[str],
-                 key_b: Optional[str], mode_b: Optional[str]) -> Optional[str]:
-    """same | relative | fifth | parallel | other, or None when either key is
-    unknown.
-
-    fifth means a perfect fifth either way in the same mode (one step round the
-    Camelot wheel); relative is the major/minor pair sharing a key signature
-    (C major / A minor); parallel shares the tonic (C major / C minor).
-    """
-    pa, pb = pitch_class(key_a), pitch_class(key_b)
-    ma, mb = _norm_mode(mode_a), _norm_mode(mode_b)
-    if pa is None or pb is None or ma is None or mb is None:
-        return None
-    if ma == mb:
-        if pa == pb:
-            return "same"
-        if (pa - pb) % 12 in (5, 7):
-            return "fifth"
-        return "other"
-    if pa == pb:
-        return "parallel"
-    major, minor = (pa, pb) if ma == "major" else (pb, pa)
-    if (major - minor) % 12 == 3:
-        return "relative"
-    return "other"
-
-
-def mirex_key_score(relation: Optional[str]) -> Optional[float]:
-    return MIREX_WEIGHTS.get(relation) if relation else None
 
 
 def boundary_prf(estimated: Iterable[float], reference: Iterable[float],
@@ -136,57 +91,7 @@ def boundary_prf(estimated: Iterable[float], reference: Iterable[float],
             "f": round(f, 4), "hits": hits, "n_est": len(est), "n_ref": len(ref)}
 
 
-def tally(values: Sequence[Optional[str]]) -> dict:
-    """Count of each relation name, ignoring None (unmeasured)."""
-    out: dict = {}
-    for v in values:
-        if v is not None:
-            out[v] = out.get(v, 0) + 1
-    return out
-
-
-def boundaries_from_sections(sections: Sequence[dict]) -> List[float]:
-    """Inner boundaries (every section start except the first) from section
-    dicts or rows carrying ``start_sec``."""
-    starts = sorted(float(s["start_sec"]) for s in sections
-                    if s.get("start_sec") is not None)
-    return starts[1:]
-
-
 _NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
-
-
-def parse_key_text(text: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """(key, mode) from a free-text key tag, or (None, None).
-
-    Accepts what DJ software and taggers write into TKEY / initialkey: "Am",
-    "A minor", "F#m", "Dbmaj", "C" (major), and Camelot codes ("8A", "11B").
-    Open Key ("1m"/"1d") is ambiguous with nothing else and is not guessed at.
-    """
-    if not text:
-        return None, None
-    s = str(text).strip().replace("♯", "#").replace("♭", "b")
-    # Camelot: 1-12 then A (minor) / B (major). 8B is C major, 8A is A minor,
-    # and each step round the wheel is a fifth (7 semitones).
-    t = s.upper().replace(" ", "")
-    if t[:-1].isdigit() and t[-1:] in ("A", "B") and 1 <= int(t[:-1]) <= 12:
-        n = int(t[:-1])
-        if t[-1] == "B":
-            return _NAMES[(7 * (n - 8)) % 12], "major"
-        return _NAMES[(9 + 7 * (n - 8)) % 12], "minor"
-    low = s.lower().replace(" ", "")
-    root = low[:2] if len(low) >= 2 and low[1] in "#b" else low[:1]
-    rest = low[len(root):]
-    pc = pitch_class(root)
-    if pc is None:
-        return None, None
-    if rest in ("", "maj", "major"):
-        mode = "major"
-    elif rest in ("m", "min", "minor"):
-        mode = "minor"
-    else:
-        return None, None
-    return _NAMES[pc], mode
 
 
 def downbeat_agreement(a: Sequence[float], b: Sequence[float],
