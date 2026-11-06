@@ -7,7 +7,6 @@ fit BOTH neighbours (±1 Camelot step, relative = 0; ±4% tempo, half/double
 allowed), ranked by distance to the energy curve, then score.
 """
 import importlib
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -151,38 +150,6 @@ def test_when_nothing_fits_the_closest_come_back_marked():
 
 
 # ── migration ───────────────────────────────────────────────────────────────
-
-def test_old_set_items_are_rebuilt_with_nullable_pairs(tmp_path, monkeypatch):
-    db = tmp_path / "old.db"
-    conn = sqlite3.connect(db)
-    conn.executescript("""
-        CREATE TABLE sets (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
-            note TEXT DEFAULT '', created_at TEXT, updated_at TEXT, UNIQUE(name));
-        CREATE TABLE set_items (id INTEGER PRIMARY KEY AUTOINCREMENT, set_id INTEGER NOT NULL,
-            position INTEGER NOT NULL, vocal_song_id INTEGER NOT NULL, inst_song_id INTEGER NOT NULL,
-            vocal_section INTEGER, inst_section INTEGER, payload_json TEXT, added_at TEXT);
-        INSERT INTO sets(name) VALUES ('kept');
-        INSERT INTO set_items(set_id, position, vocal_song_id, inst_song_id, payload_json)
-            VALUES (1, 0, 5, 6, '{}'), (1, 1, 7, 8, '{}');
-    """)
-    conn.commit(); conn.close()
-    monkeypatch.setenv("MASHUP_DB_PATH", str(db))
-    import database.models as models
-    models.init_db(db)
-    conn = sqlite3.connect(db)
-    info = {r[1]: r for r in conn.execute("PRAGMA table_info(set_items)")}
-    assert {"kind", "song_id", "label", "duration_secs", "transition_json"} <= set(info)
-    assert info["vocal_song_id"][3] == 0, "pair ids are nullable now"
-    rows = conn.execute("SELECT id, kind, vocal_song_id FROM set_items ORDER BY id").fetchall()
-    assert rows == [(1, "pair", 5), (2, "pair", 7)]
-    assert "energy_plan_json" in {r[1] for r in conn.execute("PRAGMA table_info(sets)")}
-    idx = {r[1] for r in conn.execute("PRAGMA index_list(set_items)")}
-    assert {"idx_set_items_set", "ux_set_items_pair"} <= idx
-    conn.close()
-    # Running it again is a no-op.
-    models._INITIALIZED_PATHS.discard(str(db))
-    models.init_db(db)
-
 
 # ── the API ─────────────────────────────────────────────────────────────────
 

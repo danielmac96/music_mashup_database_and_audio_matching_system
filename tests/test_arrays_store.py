@@ -1,7 +1,6 @@
 """database/arrays.py — float arrays as BLOBs, out of the hot rows."""
 from __future__ import annotations
 
-import json
 import sqlite3
 
 import pytest
@@ -62,70 +61,6 @@ def test_get_many_and_song_ids_with(tmp_path):
         # "waveform measured" flag needs for every row at once.
         assert arrays.song_ids_with(conn, "full", "waveform_rms") == {2}
         assert arrays.song_ids_with(conn, "full", "beat_times") == {1, 2}
-    finally:
-        conn.close()
-
-
-def test_migration_moves_the_json_arrays_without_losing_a_value(tmp_path):
-    """The migration runs on a database holding real rows in the old shape.
-
-    Built at version 1 deliberately — `get_conn` would apply every migration
-    and drop the two columns, leaving nothing for migration 2 to move.
-    """
-    from database import arrays, schema
-
-    conn = sqlite3.connect(tmp_path / "m.db")
-    conn.row_factory = sqlite3.Row
-    try:
-        schema._baseline(conn)                  # the pre-ledger shape, nothing more
-        conn.execute("PRAGMA user_version = 1")
-        beats = [i * 0.5 for i in range(64)]
-        env = [i / 360 for i in range(360)]
-        conn.execute("INSERT INTO songs (id, title, source_url) VALUES (1,'T','u://1')")
-        conn.execute(
-            "INSERT INTO features (song_id, stem_type, beat_times_json, "
-            "waveform_rms_json, bpm) VALUES (1,'full',?,?,124.0)",
-            (json.dumps(beats), json.dumps(env)))
-        conn.commit()
-
-        assert schema.apply(conn) == [m.version for m in schema.MIGRATIONS
-                                      if m.version > 1]
-
-        assert arrays.get(conn, 1, "full", "beat_times") == pytest.approx(beats, abs=1e-5)
-        assert arrays.get(conn, 1, "full", "waveform_rms") == pytest.approx(env, abs=1e-6)
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(features)")}
-        assert "beat_times_json" not in cols
-        assert "waveform_rms_json" not in cols
-        # The row itself survived.
-        assert conn.execute("SELECT bpm FROM features WHERE song_id=1").fetchone()[0] \
-            == pytest.approx(124.0)
-    finally:
-        conn.close()
-
-
-def test_the_migration_works_on_a_bare_connection_and_replays(tmp_path):
-    """No `row_factory` set by the caller, and a second run (a rollback resets
-    `user_version` and replays every migration) must not lose or double a value."""
-    from database import arrays, schema
-
-    conn = sqlite3.connect(tmp_path / "bare.db")     # default tuple rows
-    try:
-        schema._baseline(conn)
-        conn.execute("PRAGMA user_version = 1")
-        conn.execute("INSERT INTO songs (id, title, source_url) VALUES (1,'T','u://1')")
-        conn.execute(
-            "INSERT INTO features (song_id, stem_type, beat_times_json) "
-            "VALUES (1,'full',?)", (json.dumps([0.0, 0.5]),))
-        conn.commit()
-        schema.apply(conn)
-        assert conn.row_factory is None              # the caller's factory is back
-
-        conn.execute("PRAGMA user_version = 0")      # what down_alignment does
-        schema.apply(conn)                           # replays 1 and 2
-        conn.row_factory = sqlite3.Row
-        assert arrays.get(conn, 1, "full", "beat_times") == pytest.approx([0.0, 0.5])
-        assert "beat_times_json" not in {r[1] for r in
-                                         conn.execute("PRAGMA table_info(features)")}
     finally:
         conn.close()
 
@@ -191,70 +126,6 @@ def test_the_scoring_projection_leaves_the_arrays_behind(tmp_path):
     # `song_ids` narrows the rows.
     assert get_all_features(stem_type="full", song_ids=[sid + 99], db_path=db) == []
     assert len(get_all_features(stem_type="full", song_ids=[sid], db_path=db)) == 1
-
-
-def test_a_pipeline_swap_carries_each_pipelines_arrays(tmp_path):
-    """Parking copies `features` rows, and the arrays are no longer in them: a
-    swap that forgot them would restore one pipeline's scalars beside the other
-    pipeline's beat grid."""
-    from database import alignment
-    from database.models import (get_features_for_song, upsert_features,
-                                 upsert_song, upsert_stem)
-
-    db = tmp_path / "s.db"
-    sid = upsert_song(title="T", artist="A", source_url="u://1", db_path=db)
-    upsert_stem(sid, "full", "legacy.mp3", db_path=db)   # a swap needs stems to park
-    upsert_features(sid, "full", {"bpm": 120.0, "beat_times": [0.0, 0.5, 1.0],
-                                  "waveform_rms": [0.1, 0.2]}, db_path=db)
-    assert alignment.park_live(sid, db_path=db) > 0     # legacy rows parked, still live
-    alignment.set_live_pipeline(sid, "unified_4stem", db_path=db)
-    upsert_features(sid, "full", {"bpm": 121.0, "beat_times": [0.1, 0.6]}, db_path=db)
-
-    assert alignment.activate_pipeline(sid, "legacy_2stem", db_path=db) == "swapped"
-    got = get_features_for_song(sid, "full", db_path=db)
-    assert got["bpm"] == 120.0
-    assert got["beat_times"] == pytest.approx([0.0, 0.5, 1.0])
-    assert got["waveform_rms"] == pytest.approx([0.1, 0.2])
-
-    assert alignment.activate_pipeline(sid, "unified_4stem", db_path=db) == "swapped"
-    got = get_features_for_song(sid, "full", db_path=db)
-    assert got["bpm"] == 121.0
-    assert got["beat_times"] == pytest.approx([0.1, 0.6])
-    assert "waveform_rms" not in got
-
-
-def test_a_row_parked_before_the_migration_still_restores_its_arrays(tmp_path):
-    """Parked JSON written by an older build holds the arrays inline under the
-    old column names; restoring it must move them into the store."""
-    from database import alignment
-    from database.models import (get_conn, get_features_for_song, upsert_features,
-                                 upsert_song)
-
-    db = tmp_path / "old.db"
-    sid = upsert_song(title="T", artist="A", source_url="u://1", db_path=db)
-    upsert_features(sid, "full", {"bpm": 120.0}, db_path=db)
-    conn = get_conn(db)
-    try:
-        row = dict(conn.execute("SELECT * FROM features WHERE song_id=?",
-                                (sid,)).fetchone())
-        row.update(bpm=99.0, beat_times_json=json.dumps([0.0, 0.25]),
-                   waveform_rms_json=None)
-        conn.execute("INSERT INTO pipeline_parked(song_id, pipeline, tbl, row_json) "
-                     "VALUES (?,?,?,?)", (sid, "unified_4stem", "features",
-                                          json.dumps(row)))
-        conn.execute("INSERT INTO pipeline_parked(song_id, pipeline, tbl, row_json) "
-                     "VALUES (?,?,?,?)", (sid, "unified_4stem", "stems",
-                                          json.dumps({"song_id": sid,
-                                                      "stem_type": "full",
-                                                      "file_path": "x"})))
-        conn.commit()
-    finally:
-        conn.close()
-
-    assert alignment.activate_pipeline(sid, "unified_4stem", db_path=db) == "swapped"
-    got = get_features_for_song(sid, "full", db_path=db)
-    assert got["bpm"] == 99.0
-    assert got["beat_times"] == pytest.approx([0.0, 0.25])
 
 
 def test_a_keyboard_interrupt_rolls_back_and_is_not_wrapped(tmp_path, monkeypatch):

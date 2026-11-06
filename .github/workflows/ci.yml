@@ -50,26 +50,27 @@ jobs:
           # default index serves multi-GB CUDA builds no CI job can use.
           pip install --extra-index-url https://download.pytorch.org/whl/cpu \
               -r requirements.txt -r requirements-dev.txt
-          # audio-separator is deliberately absent from requirements.txt: no
-          # release resolves against its numpy<2 pins. It is the optional "Fast"
-          # separator, not something the suite needs, so CI does not install it.
-          # The Essentia analyser (readme §9) only has Linux/macOS wheels: the
-          # Ubuntu leg installs it and runs tests/test_essentia_*, the Windows
-          # leg skips them — which is also how native Windows users run.
+          # The Essentia analyser only has Linux/macOS wheels. The suite runs
+          # against a fake Essentia everywhere (tests/essentia_fake.py); the
+          # Ubuntu leg also installs the real one and runs the tests marked
+          # real_essentia (MASHUP_REQUIRE_ESSENTIA makes a missing install a
+          # failure there, not a skip).
           if [ "$RUNNER_OS" = "Linux" ]; then
             pip install -r requirements-essentia.txt
           fi
           python -c "import numpy; assert numpy.__version__.startswith('1.'), numpy.__version__"
 
       - name: Run the whole suite
-        # ONE invocation, never per-file. There is no conftest.py, no pytest.ini
-        # and no tests/__init__.py, so ~20 test files hand-roll a
+        # ONE invocation, never per-file. ~20 test files hand-roll a
         # config -> database.models -> route-module importlib.reload dance whose
         # ordering is load-bearing, and reload is not unwound at teardown.
         # Splitting this up would hide the class of bug it exists to catch.
         # Must run from the repo root: several files omit the sys.path.insert
         # boilerplate and rely on pytest's rootdir insertion.
-        run: python -m pytest tests -q
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then export MASHUP_REQUIRE_ESSENTIA=1; fi
+          python -m pytest tests -q
 
   frontend:
     name: frontend build

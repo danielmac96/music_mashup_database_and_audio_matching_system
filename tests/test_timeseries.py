@@ -1,7 +1,6 @@
 """analysis/timeseries.py — the one frame grid and its .npz sidecars."""
 from __future__ import annotations
 
-import sqlite3
 
 import numpy as np
 import pytest
@@ -188,10 +187,10 @@ def test_drop_leaves_the_other_pipelines_frames(db):
     frames = ts.StemFrames(step=ts.STEP_SECS,
                            chroma=np.zeros((12, 10), dtype=np.float32))
     ts.write(10, "full", "unified_4stem", frames, "h", db_path=db)
-    ts.write(10, "full", "legacy_2stem", frames, "h", db_path=db)
+    ts.write(10, "full", "other_pipeline", frames, "h", db_path=db)
 
     assert ts.drop(10, "unified_4stem", db_path=db) == 1
-    assert ts.have(10, "full", "legacy_2stem", "h", db_path=db)
+    assert ts.have(10, "full", "other_pipeline", "h", db_path=db)
 
 
 # ── The table is created by migration 4, not by alignment._DDL ───────────────
@@ -214,49 +213,6 @@ def test_get_conn_builds_the_table_and_its_index_on_a_fresh_database(tmp_path):
         index_names = {r[1] for r in conn.execute(
             "PRAGMA index_list(analysis_frames)")}
         assert "idx_analysis_frames_song" in index_names
-    finally:
-        conn.close()
-
-
-def test_migration_4_reaches_a_database_already_at_version_3(tmp_path, monkeypatch):
-    """An existing library: migrations 1-3 have run, 4 has not.
-
-    This is the test that tells a numbered migration from `alignment._DDL`.
-    `alignment.migrate` runs only inside migration 1, so a table added to `_DDL`
-    alone already exists after step 1 and the "not in _tables" assertion below
-    fails; left that way it would pass every fresh-database test and never
-    reach the 206-track library, which is already past migration 1."""
-    from database import schema
-
-    real = schema.MIGRATIONS
-    assert real[3].name == "analysis_frames"
-    conn = sqlite3.connect(tmp_path / "old.db")
-    conn.row_factory = sqlite3.Row
-    try:
-        monkeypatch.setattr(schema, "MIGRATIONS", real[:3])
-        assert schema.apply(conn) == [1, 2, 3]
-        monkeypatch.setattr(schema, "MIGRATIONS", real)
-        assert schema.current_version(conn) == 3
-        assert "analysis_frames" not in _tables(conn)
-
-        # Everything from 4 up, not exactly [4]: a later migration must not
-        # break this test (the trap test_candidates_slim fell into).
-        assert schema.apply(conn) == [m.version for m in real if m.version >= 4]
-        assert "analysis_frames" in _tables(conn)
-        assert schema.current_version(conn) == schema.SCHEMA_VERSION
-    finally:
-        conn.close()
-
-
-def test_ensure_frames_schema_is_idempotent(tmp_path):
-    """downgrade.py resets user_version to 0 and replays every migration."""
-    from database import alignment, models
-
-    conn = models.get_conn(tmp_path / "again.db")
-    try:
-        alignment.ensure_frames_schema(conn)
-        alignment.ensure_frames_schema(conn)
-        assert "analysis_frames" in _tables(conn)
     finally:
         conn.close()
 

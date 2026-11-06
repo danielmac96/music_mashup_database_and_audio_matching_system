@@ -147,7 +147,7 @@ def test_a_four_minute_track_stores_under_100kb(env):
     from analysis.allin1_runner import summarise
     from database import alignment
     song = models.upsert_song(title="T", artist="A", source_url="http://x/2")
-    alignment.store_allin1(song, "legacy_2stem", summarise(FakeResult(secs=240.0)))
+    alignment.store_allin1(song, "unified_4stem", summarise(FakeResult(secs=240.0)))
     sizes = alignment.storage_bytes(song)
     assert sum(sizes.values()) < 100_000, sizes
     got = alignment.get_allin1(song)
@@ -242,7 +242,7 @@ def test_one_failure_is_retried(env, monkeypatch):
 
 # ── Routing ───────────────────────────────────────────────────────────────────
 
-def test_next_stage_routes_to_allin1_only_when_owed(env, monkeypatch):
+def test_next_stage_routes_to_allin1_until_it_has_run(env, monkeypatch):
     models, stages, tmp, _calls = env
     import api.workers.pipeline_worker as pw
     from database import alignment
@@ -251,12 +251,10 @@ def test_next_stage_routes_to_allin1_only_when_owed(env, monkeypatch):
     # so one is owed; that routing has its own test
     # (tests/test_one_pass_pipeline.py). This test is about allin1.
     monkeypatch.setattr(pw, "_wants_structure", lambda sid: False)
-    assert pw.next_stage(song) is None                  # essentia engine
-    monkeypatch.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
-    assert pw.next_stage(song) == "allin1"
-    alignment.set_allin1_state(song, "done")
-    assert pw.next_stage(song) is None
-    monkeypatch.setenv("MASHUP_SEGMENTATION_ENGINE", "essentia")
+    assert pw.next_stage(song) == "allin1"              # never run: owed
+    for state in ("done", "failed", "skipped"):         # each counts as having run
+        alignment.set_allin1_state(song, state)
+        assert pw.next_stage(song) is None
     alignment.set_allin1_state(song, "queued")          # a backfill asked
     assert pw.next_stage(song) == "allin1"
 
@@ -270,7 +268,6 @@ def test_pipeline_failure_is_non_fatal(env, monkeypatch):
         RuntimeError("boom")))
     monkeypatch.setattr(pw, "_score_track", lambda *a, **k: None)
     monkeypatch.setattr(pw, "_wants_structure", lambda sid: False)
-    monkeypatch.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
     song = _song(models, tmp)
     job = jobs.new_job(kind="pipeline", song_id=song)
     assert pw.run_stage(job, song, "allin1") == "done"
@@ -429,8 +426,8 @@ def test_activations_survive_the_database(env):
     from database import alignment
     song = models.upsert_song(title="T", artist="A", source_url="http://x/3")
     s = summarise(FakeResult(), content_hash="h", demixed_by="pipeline", ms=1.0)
-    alignment.store_allin1(song, "legacy_2stem", s)
-    got = alignment.get_allin1(song, "legacy_2stem")
+    alignment.store_allin1(song, "unified_4stem", s)
+    got = alignment.get_allin1(song, "unified_4stem")
     assert len(got["beat_conf"]) == len(s["beats"])
     assert len(got["downbeat_conf_beats"]) == len(s["beats"])
     assert got["segment_label_probs"] == s["segment_label_probs"]
@@ -453,8 +450,8 @@ def test_the_beat_curves_are_counted_in_the_storage_budget(env):
     for key in ("beat_conf", "downbeat_conf_beats", "segment_label_probs",
                 "segment_labels_order"):
         lean[key] = None
-    alignment.store_allin1(song, "legacy_2stem", s)
-    alignment.store_allin1(lean_song, "legacy_2stem", lean)
+    alignment.store_allin1(song, "unified_4stem", s)
+    alignment.store_allin1(lean_song, "unified_4stem", lean)
 
     sizes = alignment.storage_bytes(song)
     lean_sizes = alignment.storage_bytes(lean_song)
@@ -520,15 +517,12 @@ def test_run_routes_its_demix_through_the_hand_over():
 
 # ── One separation by default (Task 6) ────────────────────────────────────────
 
-def test_the_separation_pipeline_defaults_to_one_pass(monkeypatch, tmp_path):
+def test_there_is_one_pipeline_and_one_engine():
     """The point of the unified pass: allin1's input is the separation playback
-    already uses. tests/conftest.py pins legacy_2stem for the suite, so this
-    test has to unpin it."""
+    already uses, and there is no other to choose."""
     import config
 
-    monkeypatch.setattr(config, "settings_path", lambda: tmp_path / "none.json")
-    monkeypatch.delenv("MASHUP_SEPARATION_PIPELINE", raising=False)
     assert config.current_separation_pipeline() == "unified_4stem"
-    # An existing library pins itself in settings.json and is unaffected.
-    monkeypatch.setenv("MASHUP_SEPARATION_PIPELINE", "legacy_2stem")
-    assert config.current_separation_pipeline() == "legacy_2stem"
+    assert config.current_segmentation_engine() == "allin1"
+
+

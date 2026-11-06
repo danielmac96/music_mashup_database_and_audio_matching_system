@@ -137,28 +137,32 @@ def test_reused_stems_are_not_filed_as_a_demucs_timing(env, monkeypatch):
 
 def test_analysis_records_each_step_per_stem_and_marks_failed_steps(env, monkeypatch):
     models, stages, _client, tmp = env
-    import analysis.analyze as analyze
-    import analysis.quality as quality
+    from analysis import essentia_groups
 
     raw = _wav(tmp / "raw.wav", 1.0)
     song = models.upsert_song(title="T", artist="A", source_url="http://x/1")
     models.update_song_status(song, "stemmed", raw_path=str(raw))
     models.upsert_stem(song, "full", str(raw))
 
-    def _fake(path, trim_secs=None, on_progress=None, timings=None, cache=None):
-        timings.update({"load": 5.0, "tempo": 10.0, "key": 20.0,
-                        "audio_secs": 1.0, "failed_steps": ["key"]})
-        return {"bpm": 120.0}
-    monkeypatch.setattr(analyze, "analyze_file", _fake)
-    monkeypatch.setattr(quality, "band_energy", lambda _p: [0.125] * 8)
+    payload = {"rhythm": {"bpm": 120.0, "beat_times": [0.0, 0.5]},
+               "tonal": {"key": "A", "mode": "minor", "camelot": "8A"},
+               "loudness": {"loudness_rms": 0.1},
+               "spectral": {"mfcc": [0.0] * 13, "band_energy": [0.125] * 8}}
+
+    def _fake(path, cache=None, timings=None, **_kw):
+        timings.update({"load": 5.0, "rhythm": 10.0, "tonal": 20.0,
+                        "audio_secs": 1.0, "failed_steps": ["tonal"],
+                        "cached_steps": ["loudness"]})
+        return payload
+    monkeypatch.setattr(essentia_groups, "analyze_file_essentia", _fake)
     monkeypatch.setattr(stages, "_measure_stem_quality", lambda *a, **k: None)
 
     stages.do_analyze(song)
     runs = {r["grp"]: r for r in _runs(models) if r["stem_type"] == "full"}
-    assert runs["analysis.tempo"]["ms"] == 10.0 and runs["analysis.tempo"]["ok"] == 1
-    assert runs["analysis.key"]["ok"] == 0
-    assert runs["analysis.tempo"]["audio_secs"] == 1.0
-    assert "analysis.bands" in runs
+    assert runs["essentia.rhythm"]["ms"] == 10.0 and runs["essentia.rhythm"]["ok"] == 1
+    assert runs["essentia.tonal"]["ok"] == 0
+    assert runs["essentia.rhythm"]["audio_secs"] == 1.0
+    assert "essentia.loudness.cached" in runs
     grps = {r["grp"] for r in _runs(models)}
     assert {"analysis", "quality"} <= grps
 
@@ -191,17 +195,6 @@ def test_structure_records_the_stage_and_its_phases(env, monkeypatch):
 
 
 # ── The analysers fill the timing dict for real ───────────────────────────────
-
-def test_analyze_file_times_every_step(tmp_path):
-    from analysis.analyze import STEPS, analyze_file
-    timings: dict = {}
-    feats = analyze_file(_wav(tmp_path / "t.wav", 8.0), timings=timings)
-    assert feats.get("bpm")
-    assert {"load", *STEPS} <= set(timings)
-    assert timings["audio_secs"] == pytest.approx(8.0, abs=0.05)
-    assert timings["failed_steps"] == []
-    assert all(timings[s] >= 0 for s in STEPS)
-
 
 def test_detect_sections_times_its_phases(tmp_path):
     from analysis.structure import detect_sections

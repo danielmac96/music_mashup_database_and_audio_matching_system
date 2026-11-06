@@ -301,14 +301,11 @@ def test_structure_reads_the_vocal_melody_from_the_cache(env, monkeypatch):
     models.update_song_status(song, "stemmed", raw_path=str(mix))
     for kind, p in (("full", mix), ("vocals", voc), ("instrumental", bed)):
         models.upsert_stem(song, kind, str(p))
-    store(GROUPS["essentia.melody"], content_hash(voc),
-          {"step": 0.05, "f0": [440.0] * int(secs / 0.05), "summary": None})
-
-    monkeypatch.setattr(stages, "effective_analyzer", lambda: ("librosa", "librosa"))
-    stages.do_structure(song)
+    stages.do_structure(song)                 # no melody measured yet
     assert all(s.get("f0") is None for s in models.get_sections(song))
 
-    monkeypatch.setattr(stages, "effective_analyzer", lambda: ("shadow", "librosa"))
+    store(GROUPS["essentia.melody"], content_hash(voc),
+          {"step": 0.05, "f0": [440.0] * int(secs / 0.05), "summary": None})
     stages.do_structure(song)                 # a new cache key: re-cut, with f0
     sections = models.get_sections(song)
     assert sections and all(s["f0"]["median_midi"] == pytest.approx(69, abs=0.1)
@@ -317,10 +314,8 @@ def test_structure_reads_the_vocal_melody_from_the_cache(env, monkeypatch):
     assert all(len(s["band_energy_bed"]) == 8 for s in sections)
 
 
+@pytest.mark.real_essentia
 def test_the_melody_group_measures_a_sung_note():
-    from analysis.essentia_groups import available
-    if not available():
-        pytest.skip("essentia not installed")
     from analysis.essentia_groups import Signals, group_melody
     sr = 44100
     t = np.arange(int(12 * sr)) / sr

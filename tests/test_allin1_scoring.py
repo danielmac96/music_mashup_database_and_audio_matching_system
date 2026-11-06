@@ -1,7 +1,7 @@
-"""Both segmentation engines over one library (readme §5.7): the same data
-scores under essentia and under allin1 with no reprocessing between them; in
-allin1 mode pairs hang off the vocal's phrase and a drifting bed is dropped by
-the timing gate; every row and every rating records the engine that made it."""
+"""Scoring on allin1's sections (readme §5.7): pairs hang off the vocal's
+phrase, a drifting bed is dropped by the timing gate, a track allin1 never cut
+is scored on its Essentia fallback sections (tagged essentia_fallback), and
+every row and every rating records the engine that made it."""
 import importlib
 import math
 import sys
@@ -69,11 +69,11 @@ def lib(tmp_path, monkeypatch):
         m.replace_sections(sid, _secs(plan, role))
         if name != "B_essentia_only":
             alignment.replace_allin1_sections(
-                sid, "legacy_2stem",
+                sid, "unified_4stem",
                 _secs(plan, role, wobble=0.03 if name == "B_drift" else 0.0))
     # The vocal sings its verse from a beat before bar 1 of the verse.
     verse = _secs(PLAN_V, "vocal")[1]
-    alignment.replace_vocal_phrases(ids["V"], "legacy_2stem", "allin1", [
+    alignment.replace_vocal_phrases(ids["V"], "unified_4stem", "allin1", [
         {"onset_sec": verse["start_sec"] - 60 / BPM, "downbeat_sec": verse["start_sec"],
          "pickup_sec": -60 / BPM, "end_sec": verse["end_sec"], "bars": 16}])
     return m, ids, monkeypatch
@@ -91,7 +91,7 @@ def _rows(m):
         conn.close()
 
 
-def test_both_engines_score_the_same_library_without_reprocessing(lib, monkeypatch):
+def test_allin1_scoring_gates_drift_and_falls_back(lib, monkeypatch):
     m, ids, mp = lib
     from matcher.match import score_all_pairs
     from api.workers import stages
@@ -99,18 +99,9 @@ def test_both_engines_score_the_same_library_without_reprocessing(lib, monkeypat
         monkeypatch.setattr(stages, name, lambda *a, **k: pytest.fail("reprocessed"))
 
     out = score_all_pairs(db_path=m.DB_PATH)
-    ess = _rows(m)
-    assert out["_engine"] == "essentia" and ess
-    assert {r["engine"] for r in ess} == {"essentia"}
-    assert all(r["vocal_section_idx"] < m.ALLIN1_SECTION_BASE for r in ess)
-    assert all(r["timing_ok"] is None for r in ess)
-    assert {r["inst_song_id"] for r in ess} >= {ids["B_steady"], ids["B_drift"]}
-
-    mp.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
-    out = score_all_pairs(db_path=m.DB_PATH)
-    a1 = _rows(m)
+    assert out["_engine"] == "allin1"
     by_bed = {}
-    for r in a1:
+    for r in _rows(m):
         by_bed.setdefault(r["inst_song_id"], []).append(r)
     steady = by_bed[ids["B_steady"]]
     assert {r["engine"] for r in steady} == {"allin1"}
@@ -126,25 +117,17 @@ def test_both_engines_score_the_same_library_without_reprocessing(lib, monkeypat
     assert {r["engine"] for r in fallback} == {"essentia_fallback"}
     assert all(r["timing_ok"] == 1 for r in fallback)
 
-    # Back to essentia: the same rows as the first run.
-    mp.setenv("MASHUP_SEGMENTATION_ENGINE", "essentia")
-    score_all_pairs(db_path=m.DB_PATH)
-    key = lambda r: (r["vocal_song_id"], r["inst_song_id"], r["vocal_section_idx"],
-                     r["inst_section_idx"], r["score_total"])
-    assert sorted(map(key, _rows(m))) == sorted(map(key, ess))
-
 
 def test_ratings_record_the_engine_and_the_timing_terms(lib):
     m, ids, mp = lib
     from matcher.match import score_all_pairs
-    mp.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
     score_all_pairs(db_path=m.DB_PATH)
     row = next(r for r in _rows(m) if r["engine"] == "allin1")
     m.upsert_pair_feedback(row["vocal_song_id"], row["inst_song_id"], rating=5,
                            vocal_section=row["vocal_section_idx"],
                            inst_section=row["inst_section_idx"])
     fb = m.get_pair_feedback()[0]
-    assert fb["engine"] == "allin1" and fb["pipeline"] == "legacy_2stem"
+    assert fb["engine"] == "allin1" and fb["pipeline"] == "unified_4stem"
     import json
     snap = json.loads(fb["features_json"])
     assert snap["timing_ok"] == 1 and "score_timing" in snap
@@ -161,7 +144,6 @@ def test_segments_rank_with_the_timing_gate_in_allin1_mode(lib):
     m, ids, mp = lib
     from matcher.match import score_all_pairs
     from matcher import segment_match
-    mp.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
     score_all_pairs(db_path=m.DB_PATH)
     segs = m.list_segments("vocal")
     chorus = next(s for s in segs if s["song_id"] == ids["V"] and s["label"] == "chorus")
@@ -174,63 +156,11 @@ def test_segments_rank_with_the_timing_gate_in_allin1_mode(lib):
         assert r["timing_ok"] in (1, None)
 
 
-# ── Comparison (Analysis › Engines) ──────────────────────────────────────────
-
-def test_engines_view_shows_both_engines_for_one_track(lib):
-    m, ids, mp = lib
-    from matcher.match import score_all_pairs
-    from matcher.engine_compare import engines_view
-    score_all_pairs(db_path=m.DB_PATH)                  # essentia is on
-    v = engines_view(ids["V"], db_path=m.DB_PATH)
-    e, a = v["engines"]["essentia"], v["engines"]["allin1"]
-    assert e["available"] and a["available"]
-    assert all(s["section_index"] < m.ALLIN1_SECTION_BASE for s in e["sections"])
-    assert all(s["section_index"] >= m.ALLIN1_SECTION_BASE for s in a["sections"])
-    assert a["phrases"][0]["pickup_sec"] == pytest.approx(-60 / BPM)
-    # Pairs from both engines, live, without switching the setting.
-    assert {r["engine"] for r in a["pairs"]} <= {"allin1", "essentia_fallback"}
-    assert ids["B_drift"] not in {r["inst_song_id"] for r in a["pairs"]}
-    assert ids["B_drift"] in {r["inst_song_id"] for r in e["pairs"]}
-    assert all("semitone_shift" in r for r in e["pairs"])          # playable rows
-    # Same grid either way here: the bar lines agree exactly.
-    assert v["agreement"]["within"] == 1.0
-    # A track allin1 never cut says so rather than borrowing Essentia's.
-    b = engines_view(ids["B_essentia_only"], db_path=m.DB_PATH)
-    assert b["engines"]["allin1"]["available"] is False and b["agreement"] is None
-
-
-def test_engine_report_and_routes(lib):
-    m, ids, mp = lib
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from matcher.match import score_all_pairs
-    analysis = importlib.reload(importlib.import_module("api.routes.analysis"))
-    mp.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
-    score_all_pairs(db_path=m.DB_PATH)
-    row = next(r for r in _rows(m) if r["engine"] == "allin1")
-    m.upsert_pair_feedback(row["vocal_song_id"], row["inst_song_id"], rating=4,
-                           vocal_section=row["vocal_section_idx"],
-                           inst_section=row["inst_section_idx"])
-    app = FastAPI()
-    app.include_router(analysis.router, prefix="/api/analysis")
-    c = TestClient(app)
-    rep = c.get("/api/analysis/engine-report").json()
-    by_engine = {r["engine"]: r for r in rep["candidates"]}
-    assert by_engine["allin1"]["timing_ok"] >= 1
-    assert rep["timing_gate"]["gated"] >= 1 and rep["last_engine"] == "allin1"
-    assert {r["engine"]: r["rated"] for r in rep["ratings"]} == {"allin1": 1}
-    assert rep["error_histogram"]["counts"]
-    view = c.get(f"/api/analysis/engines/{ids['V']}").json()
-    assert set(view["engines"]) == {"essentia", "allin1"}
-    assert c.get("/api/analysis/engines/99999").status_code == 404
-
-
 def test_the_listing_keeps_allin1_section_labels(lib):
     """The dock's listing joins labels from `sections`; an allin1 pairing names
     sections_allin1 rows, so the stored label must stand in."""
     m, ids, mp = lib
     from matcher.match import score_all_pairs
-    mp.setenv("MASHUP_SEGMENTATION_ENGINE", "allin1")
     score_all_pairs(db_path=m.DB_PATH)
     rows = m.get_candidates_enriched(vocal_song_id=ids["V"], inst_song_id=ids["B_steady"],
                                      max_per_song=0, limit=50)

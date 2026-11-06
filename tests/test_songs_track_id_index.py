@@ -1,10 +1,4 @@
-"""The songs.track_id index, and the migration-ordering hazard it sits behind.
-
-get_conn runs executescript(SCHEMA) BEFORE _migrate_songs_columns, and track_id is
-an optional migrated column. An index on it declared inside SCHEMA would therefore
-raise on any database created before that column existed. This file pins the index
-to the migration and proves a legacy DB still opens.
-"""
+"""The songs.track_id index and identity lookups by track id."""
 import importlib
 import sqlite3
 import sys
@@ -52,38 +46,6 @@ def test_index_is_not_unique(env):
     assert a != b
     rows = models.get_all_songs()
     assert {r["track_id"] for r in rows} <= {"", None}
-
-
-def test_legacy_db_without_track_id_still_initialises(env):
-    """The regression this file exists for: a songs table predating track_id."""
-    models, db_path = env
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.executescript("""
-        CREATE TABLE songs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            artist TEXT,
-            source_url TEXT UNIQUE,
-            source TEXT,
-            duration_secs REAL,
-            genre TEXT,
-            raw_path TEXT,
-            status TEXT DEFAULT 'queued',
-            created_at TEXT DEFAULT (datetime('now')),
-            updated_at TEXT DEFAULT (datetime('now'))
-        );
-    """)
-    conn.execute("INSERT INTO songs (title, artist, source_url) VALUES (?,?,?)",
-                 ("Old", "Timer", "https://soundcloud.com/old/timer"))
-    conn.commit()
-    conn.close()
-
-    # Must not raise, and must end up with both the column and the index.
-    models.init_db()
-    assert "idx_songs_track_id" in _indexes(db_path)
-    row = models.get_song_by_url("https://soundcloud.com/old/timer")
-    assert row is not None and row["title"] == "Old"
 
 
 def test_get_song_by_track_id(env):

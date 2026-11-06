@@ -82,13 +82,11 @@ def test_health_carries_the_build_state(served):
     assert got["frontend"]["stale"] is True
 
 
-def test_essentia_is_required_when_it_is_the_analyser(monkeypatch):
-    """Essentia is the analyser (readme §9): where it is missing — native
-    Windows — the Library's "Missing on the server" banner must name it."""
+def test_essentia_is_always_required_and_allin1_is_optional():
+    """Essentia is the analyser: where it is missing — native Windows — the
+    Library's "Missing on the server" banner must name it. allin1 has a
+    fallback, so it is reported but never required."""
     import api.server as server
-    monkeypatch.setenv("MASHUP_ANALYZER", "essentia")
-    dep = next(d for d in server.health_deps()["deps"] if d["name"] == "essentia")
-    assert dep["required"] is True
-    monkeypatch.setenv("MASHUP_ANALYZER", "librosa")
-    dep = next(d for d in server.health_deps()["deps"] if d["name"] == "essentia")
-    assert dep["required"] is False
+    deps = {d["name"]: d for d in server.health_deps()["deps"]}
+    assert deps["essentia"]["required"] is True
+    assert deps["allin1"]["required"] is False

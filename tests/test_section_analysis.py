@@ -245,17 +245,6 @@ def test_too_few_beats_give_no_fitted_tempo():
     assert bpm_from_beats([]) is None
 
 
-def test_the_track_tempo_is_fitted_from_its_beats():
-    from analysis.analyze import _step_tempo
-    sr, bpm, secs = 22050, 128.0, 60.0
-    y = np.zeros(int(secs * sr), dtype=np.float32)
-    for t in np.arange(0.5, secs, 60.0 / bpm):
-        s = int(t * sr)
-        tt = np.arange(int(0.05 * sr)) / sr
-        y[s:s + tt.size] += np.sin(2 * np.pi * 90 * tt) * np.exp(-tt * 40)
-    assert _step_tempo(y, sr, 512)["bpm"] == pytest.approx(128.0, abs=0.3)
-
-
 def test_a_section_tempo_is_fitted_too():
     bpm, source = _section_bpm(_quantised(128.0, 32), track_bpm=120.0, confidence=0.9)
     assert source == "section_estimate"

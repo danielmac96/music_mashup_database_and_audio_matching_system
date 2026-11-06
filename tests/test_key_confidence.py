@@ -1,7 +1,7 @@
 """T1.3 — key detection must report how much to trust itself.
 
 Key carries the heaviest score weight (config.py KEY_WEIGHT) and is the least
-reliable number in the DB, so _step_key now returns the margin between the best
+reliable number in the DB, so the key estimator (key_from_chroma) returns the margin between the best
 key profile correlation and the runner-up. Presenting an unreliable key as fact
 is what makes a bad semitone shift look authoritative.
 """
@@ -30,10 +30,18 @@ def _tone(np, freqs, sr=22050, secs=5.0):
 
 # ── the analysis step ────────────────────────────────────────────────────────
 
+def _key_of(y, sr, hop):
+    """The key estimator over a signal's mean chroma — what the fallback cut
+    and the test analyser both run (analysis/analyze.key_from_chroma)."""
+    from analysis import frames
+    from analysis.analyze import key_from_chroma
+    return key_from_chroma(frames.chroma_cqt(y, sr, hop).mean(axis=1))
+
+
 def test_step_key_returns_confidence_in_unit_range():
     np = pytest.importorskip("numpy")
     pytest.importorskip("librosa")
-    from analysis.analyze import _step_key
+    _step_key = _key_of
 
     out = _step_key(_tone(np, (261.63, 329.63, 392.00)), 22050, 512)
     assert "key_confidence" in out
@@ -44,7 +52,7 @@ def test_unambiguous_triad_is_more_confident_than_white_noise():
     """The whole point of the number: a clear tonal centre must outrank noise."""
     np = pytest.importorskip("numpy")
     pytest.importorskip("librosa")
-    from analysis.analyze import _step_key
+    _step_key = _key_of
 
     sr = 22050
     triad = _tone(np, (261.63, 329.63, 392.00), sr=sr)
@@ -58,7 +66,7 @@ def test_step_key_still_reports_key_mode_and_camelot():
     """Additive change — the existing contract must not move."""
     np = pytest.importorskip("numpy")
     pytest.importorskip("librosa")
-    from analysis.analyze import _step_key
+    _step_key = _key_of
 
     out = _step_key(_tone(np, (261.63, 329.63, 392.00)), 22050, 512)
     assert out["mode"] in ("major", "minor")

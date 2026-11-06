@@ -263,18 +263,9 @@ def test_import_rejects_an_empty_list(app):
 
 # ── status ───────────────────────────────────────────────────────────────────
 
-def test_status_reports_read_on_write_off(app):
-    """Read works with the scraped client_id; write needs a registered app."""
-    client, _, _ = app
-    body = client.get("/api/discovery/status").json()
-    assert body["read_enabled"] is True
-    assert body["write_enabled"] is False
-    assert body["account"]["configured"] is False
-
-
 # ── your profile ─────────────────────────────────────────────────────────────
-# "Connect" identifies a public profile; it does not log in. soundcloud_oauth is
-# dormant, so there is nothing to authenticate with and only public pages exist.
+# "Connect" identifies a public profile; it does not log in: the app never signs
+# in to SoundCloud, so only public pages exist.
 
 def user_hit(uid="55", username="Me"):
     """A browse.user_row, as soundcloud_browse.resolve returns it for a profile."""

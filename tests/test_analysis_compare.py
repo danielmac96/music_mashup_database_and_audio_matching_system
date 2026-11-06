@@ -1,4 +1,4 @@
-"""analysis/compare.py — the benchmark's (and later the shadow analyser's)
+"""analysis/compare.py — pitch-class spelling, and the allin1 benchmark's
 definition of when two analyses of a track agree."""
 import sys
 from pathlib import Path
@@ -8,8 +8,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from analysis.compare import (  # noqa: E402
-    boundaries_from_sections, boundary_prf, bpm_relation, downbeat_agreement,
-    key_relation, mirex_key_score, parse_key_text, pitch_class, tally,
+    boundary_prf, bpm_relation, downbeat_agreement, pitch_class,
 )
 
 
@@ -26,58 +25,6 @@ from analysis.compare import (  # noqa: E402
 ])
 def test_bpm_relation_names_metrical_folds(a, b, rel):
     assert bpm_relation(a, b) == rel
-
-
-@pytest.mark.parametrize("a,b,rel", [
-    (("C", "major"), ("C", "major"), "same"),
-    (("Db", "minor"), ("C#", "minor"), "same"),     # enharmonic spellings
-    (("C", "major"), ("A", "minor"), "relative"),
-    (("A", "minor"), ("C", "major"), "relative"),
-    (("F#", "minor"), ("A", "major"), "relative"),
-    (("C", "major"), ("G", "major"), "fifth"),
-    (("G", "major"), ("C", "major"), "fifth"),
-    (("C", "major"), ("C", "minor"), "parallel"),
-    (("C", "major"), ("D", "major"), "other"),
-    (("C", "major"), ("E", "minor"), "other"),
-    (("C", "major"), (None, None), None),
-])
-def test_key_relation(a, b, rel):
-    assert key_relation(a[0], a[1], b[0], b[1]) == rel
-
-
-def test_mirex_weights():
-    assert mirex_key_score("same") == 1.0
-    assert mirex_key_score("fifth") == 0.5
-    assert mirex_key_score("relative") == 0.3
-    assert mirex_key_score("parallel") == 0.2
-    assert mirex_key_score("other") == 0.0
-    assert mirex_key_score(None) is None
-
-
-@pytest.mark.parametrize("text,expected", [
-    ("Am", ("A", "minor")),
-    ("A minor", ("A", "minor")),
-    ("F#m", ("F#", "minor")),
-    ("Dbmaj", ("C#", "major")),
-    ("C", ("C", "major")),
-    ("8B", ("C", "major")),       # Camelot: 8B = C major
-    ("8A", ("A", "minor")),       # 8A = A minor
-    ("5A", ("C", "minor")),
-    ("1A", ("G#", "minor")),      # Ab minor
-    ("11B", ("A", "major")),
-    ("7A", ("D", "minor")),
-    ("", (None, None)),
-    ("banana", (None, None)),
-    ("1d", (None, None)),         # Open Key is not guessed at
-])
-def test_parse_key_text(text, expected):
-    assert parse_key_text(text) == expected
-
-
-def test_parse_key_text_agrees_with_the_analysers_camelot_table():
-    from analysis.analyze import CAMELOT, KEY_NAMES
-    for (idx, mode), code in CAMELOT.items():
-        assert parse_key_text(code) == (KEY_NAMES[idx], mode), code
 
 
 def test_pitch_class_spellings():
@@ -112,7 +59,3 @@ def test_downbeat_agreement():
     assert downbeat_agreement(a, []) is None
 
 
-def test_tally_and_section_boundaries():
-    assert tally(["same", "same", None, "half"]) == {"same": 2, "half": 1}
-    secs = [{"start_sec": 30.0}, {"start_sec": 0.0}, {"start_sec": 12.5}]
-    assert boundaries_from_sections(secs) == [12.5, 30.0]

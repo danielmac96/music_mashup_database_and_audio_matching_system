@@ -57,7 +57,10 @@ _LEGACY_SECTION = {"start_sec": 0, "end_sec": 5, "label": "intro"}
 
 def _mock_stages(monkeypatch, *, fail_stems_for=None, fail_structure_for=None,
                  section=None):
-    """Mock the four heavy stages. Returns a {stage: count} call counter.
+    """Mock the heavy stages. Returns a {stage: count} call counter.
+
+    The allin1 stand-in records a skip, so the structure stage then runs as
+    the fallback cut — the path a track takes when allin1 makes no sections.
 
     ``section`` is the row do_structure writes — defaults to one the current
     analyser would produce, so the structure gate sees it as up to date.
@@ -65,7 +68,8 @@ def _mock_stages(monkeypatch, *, fail_stems_for=None, fail_structure_for=None,
     import api.workers.stages as stages
     import database.models as models
 
-    calls = {"download": 0, "quick": 0, "stems": 0, "analyze": 0, "structure": 0}
+    calls = {"download": 0, "quick": 0, "stems": 0, "analyze": 0, "allin1": 0,
+             "structure": 0}
     row = _CURRENT_SECTION if section is None else section
 
     def dl(sid, on_progress=None):
@@ -91,6 +95,12 @@ def _mock_stages(monkeypatch, *, fail_stems_for=None, fail_structure_for=None,
         models.update_song_status(sid, "analysed")
         return {}
 
+    def a1(sid, on_progress=None):
+        from database import alignment
+        calls["allin1"] += 1
+        alignment.set_allin1_state(sid, "skipped", "test stand-in")
+        return {}
+
     def sc(sid, on_progress=None):
         calls["structure"] += 1
         if fail_structure_for and sid in fail_structure_for:
@@ -101,6 +111,7 @@ def _mock_stages(monkeypatch, *, fail_stems_for=None, fail_structure_for=None,
     monkeypatch.setattr(stages, "do_download", dl)
     monkeypatch.setattr(stages, "do_quick", qk)
     monkeypatch.setattr(stages, "do_stems", st)
+    monkeypatch.setattr(stages, "do_allin1", a1)
     monkeypatch.setattr(stages, "do_analyze", an)
     monkeypatch.setattr(stages, "do_structure", sc)
     return calls
@@ -214,8 +225,8 @@ def test_structure_failure_is_non_fatal(env, monkeypatch):
 
 
 def test_stage_queues_route_track_through_pipeline(env, monkeypatch):
-    """A queued track hops download → quick → stems → analysis → structure
-    queues and completes. Queues are drained synchronously here (no worker
+    """A queued track hops download → quick → stems → analysis → allin1 →
+    structure queues and completes. Queues are drained synchronously here (no worker
     threads) so the routing logic is tested without daemon-thread/monkeypatch
     lifetime hazards. Structure is its own queue since the cut moved after
     allin1 (whose bar lines it sits on)."""
@@ -230,7 +241,7 @@ def test_stage_queues_route_track_through_pipeline(env, monkeypatch):
     jid = queue_runner.enqueue_song(sid)
     assert jobs.get(jid)["stages"]["download"]["state"] == "waiting"
 
-    for expected in ("download", "quick", "stems", "analysis", "structure"):
+    for expected in ("download", "quick", "stems", "analysis", "allin1", "structure"):
         job_id, song_id = queue_runner.take(expected, block=False)
         assert song_id == sid
         outcome = pw.run_stage(job_id, song_id, expected)
@@ -284,7 +295,8 @@ def test_job_timeline_records_every_stage(env, monkeypatch):
     pw.run(jid, sid)
 
     stages = _stages(jid)
-    assert list(stages) == ["download", "quick", "stems", "analysis", "structure"]
+    assert list(stages) == ["download", "quick", "stems", "analysis", "allin1",
+                            "structure"]
     for name, rec in stages.items():
         assert rec["state"] == "done", name
         assert rec["started_at"] <= rec["finished_at"], name
@@ -319,9 +331,11 @@ def test_a_track_with_current_sections_never_enters_the_structure_stage(env,
     import api.workers.pipeline_worker as pw
     import api.jobs as jobs
 
+    from database import alignment
     sid = models.upsert_song(title="T", artist="A", source_url="http://x/1",
                              status="analysed")
     models.replace_sections(sid, [dict(_CURRENT_SECTION)])
+    alignment.set_allin1_state(sid, "skipped", "test")
     jid = jobs.new_job(kind="pipeline", song_id=sid)
     assert pw.next_stage(sid) is None
     pw.run(jid, sid)

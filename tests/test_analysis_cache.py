@@ -160,7 +160,7 @@ def test_capacity_evicts_least_recently_used(decode, tmp_path, monkeypatch):
 def _run_everything(tmp_path):
     """analysis on mix + stems, band occupancy, residual, stem quality and
     structure — the whole per-track pass, in pipeline order."""
-    from analysis.analyze import analyze_file
+    from essentia_fake import analyze_file_essentia
     from analysis.quality import band_energy, residual_vocal_ratio, stem_quality
     from analysis.structure import detect_sections
     mix = tmp_path / "mix.wav"
@@ -168,7 +168,7 @@ def _run_everything(tmp_path):
     bed = tmp_path / "bed.wav"
     out = {}
     for name, p in (("full", mix), ("vocals", voc), ("instrumental", bed)):
-        out[name] = analyze_file(p)
+        out[name] = analyze_file_essentia(p)
         out[name + ".bands"] = band_energy(p)
     out["residual"] = residual_vocal_ratio(voc, bed)
     out["quality"] = stem_quality(voc, mix, other_path=bed)
@@ -201,20 +201,21 @@ def test_sharing_decodes_and_transforms_changes_no_number(decode, tmp_path, monk
 # ── Registry + persistent cache ───────────────────────────────────────────────
 
 def test_every_analysis_step_is_a_registered_group():
-    from analysis.analyze import STEPS
-    from analysis.registry import GROUPS, STEP_GROUPS
-    assert set(STEP_GROUPS) == set(STEPS)
-    assert {"librosa.bands", "librosa.residual", "librosa.structure"} <= set(GROUPS)
+    from analysis.project import ESSENTIA_CORE_STEPS
+    from analysis.registry import ESSENTIA_STEP_GROUPS, GROUPS
+    assert set(ESSENTIA_CORE_STEPS) <= set(ESSENTIA_STEP_GROUPS)
+    assert {"librosa.residual", "librosa.structure", "essentia.structure",
+            "allin1.analysis", "allin1.structure"} <= set(GROUPS)
 
 
 def test_params_hash_follows_the_config_it_reads(monkeypatch):
     import config
     from analysis.registry import group
-    g = group("librosa.timbre")
+    g = group("essentia.spectral")
     before = g.params_hash()
     monkeypatch.setattr(config, "N_MFCC", 20)
     assert g.params_hash() != before
-    assert group("librosa.key").params_hash() == group("librosa.key").params_hash()
+    assert group("essentia.tonal").params_hash() == group("essentia.tonal").params_hash()
 
 
 def test_content_hash_follows_bytes_not_path(tmp_path):
@@ -235,6 +236,9 @@ def env(tmp_path, monkeypatch, decode):
     monkeypatch.setenv("MASHUP_AUDIO_ROOT", str(tmp_path / "audio"))
     monkeypatch.setenv("MASHUP_DB_PATH", str(tmp_path / "mashup.db"))
     monkeypatch.setenv("MASHUP_SETTINGS_DIR", str(tmp_path / "settings"))
+    # The test analyser writes no frame sidecars, so a missing sidecar must not
+    # force the frame-carrying steps to re-run on every pass.
+    monkeypatch.setenv("MASHUP_KEEP_ANALYSIS_FRAMES", "0")
     import config
     import database.models as models
     import api.jobs
@@ -299,7 +303,7 @@ def test_reanalysis_reprojects_from_the_cache_without_decoding(env, decode):
     assert _sections(models, song) == secs
     grps = _grps(models)
     assert "analysis.cached" in grps and "structure.cached" in grps
-    assert "analysis.tempo.cached" in grps and "analysis.tempo" not in grps
+    assert "essentia.rhythm.cached" in grps and "essentia.rhythm" not in grps
 
 
 def test_a_version_bump_recomputes_that_group_only(env, decode, monkeypatch):
@@ -309,10 +313,11 @@ def test_a_version_bump_recomputes_that_group_only(env, decode, monkeypatch):
     models, stages, song = env
     stages.do_analyze(song)
 
-    bumped = dataclasses.replace(registry.GROUPS["librosa.key"], version=2)
-    monkeypatch.setitem(registry.GROUPS, "librosa.key", bumped)
-    monkeypatch.setitem(registry.STEP_GROUPS, "key", bumped)
-    monkeypatch.setitem(cache_mod.STEP_GROUPS, "key", bumped)
+    bumped = dataclasses.replace(registry.GROUPS["essentia.tonal"],
+                                 version=registry.GROUPS["essentia.tonal"].version + 1)
+    monkeypatch.setitem(registry.GROUPS, "essentia.tonal", bumped)
+    monkeypatch.setitem(registry.ESSENTIA_STEP_GROUPS, "tonal", bumped)
+    monkeypatch.setitem(cache_mod.ESSENTIA_STEP_GROUPS, "tonal", bumped)
     conn = models.get_conn()
     conn.execute("DELETE FROM analysis_runs")
     conn.commit()
@@ -320,8 +325,8 @@ def test_a_version_bump_recomputes_that_group_only(env, decode, monkeypatch):
 
     stages.do_analyze(song)
     grps = _grps(models)
-    assert grps.count("analysis.key") == 3           # once per stem
-    assert "analysis.tempo" not in grps and grps.count("analysis.tempo.cached") == 3
+    assert grps.count("essentia.tonal") == 3         # once per stem
+    assert "essentia.rhythm" not in grps and grps.count("essentia.rhythm.cached") == 3
     assert "analysis.cached" not in grps             # a real analysis ran
 
 
@@ -347,6 +352,6 @@ def test_a_re_separated_stem_recomputes_its_groups_and_structure(env, decode, tm
     stages.do_analyze(song)
     stages.do_structure(song)
     grps = _grps(models)
-    assert "analysis.tempo.cached" in grps          # the mix and bed
-    assert any(g == "analysis.tempo" for g in grps)  # the new vocal
+    assert "essentia.rhythm.cached" in grps         # the mix and bed
+    assert any(g == "essentia.rhythm" for g in grps)  # the new vocal
     assert "structure.cached" not in grps
