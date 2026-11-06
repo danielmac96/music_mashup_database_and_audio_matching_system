@@ -223,9 +223,23 @@ def resume_pending() -> int:
     pending = get_songs_by_status("queued", "downloaded", "stemmed")
     for song in pending:
         enqueue_song(song["id"])
-    if pending:
-        log.info("Resumed %d unfinished track(s) into the pipeline queues", len(pending))
-    return len(pending)
+    # allin1 refinements queued behind a first cut (pipeline_worker): analysed
+    # tracks whose allin1 job was lost with the process.
+    from config import PRIORITY_BACKFILL
+    refine = [s for s in get_songs_by_status("analysed")
+              if (s.get("allin1_state") or "") == "queued"]
+    for song in refine:
+        enqueue_song(song["id"], priority=PRIORITY_BACKFILL)
+    total = len(pending) + len(refine)
+    if total:
+        log.info("Resumed %d unfinished track(s) into the pipeline queues", total)
+    return total
+
+
+def waiting(stage: str) -> int:
+    """How many items wait in one stage's queue (not counting running ones)."""
+    q = _QUEUES.get(stage)
+    return q.qsize() if q is not None else 0
 
 
 def queued_count() -> int:

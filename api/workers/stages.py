@@ -381,6 +381,20 @@ def require_analyzer() -> None:
 # something on an isolated vocal.
 _ESSENTIA_EXTRA_STEPS = {"vocals": ("melody",), "full": ("effnet",)}
 
+# What each separated stem is measured for. Its tempo, beat grid and key are
+# the mix's (Demucs stems are sample-aligned, and the matcher reads the mix's
+# anyway — matcher/match._with_full_bpm), so a stem runs no rhythm group and,
+# instead of the full tonal group (four key profiles, tuning, chords), only
+# "chroma": the per-frame HPCP the cut and the harmony measure read. Loudness,
+# timbre and bands stay the stem's own, because that is what is heard layered.
+_STEM_STEPS = {
+    "vocals": ("loudness", "spectral", "chroma", "melody"),
+    "instrumental": ("loudness", "spectral", "chroma"),
+    "bass": ("chroma",),
+}
+# The mix's groups a stem's features row takes as its own.
+_FROM_MIX = ("rhythm", "tonal")
+
 
 def _run_essentia(song_id: int, stem_type: str, path: Path, key: Optional[str],
                   on_progress: ProgressCb, extra_steps: tuple = (),
@@ -435,6 +449,7 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
     analysed: list[str] = []
     failed: list[str] = []
     fully_cached = True
+    mix_ess: dict = {}
     with _STAGE_GATES[gate], _timed(stage_grp, song_id,
                                     analyzer="essentia") as stage_info:
         for stem_type in stem_types:
@@ -455,28 +470,39 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
             from database import alignment
 
             pipeline = alignment.live_pipeline(song_id)
-            want_frames = (gate != "quick" and stem_type in _FRAME_STEMS
-                           and current_keep_frames())
+            # The quick tier keeps the mix's frames too: they depend on the mix
+            # alone, so the full analysis then serves tonal and spectral from
+            # the cache instead of decoding the mix and running both again,
+            # and the provisional cut reads them instead of a librosa pass.
+            want_frames = (stem_type in _FRAME_STEMS and current_keep_frames()
+                           and (gate != "quick" or stem_type == "full"))
+            stem_steps = _STEM_STEPS.get(stem_type)
+            harmony_step = "chroma" if stem_steps else "tonal"
             force: tuple = ()
             if want_frames:
                 frames_out = {}
                 if not timeseries.have(song_id, stem_type, pipeline, key):
                     # The payloads may be cached while the sidecar is not on
                     # disk (a new install, a cleared ./data, frames switched
-                    # back on). Re-run just the two steps that carry frames;
+                    # back on). Re-run just the steps that carry frames;
                     # everything else still comes from the cache.
-                    force = ("tonal", "spectral")
-            # The quick tier skips the extras (the melody, the tags): it
-            # exists to put BPM and key in the library in seconds. A
-            # tonal-only stem is there for its chroma frames.
-            if gate == "quick" or tonal_only:
-                extra: tuple = ()
+                    force = tuple(s for s in (harmony_step, "spectral")
+                                  if not stem_steps or s in stem_steps)
+            if stem_steps:
+                extra: tuple = tuple(s for s in stem_steps if s not in
+                                     ("rhythm", "tonal", "loudness", "spectral"))
+                only = stem_steps
+            elif gate == "quick":
+                # The quick tier skips the extras (the tags): it exists to
+                # put BPM and key in the library in seconds.
+                extra, only = (), ()
             else:
-                extra = _ESSENTIA_EXTRA_STEPS.get(stem_type, ())
+                extra, only = _ESSENTIA_EXTRA_STEPS.get(stem_type, ()), ()
             ess, ess_cached = _run_essentia(
                 song_id, stem_type, path, key, on_progress, extra,
-                frames_out=frames_out, force_steps=force,
-                only_steps=("tonal",) if tonal_only else ())
+                frames_out=frames_out, force_steps=force, only_steps=only)
+            if stem_type == "full":
+                mix_ess = ess or {}
             fully_cached = fully_cached and ess_cached
             if frames_out:
                 # The sung pitch rides along with the matrices that are
@@ -513,6 +539,12 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
                     analysed.append(stem_type)
                 continue
 
+            own = ess or {}
+            if stem_steps:
+                # The stem's tempo, grid and key are the mix's: read from this
+                # pass, else from the cache (a stem re-analysed on its own).
+                ess = {**own, **{g: (mix_ess.get(g) or _cached_mix_group(
+                    stem_paths, g)) for g in _FROM_MIX}}
             if not essentia_core_complete(ess):
                 # Never a half-filled row: the core columns are ranked against
                 # the library (readme §7). Retry re-runs it.
@@ -540,13 +572,28 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
                 log.exception("residual vocal ratio failed for %s/%s",
                               song_id, stem_type)
             upsert_features(song_id, stem_type, features.copy())
-            update_features_extras(song_id, stem_type, extras_from_essentia(ess, "essentia"))
+            # A stem's extras are its own measurements only: the mix's key
+            # strength, tuning or chords would be the mix's, not the stem's.
+            update_features_extras(song_id, stem_type, extras_from_essentia(
+                own if stem_steps else ess, "essentia"))
             analysed.append(stem_type)
         stage_info["failed"] = not analysed
         if analysed and fully_cached:
             # Nothing was decoded or computed: a projection, not an analysis.
             stage_info["grp"] = f"{stage_grp}.cached"
     return analysed, failed
+
+
+def _cached_mix_group(stem_paths: dict, group: str) -> Optional[dict]:
+    """One of the mix's cached Essentia payloads (rhythm, tonal), or None."""
+    fp = stem_paths.get("full")
+    if not fp or not Path(fp).exists():
+        return None
+    from analysis.cache import content_hash, lookup
+    from analysis.registry import GROUPS
+    key = content_hash(Path(fp))
+    hit = lookup(GROUPS[f"essentia.{group}"], key) if key else None
+    return hit if isinstance(hit, dict) else None
 
 
 def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
@@ -584,12 +631,11 @@ def do_analyze(song_id: int, on_progress: ProgressCb = None) -> dict:
 
     update_song_status(song_id, "analysed")
 
-    # Phase D: how well the separator did on this track. Runs after the loop so
-    # every stem path is known, and after sections exist where they do (the
-    # noise floor is measured in the parts with no voice in them).
+    # How well the separator did. On a first import the final sections do not
+    # exist yet, so this is a no-op and the allin1 stage (or the fallback cut)
+    # measures it; a re-analysis of a track with final sections measures here.
     try:
-        with _timed("quality", song_id, analyzer=ANALYZER):
-            _measure_stem_quality(song_id, stem_paths, on_progress)
+        _measure_stem_quality(song_id, stem_paths, on_progress)
     except Exception:  # noqa: BLE001
         log.exception("stem quality failed for %s", song_id)
 
@@ -664,7 +710,8 @@ def do_quick(song_id: int, on_progress: ProgressCb = None) -> dict:
     return {"analysed": analysed, "sections": result.get("section_count", 0)}
 
 
-def _load_frames(song_id: int, pipeline: Optional[str] = None):
+def _load_frames(song_id: int, pipeline: Optional[str] = None,
+                 stem_types: Optional[tuple] = None):
     """(TrackFrames, cache-key fragment) for this song's pipeline (its live
     one when not named), or (None, None).
 
@@ -682,7 +729,8 @@ def _load_frames(song_id: int, pipeline: Optional[str] = None):
         from database import alignment
 
         pipeline = pipeline or alignment.live_pipeline(song_id)
-        loaded = timeseries.load_track(song_id, pipeline)
+        loaded = (timeseries.load_track(song_id, pipeline) if stem_types is None
+                  else timeseries.load_track(song_id, pipeline, stem_types=stem_types))
         if loaded.stems.get("full") is None:
             return None, None
         return loaded, f"{timeseries.VERSION}:" + ",".join(sorted(loaded.stems))
@@ -754,8 +802,13 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
     # the stored path has no signal to beat-track, so it refuses rather than
     # decoding. No grid therefore means the librosa path — and
     # `hashes["frames"]` is absent, so the two never share a row.
-    track_frames, frames_key = (_load_frames(song_id) if use_stems and grid
-                                else (None, None))
+    # The quick tier (use_stems=False) reads the mix's frames alone: stem
+    # sidecars on disk may be the previous audio's.
+    if grid:
+        track_frames, frames_key = _load_frames(
+            song_id, stem_types=None if use_stems else ("full",))
+    else:
+        track_frames, frames_key = None, None
     if frames_key:
         hashes["frames"] = frames_key
     key = _combo_key(hashes, required=("full",))
@@ -800,15 +853,41 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
         store_phrases(song_id, inputs["vocals"], "essentia",
                       sorted({t for s in sections for t in (s.get("downbeats") or [])}),
                       sorted({t for s in sections for t in (s.get("beat_times") or [])}))
+    if provisional:
+        # The quick tier: no stems yet, so no stem hooks to cut and no
+        # separation to measure. The final sections do both.
+        return {"section_count": len(sections), "hooks": {}, "clips": {}}
+    out = _after_final_sections(song_id, stem_paths, on_progress, sections)
+    return {"section_count": len(sections), **out}
+
+
+def _after_final_sections(song_id: int, stem_paths: dict,
+                          on_progress: ProgressCb = None,
+                          sections: Optional[list] = None) -> dict:
+    """What waits for a track's final sections (allin1's, or the fallback
+    cut's): the stem quality — whose noise floor is read in the sections with
+    no voice — and the preview hooks, picked and cut so the first preview is
+    instant. Never raises."""
+    from database.models import get_sections
+    if sections is None:
+        sections = get_sections(song_id)
+    try:
+        _measure_stem_quality(song_id, stem_paths, on_progress, sections=sections)
+    except Exception:  # noqa: BLE001
+        log.exception("stem quality failed for %s", song_id)
     hooks = _persist_hooks(song_id, sections)
     # Cut the clips now so they are warm before the user reaches the ranked list
     # — a cold hook is the difference between an instant preview and a stall.
     # force: _persist_hooks has just moved the hook window, and the clip cache is
     # keyed by (song, stem), so without it a re-run keeps the previous 16 bars.
-    from api.workers.hook_worker import warm_hooks
-    with _timed("hooks", song_id):
-        clips = warm_hooks(song_id, force=True)
-    return {"section_count": len(sections), "hooks": hooks, "clips": clips}
+    clips = {}
+    try:
+        from api.workers.hook_worker import warm_hooks
+        with _timed("hooks", song_id):
+            clips = warm_hooks(song_id, force=True)
+    except Exception:  # noqa: BLE001
+        log.exception("hook clips failed for %s", song_id)
+    return {"hooks": hooks, "clips": clips}
 
 
 # ── Vocal phrases (readme §5.5) ───────────────────────────────────────────────
@@ -875,7 +954,8 @@ def store_phrases(song_id: int, vocals_path: Optional[Path], grid_source: str,
 ALLIN1_RETRIES = 1
 
 
-def do_allin1(song_id: int, on_progress: ProgressCb = None) -> dict:
+def do_allin1(song_id: int, on_progress: ProgressCb = None,
+              yield_to_stems: bool = False) -> dict:
     """Beats, downbeats and labelled sections from allin1 for the live
     pipeline's audio; then the sections measured as the Essentia cut is
     (sections_allin1) and the vocal phrases on allin1's bar grid.
@@ -886,7 +966,7 @@ def do_allin1(song_id: int, on_progress: ProgressCb = None) -> dict:
     before failing. Shares the stems gate, so it never runs beside Demucs."""
     from analysis import allin1_runner as runner
     from analysis.cache import cached
-    from config import (DEMUCS_THREADS, current_allin1_device, current_float,
+    from config import (ALLIN1_THREADS, current_allin1_device, current_float,
                         current_int, current_keep_analysis_stems)
     from database import alignment
 
@@ -947,7 +1027,7 @@ def do_allin1(song_id: int, on_progress: ProgressCb = None) -> dict:
                     t0 = time.perf_counter()
                     result = runner.run(full, sources if have4 else None,
                                         device=current_allin1_device(),
-                                        timings=timings, threads=DEMUCS_THREADS)
+                                        timings=timings, threads=ALLIN1_THREADS)
                     ms = (time.perf_counter() - t0) * 1000.0
                     summary = runner.summarise(result, content_hash=key,
                                                demixed_by=demixed_by, ms=ms)
@@ -960,9 +1040,18 @@ def do_allin1(song_id: int, on_progress: ProgressCb = None) -> dict:
                             attempt + 1, song_id, exc)
         raise last
 
+    from contextlib import ExitStack
+
+    from config import ALLIN1_PARALLEL
+    if yield_to_stems and not ALLIN1_PARALLEL:
+        _wait_for_stems_queue(on_progress)
     try:
-        with _STAGE_GATES["stems"], _STAGE_GATES["allin1"], \
-                _timed("allin1", song_id, analyzer="allin1") as tinfo:
+        with ExitStack() as gates:
+            # Beside Demucs only when allin1_parallel is on (config.py).
+            if not ALLIN1_PARALLEL:
+                gates.enter_context(_STAGE_GATES["stems"])
+            gates.enter_context(_STAGE_GATES["allin1"])
+            tinfo = gates.enter_context(_timed("allin1", song_id, analyzer="allin1"))
             tinfo["audio_secs"] = secs
             payload, hit, _ms = cached("allin1.analysis", key, _compute)
             if hit:
@@ -989,6 +1078,9 @@ def do_allin1(song_id: int, on_progress: ProgressCb = None) -> dict:
     n_phrases = store_phrases(song_id, _p("vocals"), "allin1", summary["downbeats"],
                               summary["beats"], grid_key=key)
 
+    if n_sections:
+        _after_final_sections(song_id, stem_paths, on_progress)
+
     if pipeline == "unified_4stem" and not current_keep_analysis_stems():
         _drop_analysis_sources(song_id, stem_paths)
 
@@ -996,6 +1088,18 @@ def do_allin1(song_id: int, on_progress: ProgressCb = None) -> dict:
     return {"bpm": summary.get("bpm"), "downbeats": len(summary["downbeats"]),
             "sections": n_sections, "phrases": n_phrases, "cached": hit,
             "peak_mb": peak["mb"]}
+
+
+def _wait_for_stems_queue(on_progress: ProgressCb = None,
+                          poll_secs: float = 5.0) -> None:
+    """Hold a backfill allin1 run while separations are waiting: allin1 and
+    Demucs share one gate, so a refinement taking it would delay another
+    track's first pairs by the length of an allin1 run (pairs first)."""
+    from api import queue_runner
+    while queue_runner.waiting("stems") > 0:
+        if on_progress:
+            on_progress(None, "allin1: waiting for the import's separations…")
+        time.sleep(poll_secs)
 
 
 def _allin1_sections(song_id: int, pipeline: str, stem_paths: dict, full: Path,
@@ -1099,36 +1203,64 @@ def _persist_hooks(song_id: int, sections: list) -> dict:
     return out
 
 
-def _measure_stem_quality(song_id: int, stem_paths: dict,
-                          on_progress: ProgressCb = None) -> None:
-    """Score each separated stem's quality and store it on the stems row.
+def _measure_stem_quality(song_id: int, stem_paths: Optional[dict] = None,
+                          on_progress: ProgressCb = None,
+                          sections: Optional[list] = None) -> bool:
+    """Score the vocal and instrumental stems' separation quality and store it
+    on their stems rows. Returns whether it ran.
+
+    Measured once the track's FINAL sections exist (allin1's or the fallback
+    cut's): the noise floor is read in the sections with no voice in them, and
+    the quick tier's provisional sections carry no vocal presence, so measuring
+    any earlier silently skipped it. Only vocals and instrumental are scored —
+    nothing reads the drums/bass/other numbers. Each stem's result is a cached
+    group over the stem, the mix, its complement and the quiet windows.
 
     Not status-bearing and never fatal: a stem with no quality number is one the
-    hard filter will not demote, which is the safe direction. The complementary
-    stem is passed so bleed can be measured, and the sections with no voice in
-    them are passed so the noise floor is measured where the stem should be
-    silent.
+    hard filter will not demote, which is the safe direction.
     """
+    import hashlib
+    import json
+
+    from analysis.cache import cached
     from analysis.quality import quiet_windows_for, stem_quality
     from database.models import get_sections, update_stem_quality
 
+    stem_paths = stem_paths if stem_paths is not None else _stem_paths(song_id)
     full = stem_paths.get("full")
     if not full or not Path(full).exists():
-        return
-    quiet = quiet_windows_for(get_sections(song_id))
+        return False
+    if sections is None:
+        sections = get_sections(song_id)
+    if not sections or any(s.get("provisional") for s in sections):
+        return False
+    quiet = quiet_windows_for(sections)
+    quiet_key = hashlib.blake2b(json.dumps(quiet).encode("utf-8"),
+                                digest_size=8).hexdigest()
 
     complements = {"vocals": "instrumental", "instrumental": "vocals"}
-    for stem_type in ("vocals", "instrumental", "drums", "bass", "other"):
-        fp = stem_paths.get(stem_type)
-        if not fp or not Path(fp).exists():
-            continue
-        if on_progress:
-            on_progress(None, f"Measuring {stem_type} stem quality…")
-        other = stem_paths.get(complements.get(stem_type, ""))
-        metrics = stem_quality(
-            Path(fp), Path(full),
-            other_path=Path(other) if other and Path(other).exists() else None,
+    ran = False
+    with _timed("quality", song_id, analyzer=ANALYZER):
+        for stem_type, other_type in complements.items():
+            fp = stem_paths.get(stem_type)
+            if not fp or not Path(fp).exists():
+                continue
+            if on_progress:
+                on_progress(None, f"Measuring {stem_type} stem quality…")
+            other = stem_paths.get(other_type)
+            other_p = Path(other) if other and Path(other).exists() else None
             # Only a vocal stem has a defensible "should be silent" region.
-            quiet_windows=quiet if stem_type == "vocals" else None,
-        )
-        update_stem_quality(song_id, stem_type, metrics)
+            windows = quiet if stem_type == "vocals" else None
+            hashes = _hash_inputs({"stem": Path(fp), "full": Path(full),
+                                   "other": other_p})
+            if windows:
+                hashes["quiet"] = quiet_key
+            key = _combo_key(hashes, required=("stem", "full"))
+            metrics, _hit, _ms = cached(
+                "librosa.quality", key,
+                lambda p=Path(fp), o=other_p, w=windows: stem_quality(
+                    p, Path(full), other_path=o, quiet_windows=w))
+            if metrics:
+                update_stem_quality(song_id, stem_type, metrics)
+                ran = True
+    return ran

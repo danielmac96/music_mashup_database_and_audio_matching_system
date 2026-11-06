@@ -42,6 +42,20 @@ def separator_tag() -> str:
 
 log = logging.getLogger(__name__)
 
+
+def demucs_device() -> str:
+    """cuda when the device setting asks for it AND torch sees a GPU, else cpu
+    — one setting (allin1_device) for both torch stages. Explicit, so a CUDA
+    build on a GPU-less host never tries the GPU."""
+    from config import current_allin1_device
+    if current_allin1_device() != "cuda":
+        return "cpu"
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:  # noqa: BLE001
+        return "cpu"
+
 # Optional progress callback. percent is None for status-only updates
 # (so the bar holds its last value while the message ticker keeps moving).
 ProgressCb = Optional[Callable[[Optional[int], str], None]]
@@ -88,7 +102,7 @@ def separate(song_id: int, title: str, audio_path: Path,
     tmp_dir = Path(tempfile.gettempdir()) / f"mashup_tmp_{song_id:04d}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     result = _run_demucs_four(audio_path, tmp_dir, {k: _p(k) for k in STEM_KINDS},
-                              on_progress, subtype="PCM_24")
+                              on_progress)
     if result is not None:
         result["separator"] = separator_tag()
     return result
@@ -97,7 +111,8 @@ def separate(song_id: int, title: str, audio_path: Path,
 def _run_demucs_four(audio_path: Path, tmp_dir: Path,
                      out_paths: Dict[str, Path],
                      on_progress: ProgressCb = None,
-                     subtype: Optional[str] = None) -> Optional[Dict]:
+                     source_subtype: Optional[str] = "PCM_16",
+                     sum_subtype: Optional[str] = "PCM_24") -> Optional[Dict]:
     """Full four-source Demucs: drums / bass / other / vocals.
 
     Also writes `instrumental` as the sum of drums+bass+other — the bed that
@@ -106,9 +121,12 @@ def _run_demucs_four(audio_path: Path, tmp_dir: Path,
     from api.workers._progress import parse_demucs, stream_subprocess
     log.info(f"Running Demucs ({DEMUCS_MODEL}, 4 stems) on: {audio_path.name}")
 
+    from config import current_float
     cmd = [
         sys.executable, "-m", "demucs",
         "-n", DEMUCS_MODEL,
+        "--overlap", str(current_float("demucs_overlap")),
+        "-d", demucs_device(),
         "--out", str(tmp_dir),
         str(audio_path),
     ]
@@ -156,26 +174,33 @@ def _run_demucs_four(audio_path: Path, tmp_dir: Path,
 
     out: Dict[str, Path] = {}
     try:
-        # Transcode each source to the configured format.
+        # Each source is read ONCE (float32) and kept for the instrumental sum.
+        # Demucs writes 16-bit WAV, so a source is stored as 16-bit FLAC —
+        # padding it to 24 bits added bytes, not precision. The summed
+        # instrumental has more resolution than its inputs and keeps
+        # ``sum_subtype``.
+        data_by_src: Dict[str, "np.ndarray"] = {}
+        sr = None
         for src in DEMUCS_SOURCES:
-            data, sr = sf.read(str(raw[src]))
-            sf.write(str(out_paths[src]), data, sr, subtype=subtype)
+            data, sr = sf.read(str(raw[src]), dtype="float32")
+            sf.write(str(out_paths[src]), data, sr, subtype=source_subtype)
             out[src] = out_paths[src]
+            if src in INSTRUMENTAL_SOURCES:
+                data_by_src[src] = data
 
         # instrumental = drums + bass + other, summed in float at the source rate.
         if on_progress:
             on_progress(96, "Summing instrumental…")
         mix = None
-        sr = None
         for src in INSTRUMENTAL_SOURCES:
-            data, sr = sf.read(str(raw[src]))
-            mix = data if mix is None else mix + data
+            d = data_by_src[src].astype(np.float64)
+            mix = d if mix is None else mix + d
         # Clip protection only: scaled down when (and only when) the sum would
         # clip, never normalised or limited otherwise.
         peak = float(np.max(np.abs(mix))) if mix is not None else 0.0
         if peak > 1.0:
             mix = mix / peak
-        sf.write(str(out_paths["instrumental"]), mix, sr, subtype=subtype)
+        sf.write(str(out_paths["instrumental"]), mix, sr, subtype=sum_subtype)
         out["instrumental"] = out_paths["instrumental"]
     except Exception:  # noqa: BLE001
         log.exception("failed writing four-stem output")

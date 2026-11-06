@@ -1118,9 +1118,13 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     inst   = [_with_full_bpm(i, full_by_song) for i in inst]
 
     code_index, key_table, shift_table, shift_known = _camelot_index([vocals, inst])
-    v_block = _prepare_block(vocals, code_index, lib_stats)
-    i_block = _prepare_block(inst, code_index, lib_stats)
-    if only is not None:
+    # The whole-library blocks serve only a full run: an incremental run builds
+    # its own (this track's rows against the rest), so building these too was
+    # two library-sized preparations thrown away on every per-track score.
+    if only is None:
+        v_block = _prepare_block(vocals, code_index, lib_stats)
+        i_block = _prepare_block(inst, code_index, lib_stats)
+    else:
         def _part(feats, inside):
             return [f for f in feats if (f["song_id"] in only) == inside]
         v_in, v_out, i_in = _part(vocals, True), _part(vocals, False), _part(inst, True)
@@ -1289,6 +1293,13 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                             upper_triangle=False, bpm_gate=model_bpm_gate,
                             weights=VOCAL_WEIGHTS,
                             on_block=_report(0, 30, "Scoring this track"))
+    # Every song whose sections the section search will read, in ONE query
+    # rather than one (or, under allin1, two) per partner song.
+    from database.models import sections_for_songs
+    _wanted = {t["song_id"] for t, _b, _sc in voi} | {b["song_id"] for _t, b, _sc in voi}
+    _wanted -= set(_sections_cache)
+    if _wanted:
+        _sections_cache.update(sections_for_songs(_wanted, db_path=db, engine=ENGINE))
     if use_model:
         _apply_model_scores(voi, bundle, _sections, lib_stats,
                             _report(30, 10, "Applying the learned model"),

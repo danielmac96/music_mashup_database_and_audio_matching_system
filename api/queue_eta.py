@@ -43,7 +43,7 @@ _FAILED = {"download": "downloading", "quick": "in quick analysis",
            "structure": "finding sections", "allin1": "finding downbeats (allin1)"}
 # Lifecycle order, the same tuple as api.workers.pipeline_worker.STAGES: the
 # cut runs after allin1, whose bar lines it sits on.
-_STAGE_ORDER = ("download", "quick", "stems", "analysis", "allin1", "structure")
+_STAGE_ORDER = ("download", "quick", "stems", "analysis", "structure", "allin1")
 
 
 def _parse(ts: Optional[str]) -> Optional[datetime]:

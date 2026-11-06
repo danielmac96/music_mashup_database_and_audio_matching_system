@@ -38,15 +38,19 @@ _RANK = {
     "analysed": 3,
 }
 
-# Queue stages in lifecycle order (readme §2).
+# Queue stages in lifecycle order (readme §2). Pairs first, refinement after:
 #   quick     the downloaded mix analysed and cut into provisional sections
 #             before Demucs, so BPM, key and a first structure land in seconds.
-#   allin1    follows the analysis: beats, downbeats and labelled sections from
-#             one neural pass over the four stems (readme §5.5).
-#   structure LAST, and only the fallback: the Essentia novelty cut runs when
-#             allin1 produced no sections. Non-status-bearing — matching works
-#             without sections, so a failure here never fails the track.
-STAGES = ("download", "quick", "stems", "analysis", "allin1", "structure")
+#   structure straight after the analysis: the Essentia novelty cut from the
+#             stored frames (no decode, ~0.2 s), so the track is scored on real
+#             stems minutes after its download. Non-status-bearing — matching
+#             works without sections, so a failure here never fails the track.
+#             It ends the pipeline job, and queues allin1 as a job of its own
+#             at backfill priority (allin1_state = 'queued').
+#   allin1    the refinement: beats, downbeats and labelled sections from one
+#             neural pass over the four stems (readme §5.5). It waits for the
+#             import's separations, then the track is re-scored on its sections.
+STAGES = ("download", "quick", "stems", "analysis", "structure", "allin1")
 
 _STAGE_MIN_RANK = {"download": 1, "stems": 2, "analysis": 3}
 
@@ -82,10 +86,16 @@ def next_stage(song_id: int) -> Optional[str]:
     for stage in ("stems", "analysis"):
         if rank < _STAGE_MIN_RANK[stage]:
             return stage
-    if _wants_allin1(row):
+    state = row["allin1_state"] if row else None
+    if state == "queued":
+        # The first cut has run (or a backfill asked): allin1 refines.
         return "allin1"
     if _wants_structure(song_id):
         return "structure"
+    if _wants_allin1(row):
+        # Sections already current and allin1 never ran (a re-analysis):
+        # nothing to cut first.
+        return "allin1"
     return None
 
 
@@ -132,8 +142,9 @@ def _structure_pass(job_id: str, song_id: int) -> None:
     library as stale. sections_are_current shares its definition with that
     badge, so the two can no longer disagree.
 
-    A track's sections are allin1's, measured in its own stage; this pass is
-    the fallback only (_wants_essentia_cut).
+    It runs straight after the analysis, before allin1 (pairs first), and is
+    skipped once allin1 has cut the track (_wants_essentia_cut), so when allin1
+    later fails it is already the fallback.
     """
     # Imported here rather than at module scope: bulk_worker resolves get_conn
     # per call so its db_path is not frozen at import, and this module's own
@@ -246,6 +257,34 @@ def _finalize(job_id: str, song_id: int) -> None:
     jobs.done(job_id, {"song_id": song_id, "status": _status(song_id)})
 
 
+def _queue_allin1_refinement(song_id: int) -> None:
+    """After the first cut and its pairs: allin1 as a job of its own, at
+    backfill priority, so the import's other tracks reach their pairs first.
+    Marked 'queued' so a restart resumes it (queue_runner.resume_pending) and
+    next_stage routes straight to it. Never raises."""
+    try:
+        row = _row(song_id)
+        if not row or row["status"] != "analysed" or (row["allin1_state"] or ""):
+            return
+        from config import PRIORITY_BACKFILL
+        from database.alignment import set_allin1_state
+        from api import queue_runner
+        set_allin1_state(song_id, "queued")
+        queue_runner.enqueue_song(song_id, priority=PRIORITY_BACKFILL)
+    except Exception:  # noqa: BLE001
+        log.exception("could not queue allin1 for song %s", song_id)
+
+
+def _job_priority(job_id: str) -> int:
+    from config import PRIORITY_INGEST
+    return int((jobs.get(job_id) or {}).get("priority", PRIORITY_INGEST))
+
+
+def _backfill_priority() -> int:
+    from config import PRIORITY_BACKFILL
+    return int(PRIORITY_BACKFILL)
+
+
 def _mark_non_fatal_failure(song_id: int, stage: str, error: str) -> None:
     if stage == "quick":
         from database.models import set_quick_state
@@ -282,6 +321,7 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
         jobs.update(job_id, status="running", song_id=song_id, stage="structure")
         _structure_pass(job_id, song_id)
         _finalize(job_id, song_id)
+        _queue_allin1_refinement(song_id)
         return "done"
 
     jobs.update(job_id, status="running", song_id=song_id, stage=stage,
@@ -299,8 +339,12 @@ def run_stage(job_id: str, song_id: int, stage: str) -> str:
             stages.do_stems(song_id, jobs.progress_updater(
                 job_id, "stems", stage_key="stems"))
         elif stage == "allin1":
+            # A refinement queued behind an import waits for that import's
+            # separations, so every track reaches its first pairs before any
+            # track's allin1 takes the cores (pairs first, readme §2).
             stages.do_allin1(song_id, jobs.progress_updater(
-                job_id, "allin1", stage_key="allin1"))
+                job_id, "allin1", stage_key="allin1"),
+                yield_to_stems=_job_priority(job_id) >= _backfill_priority())
         else:
             stages.do_analyze(song_id, jobs.progress_updater(
                 job_id, "analyze", stage_key="analysis"))
