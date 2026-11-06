@@ -46,12 +46,17 @@ log = logging.getLogger(__name__)
 
 
 class _Entry:
-    __slots__ = ("y", "sr", "memo")
+    __slots__ = ("y", "sr", "memo", "slices")
 
     def __init__(self, y: np.ndarray, sr: int):
         self.y = y
         self.sr = sr
         self.memo: dict = {}
+        # n -> the entry for y[:n]. One view per length, so a caller asking for
+        # the first N seconds twice gets the same array — and the transforms
+        # memoised against it (quality's power spectra on a track longer than
+        # its 240 s window were recomputed on every call before).
+        self.slices: dict = {}
 
 
 _LOCK = threading.Lock()
@@ -88,6 +93,8 @@ def _register(key: tuple, entry: _Entry) -> None:
     while len(_ENTRIES) > cap:
         _old_key, old = _ENTRIES.popitem(last=False)
         _BY_ID.pop(id(old.y), None)
+        for child in old.slices.values():
+            _BY_ID.pop(id(child.y), None)
 
 
 def load_mono(path, sr: int = 22050, duration: Optional[float] = None) -> np.ndarray:
@@ -105,8 +112,22 @@ def load_mono(path, sr: int = 22050, duration: Optional[float] = None) -> np.nda
     if duration is not None:
         n = int(round(float(duration) * sr))
         if 0 <= n < len(y):
-            return y[:n]
+            return _slice(y, n)
     return y
+
+
+def _slice(y: np.ndarray, n: int) -> np.ndarray:
+    """y[:n], the same view every time while ``y`` is cached."""
+    with _LOCK:
+        parent = _BY_ID.get(id(y))
+        if parent is None or parent.y is not y:
+            return y[:n]
+        child = parent.slices.get(n)
+        if child is None:
+            child = _Entry(y[:n], parent.sr)
+            parent.slices[n] = child
+            _BY_ID[id(child.y)] = child
+        return child.y
 
 
 def _get_full(key: tuple, path: Path, sr: int) -> np.ndarray:

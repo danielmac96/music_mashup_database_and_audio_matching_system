@@ -17,12 +17,14 @@ export const STAGES = [
   ["quick", "Quick"],
   ["stems", "Stems"],
   ["analysis", "Analyse"],
-  // allin1 (readme §5.5): downbeats and labelled sections, after the analysis.
-  ["allin1", "allin1"],
-  // The cut, LAST, and only the fallback when allin1 made no sections. Same
-  // order as pipeline_worker.STAGES, so the Timeline
-  // reads left to right in the order the stages actually run.
+  // The first cut, straight after the analysis, so the track is scored on
+  // its stems at once (pairs first, readme §2).
   ["structure", "Structure"],
+  // allin1 (readme §5.5): the refinement — downbeats and labelled sections,
+  // queued at backfill priority, then a re-score. Same order as
+  // pipeline_worker.STAGES, so the Timeline reads left to right in the order
+  // the stages actually run.
+  ["allin1", "allin1"],
 ];
 
 const ACTIVE = new Set(["queued", "running"]);

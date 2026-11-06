@@ -185,6 +185,7 @@ class SaveSettingsRequest(BaseModel):
     timing_weight: Optional[float] = None
     phrase_gap_secs: Optional[float] = None
     allin1_max_secs: Optional[float] = None
+    demucs_overlap: Optional[float] = None
 
 
 def _checked_weights(raw: dict, keys, name: str) -> dict:
@@ -258,7 +259,7 @@ def save_settings(req: SaveSettingsRequest) -> dict:
     for name in ("effort_weight", "section_weight", "stem_quality_min",
                  "bpm_max_diff", "key_min_score", "bpm_max_diff_model",
                  "timing_tol_ms", "timing_weight", "phrase_gap_secs",
-                 "allin1_max_secs"):
+                 "allin1_max_secs", "demucs_overlap"):
         value = getattr(req, name)
         if value is not None:
             lo, hi = config._TUNABLE_FLOATS[name][2:]

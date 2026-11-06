@@ -201,6 +201,10 @@ YTDLP_POSTARGS = [
 # ── Stem separation ───────────────────────────────────────────────────────────
 # htdemucs: Hybrid Transformer Demucs, four sources (drums/bass/other/vocals).
 DEMUCS_MODEL = "htdemucs"
+# How much consecutive Demucs windows overlap (demucs' own default). Lower is
+# faster (0.1 ≈ 15 % less work) at a small separation-quality cost: listen to an
+# A/B before moving it. Live (demucs_overlap).
+DEMUCS_OVERLAP = 0.25
 
 # Stems are written as FLAC: lossless, and roughly half the size of WAV. At
 # ~900 tracks x 4 stems that is the difference between ~160 GB and ~80 GB.
@@ -280,7 +284,11 @@ def current_essentia_rhythm_method() -> str:
 # when allin1 produced none (failed, skipped or found nothing).
 PIPELINE = "unified_4stem"
 ENGINE = "allin1"
-ALLIN1_MODEL = "harmonix-all"         # the 8-fold ensemble allin1 ships
+# One fold of allin1's 8-fold ensemble: ~1/8 of the inference (the ensemble's
+# median 468 s a track was 79 % of the allin1 stage). harmonix-all — the
+# ensemble — stays one setting away (allin1_model), and
+# scripts/bench_allin1_models.py measures what the fold gives up against it.
+ALLIN1_MODEL = "harmonix-fold0"
 # What allin1 1.1.0 publishes: the ensemble and its eight individual folds.
 ALLIN1_MODELS = ("harmonix-all",) + tuple(f"harmonix-fold{i}" for i in range(8))
 ALLIN1_DEVICES = ("cpu", "cuda")
@@ -289,13 +297,14 @@ ALLIN1_DEVICES = ("cpu", "cuda")
 def current_allin1_model() -> str:
     """Which allin1 checkpoint to run, re-read live.
 
-    ``harmonix-all`` is the 8-fold ensemble — measured at 330–1080 s of
-    inference a track on this library (27 tracks, 2026-10-24/25, mean 662 s),
-    roughly 8x a single fold's. A fold is chosen only on the evidence of
-    scripts/bench_allin1_models.py (downbeat agreement and segment labels
-    against the ensemble), because the 25 ms timing gate rests on these
-    downbeats. Validated against ALLIN1_MODELS, so a name allin1 does not ship
-    is refused by the settings API rather than failing ten minutes in."""
+    The default is one fold (``harmonix-fold0``). ``harmonix-all`` is the
+    8-fold ensemble — measured at a median 468 s of inference a track (27
+    tracks, 2026-10-24/25), roughly 8x a fold's; set it to trade time for the
+    ensemble's agreement. scripts/bench_allin1_models.py measures the
+    difference (downbeat agreement, boundaries, labels), which matters because
+    the 25 ms timing gate rests on these downbeats. Validated against
+    ALLIN1_MODELS, so a name allin1 does not ship is refused by the settings
+    API rather than failing ten minutes in."""
     return _live_choice("MASHUP_ALLIN1_MODEL", "allin1_model",
                         ALLIN1_MODELS, ALLIN1_MODEL)
 
@@ -487,14 +496,21 @@ ENRICH_WORKERS   = _resolve_int("MASHUP_ENRICH_WORKERS", "enrich_workers", 5)
 # in sequence on 4 cores, measured), so a process pool would buy little and
 # cost the shared decode cache.
 QUICK_WORKERS    = _resolve_int("MASHUP_QUICK_WORKERS", "quick_workers", 2)
-# allin1 (beats, downbeats, labelled sections): one torch model held per worker,
-# and it shares the stems gate so it never runs beside Demucs (both want every
-# core on CPU).
+# allin1 (beats, downbeats, labelled sections): one torch model held per worker.
 ALLIN1_WORKERS   = _resolve_int("MASHUP_ALLIN1_WORKERS", "allin1_workers", 1)
 # Threads a Demucs run may use. Left alone, torch takes every core and the
 # quick tier stalls behind it; one core is kept back for it by default.
 DEMUCS_THREADS   = _resolve_int("MASHUP_DEMUCS_THREADS", "demucs_threads",
                                 max(1, (os.cpu_count() or 2) - 1))
+# By default allin1 shares the stems gate, so it never runs beside Demucs (both
+# want every core on CPU). On, it takes its own gate and ALLIN1_THREADS: the
+# next song's separation overlaps this song's allin1. Worth it only with the
+# threads split (e.g. half the cores each) and the memory for both (~3.3 GB
+# for allin1 plus Demucs's own) — off until measured on the machine.
+ALLIN1_PARALLEL  = str(_resolve("MASHUP_ALLIN1_PARALLEL", "allin1_parallel", "")[0]
+                       ).strip().lower() in ("1", "true", "on", "yes")
+ALLIN1_THREADS   = _resolve_int("MASHUP_ALLIN1_THREADS", "allin1_threads",
+                                DEMUCS_THREADS)
 
 # Selecting a track moves it and this many of its likeliest unprocessed partners
 # (tempo + key against its quick-tier analysis) ahead of the import queue.
@@ -638,6 +654,7 @@ _TUNABLE_FLOATS = {
     "timing_weight":     ("MASHUP_TIMING_WEIGHT", "TIMING_WEIGHT", 0.0, 1.0),
     "phrase_gap_secs":   ("MASHUP_PHRASE_GAP_SECS", "PHRASE_GAP_SECS", 0.1, 4.0),
     "allin1_max_secs":   ("MASHUP_ALLIN1_MAX_SECS", "ALLIN1_MAX_SECS", 30.0, 7200.0),
+    "demucs_overlap":    ("MASHUP_DEMUCS_OVERLAP", "DEMUCS_OVERLAP", 0.0, 0.9),
 }
 _TUNABLE_INTS = {
     "allin1_mem_budget_mb": ("MASHUP_ALLIN1_MEM_BUDGET_MB", "ALLIN1_MEM_BUDGET_MB",

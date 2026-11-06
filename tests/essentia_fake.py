@@ -51,6 +51,12 @@ def _tonal(y, sr, hop):
     return key_from_chroma(frames.chroma_cqt(y, sr, hop).mean(axis=1))
 
 
+def _chroma(y, sr, hop):
+    from analysis import frames
+    return {"hpcp": [round(float(v), 5)
+                     for v in frames.chroma_cqt(y, sr, hop).mean(axis=1)]}
+
+
 def _loudness(y, sr, hop):
     from analysis import frames
     return {"loudness_rms": float(round(float(frames.rms(y, hop).mean()), 6))}
@@ -86,7 +92,12 @@ def analyze_file_essentia(path, cache=None, timings: Optional[dict] = None,
     from analysis.decode import load_mono
     from config import HOP_LENGTH, SAMPLE_RATE
 
-    wanted = [s for s in (only_steps or CORE)]
+    # The real function's step list: the core four plus the extras asked for,
+    # narrowed by only_steps. The stand-in measures the core and "chroma";
+    # the melody and the tags are never produced (absent, as when they fail).
+    wanted = list(CORE) + [s for s in extra_steps if s == "chroma"]
+    if only_steps:
+        wanted = [s for s in wanted if s in only_steps]
     out: dict = {}
     cached_steps = []
     if cache is not None:
@@ -115,6 +126,7 @@ def analyze_file_essentia(path, cache=None, timings: Optional[dict] = None,
         "tonal": lambda: _tonal(y, sr, hop),
         "loudness": lambda: _loudness(y, sr, hop),
         "spectral": lambda: _spectral(y, sr, hop, path),
+        "chroma": lambda: _chroma(y, sr, hop),
     }
     for name in todo:
         t1 = time.perf_counter()

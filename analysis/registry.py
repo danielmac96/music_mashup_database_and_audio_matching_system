@@ -49,6 +49,12 @@ def _n_mfcc() -> int:
     return N_MFCC
 
 
+def _stem_quality_params() -> dict:
+    from analysis.quality import BAND_EDGES, HF_BAND_HZ, MAX_SECS, QUALITY_SR
+    return {"sr": QUALITY_SR, "edges": list(BAND_EDGES), "hf": HF_BAND_HZ,
+            "max_secs": MAX_SECS}
+
+
 def _residual_params() -> dict:
     from analysis.quality import MAX_SECS, QUALITY_SR
     return {"sr": QUALITY_SR, "max_secs": MAX_SECS}
@@ -131,6 +137,9 @@ def _phrase_params() -> dict:
 
 
 _GROUPS = (
+    FeatureGroup("librosa.quality", 1, "librosa", 2, _stem_quality_params,
+                 "one stem's separation quality: bleed against its complement, "
+                 "HF loss against the mix, noise floor in its quiet sections"),
     FeatureGroup("librosa.residual", 1, "librosa", 2, _residual_params,
                  "residual vocal ratio of a bed (vocals + mix)"),
     # v2 (phase 4): sections also carry vocal_activity, per-stem band
@@ -153,7 +162,8 @@ _GROUPS = (
                  _essentia_params(profile=_key_profile, voters=_key_voters),
                  "key per profile + cross-profile consensus, tuning, chords, "
                  "12-bin HPCP", step="tonal"),
-    FeatureGroup("essentia.loudness", 1, "essentia", 1, _essentia_params(),
+    # v2: energies from float32 dot products (same values to the rounding).
+    FeatureGroup("essentia.loudness", 2, "essentia", 1, _essentia_params(),
                  "EBU R128 LUFS + LRA, true peak, ReplayGain, dynamic complexity, "
                  "crest, stereo width, frame RMS", step="loudness"),
     FeatureGroup("essentia.spectral", 1, "essentia", 1,
@@ -161,6 +171,9 @@ _GROUPS = (
                  "MFCC, centroid/rolloff/ZCR, flux, flatness, HFC, contrast, "
                  "complexity, moments, dissonance, 8- and 3-band energy, envelope",
                  step="spectral"),
+    FeatureGroup("essentia.chroma", 1, "essentia", 1, _essentia_params(),
+                 "stems only: TonalExtractor's per-frame HPCP and its 12-bin "
+                 "mean, without the key panel, tuning or chords", step="chroma"),
     FeatureGroup("essentia.melody", 1, "essentia", 2,
                  _essentia_params(hop=128, frame=1024, step=0.05),
                  "vocal stem only: sung pitch (PitchMelodia), 50 ms f0 curve, "

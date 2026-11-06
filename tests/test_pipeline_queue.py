@@ -225,11 +225,11 @@ def test_structure_failure_is_non_fatal(env, monkeypatch):
 
 
 def test_stage_queues_route_track_through_pipeline(env, monkeypatch):
-    """A queued track hops download → quick → stems → analysis → allin1 →
-    structure queues and completes. Queues are drained synchronously here (no worker
-    threads) so the routing logic is tested without daemon-thread/monkeypatch
-    lifetime hazards. Structure is its own queue since the cut moved after
-    allin1 (whose bar lines it sits on)."""
+    """A queued track hops download → quick → stems → analysis → structure
+    and its job completes with pairs; allin1 then runs as a job of its own at
+    backfill priority (pairs first). Queues are drained synchronously here (no
+    worker threads) so the routing logic is tested without
+    daemon-thread/monkeypatch lifetime hazards."""
     models = env
     _mock_stages(monkeypatch)
     import api.queue_runner as queue_runner
@@ -241,7 +241,7 @@ def test_stage_queues_route_track_through_pipeline(env, monkeypatch):
     jid = queue_runner.enqueue_song(sid)
     assert jobs.get(jid)["stages"]["download"]["state"] == "waiting"
 
-    for expected in ("download", "quick", "stems", "analysis", "allin1", "structure"):
+    for expected in ("download", "quick", "stems", "analysis", "structure"):
         job_id, song_id = queue_runner.take(expected, block=False)
         assert song_id == sid
         outcome = pw.run_stage(job_id, song_id, expected)
@@ -252,6 +252,14 @@ def test_stage_queues_route_track_through_pipeline(env, monkeypatch):
     assert models.get_song(sid)["status"] == "analysed"
     assert len(models.get_sections(sid)) == 1
     assert jobs.get(jid)["status"] == "completed"
+
+    # The refinement: one allin1 job, queued at backfill priority.
+    import config
+    assert models.get_song(sid)["allin1_state"] == "queued"
+    assert queue_runner.waiting("allin1") == 1
+    a1_job, song_id = queue_runner.take("allin1", block=False)
+    assert jobs.get(a1_job)["priority"] == config.PRIORITY_BACKFILL
+    assert pw.run_stage(a1_job, song_id, "allin1") == "done"
     assert queue_runner.queued_count() == 0
 
 
@@ -295,8 +303,9 @@ def test_job_timeline_records_every_stage(env, monkeypatch):
     pw.run(jid, sid)
 
     stages = _stages(jid)
-    assert list(stages) == ["download", "quick", "stems", "analysis", "allin1",
-                            "structure"]
+    # The job ends at the first cut (pairs first); allin1 is a job of its own.
+    assert list(stages) == ["download", "quick", "stems", "analysis", "structure"]
+    assert models.get_song(sid)["allin1_state"] == "queued"
     for name, rec in stages.items():
         assert rec["state"] == "done", name
         assert rec["started_at"] <= rec["finished_at"], name
@@ -545,3 +554,22 @@ def test_a_row_with_no_url_is_reported_not_saved(env, monkeypatch):
     assert out["unresolvable_count"] == 2
     assert [r["title"] for r in out["unresolvable"]] == ["A", "B"]
     assert models.get_all_songs() == []
+
+
+def test_a_restart_resumes_queued_allin1_refinements(env, monkeypatch):
+    """An analysed track whose allin1 refinement was queued when the server
+    stopped goes back into the allin1 queue, at backfill priority."""
+    models = env
+    import config
+    import api.queue_runner as queue_runner
+    importlib.reload(queue_runner)
+    import api.jobs as jobs
+    from database.alignment import set_allin1_state
+
+    sid = models.upsert_song(title="T", artist="A", source_url="http://x/r",
+                             status="analysed")
+    set_allin1_state(sid, "queued")
+    assert queue_runner.resume_pending() == 1
+    job_id, song_id = queue_runner.take("allin1", block=False)
+    assert song_id == sid
+    assert jobs.get(job_id)["priority"] == config.PRIORITY_BACKFILL

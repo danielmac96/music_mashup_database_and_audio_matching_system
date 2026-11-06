@@ -375,6 +375,13 @@ def _write_demix(stems: Dict[str, Path], out_dir: Path) -> Dict[str, float]:
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.perf_counter()
     for src in SOURCES:
+        info = sf.info(str(stems[src]))
+        if info.samplerate == SAMPLE_RATE and info.subtype == "PCM_16":
+            # Our sources are 16-bit FLAC at 44.1 kHz (stems/separate.py): copy
+            # the samples as integers, no float round trip, no clip pass.
+            data, _sr = sf.read(str(stems[src]), dtype="int16", always_2d=True)
+            sf.write(str(out_dir / f"{src}.wav"), data, SAMPLE_RATE, subtype="PCM_16")
+            continue
         data, sr = sf.read(str(stems[src]), dtype="float32", always_2d=True)
         if sr != SAMPLE_RATE:
             from scipy.signal import resample_poly

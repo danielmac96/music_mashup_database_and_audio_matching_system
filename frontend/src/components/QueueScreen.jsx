@@ -32,7 +32,7 @@ const PHASE_COLOR = {
 // run with nothing on the screen saying so.
 const POOLS = [
   ["download", "Download"], ["quick", "Quick analysis"], ["stems", "Stems"],
-  ["analysis", "Analyse"], ["allin1", "allin1"], ["structure", "Sections"],
+  ["analysis", "Analyse"], ["structure", "Sections"], ["allin1", "allin1"],
 ];
 const STAGE_LABEL = Object.fromEntries(STAGES);
 const FAILED_AT = {

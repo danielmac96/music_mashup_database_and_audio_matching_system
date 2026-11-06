@@ -304,7 +304,9 @@ def test_model_comes_from_the_live_setting(monkeypatch, tmp_path):
 
     monkeypatch.setattr(config, "settings_path", lambda: tmp_path / "none.json")
     monkeypatch.delenv("MASHUP_ALLIN1_MODEL", raising=False)
-    assert runner.model_name() == "harmonix-all"
+    assert runner.model_name() == "harmonix-fold0"        # one fold by default
+    monkeypatch.setenv("MASHUP_ALLIN1_MODEL", "harmonix-all")
+    assert runner.model_name() == "harmonix-all"          # the ensemble, one setting away
     monkeypatch.setenv("MASHUP_ALLIN1_MODEL", "harmonix-fold3")
     assert config.current_allin1_model() == "harmonix-fold3"
     assert runner.model_name() == "harmonix-fold3"
@@ -313,7 +315,7 @@ def test_model_comes_from_the_live_setting(monkeypatch, tmp_path):
     # a name allin1 does not ship falls back rather than failing a 10-minute
     # inference on a checkpoint that cannot load.
     monkeypatch.setenv("MASHUP_ALLIN1_MODEL", "harmonix-fold9")
-    assert runner.model_name() == "harmonix-all"
+    assert runner.model_name() == "harmonix-fold0"
 
 
 def test_registry_params_track_the_live_model(monkeypatch, tmp_path):
@@ -432,7 +434,7 @@ def test_activations_survive_the_database(env):
     assert len(got["downbeat_conf_beats"]) == len(s["beats"])
     assert got["segment_label_probs"] == s["segment_label_probs"]
     assert got["segment_labels_order"] == s["segment_labels_order"]
-    assert got["model"] == "harmonix-all"
+    assert got["model"] == "harmonix-fold0"
 
 
 def test_the_beat_curves_are_counted_in_the_storage_budget(env):

@@ -58,8 +58,10 @@ from analysis.timeseries import CURVE_ROWS, STEP_SECS, StemFrames
 log = logging.getLogger(__name__)
 
 STEPS = ("rhythm", "tonal", "loudness", "spectral")
-# Steps a caller asks for by name, on the stems they make sense for.
-EXTRA_STEPS = ("melody", "effnet")
+# Steps a caller asks for by name, on the stems they make sense for. "chroma"
+# is the tonal group's per-frame HPCP without the key panel, tuning or chords:
+# what a stem is measured for, since its tempo and key are the mix's.
+EXTRA_STEPS = ("melody", "effnet", "chroma")
 
 # PitchMelodia on the 22.05 kHz signal: hop 128 is 5.8 ms, and the stored curve
 # is the median of each 50 ms of voiced frames — fine enough for a sung note,
@@ -332,32 +334,10 @@ def group_rhythm(sig: Signals, method: str = "degara") -> dict:
     }
 
 
-def group_tonal(sig: Signals, primary: str = "edma",
-                frames_out: Optional[dict] = None) -> dict:
+def _tonal_extractor(sig: Signals, frames_out: Optional[dict] = None):
+    """TonalExtractor's outputs and its mean HPCP folded to 12 bins from C,
+    with the per-frame chroma handed to ``frames_out`` when asked."""
     import essentia.standard as es
-    from analysis.analyze import CAMELOT, KEY_NAMES
-
-    profiles = list(dict.fromkeys([primary, *KEY_PROFILES]))
-    candidates: Dict[str, list] = {}
-    for p in profiles:
-        try:
-            k, scale, strength = es.KeyExtractor(profileType=p, sampleRate=SR_FULL)(sig.mono44)
-        except RuntimeError:
-            continue                       # a profile this build does not know
-        name = normalise_key(k)
-        if name:
-            candidates[p] = [name, str(scale), round(float(strength), 4)]
-    if primary not in candidates:
-        raise RuntimeError(f"key profile {primary!r} produced no key")
-    key, mode, strength = candidates[primary]
-    # Confidence: the primary profile's strength × the share of profiles that
-    # name the same key and mode. One profile's strength alone is high for
-    # most records; agreement across differently-trained profiles is what
-    # separates a clear key from a coin toss.
-    agree = sum(1 for c in candidates.values() if c[0] == key and c[1] == mode)
-    consensus = agree / len(candidates)
-
-    tuning = es.TuningFrequencyExtractor()(sig.mono44)
     tonal = es.TonalExtractor()(sig.mono44)
     names = es.TonalExtractor().outputNames()
     t = dict(zip(names, tonal))
@@ -390,6 +370,46 @@ def group_tonal(sig: Signals, primary: str = "edma",
                 frames_out["chroma"] = np.ascontiguousarray(chroma)
                 frames_out["chroma_step"] = STEP_SECS
 
+    return t, hpcp_mean
+
+
+def group_chroma(sig: Signals, frames_out: Optional[dict] = None) -> dict:
+    """A stem's harmony alone: TonalExtractor's per-frame HPCP (the chroma the
+    cut and matcher/harmony.py read) and its mean. No key panel, tuning or
+    chords — a stem's key is the mix's (matcher/match._with_full_bpm), and the
+    four KeyExtractor passes plus tuning were the bulk of the tonal group."""
+    _t, hpcp_mean = _tonal_extractor(sig, frames_out)
+    return {"hpcp": [round(float(v), 5) for v in hpcp_mean]}
+
+
+def group_tonal(sig: Signals, primary: str = "edma",
+                frames_out: Optional[dict] = None) -> dict:
+    import essentia.standard as es
+    from analysis.analyze import CAMELOT, KEY_NAMES
+
+    profiles = list(dict.fromkeys([primary, *KEY_PROFILES]))
+    candidates: Dict[str, list] = {}
+    for p in profiles:
+        try:
+            k, scale, strength = es.KeyExtractor(profileType=p, sampleRate=SR_FULL)(sig.mono44)
+        except RuntimeError:
+            continue                       # a profile this build does not know
+        name = normalise_key(k)
+        if name:
+            candidates[p] = [name, str(scale), round(float(strength), 4)]
+    if primary not in candidates:
+        raise RuntimeError(f"key profile {primary!r} produced no key")
+    key, mode, strength = candidates[primary]
+    # Confidence: the primary profile's strength × the share of profiles that
+    # name the same key and mode. One profile's strength alone is high for
+    # most records; agreement across differently-trained profiles is what
+    # separates a clear key from a coin toss.
+    agree = sum(1 for c in candidates.values() if c[0] == key and c[1] == mode)
+    consensus = agree / len(candidates)
+
+    tuning = es.TuningFrequencyExtractor()(sig.mono44)
+    t, hpcp_mean = _tonal_extractor(sig, frames_out)
+
     return {
         "key": key, "mode": mode,
         "camelot": CAMELOT.get((KEY_NAMES.index(key), mode), "?"),
@@ -421,11 +441,19 @@ def group_loudness(sig: Signals) -> dict:
     n = len(y) // HOP
     frame_rms = np.sqrt((y[: n * HOP].reshape(n, HOP).astype(np.float64) ** 2).mean(axis=1)) \
         if n else np.zeros(0)
-    peak = float(np.max(np.abs(sig.stereo))) if sig.stereo.size else 0.0
-    rms_all = float(np.sqrt(np.mean(sig.mono44.astype(np.float64) ** 2))) if sig.mono44.size else 0.0
-    mid = sig.stereo.mean(axis=1).astype(np.float64)
-    side = (sig.stereo[:, 0] - sig.stereo[:, 1]).astype(np.float64) / 2.0
-    e_mid, e_side = float(np.sum(mid ** 2)), float(np.sum(side ** 2))
+    # Energies as dot products of the float32 signals: the same sums without
+    # three full-length float64 copies (they were half this group's time).
+    st = sig.stereo
+    peak = float(max(st.max(), -st.min())) if st.size else 0.0
+    m44 = sig.mono44
+    rms_all = float(np.sqrt(np.dot(m44, m44) / m44.size)) if m44.size else 0.0
+    if st.size:
+        left, right = np.ascontiguousarray(st[:, 0]), np.ascontiguousarray(st[:, 1])
+        ll, rr, lr = (float(np.dot(left, left)), float(np.dot(right, right)),
+                      float(np.dot(left, right)))
+        e_mid, e_side = (ll + 2 * lr + rr) / 4.0, (ll - 2 * lr + rr) / 4.0
+    else:
+        e_mid = e_side = 0.0
 
     return {
         "loudness_rms": float(round(float(frame_rms.mean()), 6)) if n else None,
@@ -740,6 +768,7 @@ def _runners(frames_out: Optional[dict] = None) -> Dict[str, Callable[[Signals],
         "spectral": lambda s: group_spectral(s, N_MFCC, frames_out=frames_out),
         "melody": group_melody,
         "effnet": group_effnet,
+        "chroma": lambda s: group_chroma(s, frames_out=frames_out),
     }
 
 
