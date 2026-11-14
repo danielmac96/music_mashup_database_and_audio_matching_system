@@ -292,7 +292,8 @@ def hpcp_frames_to_chroma(hpcp_frames: np.ndarray) -> Optional[np.ndarray]:
 
 def group_rhythm(sig: Signals, method: str = "degara") -> dict:
     import essentia.standard as es
-    from analysis.analyze import _pick_beat_phase, beat_grid_confidence
+    from analysis.analyze import (_pick_beat_phase, beat_grid_confidence,
+                                  fitted_bpm)
 
     bpm, ticks, conf, _estimates, intervals = es.RhythmExtractor2013(method=method)(sig.mono44)
     ticks = np.asarray(ticks, dtype=float)
@@ -322,8 +323,18 @@ def group_rhythm(sig: Signals, method: str = "degara") -> dict:
     onset_rate = _r(onset_rate_from_envelope(env, sig.secs), 3)
     dance = _r(es.Danceability(sampleRate=SR_FULL)(sig.mono44)[0], 4)
 
+    # The STORED tempo is a line fitted through the ticks, not RhythmExtractor's
+    # own estimate (readme §5.4, §7). The estimate is a tempogram-style number
+    # good to about a tenth of a BPM; the stretch ratio built from two of them
+    # (matcher.match.compute_stretch_factor) is then judged, bar line by bar
+    # line, against a 25 ms tolerance over a 60 s overlap, where a 0.1 % ratio
+    # error is already 60 ms of drift. fitted_bpm keeps the fit only inside the
+    # estimate's own octave (±6 %), so a half/double-time read is NOT quietly
+    # re-folded here — tempo_hint and the Library's ×2/÷2 chip still see the raw
+    # estimate, which stays in bpm_candidates below.
+    fit = fitted_bpm(ticks, float(bpm))
     return {
-        "bpm": float(round(float(bpm), 2)),
+        "bpm": float(fit) if fit else float(round(float(bpm), 2)),
         "bpm_confidence": float(grid_conf),
         "beat_times": [round(float(t), 4) for t in ticks],
         "beat_phase": int(phase),

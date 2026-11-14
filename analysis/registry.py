@@ -153,9 +153,15 @@ _GROUPS = (
                  "sections: boundaries, labels, per-section measurements "
                  "(mix + vocal/instrumental/bass stems)"),
     # ── Essentia (analysis/essentia_groups.py) ────────────────────────────────
-    FeatureGroup("essentia.rhythm", 1, "essentia", 1,
+    # v2: the stored BPM is analyze.fitted_bpm over the ticks rather than
+    # RhythmExtractor2013's own estimate — the beat grid itself is unchanged.
+    # Only a re-analysis picks this up; `beat_times` are identical, but the
+    # structure cache keys on the grid's bpm too, so a re-analysed track also
+    # re-cuts its sections (its track_fallback section BPMs would be stale).
+    FeatureGroup("essentia.rhythm", 2, "essentia", 1,
                  _essentia_params(method=_rhythm_method),
-                 "BPM + beat grid (RhythmExtractor2013), grid confidence, kick-band "
+                 "BPM (fitted through the beats) + beat grid "
+                 "(RhythmExtractor2013), grid confidence, kick-band "
                  "beat phase, Percival + histogram votes, onset rate, danceability",
                  step="rhythm"),
     FeatureGroup("essentia.tonal", 1, "essentia", 1,

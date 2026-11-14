@@ -35,7 +35,7 @@ from database.models import (
     get_sections, is_trusted_link,
 )
 from matcher.match import (
-    LibraryStats, _bpm_min_diff, _parse_camelot, _with_full_bpm,
+    LibraryStats, _bpm_min_diff, _full_by_song, _parse_camelot, _with_full_bpm,
     compute_semitone_shift, compute_stretch_factor, effective_bpm,
     get_library_stats, sub_scores,
 )
@@ -533,7 +533,7 @@ def build_dataset(name: str = "bbm", neg_ratio: int = 5, seed: int = 42,
         inst = get_all_features(stem_type="instrumental", columns=cols,
                                 db_path=db_path)
         full = get_all_features(stem_type="full", columns=cols, db_path=db_path)
-        full_by_song = {f["song_id"]: f for f in full}
+        full_by_song = _full_by_song(full, db_path=db_path)
 
         vocals = [_with_full_bpm(v, full_by_song) for v in vocals]
         inst = [_with_full_bpm(i, full_by_song) for i in inst]

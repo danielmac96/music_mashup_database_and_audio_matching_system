@@ -693,6 +693,18 @@ measured shift when it is sure, else the Camelot estimate (§7). **The recipe**
 transpose, nudge, loop, the bed's level (brought to the integrated loudness of
 the vocal's own instrumental), the high-pass — and what to watch for.
 
+**One grid per pair.** The conform ratio and the bar lines it is judged against
+come from the same analyser. The stored track BPM is a line fitted through the
+beats (`analyze.fitted_bpm`), never the raw estimator output, so `features.bpm`
+and `feature_arrays.beat_times` describe one tempo; and once allin1 has tracked
+a track's downbeats its BPM becomes the scoring tempo
+(`match._full_by_song`), because the pairing is placed and timed on those
+downbeats. The refinement is taken only inside the estimate's own octave
+(±6 %), so a half/double-time disagreement — or a BPM corrected by hand — is
+kept rather than re-folded, and `bpm_confidence` stays Essentia's (allin1's
+`conf_mean` is a downbeat activation, not comparable with the grid confidence
+`effort_grid` ranks across the library).
+
 **Phrase placement and the timing gate** (`matcher/phrase_align.py`). A pair
 hangs off the vocal section's first sung phrase and a bed downbeat; every
 vocal bar line in the overlap is matched to the nearest conformed bed bar line.
@@ -989,6 +1001,15 @@ Each shape below is pinned by a contract test.
 - **One transpose per pair: `matcher/recipe.bed_shift`.** Anything that sets a
   bed's semitones reads `semitone_shift` from the listing, a timing option's own
   `semitone_shift`, or `bed_shift` — never a fresh Camelot sum.
+- **One tempo per pair, and it is the grid's.** The stored BPM is
+  `analyze.fitted_bpm` over the beats (`essentia.rhythm`), so it is the tempo of
+  the grid stored beside it; a raw estimator value would put its own error into
+  the drift the 25 ms timing gate measures over a 60 s overlap. The full-mix map
+  `_with_full_bpm` reads has ONE builder, `match._full_by_song`, which also
+  swaps in allin1's BPM where it cut the track — the library run,
+  `build_dataset`, `score_pair` and Segments all call it, or two of them would
+  conform on different tempi. It moves the BPM only, and a disagreement over
+  ±6 % is left alone.
 - **`confidence_tier` and `compat` have one definition: `matcher/compat.py`**;
   the frontend never computes a tier (`theme.js` `TIERS` only names and colours
   them, pinned equal). A new consumer of pair rows goes through
@@ -1137,7 +1158,16 @@ agreement against the ensemble; the fold default holds only at off-phase
 3. **Timing gate tolerance** — report the share of pairs passing at 25 / 40 /
    60 ms on real records before settling `timing_tol_ms`; 25 ms may be tight for
    live-drummed material. Check vocal phrase starts against ≥ 10 hand-marked
-   tracks (target 90 % within a beat, pickups within 50 ms).
+   tracks (target 90 % within a beat, pickups within 50 ms). **Measure it on a
+   re-analysed library.** Until the one-grid rule (§5.7) shipped, the conform
+   ratio came from the raw estimator BPM while the bar lines came from allin1,
+   so two estimates' disagreement was being charged to the gate: a 0.1 % ratio
+   error is 60 ms of drift over a 60 s overlap. `essentia.rhythm` is now at v2,
+   so each track picks the fitted BPM up on its next analysis and re-cuts its
+   sections (the structure key reads the grid's BPM) — Settings → **Bulk
+   reprocess → re-analyse**. A library scored before that is still on the old
+   arithmetic, and loosening the tolerance against it would be fitting the gate
+   to a bug.
 4. **Judge pairs.** `pair_feedback` needs a few dozen verdicts (10+ loved and
    10+ rejected) before the term report, the learned scorer or a weight fit mean
    anything. Then weight what the report says agrees with your ears.

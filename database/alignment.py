@@ -179,6 +179,36 @@ def allin1_for_songs(song_ids: Iterable[int], db_path: Optional[Path] = None
     return out
 
 
+def allin1_bpm_by_song(song_ids: Optional[Iterable[int]] = None,
+                       db_path: Optional[Path] = None) -> Dict[int, float]:
+    """{song_id: allin1's BPM} for the songs allin1 has analysed, at each
+    song's LIVE pipeline, in one query.
+
+    The scorer's tempo refinement (matcher.match._full_by_song). One query
+    rather than allin1_for_songs' one-per-song, because this runs once per
+    scoring run over the whole library. Only the BPM: allin1's conf_mean is a
+    downbeat activation and is NOT comparable with Essentia's grid confidence
+    (steadiness x salience), which the library-ranked effort_grid term reads.
+    """
+    conn = _conn(db_path)
+    try:
+        sql = ("SELECT a.song_id AS song_id, a.bpm AS bpm "
+               "FROM allin1_analysis a JOIN songs s ON s.id = a.song_id "
+               "WHERE a.bpm IS NOT NULL AND a.bpm > 0 "
+               "AND a.pipeline = COALESCE(s.separation_pipeline, ?)")
+        args: list = [PIPELINE]
+        ids = None if song_ids is None else sorted({int(x) for x in song_ids})
+        if ids is not None:
+            if not ids:
+                return {}
+            sql += f" AND a.song_id IN ({','.join('?' * len(ids))})"
+            args += ids
+        return {int(r["song_id"]): float(r["bpm"])
+                for r in conn.execute(sql, args).fetchall()}
+    finally:
+        conn.close()
+
+
 def get_allin1_embedding(song_id: int, pipeline: Optional[str] = None,
                          db_path: Optional[Path] = None) -> Optional[np.ndarray]:
     conn = _conn(db_path)
