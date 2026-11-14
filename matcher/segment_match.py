@@ -48,8 +48,9 @@ def _fingerprint(db, engine: Optional[str] = None) -> tuple:
     new stem (section ids, feature rows, stem quality), a re-score (the stored
     totals the percentile reads), an exclusion, a dedup pass, or a section's
     line (which the Segments list shows) — and, for the allin1 engine, its
-    sections, the vocal phrases, the pipeline each track is live on and the
-    engine itself."""
+    sections, the vocal phrases, its tempos (matcher.match._full_by_song
+    refines the scoring BPM with them), the pipeline each track is live on and
+    the engine itself."""
     from config import current_segmentation_engine
     from database.models import get_conn
     conn = get_conn(db)
@@ -71,6 +72,8 @@ def _fingerprint(db, engine: Optional[str] = None) -> tuple:
                          FROM sections_allin1),
                       (SELECT COUNT(*) || ':' || COALESCE(MAX(id), 0)
                          FROM vocal_phrases),
+                      (SELECT COUNT(*) || ':' || COALESCE(SUM(bpm), 0)
+                         FROM allin1_analysis),
                       (SELECT COUNT(*) || ':' || COALESCE(SUM(LENGTH(separation_pipeline)), 0)
                          FROM songs WHERE separation_pipeline IS NOT NULL)"""
         ).fetchone()) + (engine or current_segmentation_engine(),)
@@ -86,12 +89,16 @@ class _Snapshot:
     def __init__(self, db, engine: Optional[str] = None):
         from database import models
         from matcher.match import (
-            _camelot_index, _prepare_block, _with_full_bpm, get_library_stats,
+            _camelot_index, _full_by_song, _prepare_block, _with_full_bpm,
+            get_library_stats,
         )
         self.stats = get_library_stats(db_path=db, refresh=True)
         cols = models.FEATURES_SCORING_COLUMNS
-        full = {f["song_id"]: f for f in models.get_all_features(
-            "full", columns=cols, db_path=db)}
+        # The same map the stored run built, allin1 tempo refinement included,
+        # or this ranking and the stored totals would be on two tempo scales
+        # (readme §7: Segments' live ranking is the scorer, not a copy of it).
+        full = _full_by_song(models.get_all_features(
+            "full", columns=cols, db_path=db), db_path=db)
         self.vocals = [_with_full_bpm(f, full) for f in models.get_all_features(
             "vocals", columns=cols, db_path=db)]
         self.beds = [_with_full_bpm(f, full) for f in models.get_all_features(

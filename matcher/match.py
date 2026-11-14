@@ -853,6 +853,59 @@ def _apply_model_scores(pairs, bundle, sections_of, stats: LibraryStats,
 
 # ── Score all qualifying pairs ────────────────────────────────────────────────
 
+# How far allin1's BPM may sit from Essentia's before the two are treated as
+# disagreeing about the tempo octave rather than refining one estimate. Same
+# bound analyze.fitted_bpm uses for the same reason, and it is what keeps a
+# manually corrected half/double-time read (update_features_manual) from being
+# overwritten by allin1's own read of the original.
+ALLIN1_BPM_MAX_DRIFT = 0.06
+
+
+def _full_by_song(full_rows, db_path=None) -> Dict[int, dict]:
+    """{song_id: the song's full-mix feature row}, with the tempo refined to
+    allin1's where it has one. The ONE builder of the map _with_full_bpm reads,
+    so the library run, build_dataset, score_pair and Segments' live ranking
+    cannot disagree about a track's tempo (readme §7).
+
+    Why the refinement belongs here. A pair is placed and judged on SECTION bar
+    lines, which for an allin1-cut track are allin1's downbeats
+    (matcher.phrase_align), while the ratio those grids are conformed by comes
+    from the song-level BPM (compute_stretch_factor). Reading the grid from one
+    analyser and the ratio from another puts the two estimates' disagreement
+    straight into the drift the 25 ms timing gate measures. allin1 tracked the
+    downbeats, so its BPM is the one that matches the bar lines.
+
+    Only the BPM moves. `bpm_confidence` stays Essentia's: effort_grid ranks it
+    across the library (matcher.effort) and allin1's conf_mean is a downbeat
+    activation on an unrelated scale, so mixing the two would corrupt that
+    ranking for every track. The Essentia beat grid in `feature_arrays` is left
+    alone too — nothing here rewrites a stored row.
+    """
+    out = {f["song_id"]: f for f in full_rows}
+    if not out:
+        return out
+    try:
+        from database.alignment import allin1_bpm_by_song
+        refined = allin1_bpm_by_song(out.keys(), db_path=db_path)
+    except Exception:  # noqa: BLE001 — a refinement, never a reason not to score
+        log.warning("could not read allin1 tempos; scoring on the Essentia grid",
+                    exc_info=True)
+        return out
+    for song_id, a1_bpm in refined.items():
+        row = out.get(song_id)
+        ess = _bpm(row.get("bpm")) if row else 0.0
+        if not ess:
+            continue
+        if abs(a1_bpm - ess) / ess > ALLIN1_BPM_MAX_DRIFT:
+            # The two read different tempo octaves (or the user fixed one by
+            # hand). Keep the stored value rather than silently re-folding it.
+            continue
+        row = dict(row)
+        row["bpm"] = round(float(a1_bpm), 2)
+        out[song_id] = row
+    return out
+
+
 def _with_full_bpm(feat: dict, full_by_song: Dict[int, dict]) -> dict:
     """Return a copy of `feat` with tempo AND key swapped to the song's full-mix
     values when available, leaving timbre, loudness and band occupancy
@@ -1089,7 +1142,7 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     vocals      = get_all_features(stem_type="vocals",        columns=cols, db_path=db)
     inst        = get_all_features(stem_type="instrumental",  columns=cols, db_path=db)
     full        = get_all_features(stem_type="full",          columns=cols, db_path=db)
-    full_by_song = {f["song_id"]: f for f in full}
+    full_by_song = _full_by_song(full, db_path=db)
     v_add, i_add = _provisional_stand_ins(full, vocals, inst)
     vocals += v_add
     inst += i_add
@@ -1447,9 +1500,9 @@ def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict
     weights = cfg["match_weights_vocal"]
     effort_weight = cfg["effort_weight"]
     pair_ids = (vocal_song_id, inst_song_id)
-    full_by_song = {f["song_id"]: f for f in get_all_features(
+    full_by_song = _full_by_song(get_all_features(
         stem_type="full", columns=FEATURES_SCORING_COLUMNS, song_ids=pair_ids,
-        db_path=db)}
+        db_path=db), db_path=db)
     top = next(iter(get_all_features(
         stem_type="vocals", columns=FEATURES_SCORING_COLUMNS,
         song_ids=[vocal_song_id], db_path=db)), None)
