@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { TUNING_MIN_PER_CLASS, feedbackKey, keyOf } from "../components/pairs/pairModel";
 import { toast } from "../toast";
+import { track } from "../events";
 
 // Every judgement the user has made, in one place.
 //
@@ -68,11 +69,17 @@ export function useRatings() {
   // StarRating that can write — the dock, the player bar, the partners rail,
   // Studio — undoes the same way. Clearing removes the row, so the verdict the
   // star implied goes with it (see models.delete_pair_feedback).
-  const rate = useCallback(async (candidate, stars) => {
+  //
+  // `context` names the screen for the implicit `rate` event (events.js); the
+  // judgement itself is the pair_feedback row, whatever happens to the event.
+  const rate = useCallback(async (candidate, stars, context = "dock") => {
     if (!candidate) return;
     const k = keyOf(candidate);
     const prevR = byPair[k] ?? null;
     const prevV = verdicts[k] ?? null;
+    // value 0 = the star was taken back.
+    track("rate", candidate, { value: stars === prevR ? 0 : stars,
+                               context: typeof context === "string" ? context : "dock" });
     if (stars === prevR) {
       setByPair((m) => { const o = { ...m }; delete o[k]; return o; });
       setVerdicts((m) => { const o = { ...m }; delete o[k]; return o; });

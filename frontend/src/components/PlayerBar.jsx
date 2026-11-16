@@ -191,7 +191,7 @@ export function PlayerBar({ player, ratings, onStudio }) {
         {isPair && (
           <>
             <StarRating value={ratings.ratingOf(candidate)}
-              onRate={(n) => ratings.rate(candidate, n)} size={15} />
+              onRate={(n) => ratings.rate(candidate, n, source?.context)} size={15} />
             <button className="head-btn" onClick={() => onStudio(candidate)}>
               Open in Studio
             </button>

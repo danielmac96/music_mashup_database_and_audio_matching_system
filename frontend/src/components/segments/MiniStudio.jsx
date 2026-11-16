@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
+import { track } from "../../events";
 import { toast } from "../../toast";
 import { DEFAULT_HP_HZ, useMiniStudio } from "../../hooks/useMiniStudio";
 import { KeyChip, TierBadge } from "../ui/primitives";
@@ -110,6 +111,7 @@ export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOp
     }
     setRendering(true);
     try {
+      track("render", pair, { context: "parts" });
       const { job_id, audio_url } = await api.startMixdown(clips);
       toast("Rendering the loop…");
       clearInterval(pollRef.current);
@@ -237,7 +239,7 @@ export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOp
 
       <div className="seg-band-act">
         <div className="seg-band-row">
-          <StarRating value={rating} size={15} onRate={(n) => ratings.rate(pair, n)} />
+          <StarRating value={rating} size={15} onRate={(n) => ratings.rate(pair, n, "parts")} />
           {/* Inline, never a component declared in this render: one of those
               is a new type every frame the loop position moves, so the
               buttons were remounted ~60×/s and clicks fell between them. */}
@@ -253,7 +255,7 @@ export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOp
             title={sets.active ? `Add to ${sets.active.name} (a)` : "Add to a new set (a)"}>+ Set</button>
           <button className="ui-btn" onClick={renderWav} disabled={rendering}
             title="Bounce the loop as you hear it to a WAV">{rendering ? "Rendering…" : "Render WAV"}</button>
-          <button className="btn-primary" onClick={() => onOpenStudio(pair, tweaks)}
+          <button className="btn-primary" onClick={() => { track("open_studio", pair, { context: "parts" }); onOpenStudio(pair, tweaks); }}
             title="Open the pair in Studio with what you changed here">Open in Studio</button>
         </div>
       </div>

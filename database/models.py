@@ -4110,3 +4110,164 @@ def get_segment(segment_id: int, db_path: Path = DB_PATH) -> Optional[Dict]:
     return next((s for s in get_sections(r["song_id"], db_path=db_path,
                                          engine="allin1" if a1 else "essentia")
                  if s["section_index"] == r["section_index"]), None)
+
+
+# ── Implicit pair events (readme §5.14) ───────────────────────────────────────
+
+# What can be recorded about a pair, and where from. Both are stored as text
+# and read by the learning loop, so a name is never renamed (the same rule as
+# verdicts and reason keys, §7) — add a new one instead.
+PAIR_EVENTS = ("shown", "loop_play", "skip", "expand", "open_studio", "render",
+               "fl_export", "export", "hide", "compare", "rate")
+PAIR_EVENT_CONTEXTS = ("dock", "track_detail", "studio", "parts", "mixes")
+# Raw rows older than this are folded into pair_event_summary…
+PAIR_EVENT_RETENTION_DAYS = 180
+# …and so is the oldest overflow past this many, whatever its age, so the raw
+# table is bounded even for a library judged all day.
+PAIR_EVENT_MAX_RAW = 500_000
+PAIR_EVENT_MAX_BATCH = 500
+_PAIR_EVENT_TEXT_MAX = 64
+
+
+def _event_int(value, minimum: Optional[int] = None) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        out = int(value)
+    except (TypeError, ValueError):
+        return None
+    if out != value and not (isinstance(value, str) and value.strip() == str(out)):
+        return None                     # 3.7 is not a song id
+    if minimum is not None and out < minimum:
+        return None
+    return out
+
+
+def clean_pair_events(events) -> List[tuple]:
+    """The rows worth storing from one client batch, as insert tuples. Anything
+    malformed is dropped rather than raised: an event is never a reason for a
+    request to fail (readme §5.14). At most PAIR_EVENT_MAX_BATCH are kept."""
+    import math
+    out: List[tuple] = []
+    if not isinstance(events, (list, tuple)):
+        return out
+    for e in events:
+        if len(out) >= PAIR_EVENT_MAX_BATCH:
+            break
+        if not isinstance(e, dict) or e.get("event") not in PAIR_EVENTS:
+            continue
+        vocal = _event_int(e.get("vocal_song_id"), 1)
+        inst = _event_int(e.get("inst_song_id"), 1)
+        if vocal is None or inst is None:
+            continue
+        value = e.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or not math.isfinite(value):
+            value = None
+        context = e.get("context")
+        if context not in PAIR_EVENT_CONTEXTS:
+            context = None
+        version = e.get("scorer_version")
+        version = (version.strip()[:_PAIR_EVENT_TEXT_MAX] or None
+                   if isinstance(version, str) else None)
+        out.append((vocal, inst, _event_int(e.get("vocal_section"), 0),
+                    _event_int(e.get("inst_section"), 0), e["event"],
+                    None if value is None else float(value), context, version,
+                    _event_int(e.get("rank_shown"), 1)))
+    return out
+
+
+def insert_pair_events(rows: Sequence[tuple], db_path: Path = DB_PATH) -> int:
+    """Append cleaned event rows (clean_pair_events): one connection, one
+    statement, one commit."""
+    if not rows:
+        return 0
+    conn = get_conn(db_path)
+    try:
+        conn.executemany(
+            """INSERT INTO pair_events (vocal_song_id, inst_song_id, vocal_section,
+                   inst_section, event, value, context, scorer_version, rank_shown)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""", rows)
+        conn.commit()
+    finally:
+        conn.close()
+    return len(rows)
+
+
+def compact_pair_events(max_age_days: int = PAIR_EVENT_RETENTION_DAYS,
+                        max_raw: int = PAIR_EVENT_MAX_RAW,
+                        db_path: Path = DB_PATH) -> Dict:
+    """Fold old raw events into pair_event_summary and delete them.
+
+    Folded: everything older than `max_age_days`, plus the oldest rows beyond
+    `max_raw`. A summary row is a pair + event + context with how many times it
+    happened (`n`), how many of those were shown in the top five (`n_top5`,
+    what the learning loop's "seen and ignored" signal needs), the summed
+    `value` (seconds listened, stars) and the first and last time.
+    `scorer_version` and the exact rank are not carried over.
+
+    One transaction (models.connection): the summary's count must grow by
+    exactly the number of rows about to be deleted, or nothing is deleted.
+    """
+    with connection(db_path) as conn:
+        # The age cutoff is read once, so the count, the copy and the delete
+        # below all mean the same rows even if the clock ticks between them.
+        cutoff = conn.execute("SELECT datetime('now', ?)",
+                              (f"-{int(max_age_days)} days",)).fetchone()[0]
+        # Ids are monotonic (AUTOINCREMENT), so "the oldest beyond the cap" is
+        # everything up to one id.
+        over = conn.execute(
+            "SELECT id FROM pair_events ORDER BY id DESC LIMIT 1 OFFSET ?",
+            (max(0, int(max_raw)),)).fetchone()
+        where, args = "(created_at < ? OR id <= ?)", (cutoff, over[0] if over else 0)
+        doomed = conn.execute(
+            f"SELECT COUNT(*) FROM pair_events WHERE {where}", args).fetchone()[0]
+        if not doomed:
+            return {"folded": 0, "raw": conn.execute(
+                "SELECT COUNT(*) FROM pair_events").fetchone()[0]}
+        before = conn.execute(
+            "SELECT COALESCE(SUM(n), 0) FROM pair_event_summary").fetchone()[0]
+        # The SELECT's WHERE is what lets SQLite parse ON CONFLICT after it.
+        conn.execute(
+            f"""INSERT INTO pair_event_summary (vocal_song_id, inst_song_id,
+                   vocal_section, inst_section, event, context, n, n_top5,
+                   value_sum, first_at, last_at)
+               SELECT vocal_song_id, inst_song_id, vocal_section, inst_section,
+                      event, context, COUNT(*),
+                      SUM(CASE WHEN rank_shown BETWEEN 1 AND 5 THEN 1 ELSE 0 END),
+                      COALESCE(SUM(value), 0), MIN(created_at), MAX(created_at)
+                 FROM pair_events WHERE {where}
+                GROUP BY vocal_song_id, inst_song_id, COALESCE(vocal_section, -1),
+                         COALESCE(inst_section, -1), event, COALESCE(context, '')
+               ON CONFLICT(vocal_song_id, inst_song_id, COALESCE(vocal_section, -1),
+                           COALESCE(inst_section, -1), event, COALESCE(context, ''))
+               DO UPDATE SET n = n + excluded.n,
+                             n_top5 = n_top5 + excluded.n_top5,
+                             value_sum = value_sum + excluded.value_sum,
+                             first_at = MIN(COALESCE(first_at, excluded.first_at),
+                                            excluded.first_at),
+                             last_at = MAX(COALESCE(last_at, excluded.last_at),
+                                           excluded.last_at)""", args)
+        after = conn.execute(
+            "SELECT COALESCE(SUM(n), 0) FROM pair_event_summary").fetchone()[0]
+        if after - before != doomed:
+            raise RuntimeError(
+                f"pair_events compaction folded {after - before} of {doomed} rows; "
+                "nothing was deleted")
+        conn.execute(f"DELETE FROM pair_events WHERE {where}", args)
+        raw = conn.execute("SELECT COUNT(*) FROM pair_events").fetchone()[0]
+    return {"folded": int(doomed), "raw": int(raw)}
+
+
+def pair_event_counts(db_path: Path = DB_PATH) -> Dict:
+    """How many events are held, raw and folded, per event name."""
+    conn = get_conn(db_path)
+    try:
+        raw = {r[0]: r[1] for r in conn.execute(
+            "SELECT event, COUNT(*) FROM pair_events GROUP BY event")}
+        folded = {r[0]: r[1] for r in conn.execute(
+            "SELECT event, SUM(n) FROM pair_event_summary GROUP BY event")}
+    finally:
+        conn.close()
+    return {"raw": raw, "summary": folded,
+            "raw_total": sum(raw.values()), "summary_total": sum(folded.values())}

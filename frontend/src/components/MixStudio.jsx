@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { track } from "../events";
 import { JobBadge } from "./JobBadge";
 import { KeyChip } from "./KeyChip";
 import { TrackArt } from "./TrackArt";
@@ -1748,6 +1749,14 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
     const clips = lanes.filter((l) => !l.muted && l.gain > 0).map(clipFor);
     if (clips.length === 0) { toast("Nothing audible to export"); return; }
     setError(null);
+    // Implicit signal: the pair Studio was opened on got as far as a bounce.
+    if (pairCtx) {
+      track("render", {
+        vocal_song_id: pairCtx.vocalSongId, inst_song_id: pairCtx.instSongId,
+        vocal_section_idx: activeOption?.vocal_section_idx ?? null,
+        inst_section_idx: activeOption?.inst_section_idx ?? null,
+      }, { context: "studio" });
+    }
     try {
       const { job_id } = await api.startMixdown(clips, MIXDOWN_LUFS);
       setExportToken(null);
@@ -1781,6 +1790,10 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
         && sessionPair.instId === pairCtx.instSongId
         ? { vocal: activeOption.vocal_section_idx, inst: activeOption.inst_section_idx }
         : null;
+      track("fl_export", {
+        vocal_song_id: sessionPair.vocalId, inst_song_id: sessionPair.instId,
+        vocal_section_idx: armed?.vocal ?? null, inst_section_idx: armed?.inst ?? null,
+      }, { context: "studio" });
       const { job_id } = await api.startSessionExport(
         sessionPair.vocalId, sessionPair.instId, armed, sessionLanes());
       setSessionToken(null);

@@ -170,6 +170,7 @@ vocal × bed section pair at once — the only run that also writes
  5. BUILD     Studio: conformed lanes → WAV mixdown or FL Studio session
  6. PLAN      Sets: keepers in running order, graded transitions → cue sheet, rekordbox, FL
  7. LEARN     documented mix pairs + your verdicts → dataset → learned scorer
+              (what you do with a pair — loop, skip, open, export — is logged as pair events)
 ```
 
 ### Architecture
@@ -816,6 +817,53 @@ Each shape below is pinned by a contract test.
   live, exact top-k (~0.23 s per call on 5,000 tracks).
 - **Mix summary**, **Discover gaps** (`GET /api/discovery/gaps`) and the
   attribute catalogue (`GET /api/analysis/attributes`).
+- **Pair events** (`POST /api/events`, §5.14): always answers 200 with
+  `{accepted, dropped}`.
+
+### 5.14 Implicit pair events
+
+What you *do* with a pair says something a star does not, so it is logged:
+`pair_events` holds one row per event, keyed by the pair's four ids, with a
+`value` (seconds listened, stars), the `context` it happened in, the
+`scorer_version` that ranked it (`heuristic`, or `model:<version>`) and the
+`rank_shown`. Nothing reads them yet — they are collected so the learning loop
+has history to start from.
+
+| Event | Written when | `value` |
+|---|---|---|
+| `shown` | a dock fetch lands — **sampled**: its top 20 rows, each with its rank | — |
+| `loop_play` | the player moves off a pair loop that sounded ≥ 3 s | seconds sounded (pauses excluded) |
+| `skip` | the same, under 3 s | seconds |
+| `expand` | a dock card is opened | — |
+| `open_studio` | a pair is sent to Studio | — |
+| `render` | a WAV is bounced (Studio, the mini studio) | — |
+| `fl_export` | an FL session is exported (Studio; the dock's batch, one per pair) | — |
+| `export` | the dock's Export ▾ writes a pair list, one per pair | — |
+| `hide` | a pair is hidden | — |
+| `compare` | `c` / ⇄ Compare | — |
+| `rate` | a star is set or taken back | stars, 0 = cleared |
+
+Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
+
+- **The frontend buffers** (`frontend/src/events.js`): `track()` pushes onto an
+  in-memory list (capped at 400), flushed every 5 s with a `keepalive` fetch
+  and on `pagehide` / tab hide with `sendBeacon`. Listening time is measured
+  in the one place a pair is played (`usePlayer` → `noteListening`). A failed
+  post drops its batch.
+- **The server never makes it felt** (`api/routes/events.py`): the request
+  cleans the batch in memory (`models.clean_pair_events` — a malformed event
+  is dropped, never a 400) and returns; the write is a background task after
+  the response, and a failed write is logged and swallowed.
+- **Retention** (`models.compact_pair_events`, at most every 6 hours, on the
+  same background task): raw rows older than 180 days — and the oldest beyond
+  500,000, whatever their age — are folded into `pair_event_summary` (per
+  pair, event and context: `n`, `n_top5` = how many were shown in the top
+  five, `value_sum`, first and last time) and deleted, in one transaction that
+  refuses to delete if the summary did not grow by exactly that many rows.
+  `scorer_version` and the exact rank do not survive the fold.
+- The mini studio's own loop is not timed (it has its own engine), and the
+  dock's FL batch logs the loaded top N — the server picks the same N from the
+  same query.
 
 ---
 
@@ -830,7 +878,7 @@ Each shape below is pinned by a contract test.
 | `database/alignment.py` | allin1, phrases and frame-sidecar storage |
 | `database/arrays.py` | The float-array store (`feature_arrays`) |
 | `api/server.py` | FastAPI app, routers, health/deps, yt-dlp update, SPA serving with stale-build detection |
-| `api/routes/` | `tracks`, `segments`, `playlists`, `jobs`, `analysis`, `mashups`, `mixes`, `discovery`, `crates`, `sets`, `studio`, `settings`, `prefs`, `datasets`, `models`, `database` |
+| `api/routes/` | `tracks`, `segments`, `playlists`, `jobs`, `analysis`, `mashups`, `mixes`, `discovery`, `crates`, `sets`, `studio`, `settings`, `prefs`, `events`, `datasets`, `models`, `database` |
 | `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py`, `api/queue_eta.py` | Per-stage worker pools + resume, job registry, playlist preview hydration, ETAs |
 | `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage `download/stems/analysis/structure/reverify` workers behind the per-track buttons; `bulk`, `match`, `hook`, `mixdown`, `session`, `mix_resolve`, `mix_ingest`, `discovery`, `ml` |
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py`, `fit_hints.py`, `errors.py` |
@@ -839,8 +887,8 @@ Each shape below is pinned by a contract test.
 | `analysis/` | `essentia_groups.py` (the analyser), `ml_models.py` (EffNet heads), `project.py` (payloads → `features`), `allin1_runner.py`, `structure.py` (the cut and per-section measurements), `phrases.py`, `hooks.py`, `quality.py`, `vocals.py`, `analyze.py` (shared tempo/key helpers), `decode.py`, `frames.py`, `registry.py` + `cache.py` (feature groups), `timeseries.py` (sidecars), `attributes.py`, `compare.py`, `threads.py` |
 | `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `term_report.py`, `setflow.py`, `segment_match.py` |
 | `render/` | `dsp.py`, `master.py`, `mixdown.py`, `session.py`, `transition.py`, `exports.py` |
-| `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens; `segments/`; `pairs/pairModel.js`; `ui/primitives.jsx`); `hooks/`; `engine/` (`MashupEngine`, decode, grid); `api.js`, `theme.js`, `attributes.js`; `public/soundtouch-processor.js` |
-| `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py` |
+| `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens; `segments/`; `pairs/pairModel.js`; `ui/primitives.jsx`); `hooks/`; `engine/` (`MashupEngine`, decode, grid); `api.js`, `events.js` (the pair-event buffer), `theme.js`, `attributes.js`; `public/soundtouch-processor.js` |
+| `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks) |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS; `essentia_fake.py` |
 
 **Tables** (`database/schema.sql`):
@@ -867,6 +915,9 @@ Each shape below is pinned by a contract test.
 - `pair_feedback` (verdict, stars, section indexes, `reasons_json`,
   `sections_stale`, engine, feature snapshot) · `pair_hidden` ·
   `track_excluded` · `pair_notes` · `section_lines`.
+- `pair_events` (the four ids, `event`, `value`, `context`, `scorer_version`,
+  `rank_shown`, `created_at`) and `pair_event_summary` (old events folded per
+  pair, event and context) — §5.14.
 - `mixes` · `mix_tracks` · `mashup_pairs` · `datasets` · `models` · `crates` ·
   `crate_items` · `sets` / `set_items` · `embeddings` · `analysis_runs` ·
   `app_prefs` (keys: `soundcloud_profile`, `soundcloud_saved_profiles`,
@@ -940,6 +991,14 @@ Each shape below is pinned by a contract test.
 - **One path takes a judgement away** — `delete_pair_feedback`, which deletes
   the whole row (and its reasons). Its `WHERE` mirrors the unique index,
   `COALESCE` included. Sending `rating: null` does **not** clear.
+- **A pair event is never felt, and never a judgement** (§5.14). The request
+  path of `POST /api/events` opens no connection; nothing in
+  `frontend/src/events.js` throws, awaits, toasts or imports, and no caller
+  reads what it returns. A `rate` or `hide` event is a log line beside the
+  `pair_feedback` / `pair_hidden` row its own route wrote — events never write
+  either. Event and context names are stored and learned from, so, like
+  verdicts, they are added to and never renamed (`models.PAIR_EVENTS`,
+  `PAIR_EVENT_CONTEXTS`; a test pins the frontend's to them).
 - **Stars sit beside the verdict**: 5,4 → love · 3 → ok · 2,1 → no.
   **Do not repoint training at `rating`**, and never rename a verdict or a
   reason key (`models.FEEDBACK_REASONS` ≡ `pairModel.VERDICT_REASONS`).
@@ -1138,6 +1197,56 @@ downbeat agreement (within 25/40/70 ms, off by a beat), boundary F and label
 agreement against the ensemble; the fold default holds only at off-phase
 0, within-25 ms ≥ 0.95, boundary F ±0.5 s ≥ 0.9 and labels ≥ 0.9.
 
+**Scale, on a synthetic library** (no Docker, audio or Essentia needed):
+
+```bash
+python scripts/bench_scale.py                                        # 2k / 5k / 10k tracks
+python scripts/synth_library.py --tracks 10000 --out /tmp/synth10k   # only the library
+```
+
+`synth_library.py` writes a fresh database of N tracks as the pipeline would
+leave them — both section cuts, allin1 grids, vocal phrases, stage timings,
+no audio — deterministic by seed, in its own folder (it prints the three
+`MASHUP_*` paths to point the app at it). A share of tracks has no allin1 cut
+and a share has a wandering tempo, and it plants **drop-in pairs** (bed in the
+vocal's key or one Camelot step away, within 2 % of its tempo, with a chorus
+it originally sang over, the same length, phrases on the same bars), listed in
+`synth_manifest.json` so a ranking change can be measured against them.
+
+`bench_scale.py` builds one per size in a child process bound to its own paths
+and reports per-track scoring, the full Score library, the dock listing,
+Segments, the Library payload and event ingestion, to
+`<data_dir>/bench/scale/bench_scale.{json,md}`. The full run is executed only
+when the per-track sample says it fits `--full-score-budget` (900 s); past
+that it is an estimate (per-track seconds × tracks ÷ 2, with its standard
+error) and printed as one. Where the full run was skipped, the listing is
+timed over a candidates table padded to the size a full run would leave.
+
+The baseline (2026-11-16, 4-core VM, Python 3.12, synthetic — every later
+change to scoring or listing is compared with this):
+
+| | 500 | 2,000 | 5,000 | 10,000 tracks |
+|---|---|---|---|---|
+| Score one track, mean (min–max) | 2.4 s (1.0–3.8) | 10.9 s (6.7–14.4) | 26.9 s (10.2–37.1) | 58.8 s (24.8–79.0) |
+| Score library | **454 s measured**, peak 1.27 GB | ~3.0 h ± 0.3 est. | ~18.7 h ± 2.5 est. | ~81.6 h ± 10.7 est. |
+| Dock listing, library-wide p50 / p95 | 1.58 / 1.73 s | 1.18 / 1.40 s | 1.26 / 1.58 s | 1.34 / 1.58 s |
+| Dock listing, scoped p50 / p95 | 1.54 / 1.66 s | 1.21 / 1.37 s | 1.31 / 1.46 s | 1.29 / 1.55 s |
+| `GET /api/segments` bed side, cold · size (gzip) | 0.6 s · 0.9 MB (0.2) | 1.1 s · 3.6 MB (0.8) | 2.3 s · 8.9 MB (2.0) | 4.6 s · 17.8 MB (3.9) |
+| Segment matches, vocal lead p50 / p95 | 1.79 / 1.98 s | 1.62 / 1.91 s | 0.89 / 3.06 s | 1.59 / 6.45 s |
+| Segment matches, first call (snapshot) | 2.5 s | 3.9 s | 10.3 s | 15.2 s |
+| `GET /api/tracks` p50 · size (gzip) | 0.67 s · 1.9 MB (0.2) | 1.07 s · 7.4 MB (0.7) | 2.11 s · 18.5 MB (1.8) | 3.98 s · 36.9 MB (3.5) |
+| `POST /api/events` request path p95 | 0.04 ms | 0.09 ms | 0.06 ms | 0.06 ms |
+| Database per 100,000 events | 12.1 MB | 12.1 MB | 12.1 MB | 12.1 MB |
+
+Read with it: the listing rows are over 200,000–267,000 candidate rows (the
+`max_candidate_rows` cap); the 500-track estimate read 610 ± 98 s against the
+454 s measured, so the larger estimates lean high; one track's scoring cost
+varies several-fold with what it is (an instrumental plays one role, an
+unusual tempo passes the gate rarely). The event write itself (2.5–3.5 ms p50,
+after the response) added at most 1.1 ms p95 to a concurrent read and
+1.4–2.1 ms to a concurrent write at ten batches a second — fifty times what a
+browser sends.
+
 ---
 
 ## 9. Open work
@@ -1204,6 +1313,24 @@ agreement against the ensemble; the fold default holds only at off-phase
     persistence across restarts, automatic lyrics for section lines.
 13. Segments: hidden pairs still appear in live matches; with a learned model
     active, live and stored rows are ranked on two scales.
+
+14. **Scale** (measured on synthetic libraries, §8 — none of this holds at the
+    2,000–10,000-track target yet). **Score library does not finish**: 454 s
+    at 500 tracks, an estimated 3 h at 2,000 and days at 10,000, and importing
+    one track into a 10,000-track library costs about a minute of scoring. About
+    80 % of a run is phrase placement (`matcher/phrase_align.place`, ~4 ms per
+    song pair; two `np.median` calls per placement in `_bar_secs` alone are a
+    third of it), and nothing prunes song pairs before the section search —
+    the BPM gate passes most of a dance library. The run's peak memory
+    (1.27 GB at 500 tracks) is the candidate heaps. **The dock listing** takes
+    1.2–1.6 s whatever the scope once the table is at its cap:
+    `get_candidates_enriched` recomputes two `PERCENT_RANK` windows over all of
+    `mashup_candidates` on every request. **`GET /api/tracks`** is 4 s and
+    37 MB at 10,000 tracks (3.5 MB gzipped, but the route does not compress),
+    **Segments' first match** builds its snapshot in 15 s, and each live match
+    after that takes 1–2 s.
+15. **Pair events have no reader yet** (§5.14): they are collected for the
+    learning loop. The mini studio's loop is not timed.
 
 Not worth doing: raising the `rhythm` or `structure` section weights (`rhythm`
 saturates on 4/4 dance music; `structure` duplicates `label`); persistent

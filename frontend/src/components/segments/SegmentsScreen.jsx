@@ -165,7 +165,7 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
       const el = e.target;
       if (e.metaKey || e.ctrlKey || e.altKey || (el && (el.tagName === "INPUT"
         || el.tagName === "TEXTAREA" || el.tagName === "SELECT"))) return;
-      if (/^[1-5]$/.test(e.key)) { e.preventDefault(); ratings.rate(armed, Number(e.key)); }
+      if (/^[1-5]$/.test(e.key)) { e.preventDefault(); ratings.rate(armed, Number(e.key), "parts"); }
       else if (e.key === "a") { e.preventDefault(); sets.addPair(armed); }
     };
     window.addEventListener("keydown", onKey);
