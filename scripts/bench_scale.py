@@ -7,13 +7,14 @@ Demucs, no Essentia) in its own folder and measures, on it:
 
   * **per-track scoring** — `score_song_pairs` for a few sampled tracks: what
     one import costs;
-  * **Score library** — the full run's wall time and peak resident memory.
-    Run for real when the per-track sample says it fits `--full-score-budget`
-    seconds; otherwise reported as an ESTIMATE (per-track seconds × tracks ÷ 2,
-    since one track's run covers it against the library in both roles), with
-    the sample's standard error — one track's cost varies several-fold with
-    what it is — and marked `measured: false`. An estimate is never printed as
-    a measurement;
+  * **Score library** — the full run's wall time and peak resident memory,
+    and how many of the gated song pairs it had to price (a run that can
+    overflow the row cap skips pairs that cannot be kept — readme §5.7). Run
+    for real unless `--full-score-budget` is given and the every-pair figure
+    (per-track seconds × tracks ÷ 2: what pricing EVERY pair would take, an
+    upper bound on a pruned run) is over it; then it is reported as that
+    ESTIMATE, with the sample's standard error, and marked `measured: false`.
+    An estimate is never printed as a measurement;
   * **the dock listing** — `get_candidates_enriched` library-wide and scoped
     to a track, p50 / p95. When the full run did not happen the candidates
     table is padded to the size a full run would leave (clones of the sampled
@@ -287,13 +288,14 @@ def run_one(n_tracks: int, out: Path, seed: int, score_tracks: int,
     spread = (st.stdev(secs) / len(secs) ** 0.5 * n_tracks / 2.0) if len(secs) > 1 else None
     full: Dict = {"estimate_s": round(estimate, 1), "budget_s": full_budget,
                   "estimate_se_s": None if spread is None else round(spread, 1)}
-    if estimate <= full_budget:
-        say(f"[{n_tracks}] full Score library (estimated {estimate:.0f} s)…")
+    if full_budget <= 0 or estimate <= full_budget:
+        say(f"[{n_tracks}] full Score library (every pair would be ~{estimate:.0f} s)…")
         before = peak_rss_mb()
         t = time.perf_counter()
-        score_all_pairs()
+        res = score_all_pairs()
         full.update({"measured": True, "seconds": round(time.perf_counter() - t, 1),
-                     "peak_rss_mb": peak_rss_mb(), "rss_before_mb": before})
+                     "peak_rss_mb": peak_rss_mb(), "rss_before_mb": before,
+                     "pruned": res.get("_pruned")})
     else:
         full.update({"measured": False, "seconds": None, "peak_rss_mb": None,
                      "reason": f"estimated {_span(estimate)}, over the "
@@ -429,7 +431,9 @@ def report(results: List[Dict]) -> str:
     def full(r: Dict) -> str:
         f = r["score_library"]
         if f["measured"]:
-            return f"{f['seconds']:.0f} s (measured)"
+            pr = f.get("pruned")
+            return f"{f['seconds']:.0f} s (measured)" + (
+                f", {pr['priced']:,} of {pr['pairs']:,} pairs priced" if pr else "")
         se = f.get("estimate_se_s")
         pm = f" ± {_span(se)}" if se else ""
         return f"~{_span(f['estimate_s'])}{pm} (estimated, not run)"
@@ -496,8 +500,9 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--score-tracks", type=int, default=8,
                     help="tracks sampled for per-track scoring")
-    ap.add_argument("--full-score-budget", type=float, default=900.0,
-                    help="run the full Score library only if estimated under this many seconds")
+    ap.add_argument("--full-score-budget", type=float, default=0.0,
+                    help="skip the full Score library when pricing every pair is "
+                         "estimated over this many seconds (0, the default: always run)")
     ap.add_argument("--requests", type=int, default=30,
                     help="warm calls per latency measurement")
     ap.add_argument("--keep", action="store_true",

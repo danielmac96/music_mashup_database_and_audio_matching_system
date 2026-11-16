@@ -1519,6 +1519,7 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             progress(40 + int(45 * done / max(total, 1)),
                      f"Choosing sections: {done}/{total} pairs")
 
+    pruned_stats = None
     if not pruned:
         voi = []
         for top_block, bed_block in passes:
@@ -1551,7 +1552,7 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         _wanted -= set(_sections_cache)
         if _wanted:
             _sections_cache.update(sections_for_songs(_wanted, db_path=db, engine=ENGINE))
-        _score_pruned(
+        pruned_stats = _score_pruned(
             passes, voi_gate, keepers["vocal_over_instrumental"], _usable,
             lambda top, bed, scores, seq: _price(
                 top, bed, scores, seq, "vocal_over_instrumental", active_scorer,
@@ -1632,6 +1633,10 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         _record_harmony_threshold(db)
     return {**results, "_scorer": active_scorer, "_model_version": model_version,
             "_engine": ENGINE,
+            # {"pairs", "priced"} when the run skipped pairs that could not be
+            # kept (_score_pruned), else None. The timing stats then count the
+            # vocal sections of the pairs that were priced.
+            "_pruned": pruned_stats,
             "_timing": (TIMING_BASE or {}).get("stats")}
 
 
@@ -1660,8 +1665,10 @@ def _score_pruned(passes, gate: dict, keeper: _TopRows, usable, price, *,
     w_key = weights.get("key_score", 0)
     w_pitch = EFFORT_WEIGHTS["pitch_cost"]
     # The terms a section's own statics cannot bound are bounded by 1.
-    open_terms = sum(section_weights[k] for k in ("duration", "phrase", "rhythm",
-                                                  "structure"))
+    # (Every weight but the two the statics answer — so a term added later is
+    # covered without being named here.)
+    open_terms = sum(w for k, w in section_weights.items()
+                     if k not in ("label", "voice"))
 
     def _tick(pct: int, message: str) -> None:
         if progress:

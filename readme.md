@@ -723,7 +723,37 @@ options and per-lane suggestions Studio's ticks read.
 **Listing** (`get_candidates_enriched`): SQL filters, hidden pairs and excluded
 tracks removed, a greedy per-song cap (never counting the scoped track), a cap
 on pairings of the same two songs, optional surprise and uncertain-first
-orders, `pairing_count` / `pairing_rank` for the stepper.
+orders, `pairing_count` / `pairing_rank` for the stepper. A row's
+`score_percentile` and `energy_pct` are SQL's `PERCENT_RANK` within its combo
+type, read from two sorted columns kept per state of the table
+(`models.candidate_ranks`) rather than from a window over the whole table on
+every request; a percentile filter or tier becomes a comparison on
+`score_total`.
+
+**Scale** (`match._score_pruned`, `_TopRows`, `phrase_align.place_cached`). A
+run keeps the best `max_candidate_rows` rows per combo type, so a run that
+could store more does not price every song pair:
+
+1. every gated song pair gets a **ceiling** — the most any of its rows could
+   total: its own song terms, the key term at the best harmony its sections'
+   chroma could measure, a free transpose, its sections' best labels and voice,
+   a perfect duration fit and a perfect grid;
+2. pairs are priced exactly, in tiers of falling ceiling; once the keeper is
+   full a pair whose ceiling is under its cut is skipped, and the run ends when
+   the cut reaches the next tier's ceiling;
+3. ties at the cut are settled from each row's place in emission order, the
+   rule the old in-order heap applied, so the order pairs are priced in does
+   not show.
+
+The gate and every row's arithmetic are untouched: the stored table is the one
+pricing every pair stores (pinned by a test that runs both on one library).
+What changes is what is never built — and the timing counts in the log and in
+`last_score`, which now cover the pairs that were priced. A per-track run, a
+library too small to overflow the cap, and a run under a learned model (a
+probability has no ceiling) price every pair. Within one pair, each section's
+own work (its bar lines, its phrase, its label and voice terms, its unit
+chroma) is done once per run, not once per partner, and a row is put in its
+stored shape only when it is kept.
 
 ### 5.8 Learned scorer
 
@@ -814,7 +844,8 @@ Each shape below is pinned by a contract test.
 - **Segments** (`api/routes/segments.py`, `matcher/segment_match.py`):
   `GET /api/segments?role=vocal|bed` (packed rows, cached per library state,
   gzipped) and `GET /api/segments/{id}/matches` — the scorer's own arithmetic,
-  live, exact top-k (~0.23 s per call on 5,000 tracks).
+  live, exact top-k. A pair hidden in the dock is left out here too (`hidden`
+  counts them beside `gated`).
 - **Mix summary**, **Discover gaps** (`GET /api/discovery/gaps`) and the
   attribute catalogue (`GET /api/analysis/attributes`).
 - **Pair events** (`POST /api/events`, §5.14): always answers 200 with
@@ -1022,6 +1053,27 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 - **Nothing in the section search reads settings.** `score_all_pairs` reads
   weights and patterns once and passes them down; a settings read in that loop
   made a 204-track re-score take an hour.
+- **A speed-up in the scorer is pinned to the slow path it replaced**
+  (`tests/test_score_scale.py`). `phrase_align.place_cached` must return
+  `place`'s dict to the last bit; `sections._score_statics` is the one copy of
+  `score_section_pair`'s arithmetic; `match._TopRows` must keep what the
+  in-order heap kept. Change `place` or a scoring term and the cached path
+  changes with it, in the same commit.
+- **A ceiling may be loose, never low** (`match._score_pruned`). A pruned run
+  skips a song pair whose ceiling is under the cut, so anything that can raise
+  a row's total — a new section term, a new way the key term or the effort is
+  re-priced after the section search — must raise the ceiling too, or the run
+  silently drops rows a full pricing keeps. A section term other than label
+  and voice is taken at 1, so one that can exceed 1 needs its own bound.
+- **The run's per-section cache is keyed by object identity** (`timing["_cache"]`,
+  `segment_match._Snapshot.cache`): it holds each section dict beside what it
+  derived, and lives exactly as long as the sections it was built from. Never
+  share one across runs or mutate a section while one is alive.
+- **`score_percentile` has two readers of one definition**: the listing
+  (`models.CandidateRanks`) and Segments (`segment_match._percent_rank`) both
+  compute SQL's `PERCENT_RANK`. The ranks are rebuilt when the table's row
+  count, newest id or sum of totals moves; a writer that rewrites
+  `inst_energy` alone, in place, would have to clear `models._RANKS_CACHE`.
 
 ### Pipeline and scoring
 
@@ -1311,8 +1363,8 @@ browser sends.
 12. **Foundations as they hurt:** server-side Studio projects (snapshots are
     per-browser `localStorage`), multi-resolution waveform peaks, job
     persistence across restarts, automatic lyrics for section lines.
-13. Segments: hidden pairs still appear in live matches; with a learned model
-    active, live and stored rows are ranked on two scales.
+13. Segments: with a learned model active, live and stored rows are ranked on
+    two scales.
 
 14. **Scale** (measured on synthetic libraries, §8 — none of this holds at the
     2,000–10,000-track target yet). **Score library does not finish**: 454 s
