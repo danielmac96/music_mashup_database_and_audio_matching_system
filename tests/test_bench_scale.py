@@ -66,11 +66,11 @@ def _result(tracks, measured):
     seg = {**lat, "rows": 10, "mb": 0.1, "gzip_mb": 0.02}
     return {
         "tracks": tracks, "generate": {"db_mb": 12.0},
-        "score_track": {"mean_s": 2.0, "max_s": 3.0},
+        "score_track": {"mean_s": 2.0, "max_s": 3.0, "seconds": [1.0, 2.0, 3.0]},
         "score_library": ({"measured": True, "seconds": 61.0, "peak_rss_mb": 300.0,
                            "estimate_s": 80.0} if measured else
                           {"measured": False, "seconds": None, "peak_rss_mb": None,
-                           "estimate_s": 36000.0}),
+                           "estimate_s": 36000.0, "estimate_se_s": 7200.0}),
         "dock": {"library_wide": lat, "scoped": lat, "candidate_rows": 1234,
                  "padded": not measured},
         "segments": {"list_vocal": seg, "list_bed": seg, "matches_vocal": lat,
@@ -88,7 +88,7 @@ def test_the_report_never_passes_an_estimate_off_as_a_measurement():
     table = b.report([_result(500, True), _result(10000, False)])
     wall = next(l for l in table.splitlines() if l.startswith("| Score library, wall"))
     assert "61 s (measured)" in wall
-    assert "10.0 h (estimated, not run)" in wall
+    assert "~10.0 h ± 2.0 h (estimated, not run)" in wall
     rss = next(l for l in table.splitlines() if l.startswith("| Score library, peak RSS"))
     assert "300 MB" in rss and "not measured" in rss
     rows = next(l for l in table.splitlines() if l.startswith("| Candidate rows"))
