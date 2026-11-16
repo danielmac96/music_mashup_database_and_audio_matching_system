@@ -7,6 +7,7 @@ import {
 import { keyOf, pairKey } from "./pairs/pairModel";
 import { TIERS, camelotColor } from "../theme";
 import { api } from "../api";
+import { trackEach } from "../events";
 import { toast } from "../toast";
 
 // The pair dock: 400px beside the Library (resizable 320–640, remembered as
@@ -385,9 +386,10 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
                 ["traktor", "Traktor", "A Traktor collection (.nml) with tempo, key and a hot cue at each paired section"]]
                 .map(([fmt, label, why]) => (
                   <button key={fmt} className="ui-btn" title={why} disabled={!rows.length || perVocal}
-                    onClick={() => api.exportPairs(rows.slice(0, exportN), fmt, "pairs")
+                    onClick={() => { trackEach("export", rows.slice(0, exportN), "dock");
+                      api.exportPairs(rows.slice(0, exportN), fmt, "pairs")
                       .then((r) => r.skipped && toast(`${r.skipped} track(s) skipped — no audio on disk`))
-                      .catch((e) => toast(`Export failed: ${e.message}`))}>
+                      .catch((e) => toast(`Export failed: ${e.message}`)); }}>
                     {label}
                   </button>
                 ))}

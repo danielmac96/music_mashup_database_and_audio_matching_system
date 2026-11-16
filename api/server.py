@@ -24,6 +24,7 @@ from api.routes import crates as crate_routes  # noqa: E402
 from api.routes import database as database_routes  # noqa: E402
 from api.routes import datasets as dataset_routes  # noqa: E402
 from api.routes import discovery as discovery_routes  # noqa: E402
+from api.routes import events as event_routes  # noqa: E402
 from api.routes import jobs as jobs_routes  # noqa: E402
 from api.routes import mashups as mashup_routes  # noqa: E402
 from api.routes import mixes as mix_routes  # noqa: E402
@@ -75,6 +76,7 @@ app.include_router(crate_routes.router, prefix="/api/crates", tags=["crates"])
 app.include_router(set_routes.router, prefix="/api/sets", tags=["sets"])
 app.include_router(segment_routes.router, prefix="/api/segments", tags=["segments"])
 app.include_router(prefs_routes.router, prefix="/api/prefs", tags=["prefs"])
+app.include_router(event_routes.router, prefix="/api/events", tags=["events"])
 
 
 @app.get("/api/health")

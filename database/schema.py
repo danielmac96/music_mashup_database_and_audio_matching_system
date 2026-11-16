@@ -64,8 +64,55 @@ def _baseline(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _pair_events(conn: sqlite3.Connection) -> None:
+    """Implicit signals about a pair (readme §5.14): one row per thing done
+    with it — shown, looped, skipped, expanded, opened in Studio, rendered,
+    exported, hidden, compared, rated. Keyed by the pair's four ids like every
+    other per-pair table (never candidate.id, readme §7).
+
+    `pair_event_summary` is what raw rows are folded into once they are old
+    (models.compact_pair_events): a count per pair, event and context, so the
+    raw table stays bounded and nothing learned from is lost.
+    """
+    conn.execute("""CREATE TABLE IF NOT EXISTS pair_events (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        vocal_song_id   INTEGER NOT NULL,
+        inst_song_id    INTEGER NOT NULL,
+        vocal_section   INTEGER,
+        inst_section    INTEGER,
+        event           TEXT NOT NULL,
+        value           REAL,
+        context         TEXT,
+        scorer_version  TEXT,
+        rank_shown      INTEGER,
+        created_at      TEXT DEFAULT (datetime('now'))
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pair_events_created "
+                 "ON pair_events(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pair_events_pair "
+                 "ON pair_events(vocal_song_id, inst_song_id)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS pair_event_summary (
+        vocal_song_id   INTEGER NOT NULL,
+        inst_song_id    INTEGER NOT NULL,
+        vocal_section   INTEGER,
+        inst_section    INTEGER,
+        event           TEXT NOT NULL,
+        context         TEXT,
+        n               INTEGER NOT NULL DEFAULT 0,
+        n_top5          INTEGER NOT NULL DEFAULT 0,
+        value_sum       REAL NOT NULL DEFAULT 0,
+        first_at        TEXT,
+        last_at         TEXT
+    )""")
+    conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS ux_pair_event_summary
+        ON pair_event_summary(vocal_song_id, inst_song_id,
+                              COALESCE(vocal_section, -1), COALESCE(inst_section, -1),
+                              event, COALESCE(context, ''))""")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(7, "baseline", _baseline),
+    Migration(8, "pair_events", _pair_events),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

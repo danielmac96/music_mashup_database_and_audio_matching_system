@@ -4,6 +4,7 @@ import { toast } from "../toast";
 import { onNextForSet } from "../dockModes";
 import { keyOf, pairKey, REASON_KEYS, reasonsFor, SCORE_TERMS } from "../components/pairs/pairModel";
 import { TIERS } from "../theme";
+import { track, trackEach, trackShown } from "../events";
 
 // The pair dock: what it shows, where the cursor is, and what the keyboard does.
 //
@@ -196,6 +197,8 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
         if (cancelled) return;
         const got = d.candidates || [];
         setRows(got);
+        // Implicit signal: the top of this fetch was put in front of the user.
+        trackShown(got, "dock");
         setHasMore(!perVocal && !nextFor && got.length >= LIMIT);
         setCursor(0);
         setExpanded(null);
@@ -241,12 +244,16 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   // Export the top N of what the dock is showing as FL session folders, one
   // zip. The filters go to the server rather than a list of rows, so the
   // diversity cap is applied the same way the list applied it.
-  const exportBatch = useCallback((topN) => api.startSessionBatch({
-    top_n: topN, min_score: filters.minScore, max_per_song: MAX_PER_SONG,
-    max_effort: filters.maxEffort, genre: filters.genre, era: filters.era,
-    energy: filters.energy, bpm_band: filters.bpmBand,
-    vocal_forward: filters.vocalForward, search: filters.search.trim(),
-  }), [filters]);
+  const exportBatch = useCallback((topN) => {
+    // The server picks the same top N from the same query the list came from.
+    trackEach("fl_export", rowsRef.current.slice(0, topN), "dock");
+    return api.startSessionBatch({
+      top_n: topN, min_score: filters.minScore, max_per_song: MAX_PER_SONG,
+      max_effort: filters.maxEffort, genre: filters.genre, era: filters.era,
+      energy: filters.energy, bpm_band: filters.bpmBand,
+      vocal_forward: filters.vocalForward, search: filters.search.trim(),
+    });
+  }, [filters]);
 
   // Rows after the client-side order and the loaded-pairs filters, with tier
   // counts taken BEFORE the tier chips narrow them (a chip says how many it
@@ -358,14 +365,19 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     return { index: Math.min(n - 1, Math.max(0, (c.pairing_rank || 1) - 1)), count: n };
   }, [options, stepsOn]);
 
-  const play = useCallback((candidate) => {
+  // `context` says which screen asked (the events' context); anything that is
+  // not a string — a click event, when this is passed as a handler — is the dock.
+  const play = useCallback((candidate, context = "dock") => {
     if (!candidate) return;
+    const at = visibleRef.current.findIndex((c) => keyOf(c) === keyOf(candidate));
     player.toggle({
       kind: "pair",
       key: keyOf(candidate),
       candidate,
       title: candidate.vocal_title,
       subtitle: `over ${candidate.inst_title}`,
+      context: typeof context === "string" ? context : "dock",
+      rank: at >= 0 ? at + 1 : null,
     });
   }, [player]);
 
@@ -421,6 +433,13 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     const k = pairKey(candidate);
     setExpanded((e) => (e === k ? null : k));
   }, []);
+  // Implicit signal: a card was opened up (by ⏎, a click, or auto-advance
+  // carrying the expansion to the next pair).
+  useEffect(() => {
+    if (!expanded) return;
+    const at = visibleRef.current.findIndex((c) => pairKey(c) === expanded);
+    if (at >= 0) track("expand", visibleRef.current[at], { context: "dock", rank: at + 1 });
+  }, [expanded]);
 
   // Rate, then (with auto-advance) move on — the loop follows the cursor if it
   // was playing. A click on a star never advances: you are looking at the card.
@@ -451,6 +470,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     const k = pairKey(candidate);
     setHiddenKeys((s) => new Set(s).add(k));
     if (expanded === k) setExpanded(null);
+    track("hide", candidate, { context: "dock" });
     try {
       await api.hidePair(candidate.vocal_song_id, candidate.inst_song_id);
       toast(`Hidden: ${candidate.vocal_title} over ${candidate.inst_title}`,
@@ -464,6 +484,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   const openStudio = useCallback((candidate) => {
     if (!candidate) return;
     player.stop();
+    track("open_studio", candidate, { context: "dock" });
     onOpenStudio(candidate);
   }, [player, onOpenStudio]);
 

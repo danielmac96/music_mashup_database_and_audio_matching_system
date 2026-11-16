@@ -32,6 +32,7 @@ import { usePlayer } from "./hooks/usePlayer";
 import { isActiveJob } from "./hooks/useQueue";
 import { api } from "./api";
 import { onToast } from "./toast";
+import { track } from "./events";
 import { useFreshness } from "./hooks/useFreshness";
 
 // ?styleguide — a dev-build route (tokens and primitives); never in production.
@@ -248,6 +249,7 @@ export default function App() {
   // `c` on a pair (or ⇄ Compare): Analysis › Compare, vocal against bed.
   const [compareSeed, setCompareSeed] = useState(null);
   const compareInAnalysis = (c) => {
+    track("compare", c, { context: "dock" });
     setCompareSeed({ a: c.vocal_song_id, b: c.inst_song_id, at: Date.now() });
     setRoute("analysis");
   };
@@ -516,13 +518,13 @@ export default function App() {
                   role={dockRole}
                   onRole={setDockRole}
                   onBack={() => setRoute("library")}
-                  onStudio={pairToStudio}
+                  onStudio={(c) => { track("open_studio", c, { context: "track_detail" }); pairToStudio(c); }}
                   onOpenTrack={setSelectedTrackId}
                   onStatus={setHeaderStatus}
                   onChanged={() => library.refresh(true)}
                   onDiscover={discoverSearch}
                   onLinesChanged={dock.reload}
-                  onPlayPair={dock.play}
+                  onPlayPair={(c) => dock.play(c, "track_detail")}
                   onCompareWith={(id) => { setCompareSeed({ a: id, b: null, at: Date.now() }); setRoute("analysis"); }}
                   onChooseAttributes={() => setRoute("analysis")}
                   onOpenQueue={openQueue}

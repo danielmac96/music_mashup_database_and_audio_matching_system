@@ -31,6 +31,7 @@ import { api } from "../api";
 import { useHookAudition } from "./useHookAudition";
 import { createScPlayer } from "./useScWidget";
 import { toast } from "../toast";
+import { noteListening } from "../events";
 
 /** A source's identity, for "is this row the one playing?" checks. Two sources
  *  naming the same audio must produce the same key, and a pair is keyed by its
@@ -269,6 +270,13 @@ export function usePlayer() {
 
   const kind = source?.kind || null;
   const onPair = kind === "pair";
+
+  // How long each pair loop actually sounded, for the implicit `loop_play` /
+  // `skip` events (events.js). Here because this hook is the only thing that
+  // plays a pair, whichever screen asked.
+  useEffect(() => {
+    noteListening(source?.kind === "pair" ? source : null, pair.playing);
+  }, [source, pair.playing]);
 
   const playing = onPair ? pair.playing : elState.playing;
   const position = onPair ? pair.position : elState.position;

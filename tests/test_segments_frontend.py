@@ -87,7 +87,9 @@ def test_ratings_sets_and_notes_go_through_the_shared_hooks():
     screen = FILES["SegmentsScreen.jsx"]
     band = FILES["MiniStudio.jsx"]
     assert "ratings.rate(armed" in screen and "sets.addPair(armed)" in screen
-    assert "ratings.rate(pair, n)" in band and "notes.save(pair" in band
+    # The third argument is the pair-event context (readme §5.14); the rating
+    # still goes through the one shared hook.
+    assert 'ratings.rate(pair, n, "parts")' in band and "notes.save(pair" in band
     assert "sets.addPair(pair)" in band
 
 

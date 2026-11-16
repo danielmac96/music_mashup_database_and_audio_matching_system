@@ -3,6 +3,7 @@ import { DndContext, PointerSensor, useSensor, useSensors, closestCenter } from 
 import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { api } from "../api";
+import { track } from "../events";
 import { GRAB_BOOKMARKLET } from "../bookmarklet/generated";
 import { classifyUrl } from "../sources";
 import { toast } from "../toast";
@@ -89,11 +90,14 @@ function DocumentedPairs({ pairs, player, onOpenStudio, onFindSimilar }) {
               <button className="ui-btn" disabled={!e || !player} onClick={() => player.toggle({
                 kind: "pair", key: k, candidate: e,
                 title: e.vocal_title, subtitle: `over ${e.inst_title}`,
+                context: "mixes",
               })}>{k && playingKey === k ? "◍ stop" : "▶ loop"}</button>
               <button className="ui-btn" disabled={!(p.vocal_song_id && p.inst_song_id) || !onOpenStudio}
-                onClick={() => onOpenStudio(e || {
-                  vocal_song_id: p.vocal_song_id, inst_song_id: p.inst_song_id,
-                })}>Studio</button>
+                onClick={() => {
+                  const pair = e || { vocal_song_id: p.vocal_song_id, inst_song_id: p.inst_song_id };
+                  track("open_studio", pair, { context: "mixes" });
+                  onOpenStudio(pair);
+                }}>Studio</button>
               <button className="ui-btn" disabled={!p.vocal_song_id || !onFindSimilar}
                 title="The pair dock, scoped to this vocal: every bed the engine likes under it"
                 onClick={() => onFindSimilar(p.vocal_song_id)}>Similar →</button>
