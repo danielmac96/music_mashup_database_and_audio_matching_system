@@ -215,6 +215,148 @@ def place(vocal: Dict, bed: Dict, stretch: float = 1.0,
     return out
 
 
+# ── The same placement, for a run that places millions ─────────────────────────
+#
+# `place` re-derives everything about both sections on every call: the in-range
+# downbeats, their median bar length, the vocal's phrase and its grid. In a
+# library run one vocal section is placed against thousands of bed sections and
+# one bed section under thousands of vocals, so `place_cached` keeps what
+# depends on one side only (`cache`, owned by the run) and spends a call on the
+# arithmetic that really is per pair. The numbers are `place`'s to the last
+# bit — the same float operations in the same order; a grid that is not
+# strictly ascending, or the vocal-conform direction, simply goes to `place`.
+# tests/test_phrase_align_cached.py pins the two together.
+
+_MIN_GAP = 2e-3          # > the 1e-3 slack `place` selects a landing's grid with
+_RATIO_FIT: Dict[tuple, Optional[float]] = {}
+
+
+class _Bed:
+    __slots__ = ("section", "start", "end", "dbs", "arr", "bar", "n", "fast")
+
+
+class _Vocal:
+    __slots__ = ("section", "phrases", "start", "phrase", "d_v", "bar", "a0",
+                 "span", "bars", "empty", "fast")
+
+
+def _ascending(arr: np.ndarray, gap: float) -> bool:
+    return len(arr) < 2 or bool(np.all(np.diff(arr) > gap))
+
+
+def _bed_side(section: Dict, cache: Dict) -> _Bed:
+    key = ("bed", id(section))
+    hit = cache.get(key)
+    if hit is not None and hit.section is section:
+        return hit
+    b = _Bed()
+    b.section = section                 # held, so the id cannot be reused
+    b.start = float(section.get("start_sec") or 0.0)
+    b.end = float(section.get("end_sec") or 0.0)
+    b.dbs = _downbeats(section)
+    b.arr = np.asarray(b.dbs, dtype=float)
+    b.bar = _bar_secs(b.dbs)
+    b.n = len(b.dbs)
+    b.fast = _ascending(b.arr, _MIN_GAP)
+    cache[key] = b
+    return b
+
+
+def _vocal_side(section: Dict, phrases, cache: Dict) -> _Vocal:
+    key = ("vocal", id(section))
+    hit = cache.get(key)
+    if hit is not None and hit.section is section and hit.phrases is phrases:
+        return hit
+    v = _Vocal()
+    v.section, v.phrases = section, phrases
+    v.start = float(section.get("start_sec") or 0.0)
+    end = float(section.get("end_sec") or 0.0)
+    v.phrase = phrase = pick_vocal_phrase(section, phrases)
+    dbs = _downbeats(section)
+    v.empty = {"alignment_downbeat": phrase["downbeat"], "alignment_offset": None,
+               "vocal_phrase_start": phrase["onset"],
+               "vocal_pickup_ms": round(phrase["pickup"] * 1000.0, 1),
+               "bed_landing_sec": None, "timing_ok": None,
+               "timing_err_mean_ms": None, "timing_err_max_ms": None,
+               "score_timing": None}
+    v.d_v = d_v = phrase["downbeat"]
+    v.bar = _bar_secs(dbs)
+    v.a0, v.span, v.bars, v.fast = None, 0.0, None, True
+    if d_v is not None:
+        rel = scale_grid([t for t in dbs if t >= d_v - 1e-3], 1.0, d_v)
+        v.span = max(0.0, end - d_v)
+        v.bars = phrase["bars"] or (len(rel) or None)
+        # grid_errors' lower cut, taken once; its upper cut is a prefix of this
+        # when the grid ascends.
+        v.a0 = rel[rel >= -1e-6]
+        v.fast = _ascending(v.a0, 0.0)
+    cache[key] = v
+    return v
+
+
+def place_cached(vocal: Dict, bed: Dict, stretch: float = 1.0,
+                 phrases: Optional[Sequence[Dict]] = None, tol_ms: float = 25.0,
+                 ratios: Sequence[float] = (0.25, 0.5, 1.0, 2.0, 4.0),
+                 cache: Optional[Dict] = None) -> Dict:
+    """`place(..., conform="bed")`, bit for bit, with each side's own work kept
+    in ``cache`` (a dict the caller owns for as long as the sections live)."""
+    if cache is None:
+        return place(vocal, bed, stretch, phrases, tol_ms, ratios)
+    v = _vocal_side(vocal, phrases, cache)
+    b = _bed_side(bed, cache)
+    if not (v.fast and b.fast):
+        return place(vocal, bed, stretch, phrases, tol_ms, ratios)
+    if v.d_v is None or not b.n:
+        return dict(v.empty)
+    rate = max(float(stretch or 1.0), 1e-6)
+    rkey = (v.bars, b.n, tuple(ratios))
+    try:
+        pf = _RATIO_FIT[rkey]
+    except KeyError:
+        if len(_RATIO_FIT) > 4096:
+            _RATIO_FIT.clear()
+        pf = _RATIO_FIT[rkey] = phrase_ratio_fit(v.bars, b.n or None, ratios)
+
+    a0, v_span, b_arr, b_end = v.a0, v.span, b.arr, b.end
+    min_span = MIN_OVERLAP_BARS * (v.bar or b.bar or 2.0) * 0.95
+    best = None
+    for k in LANDING_BARS:
+        if k >= b.n:
+            break
+        land = b.dbs[k]
+        b_rel = (b_arr[k:] - land) / rate
+        span = min(v_span, (b_end - land) / rate)
+        if span < min_span and k:
+            break                       # landing later leaves too little overlap
+        a = a0[:a0.searchsorted(span - 1e-3, "left")]
+        bb = b_rel[:b_rel.searchsorted(span + 0.5, "right")]
+        if len(a) < 2 or len(bb) < 2:
+            cand = (land, None, None, None)
+        else:
+            idx = bb.searchsorted(a)
+            top = len(bb) - 1
+            errs = np.minimum(np.abs(a - bb[np.clip(idx - 1, 0, top)]),
+                              np.abs(a - bb[np.clip(idx, 0, top)]))
+            mean_ms, max_ms = float(errs.mean() * 1000.0), float(errs.max() * 1000.0)
+            cand = (land, mean_ms, max_ms,
+                    max_ms <= tol_ms and (pf is None or pf > 0))
+        if best is None or (cand[3] and not best[3]):
+            best = cand
+        if cand[3]:
+            break
+
+    land, mean_ms, max_ms, ok = best
+    out = dict(v.empty)
+    out["alignment_offset"] = round((v.d_v - v.start) - (land - b.start) / rate, 4)
+    out["bed_landing_sec"] = round(land, 4)
+    if ok is not None:
+        out["timing_ok"] = 1 if ok else 0
+        out["timing_err_mean_ms"] = round(mean_ms, 2)
+        out["timing_err_max_ms"] = round(max_ms, 2)
+        out["score_timing"] = timing_score(mean_ms, max_ms, tol_ms, pf)
+    return out
+
+
 def overlay_clicks(vocal_downbeats: Sequence[float], bed_downbeats: Sequence[float],
                    offset_sec: float, length_sec: float, sr: int = 44100) -> np.ndarray:
     """A stereo click track for the debug render: the vocal's (already placed)

@@ -46,11 +46,18 @@ def confidence_tier(score_percentile: Optional[float],
     return TIERS[idx]
 
 
-def tier_sql(pct: str = "pc.score_percentile", mc: str = "mc") -> str:
+def tier_sql(pct: str = "pc.score_percentile", mc: str = "mc",
+             at_least=None) -> str:
     """The same tier as a 0-3 index in SQL (0 = strong), taking ONE bound
     parameter: the library's harmony_unsure_below. The downgrade mirrors
-    recipe.harmony_sure — a measured shift whose confidence sits under it."""
-    whens = " ".join(f"WHEN COALESCE({pct}, 0) * 100.0 >= {TIER_MIN_PCT[name]} THEN {i}"
+    recipe.harmony_sure — a measured shift whose confidence sits under it.
+
+    ``at_least(min_pct)`` supplies the SQL for "this row's percentile × 100 is
+    at least ``min_pct``" when the percentile is not a column of the query —
+    the listing ranks against a cached column
+    (models.CandidateRanks.at_least_sql) instead of a window over the table."""
+    test = at_least or (lambda min_pct: f"COALESCE({pct}, 0) * 100.0 >= {min_pct}")
+    whens = " ".join(f"WHEN {test(TIER_MIN_PCT[name])} THEN {i}"
                      for i, name in enumerate(TIERS[:-1]))
     last = len(TIERS) - 1
     return (f"MIN({last}, (CASE {whens} ELSE {last} END) + "

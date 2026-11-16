@@ -74,6 +74,19 @@ def _vec(chroma: Optional[Sequence[float]]) -> Optional[np.ndarray]:
     return v / n
 
 
+def _vec_of(chroma, cache: Optional[dict]) -> Optional[np.ndarray]:
+    """_vec, remembered per chroma list for a scoring run: one section's chroma
+    is normalised once, not once per partner. ``cache`` is the run's; the list
+    is held beside its vector so its id cannot be reused."""
+    if cache is None or chroma is None:
+        return _vec(chroma)
+    key = ("chroma", id(chroma))
+    hit = cache.get(key)
+    if hit is None or hit[0] is not chroma:
+        hit = cache[key] = (chroma, _vec(chroma))
+    return hit[1]
+
+
 def _fold(shift: int) -> int:
     """A rotation 0-11 as the smallest signed transposition, in [-6, +6]."""
     s = shift % N_PITCH_CLASSES
@@ -81,7 +94,8 @@ def _fold(shift: int) -> int:
 
 
 def harmonic_fit(vocal_chroma: Optional[Sequence[float]],
-                 bed_chroma: Optional[Sequence[float]]) -> Dict:
+                 bed_chroma: Optional[Sequence[float]],
+                 cache: Optional[dict] = None) -> Dict:
     """How well two sections' harmony agrees, and what shift makes it agree.
 
     Returns {fit, shift, confidence, known}:
@@ -94,8 +108,8 @@ def harmonic_fit(vocal_chroma: Optional[Sequence[float]],
                    fit is the neutral 0.5 and shift is 0. Callers must fall back
                    to the Camelot estimate rather than trusting a made-up 0.
     """
-    v = _vec(vocal_chroma)
-    b = _vec(bed_chroma)
+    v = _vec_of(vocal_chroma, cache)
+    b = _vec_of(bed_chroma, cache)
     if v is None or b is None:
         return {"fit": 0.5, "shift": 0, "confidence": 0.0, "known": False}
 
@@ -130,7 +144,7 @@ def harmonic_fit(vocal_chroma: Optional[Sequence[float]],
 
 def bass_clash(vocal_chroma: Optional[Sequence[float]],
                bed_bass_chroma: Optional[Sequence[float]],
-               shift: int = 0) -> Dict:
+               shift: int = 0, cache: Optional[dict] = None) -> Dict:
     """Whether the bed's bass root fights the vocal's tonic after transposing.
 
     Root clash in the low end is the most common reason a technically
@@ -140,8 +154,8 @@ def bass_clash(vocal_chroma: Optional[Sequence[float]],
 
     Returns {clash, interval, advice, known}.
     """
-    v = _vec(vocal_chroma)
-    b = _vec(bed_bass_chroma)
+    v = _vec_of(vocal_chroma, cache)
+    b = _vec_of(bed_bass_chroma, cache)
     if v is None or b is None:
         return {"clash": False, "interval": None, "advice": None, "known": False}
 
@@ -177,7 +191,8 @@ def _side_chroma(section: Optional[dict], stem_key: str):
 
 
 def section_harmony(vocal_section: Optional[dict],
-                    bed_section: Optional[dict]) -> Dict:
+                    bed_section: Optional[dict],
+                    cache: Optional[dict] = None) -> Dict:
     """The full harmonic verdict for one (vocal section, bed section) pair.
 
     Combines the measured fit with the bass-clash penalty and carries the advice
@@ -186,8 +201,8 @@ def section_harmony(vocal_section: Optional[dict],
     """
     v = _side_chroma(vocal_section, "chroma_vocal")
     b = _side_chroma(bed_section, "chroma_bed")
-    fit = harmonic_fit(v, b)
-    clash = bass_clash(v, (bed_section or {}).get("bass_chroma"), fit["shift"])
+    fit = harmonic_fit(v, b, cache)
+    clash = bass_clash(v, (bed_section or {}).get("bass_chroma"), fit["shift"], cache)
 
     score = fit["fit"]
     if fit["known"] and clash["clash"]:

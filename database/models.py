@@ -2044,6 +2044,125 @@ def _two_track_query(search: str) -> Optional[tuple[str, str]]:
     return None
 
 
+# ── Candidate percentiles (readme §5.7, "Listing") ───────────────────────────
+#
+# A pair's score_percentile and energy_pct are SQL's PERCENT_RANK over every
+# candidate of its combo type. As window functions inside the listing they were
+# recomputed over the whole table on every request — two sorts of ~200,000
+# rows to return forty. The table only changes when something is scored, so
+# the two sorted columns are kept here per state of the table and the listing
+# does its ranking with a bisect: the same number, (rows strictly below) /
+# (n - 1), NULLs first, and a percentile filter becomes a plain comparison on
+# the indexed column.
+
+_NULL_FIRST = float("-inf")
+_RANKS_CACHE: Dict[str, tuple] = {}
+
+
+class CandidateRanks:
+    """Sorted score_total and inst_energy per combo type (NULL as -inf, which
+    is where SQLite sorts it)."""
+
+    def __init__(self, conn):
+        cols: Dict[str, Dict[str, list]] = {}
+        for combo, total, energy in conn.execute(
+                "SELECT combo_type, score_total, inst_energy FROM mashup_candidates"):
+            c = cols.setdefault(combo, {"score_total": [], "inst_energy": []})
+            c["score_total"].append(_NULL_FIRST if total is None else total)
+            c["inst_energy"].append(_NULL_FIRST if energy is None else energy)
+        for c in cols.values():
+            c["score_total"].sort()
+            c["inst_energy"].sort()
+        self.cols = cols
+
+    def rank(self, combo: str, column: str, value) -> Optional[float]:
+        """PERCENT_RANK of ``value`` in its combo's ``column``; None for a
+        combo with no rows (the LEFT JOIN's NULL)."""
+        import bisect
+        arr = (self.cols.get(combo) or {}).get(column)
+        if not arr:
+            return None
+        if len(arr) == 1:
+            return 0.0
+        v = _NULL_FIRST if value is None else value
+        return bisect.bisect_left(arr, v) / (len(arr) - 1)
+
+    def _first_at(self, arr: list, p: float, scale: float = 1.0):
+        """The smallest value whose percent rank, times ``scale``, is >= ``p``
+        (None: no value reaches it). Ranks only rise along the sorted column,
+        so a bisect over positions finds where they cross, and the value there
+        is stepped forward until its own rank (its FIRST position) has."""
+        import bisect
+        n = len(arr)
+        if n == 1:
+            return arr[0] if 0.0 >= p else None
+        lo, hi = 0, n
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if mid / (n - 1) * scale >= p:
+                hi = mid
+            else:
+                lo = mid + 1
+        while lo < n and bisect.bisect_left(arr, arr[lo]) / (n - 1) * scale < p:
+            lo = bisect.bisect_right(arr, arr[lo])
+        return arr[lo] if lo < n else None
+
+    @staticmethod
+    def _lit(text: str) -> str:
+        return "'" + str(text).replace("'", "''") + "'"
+
+    def at_least_sql(self, column: str, p: float, scale: float = 1.0) -> str:
+        """SQL (on alias ``mc``, literals inline, no parameters) for
+        ``COALESCE(PERCENT_RANK(column), 0) * scale >= p``."""
+        if p <= 0:
+            return "1"
+        whens = []
+        for combo, c in self.cols.items():
+            v = self._first_at(c[column], p, scale)
+            if v is not None:
+                whens.append(f"WHEN {self._lit(combo)} THEN mc.{column} >= {v!r}")
+        if not whens:
+            return "0"
+        return f"COALESCE(CASE mc.combo_type {' '.join(whens)} ELSE 0 END, 0)"
+
+    def below_sql(self, column: str, p: float) -> str:
+        """SQL for ``PERCENT_RANK(column) < p`` (a NULL ranks 0)."""
+        if p <= 0:
+            return "0"
+        whens = []
+        for combo, c in self.cols.items():
+            v = self._first_at(c[column], p)
+            whens.append(f"WHEN {self._lit(combo)} THEN 1" if v is None else
+                         f"WHEN {self._lit(combo)} THEN "
+                         f"(mc.{column} IS NULL OR mc.{column} < {v!r})")
+        if not whens:
+            return "0"
+        return f"CASE mc.combo_type {' '.join(whens)} ELSE 0 END"
+
+
+def candidate_ranks(db_path: Path = DB_PATH, conn=None) -> CandidateRanks:
+    """The ranks for the table as it is now. The state is its row count, its
+    newest id (ids are AUTOINCREMENT, never reused) and the sum of its totals
+    (an upsert that rewrites a row in place moves that); reading it is an
+    index scan, the rebuild one pass over two columns."""
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
+    try:
+        state = tuple(conn.execute(
+            "SELECT COUNT(*), MAX(id), SUM(score_total) FROM mashup_candidates"
+        ).fetchone())
+        key = str(db_path)
+        hit = _RANKS_CACHE.get(key)
+        if hit is None or hit[0] != state:
+            hit = (state, CandidateRanks(conn))
+            _RANKS_CACHE[key] = hit
+        return hit[1]
+    finally:
+        if own:
+            conn.close()
+
+
 def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             limit: int = 100, vocal_song_id: Optional[int] = None,
                             inst_song_id: Optional[int] = None,
@@ -2123,6 +2242,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     unsure_below = (harmony_unsure_below(db_path=db_path)
                     if tiers or order == "tier" else None)
     conn = get_conn(db_path)
+    ranks = candidate_ranks(db_path, conn=conn)
     # min_score gates on the PERCENTILE, not the raw composite — the same number
     # the row displays and the same one `tierFor` colours.
     #
@@ -2133,8 +2253,13 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     # that did nothing at all between 50 and 75 and then emptied the page,
     # against a column of percentages that ran the full 0-100. Two scales, one
     # label.
-    where = ["COALESCE(pc.score_percentile, 0) >= ?"]
-    params: list = [min_score]
+    # The percentile is a bisect over the cached column (candidate_ranks), so
+    # the gate is a comparison on score_total, not a window over the table.
+    where = [ranks.at_least_sql("score_total", float(min_score or 0.0))]
+    params: list = []
+    # The card's tier in SQL, on the same cached ranks.
+    tier_expr = tier_sql(at_least=lambda pct: ranks.at_least_sql(
+        "score_total", pct, scale=100.0))
     if combo_type:
         where.append("mc.combo_type = ?")
         params.append(combo_type)
@@ -2187,8 +2312,8 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             raise ValueError(f"energy must be one of {sorted(ENERGY_BANDS)}")
         # Ranked within the library rather than thresholded on a raw number:
         # spectral energy has no absolute meaning across masters.
-        where.append("ne.energy_pct >= ? AND ne.energy_pct < ?")
-        params += [lo, hi]
+        where.append(f"({ranks.at_least_sql('inst_energy', lo)}) AND "
+                     f"({ranks.below_sql('inst_energy', hi)})")
     if max_effort is not None:
         # NULL score_effort means the row predates the column; a re-score fills
         # it in. Treat it as passing rather than hiding the whole library.
@@ -2225,7 +2350,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         where.append("mc.inst_section_label = ?")
         params.append(inst_label)
     if tiers:
-        where.append(f"{tier_sql()} IN ({','.join(str(t) for t in tiers)})")
+        where.append(f"{tier_expr} IN ({','.join(str(t) for t in tiers)})")
         params.append(unsure_below)
     if search and search.strip():
         both = _two_track_query(search)
@@ -2274,7 +2399,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         order_sql = (f"(mc.{col} IS NULL) ASC, mc.{col} DESC, "
                      "mc.score_total DESC")
     elif order == "tier":
-        order_sql = f"{tier_sql()} ASC, mc.score_total DESC"
+        order_sql = f"{tier_expr} ASC, mc.score_total DESC"
         params.append(unsure_below)
     else:
         order_sql = "mc.score_total DESC"
@@ -2292,32 +2417,8 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                 SELECT id,
                        PERCENT_RANK() OVER (ORDER BY (plays + 2 * likes)) AS popularity
                 FROM songs
-            ),
-            -- Where this pair sits among the other pairs OF ITS KIND. A raw
-            -- composite reads ~78% for nearly everything, which says nothing
-            -- about whether this pair is good *for this library*; the rank does.
-            -- Computed over the whole table rather than the returned page, so
-            -- filtering does not rescale it, but partitioned by combo_type:
-            -- ranking a vocal-over-bed pair against instrumental-over-
-            -- instrumental pairs would make the best visible row read ~84th.
-            pct AS (
-                SELECT id,
-                       PERCENT_RANK() OVER (PARTITION BY combo_type
-                                            ORDER BY score_total) AS score_percentile
-                FROM mashup_candidates
-            ),
-            -- How hard this pair hits, relative to the rest of the library.
-            -- The bed carries the energy, and a raw spectral figure means
-            -- nothing across differently mastered records, so band on the rank.
-            nrg AS (
-                SELECT id,
-                       PERCENT_RANK() OVER (PARTITION BY combo_type
-                                            ORDER BY inst_energy) AS energy_pct
-                FROM mashup_candidates
             )
             SELECT mc.*,
-                   pc.score_percentile,
-                   ne.energy_pct,
                    sv.genre        AS vocal_genre,
                    sv.release_year AS vocal_year,
                    sv.plays        AS vocal_plays,
@@ -2384,8 +2485,6 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             LEFT JOIN songs si ON si.id = mc.inst_song_id
             LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
             LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
-            LEFT JOIN pct pc   ON pc.id = mc.id
-            LEFT JOIN nrg ne   ON ne.id = mc.id
             WHERE {' AND '.join(where)}
             ORDER BY {order_sql}
             LIMIT ?""",
@@ -2396,8 +2495,20 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     # count towards the cap — counted, it used up its share on the first three
     # rows and "beds for this vocal" stopped at three.
     scoped = {s for s in (vocal_song_id, inst_song_id) if s is not None}
-    return _cap_per_song([dict(r) for r in rows], max_per_song, want,
-                         max_per_song_pair, exempt=scoped)[offset:]
+    out = _cap_per_song([dict(r) for r in rows], max_per_song, want,
+                        max_per_song_pair, exempt=scoped)[offset:]
+    # Where each pair sits among the other pairs OF ITS KIND, and how hard its
+    # bed hits relative to the rest. A raw composite reads ~78% for nearly
+    # everything, which says nothing about whether this pair is good *for this
+    # library*; the rank does. Over the whole table, so filtering does not
+    # rescale it, and per combo type: ranking a vocal-over-bed pair against
+    # instrumental-over-instrumental pairs would make the best row read ~84th.
+    for r in out:
+        r["score_percentile"] = ranks.rank(r["combo_type"], "score_total",
+                                           r.get("score_total"))
+        r["energy_pct"] = ranks.rank(r["combo_type"], "inst_energy",
+                                     r.get("inst_energy"))
+    return out
 
 
 # ── T3.5 filter vocabularies ─────────────────────────────────────────────────
@@ -2551,25 +2662,20 @@ def best_bed_per_vocal(combo_type: str = "vocal_over_instrumental",
 
     Hidden pairs and excluded tracks are filtered out here too."""
     conn = get_conn(db_path)
+    ranks = candidate_ranks(db_path, conn=conn)
+    pct_sql = ranks.at_least_sql("score_total", float(min_score or 0.0))
     rows = conn.execute(
-        """WITH pct AS (
-               SELECT id,
-                      PERCENT_RANK() OVER (PARTITION BY combo_type
-                                           ORDER BY score_total) AS score_percentile
-               FROM mashup_candidates
-           ),
-           ranked AS (
-               SELECT mc.*, pc.score_percentile,
+        f"""WITH ranked AS (
+               SELECT mc.*,
                       ROW_NUMBER() OVER (PARTITION BY mc.vocal_song_id
                                          ORDER BY mc.score_total DESC) AS bed_rank,
                       MAX(mc.score_total) OVER (PARTITION BY mc.vocal_song_id)
                           AS vocal_best_score
                FROM mashup_candidates mc
-               LEFT JOIN pct pc ON pc.id = mc.id
                WHERE mc.combo_type = ?
                  -- Percentile, matching the flat list and the number the row
                  -- shows. See get_candidates_enriched.
-                 AND COALESCE(pc.score_percentile, 0) >= ?
+                 AND {pct_sql}
                  AND NOT EXISTS (SELECT 1 FROM pair_hidden h
                                   WHERE h.vocal_song_id = mc.vocal_song_id
                                     AND h.inst_song_id = mc.inst_song_id)
@@ -2581,10 +2687,14 @@ def best_bed_per_vocal(combo_type: str = "vocal_over_instrumental",
            WHERE bed_rank <= ?
            ORDER BY vocal_best_score DESC, vocal_song_id, bed_rank
            LIMIT ?""",
-        (combo_type, min_score, max(1, per_vocal), max(1, limit)),
+        (combo_type, max(1, per_vocal), max(1, limit)),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    for r in out:
+        r["score_percentile"] = ranks.rank(r["combo_type"], "score_total",
+                                           r.get("score_total"))
+    return out
 
 
 # ── Hidden pairs / excluded tracks (T3.4) ────────────────────────────────────
