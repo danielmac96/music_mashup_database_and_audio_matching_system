@@ -1514,6 +1514,16 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         and 0.0 <= timing_weight <= 1.0 \
         and all(w >= 0 for w in SECTION_WEIGHTS_RUN.values())
 
+    def _load_phrases(vocal_ids) -> None:
+        """Every vocal song's phrases in one read, into the run's timing
+        context (timing_for then finds them there)."""
+        if TIMING_BASE is None:
+            return
+        missing = set(vocal_ids) - set(TIMING_BASE["_phrases"])
+        if missing:
+            from database.alignment import phrases_for_songs
+            TIMING_BASE["_phrases"].update(phrases_for_songs(missing, db_path=db))
+
     def _on_section_pair(done: int, total: int) -> None:
         if progress:
             progress(40 + int(45 * done / max(total, 1)),
@@ -1534,6 +1544,7 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         _wanted -= set(_sections_cache)
         if _wanted:
             _sections_cache.update(sections_for_songs(_wanted, db_path=db, engine=ENGINE))
+        _load_phrases({t["song_id"] for t, _b, _sc in voi})
         if use_model:
             _apply_model_scores(voi, bundle, _sections, lib_stats,
                                 _report(30, 10, "Applying the learned model"),
@@ -1552,6 +1563,7 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         _wanted -= set(_sections_cache)
         if _wanted:
             _sections_cache.update(sections_for_songs(_wanted, db_path=db, engine=ENGINE))
+        _load_phrases({f["song_id"] for t, _b in passes for f in t.feats})
         pruned_stats = _score_pruned(
             passes, voi_gate, keepers["vocal_over_instrumental"], _usable,
             lambda top, bed, scores, seq: _price(
