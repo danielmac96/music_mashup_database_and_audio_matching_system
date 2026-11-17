@@ -796,7 +796,14 @@ uncertain-first orders, `pairing_count` / `pairing_rank` for the stepper. A row'
 type, read from two sorted columns kept per state of the table
 (`models.candidate_ranks`) rather than from a window over the whole table on
 every request; a percentile filter or tier becomes a comparison on
-`score_total`.
+`score_total`. The orders that sort on an expression — easy (the default),
+Drop-in, tier, and score with the Drop-in bonus — would make SQLite build
+every row of the table, correlated subqueries and all, to return forty. Each
+is bounded by `score_total` from below, so library-wide they run first over
+the top slice of each combo type's scores (an index range) and keep the answer
+only when its last row provably outranks anything under the slice; otherwise
+the slice widens, and the last resort is the whole table
+(`models._bounded_listing`, pinned against the whole-table query).
 
 **Scale** (`match._score_pruned`, `_TopRows`, `phrase_align.place_cached`). A
 run keeps the best `max_candidate_rows` rows per combo type, so a run that
@@ -1170,6 +1177,13 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
   `segment_match._Snapshot.cache`): it holds each section dict beside what it
   derived, and lives exactly as long as the sections it was built from. Never
   share one across runs or mutate a section while one is alive.
+- **A computed listing order must be bounded by `score_total`.**
+  `_bounded_listing` leaves rows under a score out and proves they could not
+  have ranked higher. A new order, or a new term in an order expression, that
+  can lift a low-scoring row above a high one (another bonus, a different
+  tier rule) needs its own exactness check there, or the library-wide dock
+  silently drops rows. A scoped list is never bounded (its index range is
+  already small).
 - **`score_percentile` has two readers of one definition**: the listing
   (`models.CandidateRanks`) and Segments (`segment_match._percent_rank`) both
   compute SQL's `PERCENT_RANK`. The ranks are rebuilt when the table's row
@@ -1470,7 +1484,6 @@ browser sends.
     persistence across restarts, automatic lyrics for section lines.
 13. Segments: with a learned model active, live and stored rows are ranked on
     two scales.
-
 14. **Scale, what is left** (synthetic libraries, §8). Score library now
     finishes at 10,000 tracks, but: a run under a **learned model** still
     prices every pair (a probability has no ceiling to prune with) and will
@@ -1481,6 +1494,8 @@ browser sends.
     them to the cap and the reserve. **`GET /api/tracks`** is 4 s and 37 MB at
     10,000 tracks (3.5 MB gzipped, but the route does not compress), and
     **Segments' first match** still builds a snapshot of every section.
+15. **Pair events have no reader yet** (§5.14): they are collected for the
+    learning loop. The mini studio's loop is not timed.
 16. **Planted drop-ins are not special enough to measure a ranking with.** On
     the synthetic library a planted pair sits near the top few per cent of its
     vocal's partners, not in its top five: hundreds of naturally compatible
@@ -1490,8 +1505,6 @@ browser sends.
     generator makes planted pairs distinctive (a loudness and timbre match the
     engine already rewards), or recall is measured as "tagged Drop-in and in
     the top N %" rather than "in the top five".
-15. **Pair events have no reader yet** (§5.14): they are collected for the
-    learning loop. The mini studio's loop is not timed.
 
 Not worth doing: raising the `rhythm` or `structure` section weights (`rhythm`
 saturates on 4/4 dance music; `structure` duplicates `label`); persistent

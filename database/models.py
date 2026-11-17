@@ -2310,7 +2310,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     params: list = []
     # The card's tier in SQL, on the same cached ranks.
     tier_expr = tier_sql(at_least=lambda pct: ranks.at_least_sql(
-        "score_total", pct, scale=100.0))
+        "score_total", pct, scale=100.0)).replace("?", repr(float(unsure_below)))
     # The Drop-in rule in SQL, its one parameter (the unsure threshold) inline
     # so the expression can sit in the filter and the order alike.
     dropin_expr = dropin_sql(_threshold("slot_dropin_floor", None)).replace(
@@ -2411,7 +2411,6 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         params.append(inst_label)
     if tiers:
         where.append(f"{tier_expr} IN ({','.join(str(t) for t in tiers)})")
-        params.append(unsure_below)
     if search and search.strip():
         both = _two_track_query(search)
         if both:
@@ -2459,18 +2458,19 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         order_sql = (f"(mc.{col} IS NULL) ASC, mc.{col} DESC, "
                      "mc.score_total DESC")
     elif order == "tier":
-        order_sql = f"{tier_expr} ASC, mc.score_total DESC"
-        params.append(unsure_below)
+        order_sql = f"{tier_expr} ASC, mc.score_total DESC, mc.id"
     elif order == "easy":
         # Easy first: the tier, Drop-ins pinned first inside it, then the
         # score (which is already fit − effort).
         order_sql = (f"{tier_expr} ASC, {dropin_expr} DESC, "
-                     f"{ranked_sql} DESC, mc.score_total DESC")
-        params.append(unsure_below)
+                     f"{ranked_sql} DESC, mc.score_total DESC, mc.id")
     elif order == "dropin":
-        order_sql = f"{dropin_expr} DESC, mc.score_total DESC"
+        order_sql = f"{dropin_expr} DESC, mc.score_total DESC, mc.id"
     else:
-        order_sql = f"{ranked_sql} DESC, mc.score_total DESC"
+        # A total order once it is computed (the id settles ties), so the
+        # bounded listing returns exactly what the whole table would.
+        order_sql = (f"{ranked_sql} DESC, mc.score_total DESC"
+                     + (", mc.id" if bonus > 0 else ""))
 
     # The cap is a greedy pass over the ranked rows, so it needs more rows than
     # it will return. Fetching everything would mean 90k rows through the join
@@ -2480,7 +2480,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     want = limit + offset
     fetch = want if max_per_song <= 0 else min(max(want * 20, 200), 5000)
     params.append(fetch)
-    rows = conn.execute(
+    sql = lambda extra: (  # noqa: E731 — the one query, with an optional bound
         f"""WITH pop AS (
                 SELECT id,
                        PERCENT_RANK() OVER (ORDER BY (plays + 2 * likes)) AS popularity
@@ -2553,17 +2553,23 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             LEFT JOIN songs si ON si.id = mc.inst_song_id
             LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
             LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
-            WHERE {' AND '.join(where)}
+            WHERE {' AND '.join(where + extra)}
             ORDER BY {order_sql}
-            LIMIT ?""",
-        params,
-    ).fetchall()
+            LIMIT ?""")
+    rows = None
+    bonus_order = order == "score" and bonus > 0
+    if (bonus_order or order in ("easy", "dropin", "tier")) \
+            and vocal_song_id is None and inst_song_id is None and pairs is None:
+        rows = _bounded_listing(conn, sql, params, fetch, order, bonus, ranks,
+                                combo_type, dropin_expr, tier_expr)
+    if rows is None:
+        rows = conn.execute(sql([]), params).fetchall()
     conn.close()
     # The track a directed search is scoped to is on every row, so it must not
     # count towards the cap — counted, it used up its share on the first three
     # rows and "beds for this vocal" stopped at three.
     scoped = {s for s in (vocal_song_id, inst_song_id) if s is not None}
-    out = _cap_per_song([dict(r) for r in rows], max_per_song, want,
+    out = _cap_per_song([_listed(r) for r in rows], max_per_song, want,
                         max_per_song_pair, exempt=scoped)[offset:]
     # Where each pair sits among the other pairs OF ITS KIND, and how hard its
     # bed hits relative to the rest. A raw composite reads ~78% for nearly
@@ -2577,6 +2583,113 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         r["energy_pct"] = ranks.rank(r["combo_type"], "inst_energy",
                                      r.get("inst_energy"))
     return out
+
+
+# ── A computed order over the whole library (readme §5.7, "Listing") ──────────
+#
+# The default dock order (easy: tier, Drop-ins, score), the Drop-in bonus, the
+# tier and Drop-in orders all sort on an expression, which no index serves, so
+# SQLite would build every row of the table — correlated subqueries included —
+# to return forty. Every one of them is bounded by score_total from below: a
+# row under a score L can only reach a key a row at L could reach. So the
+# query runs first over the top slice (score_total >= L, an index range), and
+# its answer is kept only when its last row provably outranks anything under
+# L; otherwise the slice widens, and the last resort is the whole table. The
+# rows are the ones the unbounded query returns (tests/test_slot_dropin.py).
+
+_BOUND_POOLS = (4, 32)        # slice sizes, in multiples of the rows fetched
+
+
+def _listed(row) -> Dict:
+    d = dict(row)
+    d.pop("_dropin", None)
+    d.pop("_tier", None)
+    return d
+
+
+def _tier_below(ranks: "CandidateRanks", combo: str, bound: float) -> Optional[int]:
+    """The smallest tier any row of ``combo`` scoring under ``bound`` can
+    have — the tier of the best score under it (a downgrade only raises a
+    tier). None when no row of that combo scores under it."""
+    import bisect
+    from matcher.compat import TIER_MIN_PCT, TIERS
+    arr = ranks.cols[combo]["score_total"]
+    k = bisect.bisect_left(arr, bound) - 1
+    if k < 0:
+        return None
+    p = ranks.rank(combo, "score_total", arr[k]) or 0.0
+    for i, name in enumerate(TIERS[:-1]):
+        if p * 100.0 >= TIER_MIN_PCT[name]:
+            return i
+    return len(TIERS) - 1
+
+
+def _bounded_listing(conn, sql, params, fetch, order, bonus, ranks, combo_type,
+                     dropin_expr, tier_expr):
+    """The listing over the top slice of each combo type's scores, or None to
+    run it whole.
+
+    A row of combo c under its bound L_c ranks after the slice's last row
+    when, for every c that has rows under its bound:
+      score  — the last key reaches L_c + the bonus (only a vocal pair can be
+               a Drop-in and take it);
+      dropin — the last row is a Drop-in;
+      tier   — the last tier is below c's best tier under L_c, or equal with
+               a score at or over L_c;
+      easy   — the same, where at an equal tier a Drop-in last row needs
+               nothing more and a plain one needs c to be unable to hold
+               Drop-ins and its score at or over L_c."""
+    combos = [combo_type] if combo_type else list(ranks.cols)
+    combos = [c for c in combos if c in ranks.cols]
+    if not combos:
+        return None
+    marks = f", {dropin_expr} AS _dropin, {tier_expr} AS _tier"
+    for pool in _BOUND_POOLS:
+        bounds = {}
+        for c in combos:
+            arr = ranks.cols[c]["score_total"]
+            if pool * fetch < len(arr) and arr[len(arr) - pool * fetch] != float("-inf"):
+                bounds[c] = arr[len(arr) - pool * fetch]
+        if not bounds:
+            return None                 # nothing to leave out: run it whole
+        parts = [f"(mc.combo_type = {CandidateRanks._lit(c)}"
+                 + (f" AND mc.score_total >= {bounds[c]!r})" if c in bounds else ")")
+                 for c in combos]
+        q = sql([f"({' OR '.join(parts)})"]).replace(
+            "SELECT mc.*,", f"SELECT mc.*{marks},", 1)
+        rows = conn.execute(q, params).fetchall()
+        if len(rows) < fetch:
+            continue                    # rows under a bound may fill the page
+        last = rows[-1]
+        drop = bool(last["_dropin"])
+        score = last["score_total"]
+        if score is None:
+            continue
+        ok = True
+        for c, bound in bounds.items():
+            can_drop = c == "vocal_over_instrumental"
+            if order == "score":
+                ok = (score + (bonus if drop else 0.0)
+                      >= bound + (bonus if can_drop else 0.0) + 1e-9)
+            elif order == "dropin":
+                ok = drop
+            else:
+                t_ex = _tier_below(ranks, c, bound)
+                if t_ex is None:
+                    continue
+                if last["_tier"] < t_ex:
+                    ok = True
+                elif last["_tier"] > t_ex:
+                    ok = False
+                elif order == "tier":
+                    ok = score >= bound
+                else:
+                    ok = drop or (not can_drop and score >= bound)
+            if not ok:
+                break
+        if ok:
+            return rows
+    return None
 
 
 # ── T3.5 filter vocabularies ─────────────────────────────────────────────────

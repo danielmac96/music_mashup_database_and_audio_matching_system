@@ -466,3 +466,41 @@ def test_migration_nine_adds_only_nullable_candidate_columns(tmp_path, monkeypat
     assert conn.execute(
         "SELECT sql FROM sqlite_master WHERE name='pair_feedback'").fetchone() == before
     conn.close()
+
+
+# ── a computed order over the whole library ──────────────────────────────────
+
+@pytest.mark.parametrize("order", ["easy", "dropin", "tier", "score"])
+def test_a_bounded_listing_is_the_whole_tables(scored, monkeypatch, order):
+    """The easy, Drop-in, tier and bonus orders run over the top slice of
+    scores first (models._bounded_listing); whatever they return must be the
+    list the whole table returns — for small and large pages, with filters
+    that thin the slice out, and with both combo types mixed."""
+    m, _mashups, _manifest = scored
+    monkeypatch.setenv("MASHUP_DROPIN_BONUS", "0.05")
+    calls = {"bounded": 0, "answered": 0}
+    real = m._bounded_listing
+
+    def spy(*a, **k):
+        calls["bounded"] += 1
+        out = real(*a, **k)
+        calls["answered"] += out is not None
+        return out
+
+    cases = [dict(combo_type="vocal_over_instrumental", limit=5, max_per_song=0),
+             dict(combo_type="vocal_over_instrumental", limit=12, max_per_song=0),
+             dict(combo_type="", limit=8, max_per_song=0),
+             dict(combo_type="vocal_over_instrumental", limit=6, max_per_song=0,
+                  dropin=False),
+             dict(combo_type="vocal_over_instrumental", limit=4, max_per_song=0,
+                  energy="high"),
+             dict(combo_type="vocal_over_instrumental", limit=3, max_per_song=2)]
+    for kw in cases:
+        monkeypatch.setattr(m, "_bounded_listing", spy)
+        got = [r["id"] for r in m.get_candidates_enriched(order=order, **kw)]
+        monkeypatch.setattr(m, "_bounded_listing", lambda *a, **k: None)
+        want = [r["id"] for r in m.get_candidates_enriched(order=order, **kw)]
+        assert got == want, (order, kw)
+        assert got
+    assert calls["bounded"] == len(cases)
+    assert calls["answered"] >= 2          # the slice really answered some
