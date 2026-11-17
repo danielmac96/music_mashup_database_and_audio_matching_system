@@ -1839,19 +1839,26 @@ def _score_pruned(passes, gate: dict, keeper: _TopRows, usable, price, *,
 
     # Before anything is priced (pricing blanks a pair's ceiling): a uniform
     # sample of the gated pairs, for the caller's library-wide statistics.
-    if sample is not None:
-        gated = [np.argwhere(np.isfinite(ub)) for ub in ceilings]
-        n_gated = sum(len(g) for g in gated)
-        if n_gated:
-            picks = np.sort(np.random.default_rng(n_gated).choice(
-                n_gated, size=min(SLOT_SAMPLE_PAIRS, n_gated), replace=False))
-            chosen, base = [], 0
-            for (top, bed), g in zip(passes, gated):
-                for k in picks[(picks >= base) & (picks < base + len(g))] - base:
-                    chosen.append((top.feats[int(g[k][0])], bed.feats[int(g[k][1])]))
-                base += len(g)
-            sample(chosen)
-        gated = None
+    if sample is not None and int(hist.sum()):
+        # Drawn by rejection — a random cell, kept when it is a gated pair —
+        # so nothing the size of the pair matrix is built to choose from.
+        rng = np.random.default_rng(int(hist.sum()))
+        counts = [int(np.count_nonzero(np.isfinite(ub))) for ub in ceilings]
+        chosen = []
+        for (top, bed), ub, n in zip(passes, ceilings, counts):
+            quota = min(n, int(round(SLOT_SAMPLE_PAIRS * n / max(1, sum(counts)))))
+            seen = set()
+            tries = 0
+            while len(seen) < quota and tries < 200:
+                tries += 1
+                ti = rng.integers(0, ub.shape[0], size=4 * quota)
+                bi = rng.integers(0, ub.shape[1], size=4 * quota)
+                for i, j in zip(ti[np.isfinite(ub[ti, bi])], bi[np.isfinite(ub[ti, bi])]):
+                    seen.add((int(i), int(j)))
+                    if len(seen) >= quota:
+                        break
+            chosen += [(top.feats[i], bed.feats[j]) for i, j in sorted(seen)]
+        sample(chosen)
 
     # Tier edges, from the top of the ceiling histogram: the first tier is
     # enough pairs to fill the keeper if they are as good as their ceilings,
@@ -1914,19 +1921,26 @@ def _score_pruned(passes, gate: dict, keeper: _TopRows, usable, price, *,
                     floors = np.array(
                         [-np.inf if (f := reserve.floor(side, s)) is None else f
                          for s in ids], dtype=np.float32)
-                    # A ceiling at or over the track's floor could still be a
-                    # partner it keeps; take each such track's best `batch`.
-                    open_ = ub >= (floors[:, None] if axis == 1 else floors[None, :])
-                    open_ &= np.isfinite(ub)
-                    need = open_.any(axis=axis)
-                    if not need.any():
-                        continue
+                    # In strips of tracks, so no index array the size of the
+                    # pair matrix is ever built.
                     k = min(batch, ub.shape[axis])
-                    part = np.argpartition(-ub, k - 1, axis=axis)
-                    idx = np.take(part, np.arange(k), axis=axis)
-                    pick = np.zeros(ub.shape, dtype=bool)
-                    np.put_along_axis(pick, idx, True, axis=axis)
-                    want |= pick & open_
+                    for lo_ in range(0, len(ids), 512):
+                        strip = slice(lo_, min(lo_ + 512, len(ids)))
+                        cut = ub[strip] if axis == 1 else ub[:, strip]
+                        w = want[strip] if axis == 1 else want[:, strip]
+                        f = floors[strip]
+                        # A ceiling at or over the track's floor could still
+                        # be a partner it keeps; take each such track's best
+                        # `batch` (they are its highest ceilings).
+                        open_ = (cut >= (f[:, None] if axis == 1 else f[None, :])) \
+                            & np.isfinite(cut)
+                        if not open_.any():
+                            continue
+                        part = np.argpartition(-cut, k - 1, axis=axis)
+                        idx = np.take(part, np.arange(k), axis=axis)
+                        pick = np.zeros(cut.shape, dtype=bool)
+                        np.put_along_axis(pick, idx, True, axis=axis)
+                        w |= pick & open_
                 if not want.any():
                     break
 
