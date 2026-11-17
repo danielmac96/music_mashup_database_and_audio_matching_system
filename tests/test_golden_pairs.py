@@ -65,11 +65,16 @@ def _chroma(root: int, mode: str, flat: bool = False, kind: str = "triad"):
     return v
 
 
-def _secs(role: str, bpm: float, root: int, mode: str, flat: bool, kind: str = "triad"):
+def _secs(role: str, bpm: float, root: int, mode: str, flat: bool, kind: str = "triad",
+          slot: str = "", phrased: bool = False):
+    """``slot`` makes a bed a full SONG's instrumental: "vacated" — its verses
+    and choruses are where its own vocal sang (vocal_activity, a sung range);
+    "busy" — the same shape, but nobody ever sang there. ``phrased`` gives a
+    vocal the measurements the slot reads (vocal_activity, f0)."""
     bar = 4 * 60.0 / bpm
     plan = ([("intro", 8, False), ("verse", 16, True), ("chorus", 16, True),
              ("verse", 16, True), ("chorus", 16, True), ("outro", 8, False)]
-            if role == "vocal" else
+            if role == "vocal" or slot else
             [("intro", 8, False), ("build", 8, False), ("drop", 16, False),
              ("breakdown", 8, False), ("drop", 16, False), ("outro", 8, False)])
     out, t = [], 0.0
@@ -81,6 +86,18 @@ def _secs(role: str, bpm: float, root: int, mode: str, flat: bool, kind: str = "
                "vocal_presence": 0.85 if sung else 0.05, "bar_count": bars,
                "downbeats": [round(a + k * bar, 3) for k in range(bars)]}
         chroma = _chroma(root, mode, flat, kind)
+        if slot:
+            was_sung = sung and slot == "vacated"
+            sec["vocal_presence"] = 0.85 if was_sung else 0.05
+            sec["vocal_activity"] = 0.8 if was_sung else 0.03
+            sec["chroma_bed"] = chroma
+            if was_sung:
+                sec["f0"] = {"median_midi": 64.0, "p10_midi": 60.0, "p90_midi": 68.0,
+                             "range_st": 8.0, "voiced": 0.8}
+        if phrased and sung:
+            sec["vocal_activity"] = 0.85
+            sec["f0"] = {"median_midi": 64.5, "p10_midi": 61.0, "p90_midi": 69.0,
+                         "range_st": 8.0, "voiced": 0.85}
         if role == "vocal" and sung:
             sec["chroma_vocal"] = chroma
         if role == "bed" and label in ("drop", "breakdown", "build"):
@@ -117,9 +134,24 @@ def listing(tmp_path, monkeypatch):
                 "band_energy": ([0.05, 0.05, 0.1, 0.3, 0.3, 0.1, 0.05, 0.05]
                                 if stem == "vocals" else
                                 [0.3, 0.25, 0.15, 0.1, 0.08, 0.06, 0.04, 0.02])})
-        m.replace_sections(sid, _secs(song["role"], song["bpm"], NOTE[song["key"]],
-                                      song["mode"], song.get("flat_chroma", False),
-                                      song.get("chroma", "triad")))
+        secs = _secs(song["role"], song["bpm"], NOTE[song["key"]],
+                     song["mode"], song.get("flat_chroma", False),
+                     song.get("chroma", "triad"), slot=song.get("slot", ""),
+                     phrased=bool(song.get("phrases")))
+        m.replace_sections(sid, secs)
+        if song.get("phrases") or song.get("slot") == "vacated":
+            # A phrase every 8 bars of each sung section, on the bar line.
+            from database import alignment
+            bar = 4 * 60.0 / song["bpm"]
+            phrases = [{"phrase_index": 0, "onset_sec": d, "downbeat_sec": d,
+                        "pickup_sec": 0.0, "end_sec": d + 7.5 * bar, "bars": 8,
+                        "confidence": 0.9}
+                       for sec in secs if sec["label"] in ("verse", "chorus")
+                       for d in sec["downbeats"][::8]]
+            for k, ph in enumerate(phrases):
+                ph["phrase_index"] = k
+            alignment.replace_vocal_phrases(sid, alignment.live_pipeline(sid, db_path=m.DB_PATH),
+                                            "essentia", phrases, db_path=m.DB_PATH)
 
     from matcher.match import score_all_pairs
     score_all_pairs(db_path=m.DB_PATH)
@@ -233,3 +265,22 @@ def test_segments_rank_the_designed_pairs_as_well_as_the_dock(listing):
     got = measure(ids, best)
     assert not got["missing"], got["missing"]
     assert got["pair_auc"] >= FIXTURE["floors"]["pair_auc"], got
+
+
+def test_a_vacated_chorus_beats_a_busy_one(listing):
+    """The slot (readme §5.7): two beds alike in key, tempo and shape — one
+    whose choruses its own vocal used to fill, one where nobody ever sang. The
+    vocal dropped into the vacated slot must rank above the other, the slot
+    must be why, and only the first is a Drop-in."""
+    ids, best = listing
+    for case in FIXTURE["slot_cases"]:
+        into = best[(ids[case["vocal"]], ids[case["vacated"]])]
+        over = best[(ids[case["vocal"]], ids[case["busy"]])]
+        assert into["score_total"] > over["score_total"], case["name"]
+        assert into["score_slot"] > over["score_slot"] + 0.3
+        assert into["slot_phrase_match"] == pytest.approx(1.0, abs=0.01)
+        assert over["slot_occupancy"] < 0.1
+        assert into["dropin"] is True, into["dropin_reason"]
+        assert over["dropin"] is False
+        assert "own vocal was" in into["slot_reason"]
+        assert "phrase starts within" in into["slot_reason"]

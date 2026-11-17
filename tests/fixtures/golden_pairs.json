@@ -100,6 +100,30 @@
    "mode": "minor",
    "bpm": 124.0,
    "chroma": "cluster"
+  },
+  {
+   "name": "V7 A minor 124 phrased",
+   "role": "vocal",
+   "key": "A",
+   "mode": "minor",
+   "bpm": 124.0,
+   "phrases": true
+  },
+  {
+   "name": "B7 A minor 124 vacated chorus",
+   "role": "bed",
+   "key": "A",
+   "mode": "minor",
+   "bpm": 124.0,
+   "slot": "vacated"
+  },
+  {
+   "name": "B8 A minor 124 busy chorus",
+   "role": "bed",
+   "key": "A",
+   "mode": "minor",
+   "bpm": 124.0,
+   "slot": "busy"
   }
  ],
  "pairs": [
@@ -418,5 +442,13 @@
   "pair_auc": 1.0,
   "rule_pass": 1.0,
   "label_accuracy": 1.0
- }
+ },
+ "slot_cases": [
+  {
+   "name": "a vocal into a vacated chorus beats one over a chorus nobody sang on",
+   "vocal": "V7 A minor 124 phrased",
+   "vacated": "B7 A minor 124 vacated chorus",
+   "busy": "B8 A minor 124 busy chorus"
+  }
+ ]
 }
