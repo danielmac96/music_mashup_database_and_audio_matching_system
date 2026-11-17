@@ -1367,13 +1367,14 @@ it originally sang over, the same length, phrases on the same bars), listed in
 `synth_manifest.json` so a ranking change can be measured against them.
 
 `bench_scale.py` builds one per size in a child process bound to its own paths
-and reports per-track scoring, the full Score library, the dock listing,
+and reports per-track scoring, the full Score library (wall time, peak memory
+and how many of the gated song pairs it had to price), the dock listing,
 Segments, the Library payload and event ingestion, to
-`<data_dir>/bench/scale/bench_scale.{json,md}`. The full run is executed only
-when the per-track sample says it fits `--full-score-budget` (900 s); past
-that it is an estimate (per-track seconds × tracks ÷ 2, with its standard
-error) and printed as one. Where the full run was skipped, the listing is
-timed over a candidates table padded to the size a full run would leave.
+`<data_dir>/bench/scale/bench_scale.{json,md}`. The full run is always
+executed unless `--full-score-budget` is given and pricing every pair (per-track
+seconds × tracks ÷ 2, an upper bound on a pruned run) is estimated over it;
+then it is printed as that estimate, and the listing is timed over a
+candidates table padded to the size a full run would leave.
 
 The baseline (2026-11-16, 4-core VM, Python 3.12, synthetic — every later
 change to scoring or listing is compared with this):
@@ -1440,10 +1441,13 @@ browser sends.
    placement. A scoped dock lists instrumental-over-instrumental rows above
    vocal pairs. allin1's downbeat confidence is stored but unused (a bar 1 a
    beat late pairs as freely as any).
-7. **Engine:** match 8/16/32-bar **phrases** instead of whole sections (the
-   biggest engine win left; the per-bar `allin1_embeddings` have no reader yet),
-   per-bar chroma for progressions, register (`f0` after the shift) and stem
-   quality as section terms.
+7. **Engine:** the best 8/16-bar **phrase window** of each kept pairing is
+   stored (§5.7) but nothing places it yet — the dock loop, Studio and the FL
+   export still build the whole section pairing — and it is scored at weight
+   0, after the pairing has won. Still open: windows that compete for the
+   rank, 32 bars, the per-bar `allin1_embeddings` (no reader yet), per-bar
+   chroma for progressions, stem quality as a section term. The slot's
+   register reads the Camelot transpose, not the measured one (§5.7).
 8. **Dedup on the EffNet embedding** — the MFCC audio check in
    `matcher/dedup.py` lets 93 % of random pairs through, so it is not a real
    gate.
@@ -1467,21 +1471,25 @@ browser sends.
 13. Segments: with a learned model active, live and stored rows are ranked on
     two scales.
 
-14. **Scale** (measured on synthetic libraries, §8 — none of this holds at the
-    2,000–10,000-track target yet). **Score library does not finish**: 454 s
-    at 500 tracks, an estimated 3 h at 2,000 and days at 10,000, and importing
-    one track into a 10,000-track library costs about a minute of scoring. About
-    80 % of a run is phrase placement (`matcher/phrase_align.place`, ~4 ms per
-    song pair; two `np.median` calls per placement in `_bar_secs` alone are a
-    third of it), and nothing prunes song pairs before the section search —
-    the BPM gate passes most of a dance library. The run's peak memory
-    (1.27 GB at 500 tracks) is the candidate heaps. **The dock listing** takes
-    1.2–1.6 s whatever the scope once the table is at its cap:
-    `get_candidates_enriched` recomputes two `PERCENT_RANK` windows over all of
-    `mashup_candidates` on every request. **`GET /api/tracks`** is 4 s and
-    37 MB at 10,000 tracks (3.5 MB gzipped, but the route does not compress),
-    **Segments' first match** builds its snapshot in 15 s, and each live match
-    after that takes 1–2 s.
+14. **Scale, what is left** (synthetic libraries, §8). Score library now
+    finishes at 10,000 tracks, but: a run under a **learned model** still
+    prices every pair (a probability has no ceiling to prune with) and will
+    not finish at that size; a full run's **peak memory** is a few GB at
+    10,000 tracks (every section in memory, plus one float32 ceiling per
+    vocal × bed song pair); a **per-track** score is never pruned — a track's
+    rows are all written at import, and only the next Score library trims
+    them to the cap and the reserve. **`GET /api/tracks`** is 4 s and 37 MB at
+    10,000 tracks (3.5 MB gzipped, but the route does not compress), and
+    **Segments' first match** still builds a snapshot of every section.
+16. **Planted drop-ins are not special enough to measure a ranking with.** On
+    the synthetic library a planted pair sits near the top few per cent of its
+    vocal's partners, not in its top five: hundreds of naturally compatible
+    beds (same key within a step, tempo within 3 %, a sung chorus) qualify as
+    Drop-ins on equal terms, and what separates them is the loudness match,
+    which the generator draws at random for planted pairs too. Either the
+    generator makes planted pairs distinctive (a loudness and timbre match the
+    engine already rewards), or recall is measured as "tagged Drop-in and in
+    the top N %" rather than "in the top five".
 15. **Pair events have no reader yet** (§5.14): they are collected for the
     learning loop. The mini studio's loop is not timed.
 
