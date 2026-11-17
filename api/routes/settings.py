@@ -183,6 +183,8 @@ class SaveSettingsRequest(BaseModel):
     keep_analysis_stems: Optional[bool] = None
     timing_tol_ms: Optional[float] = None
     timing_weight: Optional[float] = None
+    slot_weight: Optional[float] = None
+    dropin_bonus: Optional[float] = None
     phrase_gap_secs: Optional[float] = None
     allin1_max_secs: Optional[float] = None
     demucs_overlap: Optional[float] = None
@@ -258,7 +260,8 @@ def save_settings(req: SaveSettingsRequest) -> dict:
 
     for name in ("effort_weight", "section_weight", "stem_quality_min",
                  "bpm_max_diff", "key_min_score", "bpm_max_diff_model",
-                 "timing_tol_ms", "timing_weight", "phrase_gap_secs",
+                 "timing_tol_ms", "timing_weight", "slot_weight",
+                 "dropin_bonus", "phrase_gap_secs",
                  "allin1_max_secs", "demucs_overlap"):
         value = getattr(req, name)
         if value is not None:

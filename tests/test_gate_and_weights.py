@@ -167,6 +167,9 @@ def test_row_cap_keeps_the_best_rows(library, monkeypatch):
     assert len(want) == 3, "fixture must produce more than 3 rows"
 
     monkeypatch.setenv("MASHUP_MAX_CANDIDATE_ROWS", "3")
+    # The cap alone: each track's reserved partners (config.RESERVE_PARTNERS)
+    # come on top of it, and have their own test (tests/test_score_scale.py).
+    monkeypatch.setenv("MASHUP_RESERVE_PARTNERS", "0")
     capped = score_all_pairs(db_path=db_path, scorer="heuristic")
 
     got = capped["vocal_over_instrumental"]

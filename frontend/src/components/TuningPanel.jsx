@@ -70,6 +70,17 @@ const GATE_KNOBS = [
     help: "allin1 engine: how much of the section fit is how tightly the two grids hold. " +
       "Pairs that fail the gate are dropped whatever this is.",
   },
+  {
+    key: "slot_weight", label: "Vacated slot", min: 0, max: 1, step: 0.05,
+    help: "How much of the section fit is the slot: how well the vocal replaces the one the " +
+      "bed section used to carry — how much it sang there, whether the phrases start on the " +
+      "same bars, whether the registers agree. 0 scores as before the term existed.",
+  },
+  {
+    key: "dropin_bonus", label: "Drop-in bonus", min: 0, max: 0.1, step: 0.005,
+    help: "What a Drop-in pair is lifted by in the dock's order. It never changes the stored " +
+      "score, and a pair that fails the timing gate is not stored, so it cannot be lifted.",
+  },
 ];
 
 const WEIGHTS = [

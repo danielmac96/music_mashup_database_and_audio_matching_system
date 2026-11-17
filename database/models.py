@@ -1567,15 +1567,20 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_room_section, score_coverage, score_energy_match,
        alignment_downbeat, alignment_offset, target_bpm,
        tempo_adjustment, pitch_adjustment,
+       score_slot, slot_occupancy, slot_phrase_match, slot_register,
+       slot_phrase_err_ms,
+       window_bars, vocal_window_bar, bed_window_bar, score_window,
        score_effort, effort_stretch, effort_pitch,
        effort_tempo_fold, effort_grid, effort_key_certainty,
        harmonic_shift, harmonic_confidence, bass_clash,
        score_timing, timing_ok, timing_err_mean_ms, timing_err_max_ms,
        vocal_phrase_start, vocal_pickup_ms, bed_landing_sec,
-       engine, engine_version, pipeline
+       engine, engine_version, pipeline,
+       dropin_mask, camelot_shift
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+             ?,?,?,?,?,?,?,?,?,?,?)
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -1607,6 +1612,17 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        target_bpm=excluded.target_bpm,
        tempo_adjustment=excluded.tempo_adjustment,
        pitch_adjustment=excluded.pitch_adjustment,
+       score_slot=excluded.score_slot,
+       slot_occupancy=excluded.slot_occupancy,
+       slot_phrase_match=excluded.slot_phrase_match,
+       slot_register=excluded.slot_register,
+       slot_phrase_err_ms=excluded.slot_phrase_err_ms,
+       window_bars=excluded.window_bars,
+       vocal_window_bar=excluded.vocal_window_bar,
+       bed_window_bar=excluded.bed_window_bar,
+       score_window=excluded.score_window,
+       dropin_mask=excluded.dropin_mask,
+       camelot_shift=excluded.camelot_shift,
        score_effort=excluded.score_effort,
        effort_stretch=excluded.effort_stretch,
        effort_pitch=excluded.effort_pitch,
@@ -1656,7 +1672,25 @@ SECTION_PAIR_COLUMNS = (
     "score_room_section", "score_coverage", "score_energy_match",
     "alignment_downbeat", "alignment_offset", "target_bpm",
     "tempo_adjustment", "pitch_adjustment",
+    # The vacated slot (readme §5.7): how well the vocal replaces the bed's
+    # own, and the best 8/16-bar phrase window inside the pairing.
+    "score_slot", "slot_occupancy", "slot_phrase_match", "slot_register",
+    "slot_phrase_err_ms",
+    "window_bars", "vocal_window_bar", "bed_window_bar", "score_window",
 )
+
+# The part of SECTION_PAIR_COLUMNS only a PLACED pairing has (the allin1
+# engine's section search): the slot and the phrase window.
+SLOT_COLUMNS = ("score_slot", "slot_occupancy", "slot_phrase_match",
+                "slot_register", "slot_phrase_err_ms",
+                "window_bars", "vocal_window_bar", "bed_window_bar", "score_window")
+
+# What the Drop-in rule reads that is a fact of the two SONGS, stored at
+# scoring time so the rule can run in SQL (matcher/compat.dropin_mask): which
+# key relations hold as they stand and after a one-semitone move of the bed,
+# whether the tempi are within the Drop-in window, and the Camelot transpose
+# (recipe.bed_shift's fallback).
+DROPIN_COLUMNS = ("dropin_mask", "camelot_shift")
 
 
 # Phrase placement and provenance (allin1 engine, readme §5.7). From the section
@@ -1718,6 +1752,7 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
         *(scores.get(col) for col in HARMONY_COLUMNS),
         *(sp.get(col) if sp.get(col) is not None else scores.get(col)
           for col in TIMING_COLUMNS),
+        *(scores.get(col) for col in DROPIN_COLUMNS),
     )
 
 
@@ -2064,15 +2099,16 @@ class CandidateRanks:
     is where SQLite sorts it)."""
 
     def __init__(self, conn):
+        names = ("score_total", "inst_energy")
         cols: Dict[str, Dict[str, list]] = {}
-        for combo, total, energy in conn.execute(
-                "SELECT combo_type, score_total, inst_energy FROM mashup_candidates"):
-            c = cols.setdefault(combo, {"score_total": [], "inst_energy": []})
-            c["score_total"].append(_NULL_FIRST if total is None else total)
-            c["inst_energy"].append(_NULL_FIRST if energy is None else energy)
+        for combo, *values in conn.execute(
+                f"SELECT combo_type, {', '.join(names)} FROM mashup_candidates"):
+            c = cols.setdefault(combo, {n: [] for n in names})
+            for n, v in zip(names, values):
+                c[n].append(_NULL_FIRST if v is None else v)
         for c in cols.values():
-            c["score_total"].sort()
-            c["inst_energy"].sort()
+            for n in names:
+                c[n].sort()
         self.cols = cols
 
     def rank(self, combo: str, column: str, value) -> Optional[float]:
@@ -2178,7 +2214,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             rated: str = "", key: str = "", key_tolerance: int = 0,
                             vocal_label: str = "", inst_label: str = "",
                             pairs: Optional[Sequence[Tuple[int, int]]] = None,
-                            tier: str = "",
+                            tier: str = "", dropin: Optional[bool] = None,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -2234,14 +2270,29 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     tier is a comma list of matcher/compat.TIERS ("strong,good") and
     order="tier" ranks by tier, then score. Both use compat.tier_sql — the
     card's confidence_tier in SQL, the close-call downgrade included — so they
-    search the library, like every other filter here."""
-    from matcher.compat import parse_tiers, tier_sql
-    from matcher.recipe import harmony_unsure_below
+    search the library, like every other filter here.
+
+    dropin keeps only Drop-in pairs (True) or only the rest (False), by
+    compat.dropin_sql — the card's `dropin` in SQL. order="score" ranks by the
+    total plus `dropin_bonus` for a Drop-in (the stored total is untouched);
+    order="easy", the dock's default, ranks by tier, Drop-ins first inside
+    each tier, then that; order="dropin" lists Drop-ins first."""
+    from config import current_float
+    from matcher.compat import dropin_sql, parse_tiers, tier_sql
+    from matcher.recipe import HARMONY_SURE
     offset = max(0, int(offset or 0))
     tiers = parse_tiers(tier)
-    unsure_below = (harmony_unsure_below(db_path=db_path)
-                    if tiers or order == "tier" else None)
     conn = get_conn(db_path)
+
+    def _threshold(key: str, default):
+        """A library threshold Score library wrote — recipe.harmony_unsure_below
+        and compat.slot_floor — read on this connection, not one of its own."""
+        try:
+            v = (get_pref(key, conn=conn) or {}).get("value")
+            return default if v is None else float(v)
+        except (TypeError, ValueError, sqlite3.Error):
+            return default
+    unsure_below = _threshold("harmony_unsure_below", HARMONY_SURE)
     ranks = candidate_ranks(db_path, conn=conn)
     # min_score gates on the PERCENTILE, not the raw composite — the same number
     # the row displays and the same one `tierFor` colours.
@@ -2260,6 +2311,15 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     # The card's tier in SQL, on the same cached ranks.
     tier_expr = tier_sql(at_least=lambda pct: ranks.at_least_sql(
         "score_total", pct, scale=100.0))
+    # The Drop-in rule in SQL, its one parameter (the unsure threshold) inline
+    # so the expression can sit in the filter and the order alike.
+    dropin_expr = dropin_sql(_threshold("slot_dropin_floor", None)).replace(
+        "?", repr(float(unsure_below)))
+    bonus = current_float("dropin_bonus")
+    ranked_sql = (f"(mc.score_total + {bonus!r} * {dropin_expr})" if bonus > 0
+                  else "mc.score_total")
+    if dropin is not None:
+        where.append(f"{dropin_expr} = {1 if dropin else 0}")
     if combo_type:
         where.append("mc.combo_type = ?")
         params.append(combo_type)
@@ -2401,8 +2461,16 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     elif order == "tier":
         order_sql = f"{tier_expr} ASC, mc.score_total DESC"
         params.append(unsure_below)
+    elif order == "easy":
+        # Easy first: the tier, Drop-ins pinned first inside it, then the
+        # score (which is already fit − effort).
+        order_sql = (f"{tier_expr} ASC, {dropin_expr} DESC, "
+                     f"{ranked_sql} DESC, mc.score_total DESC")
+        params.append(unsure_below)
+    elif order == "dropin":
+        order_sql = f"{dropin_expr} DESC, mc.score_total DESC"
     else:
-        order_sql = "mc.score_total DESC"
+        order_sql = f"{ranked_sql} DESC, mc.score_total DESC"
 
     # The cap is a greedy pass over the ranked rows, so it needs more rows than
     # it will return. Fetching everything would mean 90k rows through the join
@@ -2848,16 +2916,20 @@ def pairs_freshness(db_path: Path = DB_PATH) -> Dict:
     }
 
 
-def get_pref(key: str, db_path: Path = DB_PATH) -> Optional[Dict]:
+def get_pref(key: str, db_path: Path = DB_PATH, conn=None) -> Optional[Dict]:
     """One preference, or None. A row whose JSON no longer parses reads as
     absent rather than raising — a corrupt scrap of UI state must not be able to
-    take down the route that reads it."""
-    conn = get_conn(db_path)
+    take down the route that reads it. ``conn``: read on a connection the
+    caller already holds (never opened or closed here)."""
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
     try:
         row = conn.execute("SELECT value FROM app_prefs WHERE key=?",
                            ((key or "").strip(),)).fetchone()
     finally:
-        conn.close()
+        if own:
+            conn.close()
     if not row:
         return None
     try:

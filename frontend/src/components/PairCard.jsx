@@ -37,6 +37,9 @@ export function metersOf(c) {
       h.known ? c.score_key : null],
     ["Rhythm", "Per-bar onset profiles of the two sections", c.score_rhythm],
     ["Energy", "How close the two sections' energies are", c.score_energy_match],
+    ["Slot", "How well the vocal replaces the one the bed section used to carry: "
+      + "how much it sang there, phrase starts on the same bars, the same register",
+      c.score_slot],
   ];
 }
 
@@ -158,6 +161,11 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
               Δ{signed(d, 1)}%{FOLD[cb.fold] && <span className="fold"> {FOLD[cb.fold]}</span>}
             </span>
           )}
+          {c.dropin && (
+            <span className="pc-dropin mono"
+              title={`Drop-in — ${c.dropin_reason || "drops straight into the bed's vocal slot"}`}>
+              ⤓ Drop-in</span>
+          )}
           {c.scorer === "forced" && (
             <span className="pc-forced mono" title="Scored on request, outside the tempo or key gate — read the DO and WATCH rows">forced</span>
           )}
@@ -262,6 +270,28 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
           </span>
         )}
       </div>
+
+      {/* Where the vocal goes: the bed's vacated slot in words, and the 8- or
+          16-bar window worth building. Both are the server's. */}
+      {(c.slot_reason || c.window_bars) && (
+        <div className="pcx-side pcx-sideline pcx-slot">
+          {c.slot_reason && (
+            <span className="small"
+              title={"The vacated slot: the bed track's own vocal activity in this section, how close "
+                + "the incoming phrase starts land to the original's, and the two sung registers"
+                + (c.score_slot != null ? ` · slot ${Math.round(c.score_slot * 100)}` : "")
+                + (c.dropin_reason && !c.dropin ? ` · not a Drop-in: ${c.dropin_reason}` : "")}>
+              ⤓ {c.slot_reason}
+            </span>
+          )}
+          {c.window_bars && (
+            <span className="small muted mono"
+              title="The window of this pairing where the two grids hold bar for bar, the vocal is sung and the bed's own vocal sang">
+              best {c.window_bars} bars: vocal bar {c.vocal_window_bar + 1} over bed bar {c.bed_window_bar + 1}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* The numbers behind the score, folded: most of the time the DO row, the
           harmony and the effort are the decision. */}

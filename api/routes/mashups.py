@@ -33,7 +33,7 @@ _COMBO_TYPES = {"vocal_over_instrumental", "instrumental_over_instrumental"}
 # "score" and "uncertain" rank the composite; the rest rank one section term
 # each (see SECTION_TERM_ORDERS). All of them are the SQL's, not a re-sort of
 # the returned page.
-_ORDERS = {"score", "uncertain", "tier"} | set(SECTION_TERM_ORDERS)
+_ORDERS = {"score", "easy", "dropin", "uncertain", "tier"} | set(SECTION_TERM_ORDERS)
 
 # What the dominant effort component means in the DAW, for the chip's tooltip.
 _EFFORT_REASONS = {
@@ -190,9 +190,13 @@ def _with_recipes(rows: list, target_of=None) -> None:
         logging.getLogger(__name__).warning("could not read stem facts for recipes",
                                             exc_info=True)
         facts = {}
-    from matcher.compat import confidence_tier, pair_compat
+    from matcher.compat import (confidence_tier, dropin, pair_compat, slot_floor,
+                                slot_reason)
     from matcher.recipe import harmony_unsure_below
     unsure_below = harmony_unsure_below()
+    # The slot a Drop-in must reach — read only for a page that has a slot.
+    floor = (slot_floor() if any(r.get("score_slot") is not None for r in rows)
+             else None)
     for r in rows:
         r["recipe"] = pair_recipe(r, facts,
                                   target_bpm=target_of(r) if target_of else None,
@@ -204,6 +208,11 @@ def _with_recipes(rows: list, target_of=None) -> None:
         r["confidence_tier"] = confidence_tier(r.get("score_percentile"),
                                                r["harmonic_sure"])
         r["compat"] = pair_compat(r, facts)
+        # Drop-in, decided once (matcher/compat.dropin); dropin=1 and the
+        # order keys are its SQL twin. The slot in words rides along for the
+        # expanded card.
+        r["dropin"], r["dropin_reason"] = dropin(r, floor)
+        r["slot_reason"] = slot_reason(r)
         # No longer a stored column (schema migration 3); the dock's rows, the
         # Studio layer picker and the timing pills still read `reason`. A set
         # item frozen before the migration keeps the sentence it was saved with.
@@ -248,12 +257,12 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     genre: str = "", era: str = "", energy: str = "",
                     bpm_band: str = "", vocal_forward: bool = False,
                     max_effort: Optional[float] = None,
-                    order: str = "score",
+                    order: str = "easy",
                     adventure: float = 0.0,
                     search: str = "", offset: int = 0,
                     rated: str = "", key: str = "", key_tolerance: int = 1,
                     vocal_label: str = "", inst_label: str = "",
-                    tier: str = "") -> dict:
+                    tier: str = "", dropin: Optional[bool] = None) -> dict:
     """The ranked list.
 
     max_per_song caps how often one song may appear (0 = uncapped) so a single
@@ -302,11 +311,12 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
             search=search[:100], offset=offset,
             rated=rated, key=key, key_tolerance=key_tolerance,
             vocal_label=vocal_label, inst_label=inst_label, tier=tier,
+            dropin=dropin,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     rows = _with_reasons(_with_playback_terms(rows))
-    if adventure > 0 and order == "score":
+    if adventure > 0 and order in ("score", "easy"):
         rows = _reorder_by_surprise(rows, adventure)
     _with_scope_rank(rows, vocal_song_id, inst_song_id)
     return {"count": len(rows), "candidates": rows,
@@ -562,7 +572,7 @@ def term_report_route() -> dict:
     Read-only evidence for the Tuning panel: AUC of loved vs rejected pairs,
     Spearman against the stars, and each reason chip against the term it
     should move. Nothing is re-weighted here."""
-    from config import current_match_weights, current_section_weights
+    from config import current_float, current_match_weights, current_section_weights
     from matcher.term_report import term_report
     conn = get_conn()
     try:
@@ -576,7 +586,8 @@ def term_report_route() -> dict:
         conn.close()
     return term_report(get_pair_feedback(), cands,
                        section_weights=current_section_weights(),
-                       match_weights=current_match_weights("vocal_over_instrumental"))
+                       match_weights=current_match_weights("vocal_over_instrumental"),
+                       slot_weight=current_float("slot_weight"))
 
 
 @router.get("/feedback")

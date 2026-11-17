@@ -194,7 +194,8 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     from matcher.effort import effort_total_from_columns
     from matcher.match import (
         _apply_measured_harmony, _apply_section_fit, _iter_scored_pairs,
-        _prepare_block, compute_stretch_factor,
+        _prepare_block, compute_semitone_shift, compute_stretch_factor,
+        dropin_facts,
     )
     from matcher.patterns import current_patterns
     from matcher.sections import _bar_len, _pair_row, _score_statics, _statics
@@ -226,12 +227,14 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     # The allin1 engine: phrase placement and the timing gate, exactly as the
     # library run applies them (matcher/sections._timed_section_pairs).
     from matcher.match import run_engine, timing_for
-    from matcher.sections import place_pair, timed_fit
+    from matcher.section_score import slot_ceiling, slot_fit
+    from matcher.sections import place_pair, slot_terms, timed_fit
     _engine, timing_base = run_engine(db, cfg, engine=engine)
     if timing_base is not None:
         timing_base["_cache"] = snap.cache
         timing_base["_phrases"] = snap.phrases
     t_weight = float(timing_base["weight"]) if timing_base else 0.0
+    s_weight = float(timing_base["slot_weight"]) if timing_base else 0.0
 
     # The song terms: the scorer's own vectorised pass, one row against the
     # whole other side — gate included (tempo, key, same song, variant, stem
@@ -287,6 +290,9 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
                 section_weights, patterns)
             # With timing on, the fit can rise to (1-w)·fit + w (a perfect grid).
             fit_ub = (1.0 - t_weight) * fit + t_weight if timing_base else fit
+            # ...and the slot to the most this bed section allows.
+            if timing_base and s_weight:
+                fit_ub = slot_fit(fit_ub, slot_ceiling(b_sec), s_weight)
             bound = (((1.0 - section_weight) * (rest + w_key) + section_weight * fit_ub)
                      * (1.0 - effort_weight * effort_floor))
             bounded.append((bound, top, bed, scores, v_sec, b_sec, fit, stretch))
@@ -298,13 +304,19 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     for n, (bound, top, bed, scores, v_sec, b_sec, fit, stretch) in enumerate(bounded):
         if len(best) >= k and bound + 1e-9 < best[0][0]:
             break
-        placement = None
+        placement = slot = timing = None
         if timing_base is not None:
-            placement = place_pair(v_sec, b_sec, stretch,
-                                   timing_for(timing_base, top["song_id"], db))
+            timing = timing_for(timing_base, top["song_id"], db,
+                                compute_semitone_shift(str(top.get("camelot") or ""),
+                                                       str(bed.get("camelot") or "")))
+            placement = place_pair(v_sec, b_sec, stretch, timing)
             if placement.get("timing_ok") == 0:
                 continue                                  # the timing gate
             fit = timed_fit(fit, placement, t_weight)
+            if s_weight:
+                # The slot, as the library run blends it (sections.slot_terms).
+                slot = slot_terms(v_sec, b_sec, stretch, placement, timing)
+                fit = slot_fit(fit, slot["slot"], s_weight)
         sp = {"vocal_section_idx": v_sec["section_index"],
               "inst_section_idx": b_sec["section_index"],
               "score_section": round(fit, 4), "_v": v_sec, "_i": b_sec}
@@ -315,7 +327,8 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
         tie = (-(bed if role == "vocal" else top)["song_id"],
                -(b_sec if role == "vocal" else v_sec)["section_index"])
         entry = (float(s["total"]), tie, n,
-                 (top, bed, v_sec, b_sec, fit, stretch, scores, placement))
+                 (top, bed, v_sec, b_sec, fit, stretch, scores, placement,
+                  slot, timing))
         if len(best) < k:
             heapq.heappush(best, entry)
         elif entry[:2] > best[0][:2]:
@@ -328,7 +341,7 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     genres = _genres({x for t, b, *_ in kept
                       for x in (t["song_id"], b["song_id"])}, db)
     rows = []
-    for top, bed, v_sec, b_sec, fit, stretch, scores, placement in kept:
+    for top, bed, v_sec, b_sec, fit, stretch, scores, placement, slot, timing in kept:
         key = (top["song_id"], bed["song_id"], v_sec["section_index"],
                b_sec["section_index"])
         hit = stored.get(key)
@@ -340,8 +353,9 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
             sp = _pair_row(v_sec, b_sec, v_sec["section_index"],
                            b_sec["section_index"], fit, stretch, top.get("bpm"),
                            patterns=patterns, placement=placement,
-                           timing=timing_base)
+                           timing=timing, slot=slot)
             s = dict(scores)
+            s.update(dropin_facts(top, bed))
             s["engine"] = "essentia" if timing_base is None else "essentia_fallback"
             _apply_measured_harmony(top, bed, s, sp, lambda sid: sections_of(sid, []),
                                     weights, effort_weight)

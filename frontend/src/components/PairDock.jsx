@@ -64,6 +64,7 @@ function filterPills(f, setFilters) {
   if (f.vocalLabel) add("vocalLabel", `vocal: ${f.vocalLabel}`);
   if (f.instLabel) add("instLabel", `bed: ${f.instLabel}`);
   if (f.vocalForward) add("vocalForward", "vocal-forward");
+  if (f.dropin) add("dropin", "Drop-ins only");
   if (f.perVocal) add("perVocal", "best bed per vocal");
   if (f.adventure) add("adventure", `adventure ${Math.round(f.adventure * 100)}%`);
   return out;
@@ -352,12 +353,18 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
             title="Your keepers: only the pairs you rated 4–5 stars, every section pairing of them, uncapped">
             ★ Keepers
           </button>
+          <button className={`pd-keepers pd-dropin${filters.dropin ? " on" : ""}`}
+            aria-pressed={!!filters.dropin}
+            onClick={() => setFilters({ dropin: !filters.dropin })}
+            title="Drop-ins only: keys that mix with the bed moved a semitone at most, tempo within 3 %, a bed section its own vocal used to fill, and a grid that holds — searched across every scored pair">
+            ⤓ Drop-ins
+          </button>
           <select className={`pd-sort${order !== "score" ? " on" : ""}`} value={order}
             title="Rank by — every order but Effort is the server's, so it ranks the library"
             style={term ? { borderColor: term[3], color: term[3] } : undefined}
             onChange={(e) => setOrder(e.target.value)}>
             {ORDERS.map(([id, label, why]) => (
-              <option key={id} value={id} title={why}>{id === "score" ? "Sort: Score" : label}</option>
+              <option key={id} value={id} title={why}>{id === "score" ? "Sort: Easy first" : label}</option>
             ))}
           </select>
           <button className={`pd-exportbtn${exportOpen ? " on" : ""}`}

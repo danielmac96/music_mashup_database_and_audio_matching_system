@@ -27,7 +27,8 @@ from matcher.plan import (
 from matcher.alignment import align, describe
 from matcher.section_score import (
     measured_terms, phrase_score, rhythm_score, section_components,
-    section_structure_score,
+    section_structure_score, slot_ceiling, slot_fit, slot_occupancy,
+    slot_register, slot_score,
 )
 
 # What a section pair is judged on. Deliberately only the three things a
@@ -365,34 +366,85 @@ def place_pair(v: Dict, i: Dict, stretch: float, timing: Dict) -> Dict:
                         cache=timing.get("_cache"))
 
 
+def bed_phrases(timing: Dict, bed: Dict):
+    """The phrases of the bed section's own song — the vocal that used to be
+    there — from the run's timing context, read once per song. None when the
+    context cannot say (no song id on the section)."""
+    store = timing.get("_phrases")
+    song_id = bed.get("song_id")
+    if store is None or song_id is None:
+        return None
+    if song_id not in store:
+        from database.alignment import get_vocal_phrases
+        store[song_id] = get_vocal_phrases(song_id, db_path=timing.get("_db"))
+    return store[song_id]
+
+
+def slot_terms(v: Dict, i: Dict, stretch: float, placement: Dict,
+               timing: Dict) -> Dict:
+    """The vacated-slot term for one PLACED pairing (readme §5.7): its three
+    parts as stored, and ``slot`` — the unrounded blend the fit takes.
+
+    The register is read after the transpose the section search knows: the
+    Camelot estimate for the two songs (``timing["shift"]``, recipe.bed_shift's
+    fallback). The measured shift is not known until a pairing has won."""
+    from matcher.phrase_align import slot_phrase_fit
+    occupancy = slot_occupancy(i)
+    register = slot_register(v, i, timing.get("shift"))
+    phrase, err_ms = slot_phrase_fit(
+        placement, v, i, stretch, timing.get("vocal_phrases"),
+        bed_phrases(timing, i), timing.get("_cache"))
+    return {"slot": slot_score(occupancy, phrase, register),
+            "slot_occupancy": occupancy, "slot_phrase_match": phrase,
+            "slot_register": register, "slot_phrase_err_ms": err_ms}
+
+
 def _timed_section_pairs(v_use, i_use, stretch, bpm, limit, weights, patterns,
                          timing: Dict, lazy: bool = False) -> List[Dict]:
     w = float(timing.get("weight", 0.3))
+    ws = float(timing.get("slot_weight", 0.0))
+    shift = timing.get("shift")
     stats = timing.setdefault("stats", {})
     cache = timing.get("_cache")
     rate = max(float(stretch or 1.0), 1e-6)
     bar_len = _bar_len(bpm)
     bed_statics = [_statics(i, False, cache) for i in i_use]
-    # No timing score is above 1, so a bed section whose fit could not beat the
-    # best already placed even on a perfect grid is not placed at all. It only
-    # ever skips work: a section with nothing placed yet is always tried.
-    can_skip = 0.0 <= w <= 1.0
+    bed_ceilings = [slot_ceiling(i) for i in i_use] if ws else None
+    # No timing score is above 1 and no slot above its ceiling, so a bed
+    # section whose fit could not beat the best already placed even on a
+    # perfect grid is not placed at all. It only ever skips work: a section
+    # with nothing placed yet is always tried.
+    can_skip = 0.0 <= w <= 1.0 and 0.0 <= ws <= 1.0
     scored = []
     for vi, v in enumerate(v_use):
         vs = _statics(v, True, cache)
-        ranked = sorted(((_score_statics(vs, bed_statics[ii], v, i, stretch, rate,
-                                         bpm, bar_len, weights, patterns), ii, i)
-                         for ii, i in enumerate(i_use)), key=lambda t: -t[0])
+        ranked = []
+        for ii, i in enumerate(i_use):
+            sc = _score_statics(vs, bed_statics[ii], v, i, stretch, rate,
+                                bpm, bar_len, weights, patterns)
+            # Which bed sections are worth placing: the section fit, with what
+            # the slot is known to be before a placement (its phrase part
+            # neutral) — or the bed's sung chorus never reaches the shortlist.
+            lead = sc if not ws else slot_fit(
+                sc, slot_score(slot_occupancy(i), None, slot_register(v, i, shift)), ws)
+            ranked.append((lead, sc, ii, i))
+        ranked.sort(key=lambda t: -t[0])
         best = None
-        for sc, ii, i in ranked[:TIMED_CANDIDATES]:
-            if best is not None and can_skip and (1.0 - w) * sc + w <= best[0]:
-                break
+        for _lead, sc, ii, i in ranked[:TIMED_CANDIDATES]:
+            if best is not None and can_skip:
+                top = (1.0 - w) * sc + w
+                if (slot_fit(top, bed_ceilings[ii], ws) if ws else top) <= best[0]:
+                    continue
             placement = place_pair(v, i, stretch, timing)
             if placement.get("timing_ok") == 0:
                 continue                         # the timing gate
             fit = timed_fit(sc, placement, w)
+            slot = None
+            if ws:
+                slot = slot_terms(v, i, stretch, placement, timing)
+                fit = slot_fit(fit, slot["slot"], ws)
             if best is None or fit > best[0]:
-                best = (fit, (v, i, vi, ii, placement))
+                best = (fit, (v, i, vi, ii, placement, slot))
         if best is None:
             stats["gated"] = stats.get("gated", 0) + 1
             continue
@@ -400,14 +452,16 @@ def _timed_section_pairs(v_use, i_use, stretch, bpm, limit, weights, patterns,
         scored.append(best)
     scored.sort(key=lambda pair: pair[0], reverse=True)
     if lazy:
-        return [_lazy_row(v, i, vi, ii, sc, stretch, bpm, patterns, placement, timing)
-                for sc, (v, i, vi, ii, placement) in scored[:max(1, limit)]]
+        return [_lazy_row(v, i, vi, ii, sc, stretch, bpm, patterns, placement,
+                          timing, slot)
+                for sc, (v, i, vi, ii, placement, slot) in scored[:max(1, limit)]]
     return [_pair_row(v, i, vi, ii, sc, stretch, bpm, patterns=patterns,
-                      placement=placement, timing=timing)
-            for sc, (v, i, vi, ii, placement) in scored[:max(1, limit)]]
+                      placement=placement, timing=timing, slot=slot)
+            for sc, (v, i, vi, ii, placement, slot) in scored[:max(1, limit)]]
 
 
-def _lazy_row(v, i, vi, ii, score, stretch, bpm, patterns, placement, timing) -> Dict:
+def _lazy_row(v, i, vi, ii, score, stretch, bpm, patterns, placement, timing,
+              slot=None) -> Dict:
     """A section pair as the scorer needs it to price the row — the two section
     indexes and the fit — with the sections themselves and ``_row``, which
     builds the full stored shape (_pair_row) on demand. A library run prices
@@ -420,7 +474,7 @@ def _lazy_row(v, i, vi, ii, score, stretch, bpm, patterns, placement, timing) ->
         "_v": v, "_i": i,
         "_row": lambda: _pair_row(v, i, vi, ii, score, stretch, bpm,
                                   patterns=patterns, placement=placement,
-                                  timing=timing),
+                                  timing=timing, slot=slot),
     }
 
 
@@ -429,7 +483,8 @@ def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
               semitones: Optional[int] = None,
               patterns: Optional[List[Dict]] = None,
               placement: Optional[Dict] = None,
-              timing: Optional[Dict] = None) -> Dict:
+              timing: Optional[Dict] = None,
+              slot: Optional[Dict] = None) -> Dict:
     """The stored shape of one section pair. Shared by both entry points so a
     row means the same thing however it was chosen.
 
@@ -461,6 +516,22 @@ def _pair_row(v: Dict, i: Dict, vi: int, ii: int, score: float,
         extra = {k: placement.get(k) for k in (
             "score_timing", "timing_ok", "timing_err_mean_ms", "timing_err_max_ms",
             "vocal_phrase_start", "vocal_pickup_ms", "bed_landing_sec")}
+    if placement is not None and timing is not None:
+        # The slot the fit was priced with (slot_terms) — measured here for a
+        # row that was placed without one — and the window to build. Only a
+        # row in its stored shape pays for the window: it describes a pairing
+        # that has already won, and never moves a rank.
+        if slot is None:
+            slot = slot_terms(v, i, stretch, placement, timing)
+        extra["score_slot"] = round(slot["slot"], 4)
+        for key in ("slot_occupancy", "slot_phrase_match", "slot_register"):
+            extra[key] = None if slot[key] is None else round(slot[key], 4)
+        extra["slot_phrase_err_ms"] = slot["slot_phrase_err_ms"]
+        from matcher.phrase_align import best_window
+        extra.update(best_window(
+            placement, v, i, stretch, timing.get("vocal_phrases"),
+            bed_phrases(timing, i), timing.get("tol_ms", 25.0),
+            timing.get("_cache")) or {})
     if timing is not None:
         from database.models import section_namespace
         own = section_namespace(_index_of(v, vi)) == "allin1" \

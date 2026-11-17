@@ -264,3 +264,63 @@ def measured_terms(vocal: Dict, inst: Dict) -> Dict[str, Optional[float]]:
         "score_coverage": coverage_score(vocal),
         "score_energy_match": energy_match_score(vocal, inst),
     }
+
+
+# ── The vacated slot (readme §5.7) ────────────────────────────────────────────
+# The easiest mashup there is: a vocal dropped into a bed section where the
+# bed's OWN vocal used to be — the arrangement already leaves that room, and
+# the phrasing already fits it. Three stored measurements say how well the
+# incoming vocal replaces the original; none decodes audio.
+
+# Inside score_slot. Occupancy leads: without a vacated slot there is nothing
+# for the other two to describe.
+SLOT_BLEND = {"occupancy": 0.45, "phrase": 0.35, "register": 0.20}
+# Medians this close (semitones) sit in the same register; this far apart, not.
+REGISTER_FREE_ST, REGISTER_MAX_ST = 2.0, 12.0
+
+
+def slot_occupancy(bed: Dict) -> Optional[float]:
+    """How much of the bed section its own vocal used to fill: the bed
+    TRACK's vocal stem activity inside that section (vocal_activity). High is
+    a real vacated slot; None is a section whose vocal stem was never read."""
+    v = bed.get("vocal_activity")
+    try:
+        return None if v is None else max(0.0, min(1.0, float(v)))
+    except (TypeError, ValueError):
+        return None
+
+
+def slot_register(vocal: Dict, bed: Dict, shift: Optional[int] = 0) -> Optional[float]:
+    """The incoming vocal's sung register against the original's, once the bed
+    — and with it the range its own vocal was written in — has moved by
+    ``shift`` semitones. 1 within REGISTER_FREE_ST of each other, 0 an octave
+    apart; None when either section has no sung range (f0)."""
+    try:
+        a = float((vocal.get("f0") or {})["median_midi"])
+        b = float((bed.get("f0") or {})["median_midi"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    gap = abs(a - (b + float(shift or 0)))
+    return max(0.0, min(1.0, 1.0 - (gap - REGISTER_FREE_ST)
+                        / (REGISTER_MAX_ST - REGISTER_FREE_ST)))
+
+
+def slot_score(occupancy: Optional[float], phrase: Optional[float],
+               register: Optional[float]) -> float:
+    """score_slot: the blend, an unmeasured part at the neutral 0.5."""
+    def _v(x):
+        return 0.5 if x is None else x
+    return (SLOT_BLEND["occupancy"] * _v(occupancy)
+            + SLOT_BLEND["phrase"] * _v(phrase)
+            + SLOT_BLEND["register"] * _v(register))
+
+
+def slot_ceiling(bed: Dict) -> float:
+    """The most score_slot can be for any vocal over this bed section — what
+    a pruned run bounds a pair with (matcher.match._score_pruned)."""
+    return slot_score(slot_occupancy(bed), 1.0, 1.0)
+
+
+def slot_fit(fit: float, slot: float, weight: float) -> float:
+    """A section fit with the slot blended in."""
+    return (1.0 - weight) * fit + weight * slot
