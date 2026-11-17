@@ -165,16 +165,17 @@ def test_a_pruned_run_stores_the_rows_pricing_every_pair_stores(
     for prune in (False, True):
         db = tmp_path / f"prune_{prune}.db"
         shutil.copy(library / "mashup.db", db)
+        # The cap alone: each track's reserve is a search in a pruned run
+        # (its own test below), so only the cap is exact against the full one.
+        monkeypatch.setenv("MASHUP_RESERVE_PARTNERS", "0")
         m, match = _bind(db, tmp_path, monkeypatch, cap=cap)
         monkeypatch.setattr(match, "PRUNE_RUNS", prune)
         res = match.score_all_pairs(db_path=m.DB_PATH)
         tables[prune], stats[prune] = _table(db), res["_pruned"]
     assert stats[False] is None
     assert stats[True]["priced"] < stats[True]["pairs"]      # it did skip pairs
-    # The cap bit — the cut was a real one — and each track's reserved
-    # partners came on top of it.
-    assert sum(1 for r in tables[True] if r[0] == "vocal_over_instrumental") > cap
-    assert stats[True]["for_reserve"] > 0
+    # The cap bit: the cut was a real one.
+    assert sum(1 for r in tables[True] if r[0] == "vocal_over_instrumental") == cap
     assert tables[True] == tables[False]
 
 
@@ -330,8 +331,12 @@ def test_a_hidden_pair_is_not_a_live_match(scored):
 # ── each track's own best partners ───────────────────────────────────────────
 
 def test_every_track_keeps_its_best_partners_under_the_cap(library, tmp_path, monkeypatch):
-    """The cap keeps the library's best rows; a track whose own best beds are
-    not among them still has them (config.RESERVE_PARTNERS), on both sides."""
+    """The cap keeps the library's best rows; each track also keeps its best
+    partners found by a bounded search (config.RESERVE_PARTNERS from
+    match.RESERVE_SEARCH times as many by ceiling), on both sides. Pinned:
+    every track with that many gated partners has them, every reserved row is
+    the row the full run computes for that pair, and the search finds most
+    of each track's true best partners."""
     full = tmp_path / "full.db"
     shutil.copy(library / "mashup.db", full)
     m, match = _bind(full, tmp_path, monkeypatch, cap=10 ** 6)
@@ -346,22 +351,29 @@ def test_every_track_keeps_its_best_partners_under_the_cap(library, tmp_path, mo
     shutil.copy(library / "mashup.db", capped)
     monkeypatch.setenv("MASHUP_RESERVE_PARTNERS", "3")
     m, match = _bind(capped, tmp_path, monkeypatch, cap=300)
-    match.score_all_pairs(db_path=m.DB_PATH)
+    res = match.score_all_pairs(db_path=m.DB_PATH)
+    assert res["_pruned"]["for_reserve"] > 0
     conn = sqlite3.connect(capped)
     kept = {(r[0], r[1]): r[2] for r in conn.execute(
         "SELECT vocal_song_id, inst_song_id, MAX(score_total) FROM mashup_candidates "
         "WHERE combo_type='vocal_over_instrumental' GROUP BY 1, 2")}
     conn.close()
+    whole = {(v, b): t for v, b, t in best}
+    for pair, total in kept.items():
+        assert whole[pair] == total, pair          # a true row, never an estimate
+    found = wanted = 0
     for side in (0, 1):
         by_track = {}
         for row in best:
             by_track.setdefault(row[side], []).append(row)
         assert len(by_track) > 40
         for track, rows in by_track.items():
+            mine = [p for p in kept if p[side] == track]
+            assert len(mine) >= min(3, len(rows)), (side, track)
             rows.sort(key=lambda r: -r[2])
-            third = rows[min(2, len(rows) - 1)][2]
-            # Every partner strictly better than the third-best is kept, at
-            # its full-run total (ties at the third place may go either way).
-            for v, b, total in rows:
-                if total > third:
-                    assert kept.get((v, b)) == total, (side, track, v, b)
+            top = {(v, b) for v, b, _t in rows[:3]}
+            found += len(top & set(mine))
+            wanted += len(top)
+    recall = found / wanted
+    print("\nreserve recall of the true best 3:", round(recall, 3))
+    assert recall >= 0.9, recall

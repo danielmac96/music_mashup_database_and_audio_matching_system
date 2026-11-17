@@ -826,13 +826,21 @@ could store more does not price every song pair:
 a few thousand tracks most tracks' own best beds are not among them — a full
 run at 10,000 synthetic tracks left 5,422 tracks with any stored partner as a
 vocal and 3,651 with five. So on top of the cap, each track keeps the best row
-of its best partners on each side (as the vocal, and as the bed). A pruned run
-certifies them the same way: after the cap is settled, each track that could
-still gain a reserved partner has its most promising unpriced pairs priced,
-round by round, until none can.
+of its best partners on each side (as the vocal, and as the bed). In a pruned
+run that is a bounded **search**, not a certificate: once the cap is settled,
+every track has its 24 most promising unpriced partners (by ceiling, per side;
+`match.RESERVE_SEARCH` × the reserve) priced, and a track still short of 8 —
+many pairs fail the timing gate and give no row — has its next most promising
+priced round by round, up to 96 in all (`RESERVE_SEARCH_MAX`). Every reserved
+row is the true row for its pair; whether it is the track's true best is what
+the search may miss (a test measures it against pricing every pair). An exact
+certificate was tried first: at 10,000 tracks its rounds had not ended after
+four hours, because a ceiling is loose by the duration, grid and slot it
+assumes.
 
-The gate and every row's arithmetic are untouched: the stored table is the one
-pricing every pair stores (pinned by a test that runs both on one library).
+The gate and every row's arithmetic are untouched: with the reserve off, the
+stored table is the one pricing every pair stores (pinned by a test that runs
+both on one library).
 What changes is what is never built — and the timing counts in the log and in
 `last_score`, which now cover the pairs that were priced. A per-track run, a
 library too small to overflow the cap, and a run under a learned model (a

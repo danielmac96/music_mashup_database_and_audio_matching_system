@@ -949,6 +949,11 @@ _FIRST_TIER_SHARE = 0.5
 # Off: every gated pair is priced, as before pruning existed. The switch the
 # tests use to run both ways on one library; nothing else turns it off.
 PRUNE_RUNS = True
+# How many of its most promising unpriced partners (by ceiling), per reserved
+# partner, a track has searched for its reserve after the cap is settled.
+RESERVE_SEARCH = 3
+# ...and how many in all a track still short of its partners may have searched.
+RESERVE_SEARCH_MAX = 12
 # Gated song pairs searched, and not stored, for the library's slot floor.
 SLOT_SAMPLE_PAIRS = 3000
 _BOUND_BINS = 4096
@@ -1904,43 +1909,61 @@ def _score_pruned(passes, gate: dict, keeper: _TopRows, usable, price, *,
 
     # ── each track's own best partners ────────────────────────────────────────
     # The cap is settled; what is left unpriced has a ceiling under its cut.
-    # A track whose best partners are down there still gets them: round by
-    # round, every track that could still gain a reserved partner has its
-    # most promising unpriced pairs priced, until none can.
+    # A track whose best partners are down there still gets them by a bounded
+    # search: every track has its RESERVE_SEARCH × k most promising unpriced
+    # partners (by ceiling, on each side) priced, then a track still short of
+    # k partners — many pairs fail the timing gate and give no row — has its
+    # next most promising priced, round by round, up to RESERVE_SEARCH_MAX × k
+    # in all. A search, not a certificate: certifying the exact best took
+    # rounds that did not end in hours at 10,000 tracks, because a ceiling is
+    # loose by the duration, grid and slot it assumes.
     if reserve is not None and reserve.k:
-        batch = max(4, 2 * reserve.k)
+        first_k = max(4, RESERVE_SEARCH * reserve.k)
+        more_k = max(2, 2 * reserve.k)
+        limit = RESERVE_SEARCH_MAX * reserve.k
         for p, (top, bed) in enumerate(passes):
             ub = ceilings[p]
-            v_ids = [f["song_id"] for f in top.feats]
-            b_ids = [f["song_id"] for f in bed.feats]
             if not ub.size:
                 continue
+            sides = ((1, [f["song_id"] for f in top.feats], "v"),
+                     (0, [f["song_id"] for f in bed.feats], "b"))
+            used = {axis: np.zeros(len(ids), dtype=np.int64) for axis, ids, _s in sides}
+            first = True
             while True:
                 want = np.zeros(ub.shape, dtype=bool)
-                for axis, ids, side in ((1, v_ids, "v"), (0, b_ids, "b")):
-                    floors = np.array(
-                        [-np.inf if (f := reserve.floor(side, s)) is None else f
-                         for s in ids], dtype=np.float32)
+                for axis, ids, side in sides:
+                    if first:
+                        active = np.ones(len(ids), dtype=bool)
+                        k = first_k
+                    else:
+                        active = np.array(
+                            [len(reserve.heaps.get((side, s), ())) < reserve.k
+                             for s in ids], dtype=bool) & (used[axis] < limit)
+                        k = more_k
+                    if not active.any():
+                        continue
+                    k = min(k, ub.shape[axis])
                     # In strips of tracks, so no index array the size of the
                     # pair matrix is ever built.
-                    k = min(batch, ub.shape[axis])
                     for lo_ in range(0, len(ids), 512):
                         strip = slice(lo_, min(lo_ + 512, len(ids)))
-                        cut = ub[strip] if axis == 1 else ub[:, strip]
-                        w = want[strip] if axis == 1 else want[:, strip]
-                        f = floors[strip]
-                        # A ceiling at or over the track's floor could still
-                        # be a partner it keeps; take each such track's best
-                        # `batch` (they are its highest ceilings).
-                        open_ = (cut >= (f[:, None] if axis == 1 else f[None, :])) \
-                            & np.isfinite(cut)
-                        if not open_.any():
+                        on = active[strip]
+                        if not on.any():
                             continue
+                        cut = ub[strip] if axis == 1 else ub[:, strip]
+                        cut = np.where(on[:, None] if axis == 1 else on[None, :],
+                                       cut, -np.inf)
                         part = np.argpartition(-cut, k - 1, axis=axis)
                         idx = np.take(part, np.arange(k), axis=axis)
                         pick = np.zeros(cut.shape, dtype=bool)
                         np.put_along_axis(pick, idx, True, axis=axis)
-                        w |= pick & open_
+                        pick &= np.isfinite(cut)
+                        used[axis][strip] += pick.sum(axis=axis)
+                        if axis == 1:
+                            want[strip] |= pick
+                        else:
+                            want[:, strip] |= pick
+                first = False
                 if not want.any():
                     break
 
@@ -1955,6 +1978,8 @@ def _score_pruned(passes, gate: dict, keeper: _TopRows, usable, price, *,
                     if priced % 2000 == 0:
                         _tick(88, f"Each track's best partners: {priced - capped} "
                                   "more pairs priced")
+                # A picked pair the gate keeps out is never priced: spent.
+                ub[want] = -np.inf
     log.info("  pruned run: %d of %d gated song pairs priced (%d for the cap, "
              "cut %s; %d for each track's own best partners)",
              priced, n_pairs, capped, keeper.floor(), priced - capped)
