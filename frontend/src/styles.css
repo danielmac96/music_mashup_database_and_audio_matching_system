@@ -3276,6 +3276,9 @@ input, select { font-family: inherit; }
 .pcx-details[open] > .pcx-cols { margin-top: 6px; }
 .pc-prov { font-size: 9px; color: var(--muted); border: 1px dashed var(--line); border-radius: 3px; padding: 0 3px; }
 .pc-forced { font-size: 9px; color: var(--warn-soft); border: 1px solid var(--warn-bg); border-radius: 3px; padding: 0 3px; }
+.pc-dropin { font-size: 9px; color: var(--ok); background: var(--ok-bg); border: 1px solid var(--ok); border-radius: 8px; padding: 0 5px; white-space: nowrap; }
+.pd-dropin.on { color: var(--ok); border-color: var(--ok); background: var(--ok-bg); }
+.pcx-slot { flex-wrap: wrap; }
 
 /* ══════════════════════════════════════════════════════════════════════════
  * Segments — the matchup playground: vocals | beds over a mini studio band

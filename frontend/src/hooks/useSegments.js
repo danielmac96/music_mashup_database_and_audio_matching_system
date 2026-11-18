@@ -60,7 +60,8 @@ export function useSegmentMatches(anchor, opts) {
         const out = await api.getSegmentMatches(id, role, JSON.parse(optKey), c.signal);
         if (c.signal.aborted) return;
         setState({ rows: out.rows || [], loading: false, error: null,
-                   meta: { scored: out.scored, gated: out.gated, anchor: out.anchor } });
+                   meta: { scored: out.scored, gated: out.gated,
+                           hidden: out.hidden || 0, anchor: out.anchor } });
       } catch (e) {
         if (c.signal.aborted || e?.name === "AbortError") return;
         setState({ rows: [], loading: false, error: e?.message || "Could not rank the matches",

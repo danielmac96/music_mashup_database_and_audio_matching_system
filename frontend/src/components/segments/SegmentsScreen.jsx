@@ -251,8 +251,9 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
           <b>{anchorRow.label} · {anchorRow.title}</b>
           {matches.loading && <span className="faint">ranking…</span>}
           {!matches.loading && matches.meta && (
-            <span className="faint mono" title="section pairings scored · partner songs outside the tempo/key gate">
+            <span className="faint mono" title="section pairings scored · partner songs outside the tempo/key gate · pairs you hid">
               {matches.meta.scored.toLocaleString()} scored · {matches.meta.gated} gated
+              {matches.meta.hidden > 0 && ` · ${matches.meta.hidden} hidden`}
             </span>
           )}
           {sel[role] && (

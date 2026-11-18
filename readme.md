@@ -259,11 +259,18 @@ source link, adds to a crate or deletes the track.
 **The pair dock** (right, resizable) lists the best pairs for the selected
 track — **As vocal / As bed** — or **Best in library**. Each card is one song
 pair: VOX and BED lines (title, artist, style, key, BPM) and a result line
-(percentile, tier, landing key and the bed's transpose, stretch, ▶, stars).
-When several section pairings of the two songs are stored, a **‹ ● ○ ›**
-stepper switches between them. Expanding a card shows both sections, the
-**recipe** (a DO row of what building it takes, a WATCH row of what the
-numbers cannot promise), measured harmony, bass clash, effort and the scores.
+(percentile, tier, landing key and the bed's transpose, stretch, a **⤓ Drop-in**
+pill, ▶, stars). When several section pairings of the two songs are stored, a
+**‹ ● ○ ›** stepper switches between them. Expanding a card shows both
+sections, the **recipe** (a DO row of what building it takes, a WATCH row of
+what the numbers cannot promise), measured harmony, bass clash, effort, the
+**slot** in words ("lands where *X*'s own vocal was, phrase starts within
+40 ms") with the 8- or 16-bar window worth building, and the scores.
+
+- **Easy first** is the default order: by tier, Drop-ins first inside each
+  tier, then the score (which is already fit minus effort). **⤓ Drop-ins**
+  narrows the whole library to Drop-in pairs (§5.7); *Sort: Drop-ins* lists
+  them first.
 
 - Keys: `↑↓` move · `←→` step pairings · space loop · `1–5` rate and move on ·
   `⏎` expand · double-click Studio · `V`/`B` solo · `h` hide · `a` add to the
@@ -284,7 +291,7 @@ numbers cannot promise), measured harmony, bass clash, effort and the scores.
 A library of **parts**, not songs: every vocal section on the left, every bed
 section on the right, each its own filterable table. **Select a section and
 the other table becomes its matches**, scored live (§5.13) with a Fit and a
-Move column. The **mini studio** below loops the armed pair exactly as the
+Move column (pairs you hid in the dock stay out; the header counts them). The **mini studio** below loops the armed pair exactly as the
 card would (bed conformed, transposed, nudged), lets you move pitch, tempo,
 nudge, levels and the high-pass, and then rate, note, **+ Set**, **Render
 WAV** or **Open in Studio**. Reached also from Track detail ("Find beds ▸") and
@@ -372,7 +379,8 @@ hidden**, **Bulk reprocess** (re-analyse, re-separate, allin1 or re-download
 only what needs it — counts come from `bulk_worker.staleness`), **⟳ Refresh
 metadata** (re-fetch genre/year/plays for rows whose import was throttled —
 `songs.metadata_partial`), **Tuning** (match and section weights, effort
-weight, gates, the timing gate, and *What your ratings say* — the term report),
+weight, gates, the timing gate, the vacated-slot weight and Drop-in bonus, and
+*What your ratings say* — the term report),
 **Train from imported mixes**, and a read-only **database browser**.
 
 ---
@@ -403,6 +411,8 @@ Resolution order: **environment variable > `settings.json` > default.**
 | Keep drums/bass/other after allin1 | `MASHUP_KEEP_ANALYSIS_STEMS` | `keep_analysis_stems` | on |
 | Keep the per-frame `.npz` sidecars | `MASHUP_KEEP_ANALYSIS_FRAMES` | `keep_analysis_frames` | on (off puts the fallback cut on librosa transforms) |
 | Timing gate / weight / phrase gap | `MASHUP_TIMING_TOL_MS` / `MASHUP_TIMING_WEIGHT` / `MASHUP_PHRASE_GAP_SECS` | `timing_tol_ms` / `timing_weight` / `phrase_gap_secs` | `25` ms / `0.30` / `0.6` s |
+| Vacated slot weight / Drop-in bonus | `MASHUP_SLOT_WEIGHT` / `MASHUP_DROPIN_BONUS` | `slot_weight` / `dropin_bonus` | `0.20` (0 scores as before the term existed) / `0.02` (an order key, never the stored score) |
+| Partners every track keeps under the row cap | `MASHUP_RESERVE_PARTNERS` | `reserve_partners` | `8` per side (0 = the cap alone) |
 | Scoring knobs | `MASHUP_EFFORT_WEIGHT`, `MASHUP_SECTION_WEIGHT`, `MASHUP_BPM_MAX_DIFF`, `MASHUP_KEY_MIN_SCORE`, `MASHUP_STEM_QUALITY_MIN`, `MASHUP_MAX_SECTION_PAIRS`, `MASHUP_MAX_CANDIDATE_ROWS`, … | `effort_weight`, `match_weights`, `section_weights`, … | `config.py` (§5.7) |
 | Export time-stretch | `MASHUP_STRETCH` | — | `auto` (Rubber Band when ffmpeg has it, else librosa) |
 | Firecrawl key (Mixes) | `FIRECRAWL_API_KEY` | `firecrawl_api_key` | — |
@@ -715,6 +725,64 @@ passing pairings blend `score_timing` in at `timing_weight` (0.30). Rows store
 the timing terms, `engine` (`allin1`, or `essentia_fallback` for a side allin1
 did not cut), `engine_version` and `pipeline`.
 
+**The vacated slot** (`score_slot`; `matcher/section_score.py`,
+`phrase_align.slot_phrase_fit`). The easiest mashup is a vocal dropped into a
+bed section where the bed's **own vocal used to be**: the arrangement already
+leaves that room and the phrasing already fits it. For a placed pairing, from
+stored values only:
+
+- **occupancy** (0.45) — the bed track's own `vocal_activity` in that section;
+- **phrase match** (0.35) — once the pair is placed, how close each incoming
+  phrase start (and its pickup) lands to the nearest start of the bed's
+  original vocal: within a beat scores by how near, a bar away scores 0. A bed
+  whose song has phrases but none in this section is a known 0; a song with no
+  phrase rows is unmeasured;
+- **register** (0.20) — the incoming vocal's sung median (`f0`) against the
+  original's after the bed's transpose: 1 within 2 st, 0 an octave apart.
+
+An unmeasured part is 0.5. The blend replaces `slot_weight` (0.20) of the
+pairing's fit, after the timing blend, so it decides *which* bed section a
+vocal section is paired with — and which of a section's bed candidates are
+placed at all — and reaches `score_total` through the section fit. Because it
+needs the placement it lives beside the timing score
+(`sections._timed_section_pairs`, `segment_match.rank_partners`), not in
+`score_section_pair`. The transpose it reads is the Camelot estimate for the
+two songs: the measured shift is not known until a pairing has won, and
+whether it is trusted depends on a threshold the run itself rewrites.
+
+**Phrase windows** (`phrase_align.best_window`). For each **kept** pairing,
+the 8- or 16-bar window to build: a vocal phrase start over a bed bar where the
+two grids hold bar for bar within the timing tolerance, scored on that
+tightness (0.4), the share of the vocal's bars that are sung (0.3) and the
+share of the bed's bars its own vocal sang (0.3). Stored as `window_bars`,
+`vocal_window_bar`, `bed_window_bar` (bar indexes from each section's first
+downbeat) and `score_window`. It describes a pairing that has already won and
+never moves a rank; nothing places it yet (§9).
+
+**Drop-in** (`matcher/compat.py`: `dropin`, `dropin_sql`). A pair is a Drop-in
+when all hold:
+
+1. **the keys mix** — `camelot_compatible`: the same key, one step round the
+   wheel, or the relative major/minor — as the songs stand or with **the bed**
+   moved by at most one semitone (the pair's `bed_shift`). The vocal is never
+   shifted, and measured harmony never widens the rule;
+2. **tempo within 3 %** after the half/double fold;
+3. **`score_slot` at or above the library's 70th percentile** — of a random
+   sample of the library's gated pairs, taken by Score library
+   (`app_prefs.slot_dropin_floor`). The stored table cannot say: it keeps the
+   best rows, which are the high-slot ones;
+4. **it passed the timing gate.**
+
+The two songs' part of that (the tempo window, and whether the keys mix as
+they stand or a semitone either way) is stored on the row as `dropin_mask`
+with `camelot_shift`, so the same rule runs in SQL: `dropin=1` filters the
+library, `order=dropin` lists Drop-ins first, and `order=easy` — the route's
+default — is tier, then Drop-ins, then score. `dropin_bonus` (0.02) is added
+to a Drop-in's score **in the order only**; the stored total never moves, and
+a pair that failed the timing gate is not stored at all, so it cannot be
+lifted. Every row carries `dropin`, `dropin_reason` (why, or the first rule it
+missed) and `slot_reason`.
+
 **Alignment** (`matcher/alignment.py`): `alignment_offset` is how far to move
 the conformed bed so its downbeat lands under the vocal's — `None` without a
 grid. **Plan** (`matcher/plan.py`): target BPM, stretch, shift, ranked section
@@ -722,8 +790,64 @@ options and per-lane suggestions Studio's ticks read.
 
 **Listing** (`get_candidates_enriched`): SQL filters, hidden pairs and excluded
 tracks removed, a greedy per-song cap (never counting the scoped track), a cap
-on pairings of the same two songs, optional surprise and uncertain-first
-orders, `pairing_count` / `pairing_rank` for the stepper.
+on pairings of the same two songs, the easy-first / Drop-in / surprise /
+uncertain-first orders, `pairing_count` / `pairing_rank` for the stepper. A row's
+`score_percentile` and `energy_pct` are SQL's `PERCENT_RANK` within its combo
+type, read from two sorted columns kept per state of the table
+(`models.candidate_ranks`) rather than from a window over the whole table on
+every request; a percentile filter or tier becomes a comparison on
+`score_total`. The orders that sort on an expression — easy (the default),
+Drop-in, tier, and score with the Drop-in bonus — would make SQLite build
+every row of the table, correlated subqueries and all, to return forty. Each
+is bounded by `score_total` from below, so library-wide they run first over
+the top slice of each combo type's scores (an index range) and keep the answer
+only when its last row provably outranks anything under the slice; otherwise
+the slice widens, and the last resort is the whole table
+(`models._bounded_listing`, pinned against the whole-table query).
+
+**Scale** (`match._score_pruned`, `_TopRows`, `phrase_align.place_cached`). A
+run keeps the best `max_candidate_rows` rows per combo type, so a run that
+could store more does not price every song pair:
+
+1. every gated song pair gets a **ceiling** — the most any of its rows could
+   total: its own song terms, the key term at the best harmony its sections'
+   chroma could measure, a free transpose, its sections' best labels and voice,
+   a perfect duration fit, a perfect grid and the fullest slot the bed's
+   sections allow;
+2. pairs are priced exactly, in tiers of falling ceiling; once the keeper is
+   full a pair whose ceiling is under its cut is skipped, and the run ends when
+   the cut reaches the next tier's ceiling;
+3. ties at the cut are settled from each row's place in emission order, the
+   rule the old in-order heap applied, so the order pairs are priced in does
+   not show.
+
+**Every track keeps its best partners** (`match._Reserve`,
+`reserve_partners` = 8). The cap keeps the library's best rows overall, and at
+a few thousand tracks most tracks' own best beds are not among them — a full
+run at 10,000 synthetic tracks left 5,422 tracks with any stored partner as a
+vocal and 3,651 with five. So on top of the cap, each track keeps the best row
+of its best partners on each side (as the vocal, and as the bed). In a pruned
+run that is a bounded **search**, not a certificate: once the cap is settled,
+every track has its 24 most promising unpriced partners (by ceiling, per side;
+`match.RESERVE_SEARCH` × the reserve) priced, and a track still short of 8 —
+many pairs fail the timing gate and give no row — has its next most promising
+priced round by round, up to 96 in all (`RESERVE_SEARCH_MAX`). Every reserved
+row is the true row for its pair; whether it is the track's true best is what
+the search may miss (a test measures it against pricing every pair). An exact
+certificate was tried first: at 10,000 tracks its rounds had not ended after
+four hours, because a ceiling is loose by the duration, grid and slot it
+assumes.
+
+The gate and every row's arithmetic are untouched: with the reserve off, the
+stored table is the one pricing every pair stores (pinned by a test that runs
+both on one library).
+What changes is what is never built — and the timing counts in the log and in
+`last_score`, which now cover the pairs that were priced. A per-track run, a
+library too small to overflow the cap, and a run under a learned model (a
+probability has no ceiling) price every pair. Within one pair, each section's
+own work (its bar lines, its phrase, its label and voice terms, its unit
+chroma) is done once per run, not once per partner, and a row is put in its
+stored shape only when it is kept.
 
 ### 5.8 Learned scorer
 
@@ -805,6 +929,8 @@ Each shape below is pinned by a contract test.
   `confidence_tier` (`strong` ≥ 75th percentile, `good` ≥ 65, `maybe` ≥ 50,
   else `long_shot`, one tier down when the harmony is unsure) and `compat`
   (key, BPM, genre). `tier=` and `order=tier` are the same rule in SQL.
+  Every row also carries `dropin`, `dropin_reason` and `slot_reason` (§5.7);
+  `dropin=1` and `order=easy|dropin` are that rule in SQL.
 - **Queue readability** (`api/queue_eta.py`): every job carries `eta_secs` and
   a one-sentence `summary`; estimates are this library's median per
   audio-second; no history is `null`, never 0.
@@ -814,7 +940,8 @@ Each shape below is pinned by a contract test.
 - **Segments** (`api/routes/segments.py`, `matcher/segment_match.py`):
   `GET /api/segments?role=vocal|bed` (packed rows, cached per library state,
   gzipped) and `GET /api/segments/{id}/matches` — the scorer's own arithmetic,
-  live, exact top-k (~0.23 s per call on 5,000 tracks).
+  live, exact top-k. A pair hidden in the dock is left out here too (`hidden`
+  counts them beside `gated`).
 - **Mix summary**, **Discover gaps** (`GET /api/discovery/gaps`) and the
   attribute catalogue (`GET /api/analysis/attributes`).
 - **Pair events** (`POST /api/events`, §5.14): always answers 200 with
@@ -910,7 +1037,9 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 - `sections` — the fallback (and provisional) cut; `sections_allin1` — allin1's;
   `vocal_phrases`; `allin1_analysis`; `allin1_embeddings`.
 - `mashup_candidates` — one row per section pair: sub-scores, effort, section
-  terms, harmony, alignment, timing, engine, scorer + model version. Indexed for
+  terms, harmony, alignment, timing, the slot (`score_slot` and its three
+  parts), the phrase window, `dropin_mask` / `camelot_shift`, engine, scorer +
+  model version. Indexed for
   the dock scoped to a side, the library-wide list and one pairing.
 - `pair_feedback` (verdict, stars, section indexes, `reasons_json`,
   `sections_stale`, engine, feature snapshot) · `pair_hidden` ·
@@ -921,8 +1050,8 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 - `mixes` · `mix_tracks` · `mashup_pairs` · `datasets` · `models` · `crates` ·
   `crate_items` · `sets` / `set_items` · `embeddings` · `analysis_runs` ·
   `app_prefs` (keys: `soundcloud_profile`, `soundcloud_saved_profiles`,
-  `attribute_visibility`, `last_score`, `harmony_unsure_below`, `library_view`,
-  `filter_presets`).
+  `attribute_visibility`, `last_score`, `harmony_unsure_below`,
+  `slot_dropin_floor`, `library_view`, `filter_presets`).
 
 ---
 
@@ -1019,9 +1148,55 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 - **`SECTION_PAIR_COLUMNS` is the tuple that binds.** Forget a new term there
   and it is discarded on every write. `score_section_pair` deliberately does not
   call `section_terms` (hot loop); a test pins the two copies together.
+- **A term that needs the placement follows the timing score, not
+  `score_section_pair`.** `score_slot` reads where the pair landed, so it is
+  computed once per placed pairing (`sections.slot_terms`) and blended after
+  the timing blend — in `_timed_section_pairs` and in
+  `segment_match.rank_partners`, which must stay the same arithmetic (a test
+  deletes stored rows and checks Segments recomputes them to the digit). Its
+  columns are in `SECTION_PAIR_COLUMNS` (`models.SLOT_COLUMNS`), its ceiling
+  in `_score_pruned`, its row in the term report.
+- **Drop-in has one definition: `matcher/compat.py`.** `dropin` (the card) and
+  `dropin_sql` (the filter and the order keys) read the same stored
+  `dropin_mask`, the same transpose (`bed_shift` ≡ `bed_shift_sql`) and the
+  same floor (`slot_floor`); a test compares them row for row with sure and
+  unsure harmony both present. `camelot_compatible` is also the Library's
+  `8A~` (`theme.compatibleKeys`), pinned over all 24 × 24 keys. The frontend
+  never computes either.
+- **The Drop-in bonus is an order key, never a stored score**, and the slot
+  floor is a sample of the library, never a percentile of the table (the table
+  is the top slice, so its own 70th percentile is far above the library's).
 - **Nothing in the section search reads settings.** `score_all_pairs` reads
   weights and patterns once and passes them down; a settings read in that loop
   made a 204-track re-score take an hour.
+- **A speed-up in the scorer is pinned to the slow path it replaced**
+  (`tests/test_score_scale.py`). `phrase_align.place_cached` must return
+  `place`'s dict to the last bit; `sections._score_statics` is the one copy of
+  `score_section_pair`'s arithmetic; `match._TopRows` must keep what the
+  in-order heap kept. Change `place` or a scoring term and the cached path
+  changes with it, in the same commit.
+- **A ceiling may be loose, never low** (`match._score_pruned`). A pruned run
+  skips a song pair whose ceiling is under the cut, so anything that can raise
+  a row's total — a new section term, a new way the key term or the effort is
+  re-priced after the section search — must raise the ceiling too, or the run
+  silently drops rows a full pricing keeps. A section term other than label
+  and voice is taken at 1, so one that can exceed 1 needs its own bound.
+- **The run's per-section cache is keyed by object identity** (`timing["_cache"]`,
+  `segment_match._Snapshot.cache`): it holds each section dict beside what it
+  derived, and lives exactly as long as the sections it was built from. Never
+  share one across runs or mutate a section while one is alive.
+- **A computed listing order must be bounded by `score_total`.**
+  `_bounded_listing` leaves rows under a score out and proves they could not
+  have ranked higher. A new order, or a new term in an order expression, that
+  can lift a low-scoring row above a high one (another bonus, a different
+  tier rule) needs its own exactness check there, or the library-wide dock
+  silently drops rows. A scoped list is never bounded (its index range is
+  already small).
+- **`score_percentile` has two readers of one definition**: the listing
+  (`models.CandidateRanks`) and Segments (`segment_match._percent_rank`) both
+  compute SQL's `PERCENT_RANK`. The ranks are rebuilt when the table's row
+  count, newest id or sum of totals moves; a writer that rewrites
+  `inst_energy` alone, in place, would have to clear `models._RANKS_CACHE`.
 
 ### Pipeline and scoring
 
@@ -1214,13 +1389,14 @@ it originally sang over, the same length, phrases on the same bars), listed in
 `synth_manifest.json` so a ranking change can be measured against them.
 
 `bench_scale.py` builds one per size in a child process bound to its own paths
-and reports per-track scoring, the full Score library, the dock listing,
+and reports per-track scoring, the full Score library (wall time, peak memory
+and how many of the gated song pairs it had to price), the dock listing,
 Segments, the Library payload and event ingestion, to
-`<data_dir>/bench/scale/bench_scale.{json,md}`. The full run is executed only
-when the per-track sample says it fits `--full-score-budget` (900 s); past
-that it is an estimate (per-track seconds × tracks ÷ 2, with its standard
-error) and printed as one. Where the full run was skipped, the listing is
-timed over a candidates table padded to the size a full run would leave.
+`<data_dir>/bench/scale/bench_scale.{json,md}`. The full run is always
+executed unless `--full-score-budget` is given and pricing every pair (per-track
+seconds × tracks ÷ 2, an upper bound on a pruned run) is estimated over it;
+then it is printed as that estimate, and the listing is timed over a
+candidates table padded to the size a full run would leave.
 
 The baseline (2026-11-16, 4-core VM, Python 3.12, synthetic — every later
 change to scoring or listing is compared with this):
@@ -1238,7 +1414,34 @@ change to scoring or listing is compared with this):
 | `POST /api/events` request path p95 | 0.04 ms | 0.09 ms | 0.06 ms | 0.06 ms |
 | Database per 100,000 events | 12.1 MB | 12.1 MB | 12.1 MB | 12.1 MB |
 
-Read with it: the listing rows are over 200,000–267,000 candidate rows (the
+**After Phase 1** (2026-11-17/18, the same VM, synthetic; the slot, Drop-in,
+the pruned run, each track's reserved partners, the bounded listing):
+
+| | 500 | 2,000 | 5,000 | 10,000 tracks |
+|---|---|---|---|---|
+| Score one track, mean (min–max) | 0.97 s (0.31–1.57) | 4.7 s (3.0–6.1) | 10.7 s (3.8–15.2) | 26.8 s (11.4–36.5) |
+| Score library, measured | 147 s, peak 1.01 GB | 595 s, peak 1.61 GB | 2,877 s, peak 2.27 GB † | **4,531 s**, peak 3.52 GB |
+| Song pairs priced, of those gated | 100,656 of 112,770 | 451,011 of 1.84 M | 2.10 M of 11.3 M † | 3.33 M of 45.7 M |
+| Dock listing, library-wide p50 | 117 ms | 175 ms | 131 ms | 125 ms |
+| Dock listing, scoped p50 | 78 ms | 64 ms | 89 ms | 83 ms |
+| Dock route, default order ("Best in library") p50 | 122 ms | 135 ms | 183 ms | 140 ms |
+| Segment matches, vocal lead p50 / p95 | 0.18 / 0.28 s | 0.42 / 0.63 s | 0.73 / 2.16 s | 1.41 / 3.92 s |
+| Segment matches, first call (snapshot) | 0.8 s | 3.0 s | 7.8 s | 15.3 s |
+| `GET /api/tracks` p50 · size (gzip) | 0.46 s · 1.9 MB (0.2) | 0.86 s · 7.4 MB (0.7) | 2.14 s · 18.5 MB (1.8) | 4.35 s · 37.1 MB (3.6) |
+
+† 5,000 tracks was measured with the first, exact version of the reserve
+(it certified each track's best partners; 858,080 of those pairs were priced
+for it). Its re-time with the bounded search was lost to two container
+restarts. The search only prices fewer pairs (at 2,000 tracks: 611 s → 595 s),
+so read it as an upper bound.
+
+The dock rows are timed with `models.get_candidates_enriched` (the baseline's
+call) and through the route, over the table a full run leaves (267,000 to
+481,000 rows: the cap plus each track's reserved partners). `GET /api/tracks`,
+`GET /api/segments` and Segments' first call were not Phase 1's work and did
+not move.
+
+Read the baseline with it: its listing rows are over 200,000–267,000 candidate rows (the
 `max_candidate_rows` cap); the 500-track estimate read 610 ± 98 s against the
 454 s measured, so the larger estimates lean high; one track's scoring cost
 varies several-fold with what it is (an instrumental plays one role, an
@@ -1287,10 +1490,13 @@ browser sends.
    placement. A scoped dock lists instrumental-over-instrumental rows above
    vocal pairs. allin1's downbeat confidence is stored but unused (a bar 1 a
    beat late pairs as freely as any).
-7. **Engine:** match 8/16/32-bar **phrases** instead of whole sections (the
-   biggest engine win left; the per-bar `allin1_embeddings` have no reader yet),
-   per-bar chroma for progressions, register (`f0` after the shift) and stem
-   quality as section terms.
+7. **Engine:** the best 8/16-bar **phrase window** of each kept pairing is
+   stored (§5.7) but nothing places it yet — the dock loop, Studio and the FL
+   export still build the whole section pairing — and it is scored at weight
+   0, after the pairing has won. Still open: windows that compete for the
+   rank, 32 bars, the per-bar `allin1_embeddings` (no reader yet), per-bar
+   chroma for progressions, stem quality as a section term. The slot's
+   register reads the Camelot transpose, not the measured one (§5.7).
 8. **Dedup on the EffNet embedding** — the MFCC audio check in
    `matcher/dedup.py` lets 93 % of random pairs through, so it is not a real
    gate.
@@ -1311,26 +1517,29 @@ browser sends.
 12. **Foundations as they hurt:** server-side Studio projects (snapshots are
     per-browser `localStorage`), multi-resolution waveform peaks, job
     persistence across restarts, automatic lyrics for section lines.
-13. Segments: hidden pairs still appear in live matches; with a learned model
-    active, live and stored rows are ranked on two scales.
-
-14. **Scale** (measured on synthetic libraries, §8 — none of this holds at the
-    2,000–10,000-track target yet). **Score library does not finish**: 454 s
-    at 500 tracks, an estimated 3 h at 2,000 and days at 10,000, and importing
-    one track into a 10,000-track library costs about a minute of scoring. About
-    80 % of a run is phrase placement (`matcher/phrase_align.place`, ~4 ms per
-    song pair; two `np.median` calls per placement in `_bar_secs` alone are a
-    third of it), and nothing prunes song pairs before the section search —
-    the BPM gate passes most of a dance library. The run's peak memory
-    (1.27 GB at 500 tracks) is the candidate heaps. **The dock listing** takes
-    1.2–1.6 s whatever the scope once the table is at its cap:
-    `get_candidates_enriched` recomputes two `PERCENT_RANK` windows over all of
-    `mashup_candidates` on every request. **`GET /api/tracks`** is 4 s and
-    37 MB at 10,000 tracks (3.5 MB gzipped, but the route does not compress),
-    **Segments' first match** builds its snapshot in 15 s, and each live match
-    after that takes 1–2 s.
+13. Segments: with a learned model active, live and stored rows are ranked on
+    two scales.
+14. **Scale, what is left** (synthetic libraries, §8). Score library now
+    finishes at 10,000 tracks, but: a run under a **learned model** still
+    prices every pair (a probability has no ceiling to prune with) and will
+    not finish at that size; a full run's **peak memory** is a few GB at
+    10,000 tracks (every section in memory, plus one float32 ceiling per
+    vocal × bed song pair); a **per-track** score is never pruned — a track's
+    rows are all written at import, and only the next Score library trims
+    them to the cap and the reserve. **`GET /api/tracks`** is 4 s and 37 MB at
+    10,000 tracks (3.5 MB gzipped, but the route does not compress), and
+    **Segments' first match** still builds a snapshot of every section.
 15. **Pair events have no reader yet** (§5.14): they are collected for the
     learning loop. The mini studio's loop is not timed.
+16. **Planted drop-ins are not special enough to measure a ranking with.** On
+    the synthetic library a planted pair sits near the top few per cent of its
+    vocal's partners, not in its top five: hundreds of naturally compatible
+    beds (same key within a step, tempo within 3 %, a sung chorus) qualify as
+    Drop-ins on equal terms, and what separates them is the loudness match,
+    which the generator draws at random for planted pairs too. Either the
+    generator makes planted pairs distinctive (a loudness and timbre match the
+    engine already rewards), or recall is measured as "tagged Drop-in and in
+    the top N %" rather than "in the top five".
 
 Not worth doing: raising the `rhythm` or `structure` section weights (`rhythm`
 saturates on 4/4 dance music; `structure` duplicates `label`); persistent

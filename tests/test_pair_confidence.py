@@ -216,7 +216,9 @@ def test_order_tier_is_tier_then_score(app):
     rows = _all(client, order="tier")
     keys = [(ORDER.index(c["confidence_tier"]), -c["score_total"]) for c in rows]
     assert keys == sorted(keys)
-    assert rows != _all(client)      # the downgrade really reorders something
+    # The downgrade really reorders something against the plain score order
+    # (the route's default is now "easy", which is tier-first itself).
+    assert rows != _all(client, order="score")
 
 
 def test_an_unknown_tier_is_400_and_existing_orders_still_work(app):

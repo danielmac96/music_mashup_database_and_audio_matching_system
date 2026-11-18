@@ -400,8 +400,31 @@ def get_vocal_phrases(song_id: int, grid_source: Optional[str] = None,
 
 
 def phrases_for_songs(song_ids, db_path: Optional[Path] = None) -> Dict[int, List[Dict]]:
-    return {int(s): get_vocal_phrases(int(s), db_path=db_path)
-            for s in {int(i) for i in song_ids if i is not None}}
+    """get_vocal_phrases for many songs on ONE connection — a scoring run
+    places every vocal song's sections, and a connection per song was a
+    fifth of scoring one track against a large library."""
+    ids = sorted({int(i) for i in song_ids if i is not None})
+    out: Dict[int, List[Dict]] = {s: [] for s in ids}
+    if not ids:
+        return out
+    conn = _conn(db_path)
+    try:
+        by_song: Dict[int, Dict[str, List[Dict]]] = {}
+        for k in range(0, len(ids), 500):
+            chunk = ids[k:k + 500]
+            marks = ",".join("?" * len(chunk))
+            live = {s: live_pipeline(s, conn=conn) for s in chunk}
+            for r in conn.execute(
+                    f"SELECT * FROM vocal_phrases WHERE song_id IN ({marks}) "
+                    "ORDER BY song_id, grid_source, phrase_index", chunk):
+                if r["pipeline"] == live[r["song_id"]]:
+                    by_song.setdefault(r["song_id"], {}).setdefault(
+                        r["grid_source"], []).append(dict(r))
+    finally:
+        conn.close()
+    for s, by_src in by_song.items():
+        out[s] = by_src.get("allin1") or by_src.get("essentia") or []
+    return out
 
 
 # ── Which pipeline made a song's stems (songs.separation_pipeline) ─────────────

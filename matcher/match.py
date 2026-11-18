@@ -717,8 +717,17 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
                        upper_triangle: bool, weights: Dict,
                        effort_weight: float = 0.0,
                        quality_min: float = 0.0,
-                       on_block=None):
+                       on_block=None, pre_select=None, post_select=None,
+                       terms_only: bool = False):
     """Yield (top_idx, bed_idx, scores) for every pair that passes the gate.
+
+    ``pre_select(rows, keep)`` and ``post_select(rows, keep, total)`` narrow a
+    block's gated pairs further — before its sub-scores are computed, and once
+    its totals are known. They only ever skip pairs the caller has proved
+    cannot be kept (readme §5.7, "Scale"); the gate itself is the lines below.
+    ``terms_only`` yields one ``(rows, keep, terms)`` per block instead — the
+    matrices themselves, for the caller that bounds a block rather than
+    walking it.
 
     Emission order is row-major over the top side, i.e. exactly the order the
     nested `for top: for bed:` loop produced — so ties in the final ranking
@@ -764,6 +773,8 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
         # library is unaffected.
         if quality_min > 0:
             keep &= (top.quality[rows][:, None] >= quality_min)
+        if pre_select is not None:
+            keep = pre_select(rows, keep)
 
         if keep.any():
             bpm_s = _bpm_score_block(diff)
@@ -790,6 +801,14 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
                 top.bpm_conf[rows][:, None], bed.bpm_conf[None, :],
                 top.key_conf[rows][:, None], bed.key_conf[None, :], folded)
             total = fit * (1.0 - effort_weight * effort)
+            if terms_only:
+                yield rows, keep, {"fit": fit, "key": key_s, "total": total,
+                                   "effort": effort, "parts": parts}
+                if on_block is not None:
+                    on_block(rows.stop, n_top)
+                continue
+            if post_select is not None:
+                keep = post_select(rows, keep, total)
 
             # np.nonzero returns row-major index pairs, preserving the original
             # iteration order. round() stays Python's so the persisted total is
@@ -812,6 +831,214 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
                 }
         if on_block is not None:
             on_block(rows.stop, n_top)
+
+
+class _TopRows:
+    """The best ``cap`` rows of a run, whatever order they are priced in.
+
+    A run used to push every row through one bounded heap in emission order
+    and let the heap decide; which rows survive a tie at the cut then depends
+    on that order. This keeps every row at or above the running cut (so
+    nothing that could still be kept is lost) and applies the same rule once,
+    at the end, from each row's emission sequence — so a run may price its
+    most promising pairs first, or skip ones that cannot reach the cut, and
+    still store exactly the rows the in-order heap would have.
+    tests/test_score_scale.py pins it to that heap."""
+
+    def __init__(self, cap: int):
+        self.cap = max(1, int(cap))
+        self.heap: list = []
+        self._count: Dict[float, int] = {}
+
+    def floor(self) -> Optional[float]:
+        """The cut: a total below it can no longer be kept. None until ``cap``
+        rows are held."""
+        return self.heap[0][0] if len(self.heap) >= self.cap else None
+
+    def wants(self, total: float) -> bool:
+        return len(self.heap) < self.cap or total >= self.heap[0][0]
+
+    def push(self, total: float, seq: tuple, row, built) -> None:
+        heapq.heappush(self.heap, (total, seq, row, built))
+        self._count[total] = self._count.get(total, 0) + 1
+        while len(self.heap) > self.cap:
+            low = self.heap[0][0]
+            n_low = self._count[low]
+            if len(self.heap) - n_low < self.cap:
+                break                   # the lowest total is still inside the cut
+            for _ in range(n_low):
+                heapq.heappop(self.heap)
+            del self._count[low]
+
+    def ranked(self) -> list:
+        """The kept rows, best first, ties in emission order.
+
+        The in-order heap admits a row when it is not full or the row beats
+        its lowest total, and evicts the earliest row at that lowest total.
+        With T the final cut: every row at or above T is admitted until the
+        heap holds ``cap`` of them; after that a row at T is refused and each
+        row above T evicts the earliest T-row still held."""
+        items = sorted(self.heap, key=lambda t: t[1])
+        if len(items) > self.cap:
+            cut = self.heap[0][0]
+            first, later = items[:self.cap], items[self.cap:]
+            evict = sum(1 for t in later if t[0] > cut)
+            kept = []
+            for t in first:
+                if evict and t[0] == cut:
+                    evict -= 1
+                    continue
+                kept.append(t)
+            kept.extend(t for t in later if t[0] > cut)
+            items = kept
+        return sorted(items, key=lambda t: (-t[0], t[1]))
+
+
+class _Reserve:
+    """Each track's best partners, whatever the row cap keeps (readme §5.7).
+
+    Per vocal song and per bed song: the best row of each of its ``k`` best
+    partner songs, best total first, the earlier-emitted pair on a tie. A
+    pair is offered once, with its best row."""
+
+    def __init__(self, k: int):
+        self.k = max(0, int(k))
+        self.heaps: Dict[tuple, list] = {}
+
+    def _key(self, total: float, seq: tuple) -> tuple:
+        return (total, tuple(-x for x in seq))      # earlier seq = larger key
+
+    def floor(self, side: str, song_id: int) -> Optional[float]:
+        """The total a new partner must reach to be kept for this track; None
+        while it has fewer than ``k``."""
+        heap = self.heaps.get((side, song_id))
+        return heap[0][0][0] if heap and len(heap) >= self.k else None
+
+    def wants(self, side: str, song_id: int, total: float, seq: tuple) -> bool:
+        if not self.k:
+            return False
+        heap = self.heaps.get((side, song_id))
+        return heap is None or len(heap) < self.k or self._key(total, seq) > heap[0][0]
+
+    def push(self, side: str, song_id: int, total: float, seq: tuple, item) -> None:
+        heap = self.heaps.setdefault((side, song_id), [])
+        entry = (self._key(total, seq), item)
+        if len(heap) < self.k:
+            heapq.heappush(heap, entry)
+        elif entry[0] > heap[0][0]:
+            heapq.heapreplace(heap, entry)
+
+    def items(self) -> list:
+        """Every reserved row once, as _TopRows items."""
+        seen, out = set(), []
+        for heap in self.heaps.values():
+            for _key, item in heap:
+                if item[1] not in seen:
+                    seen.add(item[1])
+                    out.append(item)
+        return out
+
+
+# Added to every ceiling: totals are rounded to four places on the way to the
+# table (5e-5 each for the section fit, the effort and the total) and the
+# ceilings are held as float32.
+_BOUND_SLACK = 3e-4
+# How many song pairs the first, most promising tier of a pruned run prices,
+# as a share of the row cap; each later tier is twice the one before.
+_FIRST_TIER_SHARE = 0.5
+# Off: every gated pair is priced, as before pruning existed. The switch the
+# tests use to run both ways on one library; nothing else turns it off.
+PRUNE_RUNS = True
+# How many of its most promising unpriced partners (by ceiling), per reserved
+# partner, a track has searched for its reserve after the cap is settled.
+RESERVE_SEARCH = 3
+# ...and how many in all a track still short of its partners may have searched.
+RESERVE_SEARCH_MAX = 12
+# Gated song pairs searched, and not stored, for the library's slot floor.
+SLOT_SAMPLE_PAIRS = 3000
+_BOUND_BINS = 4096
+_BOUND_TOP = 1.5
+
+
+def _section_ceilings(feats: List[dict], usable, vocal_side: bool,
+                      section_weights: Dict[str, float], cache: dict):
+    """Per song on one side: the most its sections can add to a section fit,
+    whether it has any usable section at all, and — a bed — the most the
+    vacated slot can be for any vocal over it."""
+    from matcher.section_score import slot_ceiling
+    from matcher.sections import _statics
+    w_label = section_weights["label"]
+    w_voice = section_weights["voice"]
+    best = np.zeros(len(feats), dtype=np.float64)
+    has = np.zeros(len(feats), dtype=bool)
+    slot = np.ones(len(feats), dtype=np.float64)
+    for k, f in enumerate(feats):
+        secs = usable(f["song_id"], vocal_side)
+        if not secs:
+            continue
+        has[k] = True
+        if not vocal_side:
+            slot[k] = max(slot_ceiling(x) for x in secs)
+        if vocal_side:
+            best[k] = max(w_label * st[1] + w_voice * st[2]
+                          for st in (_statics(x, True, cache) for x in secs))
+        else:
+            best[k] = max(w_label * _statics(x, False, cache)[1] for x in secs)
+    return best, has, slot
+
+
+def _chroma_rows(feats: List[dict], usable, vocal_side: bool, cache: dict):
+    """The unit chroma of every usable section on one side, stacked, with each
+    song's slice — and whether any of its usable sections has none (that
+    pairing then keeps the Camelot key score, _apply_measured_harmony)."""
+    from matcher.harmony import _side_chroma, _vec_of
+    key = "chroma_vocal" if vocal_side else "chroma_bed"
+    vecs, spans = [], []
+    unknown = np.zeros(len(feats), dtype=bool)
+    for k, f in enumerate(feats):
+        start = len(vecs)
+        for sec in usable(f["song_id"], vocal_side):
+            v = _vec_of(_side_chroma(sec, key), cache)
+            if v is None:
+                unknown[k] = True
+            else:
+                vecs.append(v)
+        spans.append((start, len(vecs)))
+    mat = (np.asarray(vecs, dtype=np.float32) if vecs
+           else np.zeros((0, 12), dtype=np.float32))
+    return mat, spans, unknown
+
+
+def _harmony_ceiling(v_mat, v_spans, b_mat, b_spans, rows: slice) -> np.ndarray:
+    """For the top songs in ``rows`` against every bed song: the best measured
+    harmony any of their section pairs could reach — the correlation at its
+    best rotation, before the transpose is priced or a bass clash taken off,
+    so never below matcher.harmony.section_harmony's fit. -inf where either
+    song has no section with chroma."""
+    from matcher.harmony import _ROTATIONS
+    n_bed = len(b_spans)
+    out = np.full((rows.stop - rows.start, n_bed), -np.inf, dtype=np.float32)
+    lo, hi = v_spans[rows.start][0], v_spans[rows.stop - 1][1]
+    if hi <= lo or not len(b_mat):
+        return out
+    V = v_mat[lo:hi]
+    dots = None
+    for k in range(_ROTATIONS.shape[0]):
+        d = V @ b_mat[:, _ROTATIONS[k]].T
+        dots = d if dots is None else np.maximum(dots, d, out=dots)
+    # Section pairs -> song pairs: the best over each song's slice, on both
+    # axes. reduceat needs non-empty groups, so songs without chroma sit out.
+    b_ok = [j for j, (a, z) in enumerate(b_spans) if z > a]
+    if not b_ok:
+        return out
+    by_bed = np.maximum.reduceat(dots, [b_spans[j][0] for j in b_ok], axis=1)
+    t_ok = [i for i in range(rows.start, rows.stop) if v_spans[i][1] > v_spans[i][0]]
+    if not t_ok:
+        return out
+    by_pair = np.maximum.reduceat(by_bed, [v_spans[i][0] - lo for i in t_ok], axis=0)
+    fit = np.clip((by_pair + 1.0) / 2.0, 0.0, 1.0) + 1e-5       # float32 dots
+    out[np.ix_([i - rows.start for i in t_ok], b_ok)] = fit
+    return out
 
 
 def _apply_model_scores(pairs, bundle, sections_of, stats: LibraryStats,
@@ -1109,6 +1336,7 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     # The segmentation engine, once per run (readme §5.7): which sections pairs
     # are cut from and — for allin1 — phrase placement and the timing gate.
     ENGINE, TIMING_BASE = run_engine(db, cfg)
+    RUN_CACHE: dict = TIMING_BASE["_cache"] if TIMING_BASE is not None else {}
     pipelines = song_pipelines(db)
     # When this run started reading inputs, in SQLite's datetime('now') form so
     # songs.pairs_input_at compares as text. Stored only on success: a failed
@@ -1187,13 +1415,14 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         "instrumental_over_instrumental": [],
     }
     # P1.1 — with the key gate off, the surviving pair count is roughly 4x what
-    # it was, and each survivor contributes up to MAX_SECTION_PAIRS rows. Keep
-    # only the best MAX_CANDIDATE_ROWS per combo type, in a bounded min-heap, so
-    # widening the gate costs a bounded amount of memory instead of an unbounded
-    # one. Nothing good is lost: eviction is always the current worst row.
+    # it was, and each survivor contributes up to MAX_SECTION_PAIRS rows. Only
+    # the best MAX_CANDIDATE_ROWS per combo type are kept (_TopRows), so
+    # widening the gate costs a bounded amount of memory instead of an
+    # unbounded one. Nothing good is lost: what is dropped is always the worst.
     max_rows = cfg["max_candidate_rows"]
-    heaps: Dict[str, list] = {k: [] for k in results}
-    seq = itertools.count()
+    keepers: Dict[str, _TopRows] = {k: _TopRows(max_rows) for k in results}
+    # Every track's best partners, kept whatever the cap does (_Reserve).
+    reserve = _Reserve(cfg["reserve_partners"])
     scored = 0
 
     def _report(base: int, span: int, label: str):
@@ -1204,21 +1433,14 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                 progress(pct, f"{label}: {done}/{total} tracks")
         return _on_block
 
-    def _run(top_block, bed_block, *, key_gate, upper_triangle, on_block,
-             weights, bpm_gate=None):
-        """Every surviving pair of one pass, as (top_feat, bed_feat, scores)."""
-        return [
-            (top_block.feats[ti], bed_block.feats[bi], scores)
-            for ti, bi, scores in _iter_scored_pairs(
-                top_block, bed_block, stats=lib_stats, key_table=key_table,
-                shift_table=shift_table, shift_known=shift_known,
-                bpm_max=bpm_gate if bpm_gate is not None else bpm_max,
-                key_min=key_gate,
-                upper_triangle=upper_triangle, weights=weights,
-                effort_weight=EFFORT_WEIGHT,
-                quality_min=STEM_QUALITY_MIN,
-                on_block=on_block)
-        ]
+    def _gate(*, key_gate, upper_triangle, weights, bpm_gate=None) -> dict:
+        """The arguments every block pass of one combo shares."""
+        return dict(stats=lib_stats, key_table=key_table,
+                    shift_table=shift_table, shift_known=shift_known,
+                    bpm_max=bpm_gate if bpm_gate is not None else bpm_max,
+                    key_min=key_gate, upper_triangle=upper_triangle,
+                    weights=weights, effort_weight=EFFORT_WEIGHT,
+                    quality_min=STEM_QUALITY_MIN)
 
     # The sections each side would actually contribute, filtered and ordered
     # once per song. best_section_pair then only walks the survivors.
@@ -1231,8 +1453,10 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             _usable_cache[key] = usable_sections(_sections(song_id), vocal_side)
         return _usable_cache[key]
 
-    # Memoised per song pair: the model pass and the emit pass both want this
-    # answer for the same two songs, and it is an O(usable_v x usable_i) search.
+    # Memoised per song pair under a learned model only: its pass and the
+    # pricing pass both want this answer for the same two songs. Without a
+    # model each pair is searched once, and remembering millions of them is
+    # what a large run's memory went on.
     _section_pair_cache: Dict[tuple, list] = {}
 
     def _section_pairs(top: dict, bed: dict) -> list:
@@ -1242,23 +1466,29 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         single section-less row and readers fall back to each track's hook.
         """
         key = (top["song_id"], bed["song_id"])
-        if key in _section_pair_cache:
+        if use_model and key in _section_pair_cache:
             return _section_pair_cache[key]
         from matcher.sections import top_section_pairs
         v_use = _usable(top["song_id"], True)
         i_use = _usable(bed["song_id"], False)
         if not v_use or not i_use:
-            _section_pair_cache[key] = []
-            return []
-        stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
-        # The vocal sets the target tempo, so bars are counted at its BPM.
-        out = top_section_pairs(v_use, i_use, stretch, prefiltered=True,
-                                bpm=top.get("bpm"),
-                                limit=MAX_SECTION_PAIRS_PER_SONG_PAIR,
-                                weights=SECTION_WEIGHTS_RUN,
-                                patterns=PATTERNS_RUN,
-                                timing=timing_for(TIMING_BASE, top["song_id"], db))
-        _section_pair_cache[key] = out
+            out = []
+        else:
+            stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
+            # The vocal sets the target tempo, so bars are counted at its BPM.
+            out = top_section_pairs(v_use, i_use, stretch, prefiltered=True,
+                                    bpm=top.get("bpm"),
+                                    limit=MAX_SECTION_PAIRS_PER_SONG_PAIR,
+                                    weights=SECTION_WEIGHTS_RUN,
+                                    patterns=PATTERNS_RUN,
+                                    timing=timing_for(
+                                        TIMING_BASE, top["song_id"], db,
+                                        compute_semitone_shift(
+                                            str(top.get("camelot") or ""),
+                                            str(bed.get("camelot") or ""))),
+                                    lazy=TIMING_BASE is not None)
+        if use_model:
+            _section_pair_cache[key] = out
         return out
 
     def _best_section_idx(top: dict, bed: dict):
@@ -1272,51 +1502,65 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             return None, None
         return pairs[0].get("vocal_section_idx"), pairs[0].get("inst_section_idx")
 
-    def _emit(pairs, combo_type, row_scorer, row_version, weights,
-              with_sections=False, on_pair=None):
+    def _price(top, bed, scores, seq: tuple, combo_type, row_scorer,
+               row_version, weights, with_sections=False) -> None:
+        """Price one song pair's rows and offer them to the keeper. ``seq`` is
+        the pair's place in emission order (row-major over the top side) — the
+        tiebreak, so equal-scoring rows rank as the in-order loop ranked them
+        whatever order the pairs are priced in."""
         nonlocal scored
-        heap = heaps[combo_type]
-        n_pairs = len(pairs)
-        # The section search is per song pair and was the silent half of a
-        # run: the bar sat at 55% for the whole of it. Report every ~1%.
-        tick = max(1, n_pairs // 100)
-        for k, (top, bed, scores) in enumerate(pairs):
-            if on_pair and k % tick == 0:
-                on_pair(k, n_pairs)
-            # One row per section pair (E.3): "chorus over drop" and "verse over
-            # breakdown" are different ideas about the same two records.
-            section_pairs = _section_pairs(top, bed) if with_sections else []
-            pair_scorer = (PROVISIONAL_SCORER
-                           if top.get("provisional") or bed.get("provisional")
-                           else row_scorer)
-            if with_sections and TIMING_BASE is not None and not section_pairs \
-                    and _usable(top["song_id"], True) and _usable(bed["song_id"], False):
-                # Every section pairing failed the timing gate: the song pair is
-                # dropped, not stored section-less (that would hide the verdict).
+        keeper = keepers[combo_type]
+        # One row per section pair (E.3): "chorus over drop" and "verse over
+        # breakdown" are different ideas about the same two records.
+        section_pairs = _section_pairs(top, bed) if with_sections else []
+        pair_scorer = (PROVISIONAL_SCORER
+                       if top.get("provisional") or bed.get("provisional")
+                       else row_scorer)
+        if with_sections and TIMING_BASE is not None and not section_pairs \
+                and _usable(top["song_id"], True) and _usable(bed["song_id"], False):
+            # Every section pairing failed the timing gate: the song pair is
+            # dropped, not stored section-less (that would hide the verdict).
+            return
+        facts = dropin_facts(top, bed) if with_sections else {}
+        best_item = None
+        for j, sp in enumerate(section_pairs or [None]):
+            s = dict(scores)
+            s.update(facts)
+            s["engine"] = ENGINE if TIMING_BASE is None else "essentia_fallback"
+            s["pipeline"] = pair_pipeline(pipelines, top["song_id"], bed["song_id"])
+            if sp is not None:
+                _apply_measured_harmony(top, bed, s, sp, _sections,
+                                        weights, EFFORT_WEIGHT,
+                                        cache=RUN_CACHE)
+                _apply_section_fit(s, sp, EFFORT_WEIGHT,
+                                   weights, cfg["section_weight"])
+            scored += 1
+            total = float(s.get("total") or 0.0)
+            row_seq = seq + (j,)
+            # The pair's best row is also offered to each side's reserve.
+            leads = with_sections and (best_item is None or total > best_item[0])
+            if leads:
+                best_item = (total, row_seq, None, None)
+            kept = keeper.wants(total)
+            if not kept and not (leads and (
+                    reserve.wants("v", top["song_id"], total, row_seq)
+                    or reserve.wants("b", bed["song_id"], total, row_seq))):
                 continue
-            for sp in (section_pairs or [None]):
-                s = dict(scores)
-                s["engine"] = ENGINE if TIMING_BASE is None else "essentia_fallback"
-                s["pipeline"] = pair_pipeline(pipelines, top["song_id"], bed["song_id"])
-                if sp is not None:
-                    _apply_measured_harmony(top, bed, s, sp, _sections,
-                                            weights, EFFORT_WEIGHT)
-                    _apply_section_fit(s, sp, EFFORT_WEIGHT,
-                                       weights, cfg["section_weight"])
-                scored += 1
-                total = float(s.get("total") or 0.0)
-                # The sequence number is the tiebreak, so equal-scoring rows
-                # keep the row-major emission order the nested loop produced —
-                # and so eviction on a tie drops the LATER row, matching how the
-                # final ranking has always resolved ties.
-                item = (total, next(seq),
-                        candidate_row(top, bed, s, combo_type,
-                                      pair_scorer, row_version, sp),
-                        _build_row(top, bed, s, sp))
-                if len(heap) < max_rows:
-                    heapq.heappush(heap, item)
-                elif total > heap[0][0]:
-                    heapq.heapreplace(heap, item)
+            # Priced; only a row that may be kept is put in its stored shape.
+            if sp is not None and "_row" in sp:
+                sp = sp["_row"]()
+            item = (total, row_seq,
+                    candidate_row(top, bed, s, combo_type,
+                                  pair_scorer, row_version, sp),
+                    _build_row(top, bed, s, sp))
+            if leads:
+                best_item = item
+            if kept:
+                keeper.push(*item)
+        if best_item is not None and best_item[2] is not None:
+            for side, song_id in (("v", top["song_id"]), ("b", bed["song_id"])):
+                if reserve.wants(side, song_id, best_item[0], best_item[1]):
+                    reserve.push(side, song_id, best_item[0], best_item[1], best_item)
 
     # ── vocal over instrumental ───────────────────────────────────────────────
     # This is the only combo the learned model scores (it was trained on
@@ -1330,41 +1574,113 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     # bpm_max_diff from the caller always wins.
     model_bpm_gate = (max(bpm_max, BPM_MAX_DIFF_MODEL)
                       if use_model and bpm_max_diff is None else None)
+    voi_gate = _gate(key_gate=None if use_model else key_min,
+                     upper_triangle=False, weights=VOCAL_WEIGHTS,
+                     bpm_gate=model_bpm_gate)
     if only is None:
-        voi = _run(v_block, i_block,
-                   key_gate=None if use_model else key_min, upper_triangle=False,
-                   bpm_gate=model_bpm_gate, weights=VOCAL_WEIGHTS,
-                   on_block=_report(0, 30, "Scoring vocal over instrumental"))
+        passes = [(v_block, i_block)]
     else:
         # This track on top of everything, then everything else on top of it.
-        voi = []
-        for tops, beds in ((v_in, inst), (v_out, i_in)):
-            if tops and beds:
-                voi += _run(_prepare_block(tops, code_index, lib_stats),
-                            _prepare_block(beds, code_index, lib_stats),
-                            key_gate=None if use_model else key_min,
-                            upper_triangle=False, bpm_gate=model_bpm_gate,
-                            weights=VOCAL_WEIGHTS,
-                            on_block=_report(0, 30, "Scoring this track"))
-    # Every song whose sections the section search will read, in ONE query
-    # rather than one (or, under allin1, two) per partner song.
+        passes = [(_prepare_block(tops, code_index, lib_stats),
+                   _prepare_block(beds, code_index, lib_stats))
+                  for tops, beds in ((v_in, inst), (v_out, i_in)) if tops and beds]
     from database.models import sections_for_songs
-    _wanted = {t["song_id"] for t, _b, _sc in voi} | {b["song_id"] for _t, b, _sc in voi}
-    _wanted -= set(_sections_cache)
-    if _wanted:
-        _sections_cache.update(sections_for_songs(_wanted, db_path=db, engine=ENGINE))
-    if use_model:
-        _apply_model_scores(voi, bundle, _sections, lib_stats,
-                            _report(30, 10, "Applying the learned model"),
-                            pinned_sections=_best_section_idx)
+    timing_weight = float(TIMING_BASE["weight"]) if TIMING_BASE is not None else 0.0
+    # A run that could store more rows than the cap keeps only the best of
+    # them, so it need not price a song pair whose ceiling is under the cut
+    # (_score_pruned). A smaller run — one track, a small library — and a
+    # learned model's (its probability has no ceiling) price every pair.
+    can_overflow = sum(len(t.feats) * len(b.feats) for t, b in passes) \
+        * max(1, MAX_SECTION_PAIRS_PER_SONG_PAIR) > max_rows
+    slot_weight = float(TIMING_BASE["slot_weight"]) if TIMING_BASE is not None else 0.0
+    pruned = PRUNE_RUNS and can_overflow and not use_model \
+        and 0.0 <= timing_weight <= 1.0 and 0.0 <= slot_weight <= 1.0 \
+        and all(w >= 0 for w in SECTION_WEIGHTS_RUN.values())
+
+    def _load_phrases(vocal_ids) -> None:
+        """Every song's phrases in one read, into the run's timing context:
+        the vocal's own (timing_for) and the bed's — the vocal it used to
+        carry, which the slot reads (sections.bed_phrases)."""
+        if TIMING_BASE is None:
+            return
+        missing = set(vocal_ids) - set(TIMING_BASE["_phrases"])
+        if missing:
+            from database.alignment import phrases_for_songs
+            TIMING_BASE["_phrases"].update(phrases_for_songs(missing, db_path=db))
+
+    slot_sample: List[float] = []
+
+    def _sample_slots(pairs) -> None:
+        """The slot over a random sample of the gated pairs — what the Drop-in
+        rule ranks a slot against (compat.slot_floor). The table cannot say:
+        it keeps the best rows, which are the high-slot ones. The pairs are
+        searched as any pair is and nothing of them is stored; the run's
+        timing counts are put back as they were."""
+        if TIMING_BASE is None or only is not None:
+            return
+        counts = dict(TIMING_BASE["stats"])
+        for top, bed in pairs:
+            for sp in _section_pairs(top, bed):
+                row = sp["_row"]() if "_row" in sp else sp
+                if row.get("score_slot") is not None:
+                    slot_sample.append(float(row["score_slot"]))
+        TIMING_BASE["stats"].clear()
+        TIMING_BASE["stats"].update(counts)
 
     def _on_section_pair(done: int, total: int) -> None:
         if progress:
             progress(40 + int(45 * done / max(total, 1)),
                      f"Choosing sections: {done}/{total} pairs")
-    _emit(voi, "vocal_over_instrumental", active_scorer, model_version,
-          VOCAL_WEIGHTS, with_sections=True, on_pair=_on_section_pair)
-    voi = None                      # release before the second pass allocates
+
+    pruned_stats = None
+    if not pruned:
+        voi = []
+        for top_block, bed_block in passes:
+            voi += [(top_block.feats[ti], bed_block.feats[bi], scores)
+                    for ti, bi, scores in _iter_scored_pairs(
+                        top_block, bed_block, **voi_gate,
+                        on_block=_report(0, 30, "Scoring vocal over instrumental"
+                                         if only is None else "Scoring this track"))]
+        # Every song whose sections the section search will read, in ONE query
+        # rather than one (or, under allin1, two) per partner song.
+        _wanted = {t["song_id"] for t, _b, _sc in voi} | {b["song_id"] for _t, b, _sc in voi}
+        _wanted -= set(_sections_cache)
+        if _wanted:
+            _sections_cache.update(sections_for_songs(_wanted, db_path=db, engine=ENGINE))
+        _load_phrases({x["song_id"] for t, b, _sc in voi for x in (t, b)})
+        if voi and not use_model:
+            picks = np.random.default_rng(len(voi)).choice(
+                len(voi), size=min(SLOT_SAMPLE_PAIRS, len(voi)), replace=False)
+            _sample_slots((voi[int(k)][0], voi[int(k)][1]) for k in sorted(picks))
+        if use_model:
+            _apply_model_scores(voi, bundle, _sections, lib_stats,
+                                _report(30, 10, "Applying the learned model"),
+                                pinned_sections=_best_section_idx)
+        # The section search is per song pair and was the silent half of a
+        # run: the bar sat at 55% for the whole of it. Report every ~1%.
+        tick = max(1, len(voi) // 100)
+        for k, (top, bed, scores) in enumerate(voi):
+            if k % tick == 0:
+                _on_section_pair(k, len(voi))
+            _price(top, bed, scores, (0, k), "vocal_over_instrumental",
+                   active_scorer, model_version, VOCAL_WEIGHTS, with_sections=True)
+        voi = None                  # release before the second pass allocates
+    else:
+        _wanted = {f["song_id"] for t, b in passes for f in t.feats + b.feats}
+        _wanted -= set(_sections_cache)
+        if _wanted:
+            _sections_cache.update(sections_for_songs(_wanted, db_path=db, engine=ENGINE))
+        _load_phrases({f["song_id"] for t, b in passes for f in t.feats + b.feats})
+        pruned_stats = _score_pruned(
+            passes, voi_gate, keepers["vocal_over_instrumental"], _usable,
+            lambda top, bed, scores, seq: _price(
+                top, bed, scores, seq, "vocal_over_instrumental", active_scorer,
+                model_version, VOCAL_WEIGHTS, with_sections=True),
+            weights=VOCAL_WEIGHTS, section_weights=SECTION_WEIGHTS_RUN,
+            section_weight=cfg["section_weight"], effort_weight=EFFORT_WEIGHT,
+            timing_weight=timing_weight if TIMING_BASE is not None else None,
+            slot_weight=slot_weight, cache=RUN_CACHE, reserve=reserve,
+            sample=_sample_slots, progress=progress)
 
     # ── instrumental over instrumental ────────────────────────────────────────
     # Always heuristic (BPM + key gate), even when a model is active — the model
@@ -1374,21 +1690,42 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     # No section pair: the top layer here is an instrumental, and the vocal-side
     # filter (vocal_presence ≥ 0.25) would be asking the wrong question of it.
     if only is None:
-        _emit(_run(i_block, i_block, key_gate=key_min, upper_triangle=True,
-                   weights=MATCH_WEIGHTS,
-                   on_block=_report(85, 5, "Scoring instrumental over instrumental")),
-              "instrumental_over_instrumental", "heuristic", None, MATCH_WEIGHTS)
+        ioi_keeper = keepers["instrumental_over_instrumental"]
 
-    # Drain the heaps in ranked order. Sorting on (-total, seq) rather than
-    # total alone keeps ties in emission order, which is how this function has
-    # always resolved them.
+        def _ioi_worth(rows, keep, total):
+            """A row here is its block total, so what cannot be kept is known
+            before a single row is built: anything under the cut so far, or
+            under this block's own ``max_rows``-th best. (1e-4: the stored
+            total is this one rounded to four places.)"""
+            cut = ioi_keeper.floor()
+            n = int(keep.sum())
+            if n > max_rows:
+                kth = float(np.partition(total[keep], n - max_rows)[n - max_rows])
+                cut = kth if cut is None else max(cut, kth)
+            return keep if cut is None else keep & (total >= cut - 1e-4)
+
+        for ti, bi, scores in _iter_scored_pairs(
+                i_block, i_block,
+                **_gate(key_gate=key_min, upper_triangle=True, weights=MATCH_WEIGHTS),
+                post_select=_ioi_worth,
+                on_block=_report(85, 5, "Scoring instrumental over instrumental")):
+            _price(i_block.feats[ti], i_block.feats[bi], scores, (0, ti, bi),
+                   "instrumental_over_instrumental", "heuristic", None, MATCH_WEIGHTS)
+
+    # Drain the keepers in ranked order: (-total, seq), so ties keep emission
+    # order, which is how this function has always resolved them.
     rows: List[tuple] = []
     kept = 0
-    for key, heap in heaps.items():
-        ordered = sorted(heap, key=lambda t: (-t[0], t[1]))
+    for key, keeper in keepers.items():
+        ordered = keeper.ranked()
+        if key == "vocal_over_instrumental":
+            have = {t[1] for t in ordered}
+            ordered += sorted((t for t in reserve.items() if t[1] not in have),
+                              key=lambda t: (-t[0], t[1]))
         rows.extend(t[2] for t in ordered)
         results[key] = [t[3] for t in ordered]
         kept += len(ordered)
+    keepers = None
 
     if progress:
         progress(90, f"Writing {len(rows)} candidates…")
@@ -1418,9 +1755,235 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                                 "timing": (TIMING_BASE or {}).get("stats")},
                  db_path=db)
         _record_harmony_threshold(db)
+        if slot_sample:
+            from config import DROPIN_SLOT_PERCENTILE
+            set_pref("slot_dropin_floor", {
+                "value": round(float(np.quantile(slot_sample, DROPIN_SLOT_PERCENTILE)), 4),
+                "pairings": len(slot_sample)}, db_path=db)
     return {**results, "_scorer": active_scorer, "_model_version": model_version,
             "_engine": ENGINE,
+            # {"pairs", "priced"} when the run skipped pairs that could not be
+            # kept (_score_pruned), else None. The timing stats then count the
+            # vocal sections of the pairs that were priced.
+            "_pruned": pruned_stats,
             "_timing": (TIMING_BASE or {}).get("stats")}
+
+
+def _score_pruned(passes, gate: dict, keeper: _TopRows, usable, price, *,
+                  weights: Dict, section_weights: Dict[str, float],
+                  section_weight: float, effort_weight: float,
+                  timing_weight: Optional[float], cache: dict,
+                  slot_weight: float = 0.0, reserve: Optional[_Reserve] = None,
+                  sample=None, progress=None) -> dict:
+    """Price the vocal-over-instrumental pairs of a run that can overflow the
+    row cap, most promising first, and stop when nothing left can be kept.
+
+    Every gated song pair gets a CEILING — the most any of its rows could
+    total: its own song terms, with the key term at the best harmony its
+    sections' chroma could measure (_harmony_ceiling), a free transpose, the
+    best labels and voice its sections offer, a perfect duration fit, a
+    perfect grid and the fullest slot the bed's sections offer. Pairs are then priced exactly, in tiers of falling ceiling;
+    once ``keeper`` is full its cut only rises, a pair whose ceiling is under
+    the cut is skipped, and the run ends when the cut reaches the next tier's
+    ceiling. The gate and every row's arithmetic are untouched, so the rows
+    kept are the ones pricing every pair would keep (tests/test_score_scale.py
+    runs both on one library) — what changes is that the rest are never built.
+
+    Returns {"pairs", "priced"}: gated song pairs, and how many were priced.
+    """
+    from matcher.effort import EFFORT_WEIGHTS
+    w_key = weights.get("key_score", 0)
+    w_pitch = EFFORT_WEIGHTS["pitch_cost"]
+    # The terms a section's own statics cannot bound are bounded by 1.
+    # (Every weight but the two the statics answer — so a term added later is
+    # covered without being named here.)
+    open_terms = sum(w for k, w in section_weights.items()
+                     if k not in ("label", "voice"))
+
+    def _tick(pct: int, message: str) -> None:
+        if progress:
+            progress(pct, message)
+
+    ceilings = []
+    hist = np.zeros(_BOUND_BINS, dtype=np.int64)
+    for top, bed in passes:
+        a_v, has_v, _ = _section_ceilings(top.feats, usable, True,
+                                          section_weights, cache)
+        b_b, has_b, slot_ub = _section_ceilings(bed.feats, usable, False,
+                                                section_weights, cache)
+        v_mat, v_spans, v_unknown = _chroma_rows(top.feats, usable, True, cache)
+        b_mat, b_spans, b_unknown = _chroma_rows(bed.feats, usable, False, cache)
+        ub = np.full((len(top.feats), len(bed.feats)), -np.inf, dtype=np.float32)
+        for rows, keep, t in _iter_scored_pairs(
+                top, bed, **gate, terms_only=True,
+                on_block=lambda done, n: _tick(
+                    int(15 * done / max(n, 1)), f"Bounding pairs: {done}/{n} tracks")):
+            measured = _harmony_ceiling(v_mat, v_spans, b_mat, b_spans, rows)
+            # A section without chroma keeps the Camelot key score.
+            unknown = (v_unknown[rows][:, None] | b_unknown[None, :]) \
+                | ~np.isfinite(measured)
+            key_ub = np.where(unknown, np.maximum(measured, t["key"]), measured)
+            whole = t["fit"] + w_key * (key_ub - t["key"])
+            fit_ub = a_v[rows][:, None] + b_b[None, :] + open_terms
+            if timing_weight is not None:
+                fit_ub = (1.0 - timing_weight) * fit_ub + timing_weight
+                # ...and the slot at the most this bed's sections allow.
+                fit_ub = (1.0 - slot_weight) * fit_ub + slot_weight * slot_ub[None, :]
+            effort_lb = np.maximum(
+                t["effort"] - w_pitch * t["parts"]["pitch_cost"] - 2e-4, 0.0)
+            bound = (((1.0 - section_weight) * whole + section_weight * fit_ub)
+                     * (1.0 - effort_weight * effort_lb))
+            # Without usable sections on both sides the pair is one
+            # section-less row: its block total.
+            both = has_v[rows][:, None] & has_b[None, :]
+            bound = np.where(both, bound, t["total"]) + _BOUND_SLACK
+            ub[rows] = np.where(keep, bound, -np.inf)
+            hist += np.histogram(np.clip(bound[keep], 0.0, _BOUND_TOP - 1e-9),
+                                 bins=_BOUND_BINS, range=(0.0, _BOUND_TOP))[0]
+        ceilings.append(ub)
+
+    # Before anything is priced (pricing blanks a pair's ceiling): a uniform
+    # sample of the gated pairs, for the caller's library-wide statistics.
+    if sample is not None and int(hist.sum()):
+        # Drawn by rejection — a random cell, kept when it is a gated pair —
+        # so nothing the size of the pair matrix is built to choose from.
+        rng = np.random.default_rng(int(hist.sum()))
+        counts = [int(np.count_nonzero(np.isfinite(ub))) for ub in ceilings]
+        chosen = []
+        for (top, bed), ub, n in zip(passes, ceilings, counts):
+            quota = min(n, int(round(SLOT_SAMPLE_PAIRS * n / max(1, sum(counts)))))
+            seen = set()
+            tries = 0
+            while len(seen) < quota and tries < 200:
+                tries += 1
+                ti = rng.integers(0, ub.shape[0], size=4 * quota)
+                bi = rng.integers(0, ub.shape[1], size=4 * quota)
+                for i, j in zip(ti[np.isfinite(ub[ti, bi])], bi[np.isfinite(ub[ti, bi])]):
+                    seen.add((int(i), int(j)))
+                    if len(seen) >= quota:
+                        break
+            chosen += [(top.feats[i], bed.feats[j]) for i, j in sorted(seen)]
+        sample(chosen)
+
+    # Tier edges, from the top of the ceiling histogram: the first tier is
+    # enough pairs to fill the keeper if they are as good as their ceilings,
+    # each later one twice the last.
+    n_pairs = int(hist.sum())
+    edges, cum, want = [], 0, max(1, int(keeper.cap * _FIRST_TIER_SHARE))
+    step = want
+    for k in range(_BOUND_BINS - 1, 0, -1):
+        cum += int(hist[k])
+        if cum >= want and cum < n_pairs:
+            edges.append(k * _BOUND_TOP / _BOUND_BINS)
+            step *= 2
+            want = cum + step
+    edges.append(-np.inf)
+
+    priced, hi = 0, np.inf
+    for lo in edges:
+        for p, (top, bed) in enumerate(passes):
+            ub = ceilings[p]
+
+            def _in_tier(rows, keep, ub=ub, lo=lo, hi=hi):
+                cut = keeper.floor()
+                u = ub[rows]
+                return keep & (u >= (lo if cut is None else max(lo, cut))) & (u < hi)
+
+            for ti, bi, scores in _iter_scored_pairs(top, bed, **gate,
+                                                     pre_select=_in_tier):
+                cut = keeper.floor()
+                if cut is not None and ub[ti, bi] < cut:
+                    continue                # the cut rose since this block began
+                price(top.feats[ti], bed.feats[bi], scores, (p, ti, bi))
+                ub[ti, bi] = -np.inf        # priced: never selected again
+                priced += 1
+                if priced % 2000 == 0:
+                    _tick(15 + min(69, int(70 * priced / max(n_pairs, 1))),
+                          f"Choosing sections: {priced} pairs priced of {n_pairs}"
+                          + (f", cut {cut:.3f}" if cut is not None else ""))
+        hi = lo
+        cut = keeper.floor()
+        if cut is not None and cut >= lo:
+            break                           # every pair left has a ceiling under the cut
+    capped = priced
+
+    # ── each track's own best partners ────────────────────────────────────────
+    # The cap is settled; what is left unpriced has a ceiling under its cut.
+    # A track whose best partners are down there still gets them by a bounded
+    # search: every track has its RESERVE_SEARCH × k most promising unpriced
+    # partners (by ceiling, on each side) priced, then a track still short of
+    # k partners — many pairs fail the timing gate and give no row — has its
+    # next most promising priced, round by round, up to RESERVE_SEARCH_MAX × k
+    # in all. A search, not a certificate: certifying the exact best took
+    # rounds that did not end in hours at 10,000 tracks, because a ceiling is
+    # loose by the duration, grid and slot it assumes.
+    if reserve is not None and reserve.k:
+        first_k = max(4, RESERVE_SEARCH * reserve.k)
+        more_k = max(2, 2 * reserve.k)
+        limit = RESERVE_SEARCH_MAX * reserve.k
+        for p, (top, bed) in enumerate(passes):
+            ub = ceilings[p]
+            if not ub.size:
+                continue
+            sides = ((1, [f["song_id"] for f in top.feats], "v"),
+                     (0, [f["song_id"] for f in bed.feats], "b"))
+            used = {axis: np.zeros(len(ids), dtype=np.int64) for axis, ids, _s in sides}
+            first = True
+            while True:
+                want = np.zeros(ub.shape, dtype=bool)
+                for axis, ids, side in sides:
+                    if first:
+                        active = np.ones(len(ids), dtype=bool)
+                        k = first_k
+                    else:
+                        active = np.array(
+                            [len(reserve.heaps.get((side, s), ())) < reserve.k
+                             for s in ids], dtype=bool) & (used[axis] < limit)
+                        k = more_k
+                    if not active.any():
+                        continue
+                    k = min(k, ub.shape[axis])
+                    # In strips of tracks, so no index array the size of the
+                    # pair matrix is ever built.
+                    for lo_ in range(0, len(ids), 512):
+                        strip = slice(lo_, min(lo_ + 512, len(ids)))
+                        on = active[strip]
+                        if not on.any():
+                            continue
+                        cut = ub[strip] if axis == 1 else ub[:, strip]
+                        cut = np.where(on[:, None] if axis == 1 else on[None, :],
+                                       cut, -np.inf)
+                        part = np.argpartition(-cut, k - 1, axis=axis)
+                        idx = np.take(part, np.arange(k), axis=axis)
+                        pick = np.zeros(cut.shape, dtype=bool)
+                        np.put_along_axis(pick, idx, True, axis=axis)
+                        pick &= np.isfinite(cut)
+                        used[axis][strip] += pick.sum(axis=axis)
+                        if axis == 1:
+                            want[strip] |= pick
+                        else:
+                            want[:, strip] |= pick
+                first = False
+                if not want.any():
+                    break
+
+                def _wanted(rows, keep, want=want):
+                    return keep & want[rows]
+
+                for ti, bi, scores in _iter_scored_pairs(top, bed, **gate,
+                                                         pre_select=_wanted):
+                    price(top.feats[ti], bed.feats[bi], scores, (p, ti, bi))
+                    ub[ti, bi] = -np.inf
+                    priced += 1
+                    if priced % 2000 == 0:
+                        _tick(88, f"Each track's best partners: {priced - capped} "
+                                  "more pairs priced")
+                # A picked pair the gate keeps out is never priced: spent.
+                ub[want] = -np.inf
+    log.info("  pruned run: %d of %d gated song pairs priced (%d for the cap, "
+             "cut %s; %d for each track's own best partners)",
+             priced, n_pairs, capped, keeper.floor(), priced - capped)
+    return {"pairs": n_pairs, "priced": priced, "for_reserve": priced - capped}
 
 
 # ── The segmentation engine (readme §5.7) ─────────────────────────────────────
@@ -1440,23 +2003,33 @@ def run_engine(db, cfg: Optional[dict] = None, engine: Optional[str] = None):
     return engine, {
         "tol_ms": current_float("timing_tol_ms"),
         "weight": current_float("timing_weight"),
+        # The vacated slot (readme §5.7): its share of a placed pairing's fit.
+        "slot_weight": current_float("slot_weight"),
+        "_db": db,
         "ratios": TIMING_PHRASE_RATIOS,
         "engine_version": ver,
         "stats": {},
         "_phrases": {},
+        # Per-section work the placement and the section fit would otherwise
+        # redo for every partner (matcher/phrase_align.place_cached). Lives as
+        # long as this context, i.e. one run.
+        "_cache": {},
     }
 
 
-def timing_for(base: Optional[dict], vocal_song_id: int, db) -> Optional[dict]:
+def timing_for(base: Optional[dict], vocal_song_id: int, db,
+               shift: Optional[int] = None) -> Optional[dict]:
     """The timing context for one vocal song: the run's, plus that song's
-    phrases (memoised in the run's context)."""
+    phrases (memoised in the run's context) and ``shift`` — the Camelot
+    transpose of the bed it is about to be searched against, which the slot's
+    register reads."""
     if base is None:
         return None
     cache = base["_phrases"]
     if vocal_song_id not in cache:
         from database.alignment import get_vocal_phrases
         cache[vocal_song_id] = get_vocal_phrases(vocal_song_id, db_path=db)
-    return {**base, "vocal_phrases": cache[vocal_song_id]}
+    return {**base, "vocal_phrases": cache[vocal_song_id], "shift": shift}
 
 
 def song_pipelines(db) -> Dict[int, str]:
@@ -1475,6 +2048,15 @@ def pair_pipeline(pipelines: Dict[int, str], a: int, b: int) -> str:
 
 
 FORCED_SCORER = "forced"
+
+
+def dropin_facts(top: dict, bed: dict) -> dict:
+    """What the Drop-in rule reads of the two songs, as stored on every
+    vocal-over-instrumental row (models.DROPIN_COLUMNS)."""
+    from matcher.compat import dropin_mask
+    v_cam, b_cam = str(top.get("camelot") or ""), str(bed.get("camelot") or "")
+    return {"dropin_mask": dropin_mask(v_cam, b_cam, top.get("bpm"), bed.get("bpm")),
+            "camelot_shift": compute_semitone_shift(v_cam, b_cam)}
 
 
 def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict]:
@@ -1531,12 +2113,17 @@ def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict
     pairs = (top_section_pairs(v_use, i_use, stretch, prefiltered=True, bpm=top.get("bpm"),
                                limit=cfg["max_section_pairs"],
                                weights=current_section_weights(), patterns=current_patterns(),
-                               timing=timing_for(timing, vocal_song_id, db))
+                               timing=timing_for(
+                                   timing, vocal_song_id, db,
+                                   compute_semitone_shift(
+                                       str(top.get("camelot") or ""),
+                                       str(bed.get("camelot") or ""))))
              if v_use and i_use else [])
     rows, built = [], []
     pipelines = song_pipelines(db)
     for sp in (pairs or [None]):
         sc = dict(base)
+        sc.update(dropin_facts(top, bed))
         sc["engine"] = engine if timing is None else "essentia_fallback"
         sc["pipeline"] = pair_pipeline(pipelines, vocal_song_id, inst_song_id)
         if sp is not None:
@@ -1578,7 +2165,8 @@ def _build_row(feat_a: dict, feat_b: dict, scores: dict,
 
 def _apply_measured_harmony(top: dict, bed: dict, scores: dict,
                             section_pair: dict, sections_of,
-                            weights: Dict, effort_weight: float) -> None:
+                            weights: Dict, effort_weight: float,
+                            cache: Optional[dict] = None) -> None:
     """Replace the Camelot key_score with the MEASURED harmonic fit (Phase E).
 
     The block scorer works on whole-track Camelot codes because that is what
@@ -1596,11 +2184,15 @@ def _apply_measured_harmony(top: dict, bed: dict, scores: dict,
     b_idx = section_pair.get("inst_section_idx")
     if v_idx is None or b_idx is None:
         return
-    v_sec = next((s for s in sections_of(top["song_id"])
-                  if s.get("section_index") == v_idx), None)
-    b_sec = next((s for s in sections_of(bed["song_id"])
-                  if s.get("section_index") == b_idx), None)
-    h = section_harmony(v_sec, b_sec)
+    # A lazy row (matcher.sections._lazy_row) carries the two sections; a
+    # stored-shape row is resolved by index.
+    v_sec = section_pair.get("_v") or next(
+        (s for s in sections_of(top["song_id"])
+         if s.get("section_index") == v_idx), None)
+    b_sec = section_pair.get("_i") or next(
+        (s for s in sections_of(bed["song_id"])
+         if s.get("section_index") == b_idx), None)
+    h = section_harmony(v_sec, b_sec, cache=cache)
     if not h["known"]:
         return
 

@@ -560,6 +560,23 @@ EFFORT_WEIGHT = 0.25
 # the section was chosen afterwards, wrong once the section is the unit.
 SECTION_WEIGHT = 0.25
 
+# ── The vacated slot and Drop-in (readme §5.7) ────────────────────────────────
+# How much of a placed pairing's section fit is the slot term: how well the
+# incoming vocal replaces the vocal the bed section used to carry (occupancy,
+# phrase starts, register). Moderate: enough that a bed's sung chorus beats
+# its drop for a vocal that fits it, not enough to bury a good instrumental
+# bed. 0 scores exactly as before the term existed.
+SLOT_WEIGHT = 0.20
+# What a Drop-in pair is lifted by in the listing's order (never in the stored
+# total). Bounded, and small against the 0.05-0.10 a tier spans.
+DROPIN_BONUS = 0.02
+# The Drop-in rule's fixed thresholds (owner-approved): tempo within this
+# share after the half/double fold, the slot at or above this library
+# percentile, the bed moved by at most this many semitones.
+DROPIN_TEMPO_PCT = 3.0
+DROPIN_SLOT_PERCENTILE = 0.70
+DROPIN_MAX_SHIFT_ST = 1
+
 # Weights inside score_section itself (phrase / rhythm / structure,
 # plus the label/duration/voice terms that were already there).
 #
@@ -652,11 +669,20 @@ _TUNABLE_FLOATS = {
     "bpm_max_diff_model": ("MASHUP_BPM_MAX_DIFF_MODEL", "BPM_MAX_DIFF_MODEL", 1.0, 60.0),
     "timing_tol_ms":     ("MASHUP_TIMING_TOL_MS", "TIMING_TOL_MS", 5.0, 250.0),
     "timing_weight":     ("MASHUP_TIMING_WEIGHT", "TIMING_WEIGHT", 0.0, 1.0),
+    "slot_weight":       ("MASHUP_SLOT_WEIGHT", "SLOT_WEIGHT", 0.0, 1.0),
+    "dropin_bonus":      ("MASHUP_DROPIN_BONUS", "DROPIN_BONUS", 0.0, 0.1),
     "phrase_gap_secs":   ("MASHUP_PHRASE_GAP_SECS", "PHRASE_GAP_SECS", 0.1, 4.0),
     "allin1_max_secs":   ("MASHUP_ALLIN1_MAX_SECS", "ALLIN1_MAX_SECS", 30.0, 7200.0),
     "demucs_overlap":    ("MASHUP_DEMUCS_OVERLAP", "DEMUCS_OVERLAP", 0.0, 0.9),
 }
+# However the row cap falls, every track keeps the best row of this many of
+# its best partners on each side (as the vocal, and as the bed). Without it
+# the cap keeps the library's best rows overall, and at a few thousand tracks
+# most tracks' own best beds are not among them: their scoped dock is empty.
+RESERVE_PARTNERS = 8
+
 _TUNABLE_INTS = {
+    "reserve_partners": ("MASHUP_RESERVE_PARTNERS", "RESERVE_PARTNERS", 0, 50),
     "allin1_mem_budget_mb": ("MASHUP_ALLIN1_MEM_BUDGET_MB", "ALLIN1_MEM_BUDGET_MB",
                              500, 256_000),
     "max_section_pairs": ("MASHUP_MAX_SECTION_PAIRS",
@@ -798,4 +824,5 @@ def current_scoring_settings() -> dict:
         "bpm_max_diff_model": current_float("bpm_max_diff_model"),
         "max_section_pairs": current_int("max_section_pairs"),
         "max_candidate_rows": current_int("max_candidate_rows"),
+        "reserve_partners": current_int("reserve_partners"),
     }

@@ -29,7 +29,9 @@ import { track, trackEach, trackShown } from "../events";
 const AUTO_ADVANCE_KEY = "mashup.dockAutoAdvance.v1";
 
 export const ORDERS = [
-  ["score", "Score", "Best fit first."],
+  ["score", "Easy first",
+   "By tier, Drop-ins first inside each, then best fit minus effort."],
+  ["dropin", "Drop-ins", "Every Drop-in pair first, best fit first."],
   ["effort", "Effort", "Cheapest to build first, within the rows already loaded."],
   ["uncertain", "Uncertain",
    "Where the learned scorer is least sure — a verdict here teaches it the most."],
@@ -55,6 +57,8 @@ export const DOCK_FILTERS = {
   // LANDS in (the vocal's) within keyTol Camelot steps; one section type per
   // side. All four in SQL too.
   rated: "", key: "", keyTol: 1, vocalLabel: "", instLabel: "",
+  // Only Drop-in pairs — the server's rule (matcher/compat.dropin), in SQL.
+  dropin: false,
 };
 
 // The loaded-pairs filters (client side, never a request).
@@ -84,7 +88,7 @@ function filterOpts(f) {
     genre: f.genre, era: f.era, energy: f.energy, bpmBand: f.bpmBand,
     vocalForward: f.vocalForward, adventure: f.adventure,
     rated: f.rated, key: f.key, keyTol: f.keyTol,
-    vocalLabel: f.vocalLabel, instLabel: f.instLabel,
+    vocalLabel: f.vocalLabel, instLabel: f.instLabel, dropin: f.dropin,
   };
 }
 

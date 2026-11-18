@@ -290,8 +290,10 @@ export const api = {
     genre = "", era = "", energy = "", bpmBand = "", vocalForward = false,
     // Phase C — cap on how much work a pair costs to build (0-1). null = any.
     maxEffort = null,
-    // Phase F — "score" (best first) or "uncertain" (the model's blind spots,
-    // where a verdict buys the most information per keypress).
+    // "score" is the server's default order — easy first: the tier, Drop-ins
+    // first inside it, then fit minus effort — and is sent as no parameter.
+    // "uncertain" is the model's blind spots, where a verdict buys the most
+    // information per keypress.
     order = "score",
     // Phase F — 0 = safest fit first, 1 = most adventurous. Only reorders pairs
     // that already cleared every technical gate; it never surfaces a bad fit.
@@ -301,6 +303,8 @@ export const api = {
     search = "", offset = 0,
     // Keepers / unrated, the landing key ± n Camelot steps, section types.
     rated = "", key = "", keyTol = 1, vocalLabel = "", instLabel = "",
+    // Only Drop-in pairs (matcher/compat.dropin — the server's rule, in SQL).
+    dropin = false,
   } = {}) => {
     const params = new URLSearchParams();
     if (search) params.set("search", search);
@@ -323,6 +327,7 @@ export const api = {
     if (key) { params.set("key", key); params.set("key_tolerance", String(keyTol)); }
     if (vocalLabel) params.set("vocal_label", vocalLabel);
     if (instLabel) params.set("inst_label", instLabel);
+    if (dropin) params.set("dropin", "true");
     return jsonFetch(`/api/mashups?${params}`);
   },
 

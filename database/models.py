@@ -1567,15 +1567,20 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_room_section, score_coverage, score_energy_match,
        alignment_downbeat, alignment_offset, target_bpm,
        tempo_adjustment, pitch_adjustment,
+       score_slot, slot_occupancy, slot_phrase_match, slot_register,
+       slot_phrase_err_ms,
+       window_bars, vocal_window_bar, bed_window_bar, score_window,
        score_effort, effort_stretch, effort_pitch,
        effort_tempo_fold, effort_grid, effort_key_certainty,
        harmonic_shift, harmonic_confidence, bass_clash,
        score_timing, timing_ok, timing_err_mean_ms, timing_err_max_ms,
        vocal_phrase_start, vocal_pickup_ms, bed_landing_sec,
-       engine, engine_version, pipeline
+       engine, engine_version, pipeline,
+       dropin_mask, camelot_shift
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+             ?,?,?,?,?,?,?,?,?,?,?)
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
@@ -1607,6 +1612,17 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        target_bpm=excluded.target_bpm,
        tempo_adjustment=excluded.tempo_adjustment,
        pitch_adjustment=excluded.pitch_adjustment,
+       score_slot=excluded.score_slot,
+       slot_occupancy=excluded.slot_occupancy,
+       slot_phrase_match=excluded.slot_phrase_match,
+       slot_register=excluded.slot_register,
+       slot_phrase_err_ms=excluded.slot_phrase_err_ms,
+       window_bars=excluded.window_bars,
+       vocal_window_bar=excluded.vocal_window_bar,
+       bed_window_bar=excluded.bed_window_bar,
+       score_window=excluded.score_window,
+       dropin_mask=excluded.dropin_mask,
+       camelot_shift=excluded.camelot_shift,
        score_effort=excluded.score_effort,
        effort_stretch=excluded.effort_stretch,
        effort_pitch=excluded.effort_pitch,
@@ -1656,7 +1672,25 @@ SECTION_PAIR_COLUMNS = (
     "score_room_section", "score_coverage", "score_energy_match",
     "alignment_downbeat", "alignment_offset", "target_bpm",
     "tempo_adjustment", "pitch_adjustment",
+    # The vacated slot (readme §5.7): how well the vocal replaces the bed's
+    # own, and the best 8/16-bar phrase window inside the pairing.
+    "score_slot", "slot_occupancy", "slot_phrase_match", "slot_register",
+    "slot_phrase_err_ms",
+    "window_bars", "vocal_window_bar", "bed_window_bar", "score_window",
 )
+
+# The part of SECTION_PAIR_COLUMNS only a PLACED pairing has (the allin1
+# engine's section search): the slot and the phrase window.
+SLOT_COLUMNS = ("score_slot", "slot_occupancy", "slot_phrase_match",
+                "slot_register", "slot_phrase_err_ms",
+                "window_bars", "vocal_window_bar", "bed_window_bar", "score_window")
+
+# What the Drop-in rule reads that is a fact of the two SONGS, stored at
+# scoring time so the rule can run in SQL (matcher/compat.dropin_mask): which
+# key relations hold as they stand and after a one-semitone move of the bed,
+# whether the tempi are within the Drop-in window, and the Camelot transpose
+# (recipe.bed_shift's fallback).
+DROPIN_COLUMNS = ("dropin_mask", "camelot_shift")
 
 
 # Phrase placement and provenance (allin1 engine, readme §5.7). From the section
@@ -1718,6 +1752,7 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
         *(scores.get(col) for col in HARMONY_COLUMNS),
         *(sp.get(col) if sp.get(col) is not None else scores.get(col)
           for col in TIMING_COLUMNS),
+        *(scores.get(col) for col in DROPIN_COLUMNS),
     )
 
 
@@ -2044,6 +2079,126 @@ def _two_track_query(search: str) -> Optional[tuple[str, str]]:
     return None
 
 
+# ── Candidate percentiles (readme §5.7, "Listing") ───────────────────────────
+#
+# A pair's score_percentile and energy_pct are SQL's PERCENT_RANK over every
+# candidate of its combo type. As window functions inside the listing they were
+# recomputed over the whole table on every request — two sorts of ~200,000
+# rows to return forty. The table only changes when something is scored, so
+# the two sorted columns are kept here per state of the table and the listing
+# does its ranking with a bisect: the same number, (rows strictly below) /
+# (n - 1), NULLs first, and a percentile filter becomes a plain comparison on
+# the indexed column.
+
+_NULL_FIRST = float("-inf")
+_RANKS_CACHE: Dict[str, tuple] = {}
+
+
+class CandidateRanks:
+    """Sorted score_total and inst_energy per combo type (NULL as -inf, which
+    is where SQLite sorts it)."""
+
+    def __init__(self, conn):
+        names = ("score_total", "inst_energy")
+        cols: Dict[str, Dict[str, list]] = {}
+        for combo, *values in conn.execute(
+                f"SELECT combo_type, {', '.join(names)} FROM mashup_candidates"):
+            c = cols.setdefault(combo, {n: [] for n in names})
+            for n, v in zip(names, values):
+                c[n].append(_NULL_FIRST if v is None else v)
+        for c in cols.values():
+            for n in names:
+                c[n].sort()
+        self.cols = cols
+
+    def rank(self, combo: str, column: str, value) -> Optional[float]:
+        """PERCENT_RANK of ``value`` in its combo's ``column``; None for a
+        combo with no rows (the LEFT JOIN's NULL)."""
+        import bisect
+        arr = (self.cols.get(combo) or {}).get(column)
+        if not arr:
+            return None
+        if len(arr) == 1:
+            return 0.0
+        v = _NULL_FIRST if value is None else value
+        return bisect.bisect_left(arr, v) / (len(arr) - 1)
+
+    def _first_at(self, arr: list, p: float, scale: float = 1.0):
+        """The smallest value whose percent rank, times ``scale``, is >= ``p``
+        (None: no value reaches it). Ranks only rise along the sorted column,
+        so a bisect over positions finds where they cross, and the value there
+        is stepped forward until its own rank (its FIRST position) has."""
+        import bisect
+        n = len(arr)
+        if n == 1:
+            return arr[0] if 0.0 >= p else None
+        lo, hi = 0, n
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if mid / (n - 1) * scale >= p:
+                hi = mid
+            else:
+                lo = mid + 1
+        while lo < n and bisect.bisect_left(arr, arr[lo]) / (n - 1) * scale < p:
+            lo = bisect.bisect_right(arr, arr[lo])
+        return arr[lo] if lo < n else None
+
+    @staticmethod
+    def _lit(text: str) -> str:
+        return "'" + str(text).replace("'", "''") + "'"
+
+    def at_least_sql(self, column: str, p: float, scale: float = 1.0) -> str:
+        """SQL (on alias ``mc``, literals inline, no parameters) for
+        ``COALESCE(PERCENT_RANK(column), 0) * scale >= p``."""
+        if p <= 0:
+            return "1"
+        whens = []
+        for combo, c in self.cols.items():
+            v = self._first_at(c[column], p, scale)
+            if v is not None:
+                whens.append(f"WHEN {self._lit(combo)} THEN mc.{column} >= {v!r}")
+        if not whens:
+            return "0"
+        return f"COALESCE(CASE mc.combo_type {' '.join(whens)} ELSE 0 END, 0)"
+
+    def below_sql(self, column: str, p: float) -> str:
+        """SQL for ``PERCENT_RANK(column) < p`` (a NULL ranks 0)."""
+        if p <= 0:
+            return "0"
+        whens = []
+        for combo, c in self.cols.items():
+            v = self._first_at(c[column], p)
+            whens.append(f"WHEN {self._lit(combo)} THEN 1" if v is None else
+                         f"WHEN {self._lit(combo)} THEN "
+                         f"(mc.{column} IS NULL OR mc.{column} < {v!r})")
+        if not whens:
+            return "0"
+        return f"CASE mc.combo_type {' '.join(whens)} ELSE 0 END"
+
+
+def candidate_ranks(db_path: Path = DB_PATH, conn=None) -> CandidateRanks:
+    """The ranks for the table as it is now. The state is its row count, its
+    newest id (ids are AUTOINCREMENT, never reused) and the sum of its totals
+    (an upsert that rewrites a row in place moves that); reading it is an
+    index scan, the rebuild one pass over two columns."""
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
+    try:
+        state = tuple(conn.execute(
+            "SELECT COUNT(*), MAX(id), SUM(score_total) FROM mashup_candidates"
+        ).fetchone())
+        key = str(db_path)
+        hit = _RANKS_CACHE.get(key)
+        if hit is None or hit[0] != state:
+            hit = (state, CandidateRanks(conn))
+            _RANKS_CACHE[key] = hit
+        return hit[1]
+    finally:
+        if own:
+            conn.close()
+
+
 def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             limit: int = 100, vocal_song_id: Optional[int] = None,
                             inst_song_id: Optional[int] = None,
@@ -2059,7 +2214,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             rated: str = "", key: str = "", key_tolerance: int = 0,
                             vocal_label: str = "", inst_label: str = "",
                             pairs: Optional[Sequence[Tuple[int, int]]] = None,
-                            tier: str = "",
+                            tier: str = "", dropin: Optional[bool] = None,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -2115,14 +2270,30 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     tier is a comma list of matcher/compat.TIERS ("strong,good") and
     order="tier" ranks by tier, then score. Both use compat.tier_sql — the
     card's confidence_tier in SQL, the close-call downgrade included — so they
-    search the library, like every other filter here."""
-    from matcher.compat import parse_tiers, tier_sql
-    from matcher.recipe import harmony_unsure_below
+    search the library, like every other filter here.
+
+    dropin keeps only Drop-in pairs (True) or only the rest (False), by
+    compat.dropin_sql — the card's `dropin` in SQL. order="score" ranks by the
+    total plus `dropin_bonus` for a Drop-in (the stored total is untouched);
+    order="easy", the dock's default, ranks by tier, Drop-ins first inside
+    each tier, then that; order="dropin" lists Drop-ins first."""
+    from config import current_float
+    from matcher.compat import dropin_sql, parse_tiers, tier_sql
+    from matcher.recipe import HARMONY_SURE
     offset = max(0, int(offset or 0))
     tiers = parse_tiers(tier)
-    unsure_below = (harmony_unsure_below(db_path=db_path)
-                    if tiers or order == "tier" else None)
     conn = get_conn(db_path)
+
+    def _threshold(key: str, default):
+        """A library threshold Score library wrote — recipe.harmony_unsure_below
+        and compat.slot_floor — read on this connection, not one of its own."""
+        try:
+            v = (get_pref(key, conn=conn) or {}).get("value")
+            return default if v is None else float(v)
+        except (TypeError, ValueError, sqlite3.Error):
+            return default
+    unsure_below = _threshold("harmony_unsure_below", HARMONY_SURE)
+    ranks = candidate_ranks(db_path, conn=conn)
     # min_score gates on the PERCENTILE, not the raw composite — the same number
     # the row displays and the same one `tierFor` colours.
     #
@@ -2133,8 +2304,22 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     # that did nothing at all between 50 and 75 and then emptied the page,
     # against a column of percentages that ran the full 0-100. Two scales, one
     # label.
-    where = ["COALESCE(pc.score_percentile, 0) >= ?"]
-    params: list = [min_score]
+    # The percentile is a bisect over the cached column (candidate_ranks), so
+    # the gate is a comparison on score_total, not a window over the table.
+    where = [ranks.at_least_sql("score_total", float(min_score or 0.0))]
+    params: list = []
+    # The card's tier in SQL, on the same cached ranks.
+    tier_expr = tier_sql(at_least=lambda pct: ranks.at_least_sql(
+        "score_total", pct, scale=100.0)).replace("?", repr(float(unsure_below)))
+    # The Drop-in rule in SQL, its one parameter (the unsure threshold) inline
+    # so the expression can sit in the filter and the order alike.
+    dropin_expr = dropin_sql(_threshold("slot_dropin_floor", None)).replace(
+        "?", repr(float(unsure_below)))
+    bonus = current_float("dropin_bonus")
+    ranked_sql = (f"(mc.score_total + {bonus!r} * {dropin_expr})" if bonus > 0
+                  else "mc.score_total")
+    if dropin is not None:
+        where.append(f"{dropin_expr} = {1 if dropin else 0}")
     if combo_type:
         where.append("mc.combo_type = ?")
         params.append(combo_type)
@@ -2187,8 +2372,8 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             raise ValueError(f"energy must be one of {sorted(ENERGY_BANDS)}")
         # Ranked within the library rather than thresholded on a raw number:
         # spectral energy has no absolute meaning across masters.
-        where.append("ne.energy_pct >= ? AND ne.energy_pct < ?")
-        params += [lo, hi]
+        where.append(f"({ranks.at_least_sql('inst_energy', lo)}) AND "
+                     f"({ranks.below_sql('inst_energy', hi)})")
     if max_effort is not None:
         # NULL score_effort means the row predates the column; a re-score fills
         # it in. Treat it as passing rather than hiding the whole library.
@@ -2225,8 +2410,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         where.append("mc.inst_section_label = ?")
         params.append(inst_label)
     if tiers:
-        where.append(f"{tier_sql()} IN ({','.join(str(t) for t in tiers)})")
-        params.append(unsure_below)
+        where.append(f"{tier_expr} IN ({','.join(str(t) for t in tiers)})")
     if search and search.strip():
         both = _two_track_query(search)
         if both:
@@ -2274,10 +2458,19 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         order_sql = (f"(mc.{col} IS NULL) ASC, mc.{col} DESC, "
                      "mc.score_total DESC")
     elif order == "tier":
-        order_sql = f"{tier_sql()} ASC, mc.score_total DESC"
-        params.append(unsure_below)
+        order_sql = f"{tier_expr} ASC, mc.score_total DESC, mc.id"
+    elif order == "easy":
+        # Easy first: the tier, Drop-ins pinned first inside it, then the
+        # score (which is already fit − effort).
+        order_sql = (f"{tier_expr} ASC, {dropin_expr} DESC, "
+                     f"{ranked_sql} DESC, mc.score_total DESC, mc.id")
+    elif order == "dropin":
+        order_sql = f"{dropin_expr} DESC, mc.score_total DESC, mc.id"
     else:
-        order_sql = "mc.score_total DESC"
+        # A total order once it is computed (the id settles ties), so the
+        # bounded listing returns exactly what the whole table would.
+        order_sql = (f"{ranked_sql} DESC, mc.score_total DESC"
+                     + (", mc.id" if bonus > 0 else ""))
 
     # The cap is a greedy pass over the ranked rows, so it needs more rows than
     # it will return. Fetching everything would mean 90k rows through the join
@@ -2287,37 +2480,13 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
     want = limit + offset
     fetch = want if max_per_song <= 0 else min(max(want * 20, 200), 5000)
     params.append(fetch)
-    rows = conn.execute(
+    sql = lambda extra: (  # noqa: E731 — the one query, with an optional bound
         f"""WITH pop AS (
                 SELECT id,
                        PERCENT_RANK() OVER (ORDER BY (plays + 2 * likes)) AS popularity
                 FROM songs
-            ),
-            -- Where this pair sits among the other pairs OF ITS KIND. A raw
-            -- composite reads ~78% for nearly everything, which says nothing
-            -- about whether this pair is good *for this library*; the rank does.
-            -- Computed over the whole table rather than the returned page, so
-            -- filtering does not rescale it, but partitioned by combo_type:
-            -- ranking a vocal-over-bed pair against instrumental-over-
-            -- instrumental pairs would make the best visible row read ~84th.
-            pct AS (
-                SELECT id,
-                       PERCENT_RANK() OVER (PARTITION BY combo_type
-                                            ORDER BY score_total) AS score_percentile
-                FROM mashup_candidates
-            ),
-            -- How hard this pair hits, relative to the rest of the library.
-            -- The bed carries the energy, and a raw spectral figure means
-            -- nothing across differently mastered records, so band on the rank.
-            nrg AS (
-                SELECT id,
-                       PERCENT_RANK() OVER (PARTITION BY combo_type
-                                            ORDER BY inst_energy) AS energy_pct
-                FROM mashup_candidates
             )
             SELECT mc.*,
-                   pc.score_percentile,
-                   ne.energy_pct,
                    sv.genre        AS vocal_genre,
                    sv.release_year AS vocal_year,
                    sv.plays        AS vocal_plays,
@@ -2384,20 +2553,143 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
             LEFT JOIN songs si ON si.id = mc.inst_song_id
             LEFT JOIN pop pv   ON pv.id = mc.vocal_song_id
             LEFT JOIN pop pi   ON pi.id = mc.inst_song_id
-            LEFT JOIN pct pc   ON pc.id = mc.id
-            LEFT JOIN nrg ne   ON ne.id = mc.id
-            WHERE {' AND '.join(where)}
+            WHERE {' AND '.join(where + extra)}
             ORDER BY {order_sql}
-            LIMIT ?""",
-        params,
-    ).fetchall()
+            LIMIT ?""")
+    rows = None
+    bonus_order = order == "score" and bonus > 0
+    if (bonus_order or order in ("easy", "dropin", "tier")) \
+            and vocal_song_id is None and inst_song_id is None and pairs is None:
+        rows = _bounded_listing(conn, sql, params, fetch, order, bonus, ranks,
+                                combo_type, dropin_expr, tier_expr)
+    if rows is None:
+        rows = conn.execute(sql([]), params).fetchall()
     conn.close()
     # The track a directed search is scoped to is on every row, so it must not
     # count towards the cap — counted, it used up its share on the first three
     # rows and "beds for this vocal" stopped at three.
     scoped = {s for s in (vocal_song_id, inst_song_id) if s is not None}
-    return _cap_per_song([dict(r) for r in rows], max_per_song, want,
-                         max_per_song_pair, exempt=scoped)[offset:]
+    out = _cap_per_song([_listed(r) for r in rows], max_per_song, want,
+                        max_per_song_pair, exempt=scoped)[offset:]
+    # Where each pair sits among the other pairs OF ITS KIND, and how hard its
+    # bed hits relative to the rest. A raw composite reads ~78% for nearly
+    # everything, which says nothing about whether this pair is good *for this
+    # library*; the rank does. Over the whole table, so filtering does not
+    # rescale it, and per combo type: ranking a vocal-over-bed pair against
+    # instrumental-over-instrumental pairs would make the best row read ~84th.
+    for r in out:
+        r["score_percentile"] = ranks.rank(r["combo_type"], "score_total",
+                                           r.get("score_total"))
+        r["energy_pct"] = ranks.rank(r["combo_type"], "inst_energy",
+                                     r.get("inst_energy"))
+    return out
+
+
+# ── A computed order over the whole library (readme §5.7, "Listing") ──────────
+#
+# The default dock order (easy: tier, Drop-ins, score), the Drop-in bonus, the
+# tier and Drop-in orders all sort on an expression, which no index serves, so
+# SQLite would build every row of the table — correlated subqueries included —
+# to return forty. Every one of them is bounded by score_total from below: a
+# row under a score L can only reach a key a row at L could reach. So the
+# query runs first over the top slice (score_total >= L, an index range), and
+# its answer is kept only when its last row provably outranks anything under
+# L; otherwise the slice widens, and the last resort is the whole table. The
+# rows are the ones the unbounded query returns (tests/test_slot_dropin.py).
+
+_BOUND_POOLS = (4, 32)        # slice sizes, in multiples of the rows fetched
+
+
+def _listed(row) -> Dict:
+    d = dict(row)
+    d.pop("_dropin", None)
+    d.pop("_tier", None)
+    return d
+
+
+def _tier_below(ranks: "CandidateRanks", combo: str, bound: float) -> Optional[int]:
+    """The smallest tier any row of ``combo`` scoring under ``bound`` can
+    have — the tier of the best score under it (a downgrade only raises a
+    tier). None when no row of that combo scores under it."""
+    import bisect
+    from matcher.compat import TIER_MIN_PCT, TIERS
+    arr = ranks.cols[combo]["score_total"]
+    k = bisect.bisect_left(arr, bound) - 1
+    if k < 0:
+        return None
+    p = ranks.rank(combo, "score_total", arr[k]) or 0.0
+    for i, name in enumerate(TIERS[:-1]):
+        if p * 100.0 >= TIER_MIN_PCT[name]:
+            return i
+    return len(TIERS) - 1
+
+
+def _bounded_listing(conn, sql, params, fetch, order, bonus, ranks, combo_type,
+                     dropin_expr, tier_expr):
+    """The listing over the top slice of each combo type's scores, or None to
+    run it whole.
+
+    A row of combo c under its bound L_c ranks after the slice's last row
+    when, for every c that has rows under its bound:
+      score  — the last key reaches L_c + the bonus (only a vocal pair can be
+               a Drop-in and take it);
+      dropin — the last row is a Drop-in;
+      tier   — the last tier is below c's best tier under L_c, or equal with
+               a score at or over L_c;
+      easy   — the same, where at an equal tier a Drop-in last row needs
+               nothing more and a plain one needs c to be unable to hold
+               Drop-ins and its score at or over L_c."""
+    combos = [combo_type] if combo_type else list(ranks.cols)
+    combos = [c for c in combos if c in ranks.cols]
+    if not combos:
+        return None
+    marks = f", {dropin_expr} AS _dropin, {tier_expr} AS _tier"
+    for pool in _BOUND_POOLS:
+        bounds = {}
+        for c in combos:
+            arr = ranks.cols[c]["score_total"]
+            if pool * fetch < len(arr) and arr[len(arr) - pool * fetch] != float("-inf"):
+                bounds[c] = arr[len(arr) - pool * fetch]
+        if not bounds:
+            return None                 # nothing to leave out: run it whole
+        parts = [f"(mc.combo_type = {CandidateRanks._lit(c)}"
+                 + (f" AND mc.score_total >= {bounds[c]!r})" if c in bounds else ")")
+                 for c in combos]
+        q = sql([f"({' OR '.join(parts)})"]).replace(
+            "SELECT mc.*,", f"SELECT mc.*{marks},", 1)
+        rows = conn.execute(q, params).fetchall()
+        if len(rows) < fetch:
+            continue                    # rows under a bound may fill the page
+        last = rows[-1]
+        drop = bool(last["_dropin"])
+        score = last["score_total"]
+        if score is None:
+            continue
+        ok = True
+        for c, bound in bounds.items():
+            can_drop = c == "vocal_over_instrumental"
+            if order == "score":
+                ok = (score + (bonus if drop else 0.0)
+                      >= bound + (bonus if can_drop else 0.0) + 1e-9)
+            elif order == "dropin":
+                ok = drop
+            else:
+                t_ex = _tier_below(ranks, c, bound)
+                if t_ex is None:
+                    continue
+                if last["_tier"] < t_ex:
+                    ok = True
+                elif last["_tier"] > t_ex:
+                    ok = False
+                elif order == "tier":
+                    ok = score >= bound
+                else:
+                    ok = drop or (not can_drop and score >= bound)
+            if not ok:
+                break
+        if ok:
+            return rows
+    return None
 
 
 # ── T3.5 filter vocabularies ─────────────────────────────────────────────────
@@ -2551,25 +2843,20 @@ def best_bed_per_vocal(combo_type: str = "vocal_over_instrumental",
 
     Hidden pairs and excluded tracks are filtered out here too."""
     conn = get_conn(db_path)
+    ranks = candidate_ranks(db_path, conn=conn)
+    pct_sql = ranks.at_least_sql("score_total", float(min_score or 0.0))
     rows = conn.execute(
-        """WITH pct AS (
-               SELECT id,
-                      PERCENT_RANK() OVER (PARTITION BY combo_type
-                                           ORDER BY score_total) AS score_percentile
-               FROM mashup_candidates
-           ),
-           ranked AS (
-               SELECT mc.*, pc.score_percentile,
+        f"""WITH ranked AS (
+               SELECT mc.*,
                       ROW_NUMBER() OVER (PARTITION BY mc.vocal_song_id
                                          ORDER BY mc.score_total DESC) AS bed_rank,
                       MAX(mc.score_total) OVER (PARTITION BY mc.vocal_song_id)
                           AS vocal_best_score
                FROM mashup_candidates mc
-               LEFT JOIN pct pc ON pc.id = mc.id
                WHERE mc.combo_type = ?
                  -- Percentile, matching the flat list and the number the row
                  -- shows. See get_candidates_enriched.
-                 AND COALESCE(pc.score_percentile, 0) >= ?
+                 AND {pct_sql}
                  AND NOT EXISTS (SELECT 1 FROM pair_hidden h
                                   WHERE h.vocal_song_id = mc.vocal_song_id
                                     AND h.inst_song_id = mc.inst_song_id)
@@ -2581,10 +2868,14 @@ def best_bed_per_vocal(combo_type: str = "vocal_over_instrumental",
            WHERE bed_rank <= ?
            ORDER BY vocal_best_score DESC, vocal_song_id, bed_rank
            LIMIT ?""",
-        (combo_type, min_score, max(1, per_vocal), max(1, limit)),
+        (combo_type, max(1, per_vocal), max(1, limit)),
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    for r in out:
+        r["score_percentile"] = ranks.rank(r["combo_type"], "score_total",
+                                           r.get("score_total"))
+    return out
 
 
 # ── Hidden pairs / excluded tracks (T3.4) ────────────────────────────────────
@@ -2738,16 +3029,20 @@ def pairs_freshness(db_path: Path = DB_PATH) -> Dict:
     }
 
 
-def get_pref(key: str, db_path: Path = DB_PATH) -> Optional[Dict]:
+def get_pref(key: str, db_path: Path = DB_PATH, conn=None) -> Optional[Dict]:
     """One preference, or None. A row whose JSON no longer parses reads as
     absent rather than raising — a corrupt scrap of UI state must not be able to
-    take down the route that reads it."""
-    conn = get_conn(db_path)
+    take down the route that reads it. ``conn``: read on a connection the
+    caller already holds (never opened or closed here)."""
+    own = conn is None
+    if own:
+        conn = get_conn(db_path)
     try:
         row = conn.execute("SELECT value FROM app_prefs WHERE key=?",
                            ((key or "").strip(),)).fetchone()
     finally:
-        conn.close()
+        if own:
+            conn.close()
     if not row:
         return None
     try:

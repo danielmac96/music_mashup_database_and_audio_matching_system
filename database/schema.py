@@ -110,9 +110,32 @@ def _pair_events(conn: sqlite3.Connection) -> None:
                               event, COALESCE(context, ''))""")
 
 
+_SLOT_COLUMNS = (
+    ("score_slot", "REAL"), ("slot_occupancy", "REAL"),
+    ("slot_phrase_match", "REAL"), ("slot_register", "REAL"),
+    ("slot_phrase_err_ms", "REAL"),
+    ("window_bars", "INTEGER"), ("vocal_window_bar", "INTEGER"),
+    ("bed_window_bar", "INTEGER"), ("score_window", "REAL"),
+    ("dropin_mask", "INTEGER"), ("camelot_shift", "INTEGER"),
+)
+
+
+def _slot_and_dropin(conn: sqlite3.Connection) -> None:
+    """The vacated-slot term, the best phrase window and what the Drop-in rule
+    reads (readme §5.7), on mashup_candidates. All nullable: a row scored
+    before this is unmeasured, never zero, until the next Score library.
+    Only that table is touched — it is rewritten by every scoring run and
+    holds no user input."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(mashup_candidates)")}
+    for name, kind in _SLOT_COLUMNS:
+        if name not in have:
+            conn.execute(f"ALTER TABLE mashup_candidates ADD COLUMN {name} {kind}")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(7, "baseline", _baseline),
     Migration(8, "pair_events", _pair_events),
+    Migration(9, "slot_and_dropin", _slot_and_dropin),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

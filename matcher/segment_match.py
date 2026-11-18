@@ -46,7 +46,7 @@ def _fingerprint(db, engine: Optional[str] = None) -> tuple:
     """Changes whenever anything the ranking reads changes: a scoring input
     (songs.pairs_input_at — every writer bumps it, readme §7), a re-cut or a
     new stem (section ids, feature rows, stem quality), a re-score (the stored
-    totals the percentile reads), an exclusion, a dedup pass, or a section's
+    totals the percentile reads), an exclusion, a hidden pair, a dedup pass, or a section's
     line (which the Segments list shows) — and, for the allin1 engine, its
     sections, the vocal phrases, its tempos (matcher.match._full_by_song
     refines the scoring BPM with them), the pipeline each track is live on and
@@ -75,7 +75,10 @@ def _fingerprint(db, engine: Optional[str] = None) -> tuple:
                       (SELECT COUNT(*) || ':' || COALESCE(SUM(bpm), 0)
                          FROM allin1_analysis),
                       (SELECT COUNT(*) || ':' || COALESCE(SUM(LENGTH(separation_pipeline)), 0)
-                         FROM songs WHERE separation_pipeline IS NOT NULL)"""
+                         FROM songs WHERE separation_pipeline IS NOT NULL),
+                      (SELECT COUNT(*) || ':' || COALESCE(SUM(vocal_song_id), 0)
+                         || ':' || COALESCE(SUM(inst_song_id), 0)
+                         FROM pair_hidden)"""
         ).fetchone()) + (engine or current_segmentation_engine(),)
     finally:
         conn.close()
@@ -120,6 +123,10 @@ class _Snapshot:
                 "ORDER BY score_total")]
             self.excluded = {r[0] for r in conn.execute(
                 "SELECT song_id FROM track_excluded")}
+            # A pair hidden in the dock is hidden here too: the same two
+            # songs, whichever sections (models.hide_pair is per song pair).
+            self.hidden = {(r[0], r[1]) for r in conn.execute(
+                "SELECT vocal_song_id, inst_song_id FROM pair_hidden")}
         finally:
             conn.close()
         # The partners each side offers: what the tables list, less intros and
@@ -131,6 +138,12 @@ class _Snapshot:
                          and (x.get("label") or "verse") not in ("intro", "outro")]
                    for sid, secs in self.sections.items()}
             for role in ROLES}
+        # Per-section work that does not depend on the partner — each side's
+        # placement grid, its section statics, its unit chroma — and each
+        # vocal's phrases: kept for the life of the snapshot, so a second
+        # match of the same library starts warm (matcher/phrase_align.py).
+        self.cache: Dict = {}
+        self.phrases: Dict = {}
 
 
 _CACHE: Dict[tuple, tuple] = {}
@@ -164,11 +177,12 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     """Score the section `segment_id`, played as `role` ("vocal" or "bed"),
     against every offered section on the other side.
 
-    Returns {anchor, role, rows, scored, gated} or None when the section does
+    Returns {anchor, role, rows, scored, gated, hidden} or None when the section does
     not exist. `rows` are candidate dicts (models.CANDIDATE_COLUMNS) plus
     `score_percentile`, `segment_id` (the partner's), `stored` and the joined
     genre columns, best first, at most `limit`; `scored` is how many section
-    pairings passed the gate, `gated` how many partner songs did not. The route
+    pairings passed the gate, `gated` how many partner songs did not, `hidden`
+    how many partner songs were left out because the pair is hidden. The route
     adds the playback terms (transpose, recipe, tier, compat) the listing adds.
 
     Exact top-k: every pairing's total is bounded from above by its song
@@ -180,10 +194,11 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     from matcher.effort import effort_total_from_columns
     from matcher.match import (
         _apply_measured_harmony, _apply_section_fit, _iter_scored_pairs,
-        _prepare_block, compute_stretch_factor,
+        _prepare_block, compute_semitone_shift, compute_stretch_factor,
+        dropin_facts,
     )
     from matcher.patterns import current_patterns
-    from matcher.sections import _pair_row, score_section_pair
+    from matcher.sections import _bar_len, _pair_row, _score_statics, _statics
 
     if role not in ROLES:
         raise ValueError(f"role must be one of {ROLES}")
@@ -197,7 +212,7 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
         if anchor is None:
             return None
     base = {"anchor": {**_slim(anchor), "segment_id": int(segment_id), "role": role},
-            "role": role, "rows": [], "scored": 0, "gated": 0}
+            "role": role, "rows": [], "scored": 0, "gated": 0, "hidden": 0}
     at = snap.vocal_at if role == "vocal" else snap.bed_at
     if anchor["song_id"] not in at or anchor["song_id"] in snap.excluded \
             or not _offered(anchor, role):
@@ -212,9 +227,14 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     # The allin1 engine: phrase placement and the timing gate, exactly as the
     # library run applies them (matcher/sections._timed_section_pairs).
     from matcher.match import run_engine, timing_for
-    from matcher.sections import place_pair, timed_fit
+    from matcher.section_score import slot_ceiling, slot_fit
+    from matcher.sections import place_pair, slot_terms, timed_fit
     _engine, timing_base = run_engine(db, cfg, engine=engine)
+    if timing_base is not None:
+        timing_base["_cache"] = snap.cache
+        timing_base["_phrases"] = snap.phrases
     t_weight = float(timing_base["weight"]) if timing_base else 0.0
+    s_weight = float(timing_base["slot_weight"]) if timing_base else 0.0
 
     # The song terms: the scorer's own vectorised pass, one row against the
     # whole other side — gate included (tempo, key, same song, variant, stem
@@ -240,24 +260,39 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     song_pairs = [p for p in song_pairs
                   if p[0]["song_id"] not in snap.excluded
                   and p[1]["song_id"] not in snap.excluded]
-    gated = n_other - len(song_pairs) - (1 if anchor["song_id"] in
+    n_gate = len(song_pairs)
+    song_pairs = [p for p in song_pairs
+                  if (p[0]["song_id"], p[1]["song_id"]) not in snap.hidden]
+    hidden = n_gate - len(song_pairs)
+    gated = n_other - n_gate - (1 if anchor["song_id"] in
                                           (snap.bed_at if role == "vocal"
                                            else snap.vocal_at) else 0)
 
     other_role = "bed" if role == "vocal" else "vocal"
     w_key = weights.get("key_score", 0.0)
     bounded = []
+    anchor_statics = _statics(anchor, role == "vocal", snap.cache)
     for top, bed, scores in song_pairs:
         stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
+        rate = max(float(stretch or 1.0), 1e-6)
+        bar_len = _bar_len(top.get("bpm"))
         rest = sum(scores[k] * w for k, w in weights.items() if k != "key_score")
         effort_floor = effort_total_from_columns({**scores, "effort_pitch": 0.0})
         partner = bed if role == "vocal" else top
         for sec in snap.partners[other_role].get(partner["song_id"], ()):
             v_sec, b_sec = (anchor, sec) if role == "vocal" else (sec, anchor)
-            fit = score_section_pair(v_sec, b_sec, stretch, top.get("bpm"),
-                                     section_weights, patterns)
+            other = _statics(sec, role != "vocal", snap.cache)
+            # score_section_pair's arithmetic, on each section's kept statics.
+            fit = _score_statics(
+                anchor_statics if role == "vocal" else other,
+                other if role == "vocal" else anchor_statics,
+                v_sec, b_sec, stretch, rate, top.get("bpm"), bar_len,
+                section_weights, patterns)
             # With timing on, the fit can rise to (1-w)·fit + w (a perfect grid).
             fit_ub = (1.0 - t_weight) * fit + t_weight if timing_base else fit
+            # ...and the slot to the most this bed section allows.
+            if timing_base and s_weight:
+                fit_ub = slot_fit(fit_ub, slot_ceiling(b_sec), s_weight)
             bound = (((1.0 - section_weight) * (rest + w_key) + section_weight * fit_ub)
                      * (1.0 - effort_weight * effort_floor))
             bounded.append((bound, top, bed, scores, v_sec, b_sec, fit, stretch))
@@ -269,24 +304,31 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     for n, (bound, top, bed, scores, v_sec, b_sec, fit, stretch) in enumerate(bounded):
         if len(best) >= k and bound + 1e-9 < best[0][0]:
             break
-        placement = None
+        placement = slot = timing = None
         if timing_base is not None:
-            placement = place_pair(v_sec, b_sec, stretch,
-                                   timing_for(timing_base, top["song_id"], db))
+            timing = timing_for(timing_base, top["song_id"], db,
+                                compute_semitone_shift(str(top.get("camelot") or ""),
+                                                       str(bed.get("camelot") or "")))
+            placement = place_pair(v_sec, b_sec, stretch, timing)
             if placement.get("timing_ok") == 0:
                 continue                                  # the timing gate
             fit = timed_fit(fit, placement, t_weight)
+            if s_weight:
+                # The slot, as the library run blends it (sections.slot_terms).
+                slot = slot_terms(v_sec, b_sec, stretch, placement, timing)
+                fit = slot_fit(fit, slot["slot"], s_weight)
         sp = {"vocal_section_idx": v_sec["section_index"],
               "inst_section_idx": b_sec["section_index"],
-              "score_section": round(fit, 4)}
+              "score_section": round(fit, 4), "_v": v_sec, "_i": b_sec}
         s = dict(scores)
         _apply_measured_harmony(top, bed, s, sp, lambda sid: sections_of(sid, []),
-                                weights, effort_weight)
+                                weights, effort_weight, cache=snap.cache)
         _apply_section_fit(s, sp, effort_weight, weights, section_weight)
         tie = (-(bed if role == "vocal" else top)["song_id"],
                -(b_sec if role == "vocal" else v_sec)["section_index"])
         entry = (float(s["total"]), tie, n,
-                 (top, bed, v_sec, b_sec, fit, stretch, scores, placement))
+                 (top, bed, v_sec, b_sec, fit, stretch, scores, placement,
+                  slot, timing))
         if len(best) < k:
             heapq.heappush(best, entry)
         elif entry[:2] > best[0][:2]:
@@ -299,7 +341,7 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     genres = _genres({x for t, b, *_ in kept
                       for x in (t["song_id"], b["song_id"])}, db)
     rows = []
-    for top, bed, v_sec, b_sec, fit, stretch, scores, placement in kept:
+    for top, bed, v_sec, b_sec, fit, stretch, scores, placement, slot, timing in kept:
         key = (top["song_id"], bed["song_id"], v_sec["section_index"],
                b_sec["section_index"])
         hit = stored.get(key)
@@ -311,8 +353,9 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
             sp = _pair_row(v_sec, b_sec, v_sec["section_index"],
                            b_sec["section_index"], fit, stretch, top.get("bpm"),
                            patterns=patterns, placement=placement,
-                           timing=timing_base)
+                           timing=timing, slot=slot)
             s = dict(scores)
+            s.update(dropin_facts(top, bed))
             s["engine"] = "essentia" if timing_base is None else "essentia_fallback"
             _apply_measured_harmony(top, bed, s, sp, lambda sid: sections_of(sid, []),
                                     weights, effort_weight)
@@ -325,7 +368,8 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
         row["segment_id"] = (b_sec if role == "vocal" else v_sec).get("id")
         rows.append(row)
     rows.sort(key=lambda r: -(r.get("score_total") or 0.0))
-    return {**base, "rows": rows, "scored": len(bounded), "gated": max(gated, 0)}
+    return {**base, "rows": rows, "scored": len(bounded), "gated": max(gated, 0),
+            "hidden": hidden}
 
 
 def _slim(section: Dict) -> Dict:

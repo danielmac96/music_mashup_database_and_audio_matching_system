@@ -33,6 +33,14 @@ TERMS: List[Dict] = [
     {"key": "score_phrase", "label": "PHR phrase", "kind": "section", "weight": "phrase"},
     {"key": "score_rhythm", "label": "rhythm", "kind": "section", "weight": "rhythm"},
     {"key": "score_structure", "label": "structure", "kind": "section", "weight": "structure"},
+    # The vacated slot: blended into a placed pairing's fit at `slot_weight`
+    # (not a SECTION_WEIGHTS key — it needs the placement). Its parts and the
+    # phrase window are stored beside it, unweighted on their own.
+    {"key": "score_slot", "label": "SLOT vacated slot", "kind": "slot"},
+    {"key": "slot_occupancy", "label": "slot: bed's own vocal", "kind": "measured"},
+    {"key": "slot_phrase_match", "label": "slot: phrase starts", "kind": "measured"},
+    {"key": "slot_register", "label": "slot: register", "kind": "measured"},
+    {"key": "score_window", "label": "best phrase window", "kind": "measured"},
     {"key": "score_room_section", "label": "section room", "kind": "measured"},
     {"key": "score_coverage", "label": "vocal coverage", "kind": "measured"},
     {"key": "score_energy_match", "label": "section energy match", "kind": "measured"},
@@ -49,10 +57,10 @@ TERMS: List[Dict] = [
 REASON_SUSPECTS: Dict[str, List[str]] = {
     "key_clash": ["score_key"],
     "harmony": ["score_key"],
-    "timing_off": ["score_phrase", "score_duration"],
+    "timing_off": ["score_phrase", "score_duration", "slot_phrase_match"],
     "groove": ["score_phrase", "score_rhythm"],
     "vocal_buried": ["score_room_section", "score_collision", "score_coverage"],
-    "vocal_sits": ["score_room_section", "score_collision"],
+    "vocal_sits": ["score_room_section", "score_collision", "score_slot"],
     "bass_mud": ["score_room_section", "score_collision"],
     "energy_mismatch": ["score_energy_match", "score_energy"],
     "energy_lift": ["score_energy_match", "score_energy"],
@@ -150,7 +158,8 @@ def judged_rows(feedback: Sequence[Dict], candidates: Sequence[Dict]) -> List[Tu
 
 def term_report(feedback: Sequence[Dict], candidates: Sequence[Dict],
                 section_weights: Optional[Dict] = None,
-                match_weights: Optional[Dict] = None) -> Dict:
+                match_weights: Optional[Dict] = None,
+                slot_weight: Optional[float] = None) -> Dict:
     """The evidence for and against each term, from the judged pairs."""
     rows = judged_rows(feedback, candidates)
     rated = [(f, c) for f, c in rows if _num(f.get("rating")) is not None]
@@ -172,6 +181,8 @@ def term_report(feedback: Sequence[Dict], candidates: Sequence[Dict],
             weight = match_weights.get(t["weight"])
         elif t["kind"] == "measured":
             weight = 0.0
+        elif t["kind"] == "slot":
+            weight = slot_weight
         a = auc(good, bad)
         enough = len(good) >= MIN_PER_CLASS and len(bad) >= MIN_PER_CLASS
         terms.append({

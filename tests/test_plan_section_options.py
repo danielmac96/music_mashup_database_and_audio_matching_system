@@ -102,10 +102,11 @@ def test_an_option_is_exactly_a_pair_row(models):
     # A pair row, plus the option's own harmony (in the candidate row's column
     # names) and the shift it plays — so a pill transposes like the card says —
     # plus the phrase placement and timing terms the allin1 section search adds.
-    from database.models import TIMING_COLUMNS
+    # ...and the vacated slot and phrase window a placed pairing carries.
+    from database.models import SLOT_COLUMNS, TIMING_COLUMNS
+    placed = set(TIMING_COLUMNS) | set(SLOT_COLUMNS)
     for opt in plan["section_options"]:
-        assert (set(opt) - set(OPTION_HARMONY_KEYS) - set(TIMING_COLUMNS)
-                == set(reference) - set(TIMING_COLUMNS))
+        assert set(opt) - set(OPTION_HARMONY_KEYS) - placed == set(reference) - placed
         assert {"harmonic_shift", "semitone_shift"} <= set(opt)
 
     # The fields the pills actually place and label with, spelled out once so a
