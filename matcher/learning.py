@@ -274,14 +274,17 @@ def _stored_rows(conn, song_pairs: set) -> Dict[Tuple[int, int], List[dict]]:
     if not song_pairs:
         return out
     cols = _row_columns()
-    conn.execute("CREATE TEMP TABLE IF NOT EXISTS _learn_pairs (v INTEGER, i INTEGER)")
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS _learn_pairs "
+                 "(v INTEGER, i INTEGER, PRIMARY KEY (v, i)) WITHOUT ROWID")
     conn.execute("DELETE FROM _learn_pairs")
-    conn.executemany("INSERT INTO _learn_pairs VALUES (?, ?)", sorted(song_pairs))
+    conn.executemany("INSERT OR IGNORE INTO _learn_pairs VALUES (?, ?)", sorted(song_pairs))
+    # CROSS JOIN fixes the loop order: each pair probes the candidates'
+    # (combo_type, vocal, inst, …) unique index, never a scan per pair.
     for r in conn.execute(
             f"""SELECT {', '.join('mc.' + c for c in cols)}
-                FROM mashup_candidates mc
-                JOIN _learn_pairs p ON p.v = mc.vocal_song_id AND p.i = mc.inst_song_id
-                WHERE mc.combo_type = 'vocal_over_instrumental'"""):
+                FROM _learn_pairs p CROSS JOIN mashup_candidates mc
+                WHERE mc.combo_type = 'vocal_over_instrumental'
+                  AND mc.vocal_song_id = p.v AND mc.inst_song_id = p.i"""):
         d = dict(zip(cols, r))
         out.setdefault((d["vocal_song_id"], d["inst_song_id"]), []).append(d)
     conn.execute("DELETE FROM _learn_pairs")
@@ -711,6 +714,17 @@ def blend_rows(rows: List[dict], ctx_features: Callable[[dict], Optional[dict]],
 def blend_table(db_path=None, song_ids: Optional[Iterable[int]] = None,
                 pairs: Optional[Iterable[Tuple[int, int]]] = None,
                 progress=None, chunk: int = 20000) -> Dict:
+    """See _blend_table. Holds the scorer's lock (re-entrant: a scoring run
+    calls this from inside it), so a model switch never re-blends a table a
+    Score library is rewriting."""
+    from matcher.match import _SCORE_LOCK
+    with _SCORE_LOCK:
+        return _blend_table(db_path, song_ids, pairs, progress, chunk)
+
+
+def _blend_table(db_path=None, song_ids: Optional[Iterable[int]] = None,
+                 pairs: Optional[Iterable[Tuple[int, int]]] = None,
+                 progress=None, chunk: int = 20000) -> Dict:
     """Write the active model's blend onto stored vocal-over-bed rows — all of
     them, or those touching `song_ids`, or those of `pairs`. With no model
     (or α = 0) a row that carries a blend is put back to its rule total;

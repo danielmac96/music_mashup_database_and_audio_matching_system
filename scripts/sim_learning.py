@@ -10,8 +10,10 @@ included — and the real learning loop retrains as it goes:
     plus one hidden taste the rules do not have — they love a **breakdown**
     bed — plus a little of the rule's own score, and noise on every verdict;
   * each judgement: a random vocal from the training half, its scoped dock
-    (`GET /api/mashups?vocal_song_id=…`, the default order), and the first
-    pair in its top ten the user has not judged. Every fetch logs `shown` for
+    of vocal pairs (`GET /api/mashups?vocal_song_id=…`, the default order),
+    and one pair from its top ten the user has not judged, picked with a mild
+    preference for the top (weight 1/√rank) — so an exploration slot is
+    judged about as often as a listener would. Every fetch logs `shown` for
     the top ten; the judged pair is looped (25 s when liked, a 1.5 s skip when
     not) and opened in Studio when loved — so the weak labels are exercised;
   * at every checkpoint the loop trains (learning.train: grouped CV, the
@@ -44,7 +46,9 @@ if str(ROOT) not in sys.path:
 
 W_DROPIN, W_BREAKDOWN, W_RULE = 1.0, 1.0, 0.5
 NOISE = 0.15
-LOVE_AT, OK_AT = 1.1, 0.75
+# A Drop-in alone, or a breakdown bed alone, is "ok"; both is "love"; neither
+# is "no" — so the dock's top (mostly Drop-ins) is not all loved.
+LOVE_AT, OK_AT = 1.6, 0.9
 
 
 def _bind(lib: Path) -> None:
@@ -88,6 +92,17 @@ def main(argv=None) -> int:
     if args.library:
         shutil.copytree(args.library, lib)
     _bind(lib)
+    if args.library:
+        # A clean slate on the copy: no verdicts, events or models, the rule's totals.
+        import sqlite3
+        c = sqlite3.connect(lib / "mashup.db")
+        for t in ("pair_feedback", "pair_events", "pair_event_summary", "models"):
+            c.execute(f"DELETE FROM {t}")
+        c.execute("DELETE FROM app_prefs WHERE key='learning_state'")
+        c.execute("UPDATE mashup_candidates SET score_total = score_rule, model_prob = NULL, "
+                  "model_version = NULL WHERE score_rule IS NOT NULL")
+        c.commit()
+        c.close()
     t0 = time.time()
     if not args.library:
         from scripts.synth_library import generate
@@ -127,7 +142,7 @@ def main(argv=None) -> int:
             for r in conn.execute(
                     f"SELECT {', '.join(cols)} FROM mashup_candidates "
                     f"WHERE combo_type='vocal_over_instrumental' "
-                    f"AND vocal_song_id IN ({marks})", sorted(held)):
+                    f"AND vocal_song_id IN ({marks}) ORDER BY id", sorted(held)):
                 d = dict(zip(cols, r))
                 by_vocal.setdefault(d["vocal_song_id"], []).append(d)
         finally:
@@ -143,7 +158,11 @@ def main(argv=None) -> int:
                                                        else d["score_total"])):
                     best.setdefault(d["inst_song_id"], d)
                 return list(best.values())
-            ideal = [d["_g"] for d in best_per_bed("score_total")]
+            # The ideal: each bed song at its best pairing for this listener.
+            top_g = {}
+            for d in rows:
+                top_g[d["inst_song_id"]] = max(top_g.get(d["inst_song_id"], 0.0), d["_g"])
+            ideal = list(top_g.values())
             rule_n.append(ndcg([d["_g"] for d in best_per_bed("score_rule")], ideal))
             blend_n.append(ndcg([d["_g"] for d in best_per_bed("score_total")], ideal))
         return (sum(rule_n) / len(rule_n), sum(blend_n) / len(blend_n))
@@ -155,12 +174,15 @@ def main(argv=None) -> int:
     for n in range(1, args.judgements + 1):
         for _attempt in range(20):
             v = rng.choice(train_vocals)
-            page = list_candidates(vocal_song_id=v, limit=10)["candidates"][:10]
+            page = list_candidates(vocal_song_id=v, limit=10,
+                                   combo_type="vocal_over_instrumental")["candidates"][:10]
             events = [("shown", r, k + 1) for k, r in enumerate(page)]
-            pick = next((r for r in page if (r["vocal_song_id"], r["inst_song_id"],
-                                             r.get("vocal_section_idx"),
-                                             r.get("inst_section_idx")) not in judged), None)
-            if pick is not None:
+            open_ = [(k, r) for k, r in enumerate(page)
+                     if (r["vocal_song_id"], r["inst_song_id"], r.get("vocal_section_idx"),
+                         r.get("inst_section_idx")) not in judged]
+            if open_:
+                pick = rng.choices([r for _k, r in open_],
+                                   weights=[1.0 / math.sqrt(k + 1) for k, _r in open_])[0]
                 break
         explored += bool(pick.get("explore"))
         u = utility(pick, bool(pick.get("dropin"))) + rng.gauss(0.0, NOISE)
