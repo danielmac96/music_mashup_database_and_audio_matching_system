@@ -12,8 +12,10 @@ def _read(rel):
 def test_attributes_are_fetched_once_in_app():
     app = _read("App.jsx")
     assert app.count("useAttributes()") == 1
-    for screen in ("LibraryScreen", "TrackDetail", "AnalysisScreen"):
+    for screen in ("LibraryScreen", "TrackDetail"):
         assert re.search(rf"<{screen}[^>]*attributes={{attributes}}", app, re.S), screen
+    # The catalogue panel is the Library's Columns & attributes sheet (3A).
+    assert "<AttributesPanel catalogue={attributes?.catalogue" in _read("components/LibraryScreen.jsx")
 
 
 def test_the_api_has_both_calls():
@@ -28,24 +30,29 @@ def test_attribute_columns_are_keyed_by_id():
     assert "`attr:${a.id}`" in js
 
 
-def test_the_rail_has_analysis_between_queue_and_discover():
-    nav = _read("shell/Sidebar.jsx")
-    order = [m.group(1) for m in re.finditer(r'\["(\w+)", "', nav)]
-    assert order.index("analysis") == order.index("queue") + 1
-    assert order.index("discovery") == order.index("analysis") + 1
-    assert 'route === "analysis"' in _read("App.jsx")
+def test_analysis_is_folded_into_library_track_detail_and_queue():
+    """Master plan 3A: the attribute catalogue is the Library's column/filter
+    picker, Compare is Track detail's "Compare with…", the status strip is in
+    the Queue and Settings; the old route redirects."""
+    nav, app = _read("shell/Sidebar.jsx"), _read("App.jsx")
+    assert 'analysis: { route: "library", columns: true' in nav
+    assert 'route === "analysis"' not in app
+    assert "<AttributesPanel" in _read("components/LibraryScreen.jsx")
+    assert "<TrackCompare" in _read("components/TrackDetail.jsx")
+    assert app.count("<AnalyzerStatus status={analyzer.status}") == 2
+    assert "{analyzer}" in _read("components/QueueScreen.jsx")
 
 
 def test_every_panel_class_exists_in_the_stylesheet():
     css = _read("styles.css")
-    jsx = _read("components/AnalysisScreen.jsx")
+    jsx = _read("components/AnalysisPanels.jsx")
     for cls in set(re.findall(r'className="([^"]+)"', jsx)):
         for c in cls.split():
             assert f".{c}" in css, c
 
 
 def test_the_panel_toggles_library_and_detail_and_never_recomputes():
-    jsx = _read("components/AnalysisScreen.jsx")
+    jsx = _read("components/AnalysisPanels.jsx")
     assert 'toggle("library"' in jsx and 'toggle("detail"' in jsx
     assert "bulk" not in jsx and "reanalys" not in jsx.lower()
 
@@ -55,7 +62,7 @@ def test_attribute_columns_come_from_the_catalogue_and_the_panel_switches():
     Analysis panel's Library switch, so the Columns menu and the panel agree."""
     screen = _read("components/LibraryScreen.jsx")
     assert "const attrColumn = (a)" in screen and "id: `attr:${a.id}`" in screen
-    assert 'attributes.toggle("library", c.attr.id)' in screen
+    assert "toggle={attributes?.toggle" in screen and "onFilter={(a, st) =>" in screen
     view = _read("hooks/useColumnWidths.js")
     assert "const visible = c.attr ? attrSet.has(id)" in view
 
@@ -88,11 +95,11 @@ def test_table_cells_are_compact_and_small_numbers_stay_readable():
 def test_compare_says_whether_the_two_tracks_mash():
     """Comparing two tracks stopped at their attributes; it now shows the scored
     pair both ways round, with a loop and a Studio hand-off."""
-    src = _read("components/AnalysisScreen.jsx")
+    src = _read("components/AnalysisPanels.jsx")
     assert "const verdict = (c, v, i) =>" in src and "<PairCard candidate={c}" in src
     assert 'comboType: "vocal_over_instrumental"' in src
     assert "one(a, b), one(b, a)" in src
     assert "onPlayPair(c)" in src and "onOpenPair(c)" in src
     assert "outside the tempo gate" in src and "two cuts of the same record" in src
     app = _read("App.jsx")
-    assert "onPlayPair={dock.play} onOpenPair={pairToStudio}" in app
+    assert "onPlayPairCompare={dock.play} onOpenPairCompare={pairToStudio}" in app

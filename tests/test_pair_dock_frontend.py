@@ -178,7 +178,8 @@ def test_the_keyboard_is_gated_on_the_visible_screen():
     only while the Library (or its Track detail, minus space) is showing."""
     assert "bindKeys" in DOCK_HOOK
     app = _read("App.jsx")
-    assert 'dock.bindKeys(route === "library" || route === "track",' in app
+    # In Parts mode the parts dock owns the keys instead (3A).
+    assert 'dock.bindKeys((route === "library" || route === "track") && libMode === "tracks",' in app
     assert "if (!enabled) return undefined;" in DOCK_HOOK
 
 

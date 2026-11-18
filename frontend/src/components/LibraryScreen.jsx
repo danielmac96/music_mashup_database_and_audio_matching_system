@@ -15,6 +15,11 @@ import { isActiveJob, jobRunning, latestJobBySong } from "../hooks/useQueue";
 import { toast } from "../toast";
 import { notifyPairsInputChanged, requestRescore } from "../rescore";
 import { api } from "../api";
+import { AttributesPanel, libraryStats } from "./AnalysisPanels";
+
+// What the Library lists: tracks, or every vocal / bed section as a part
+// (master plan 3A — the Segments tab, folded in).
+export const LIB_MODES = [["tracks", "Tracks"], ["vocal", "Vocal parts"], ["bed", "Bed parts"]];
 
 // Screen 1a: the library, its filters, and the rail furniture that belongs to
 // it (Saved views and Crates). The pair dock is a sibling, not a child — it
@@ -31,7 +36,9 @@ const attrColumn = (a) => ({
 
 export function LibraryScreen({ library, attributes, ratings, groups, player, selectedId,
                                 onSelect, onOpen, onRailSlot, onStatus, onOpenQueue,
-                                presets, applyPreset = null, onHelp = null }) {
+                                presets, applyPreset = null, onHelp = null,
+                                mode = "tracks", onMode = null, parts = null,
+                                openColumns = null }) {
   const { tracks, pipeJobs, loading, error, refresh } = library;
 
   const [menuId, setMenuId] = useState(null);
@@ -40,6 +47,10 @@ export function LibraryScreen({ library, attributes, ratings, groups, player, se
   const [importOpen, setImportOpen] = useState(false);
   const [colsOpen, setColsOpen] = useState(false);
   const [colQ, setColQ] = useState("");
+  // Analysis's old link ("analysis" → here) opens the picker.
+  useEffect(() => { if (openColumns) setColsOpen(true); }, [openColumns]);
+  const attrStats = useMemo(() => (colsOpen ? libraryStats(tracks, attributes?.catalogue || []) : {}),
+    [colsOpen, tracks, attributes?.catalogue]);
   const searchRef = useRef(null);
   const tableRef = useRef(null);
 
@@ -180,45 +191,74 @@ export function LibraryScreen({ library, attributes, ratings, groups, player, se
     <>
       <header className="lib-head">
         <h1>Library</h1>
-        <span className="mono muted" title="Tracks matching the current filters">
-          <b>{visible.length.toLocaleString()}</b> of {total.toLocaleString()} tracks
-        </span>
+        {onMode && (
+          <div className="seg-toggle" role="group" aria-label="What the Library lists">
+            {LIB_MODES.map(([id, label]) => (
+              <button key={id} className={mode === id ? "on" : ""} aria-pressed={mode === id}
+                onClick={() => onMode(id)}
+                title={id === "tracks" ? "Every track"
+                  : `Every ${id} section of every track — select one and the dock ranks its ${id === "vocal" ? "beds" : "vocals"}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+        {mode === "tracks" && (
+          <span className="mono muted" title="Tracks matching the current filters">
+            <b>{visible.length.toLocaleString()}</b> of {total.toLocaleString()} tracks
+          </span>
+        )}
         <span className="grow" />
-        <span className="mono faint hint">{HEAD_HINT}</span>
-        <div className="fchip-wrap">
-          <button className="ui-btn" onClick={() => setColsOpen((o) => !o)}
-            title="Show, hide and reset columns">Columns ▾</button>
-          {colsOpen && (
-            <>
-              <div className="pop-scrim" onClick={() => setColsOpen(false)} />
-              <div className="pop right cols-pop"
-                onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setColsOpen(false); } }}>
-                <input className="pop-input" value={colQ} placeholder="Find a column or attribute"
-                  onChange={(e) => setColQ(e.target.value)} autoFocus />
-                <div className="pop-list">
-                  {colOpts.map((c) => (
-                    <button key={c.id} className="list-row"
-                      onClick={() => (c.attr
-                        ? attributes.toggle("library", c.attr.id)
-                        : view.setVisible(c.id, !c.visible))}>
-                      <span className={`cbox${c.visible ? " on" : ""}`}>{c.visible ? "✓" : ""}</span>
-                      <span className="grow">{c.attr ? c.attr.label : c.label}</span>
-                      {c.attr && <span className="muted small">attribute</span>}
-                    </button>
-                  ))}
-                </div>
-                <div className="pop-foot">
-                  <span className="muted small">Drag headers to reorder · edges to resize</span>
-                  <button className="btn-ghost" onClick={() => {
-                    view.reset(); setColsOpen(false); toast("Library view reset");
-                  }}>Reset view</button>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-        <button className="ui-btn" onClick={() => setImportOpen((v) => !v)}>＋ Import</button>
+        {mode === "tracks" && <span className="mono faint hint">{HEAD_HINT}</span>}
+        {mode === "tracks" && (
+          <button className="ui-btn" onClick={() => setColsOpen((o) => !o)} aria-expanded={colsOpen}
+            title="Columns and every analysed attribute: coverage, distribution, show it, filter by it">
+            Columns &amp; attributes ▾</button>
+        )}
+        <button className="btn-primary" onClick={() => setImportOpen((v) => !v)}>＋ Import</button>
       </header>
+
+      {colsOpen && mode === "tracks" && (
+        <>
+          <div className="drawer-scrim" onClick={() => setColsOpen(false)} />
+          <aside className="cols-sheet" aria-label="Columns and attributes"
+            onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setColsOpen(false); } }}>
+            <div className="drawer-head">
+              <h2>Columns &amp; attributes</h2>
+              <span className="grow" />
+              <button className="btn-ghost" onClick={() => { view.reset(); toast("Library view reset"); }}>
+                Reset view</button>
+              <button className="drawer-x" onClick={() => setColsOpen(false)} aria-label="Close"
+                title="Close (esc)">✕</button>
+            </div>
+            <div className="cols-core">
+              <input className="pop-input" value={colQ} placeholder="Find a column"
+                onChange={(e) => setColQ(e.target.value)} autoFocus />
+              <div className="cols-chips">
+                {colOpts.filter((c) => !c.attr).map((c) => (
+                  <button key={c.id} className={`chip-toggle${c.visible ? " on" : ""}`}
+                    aria-pressed={c.visible} onClick={() => view.setVisible(c.id, !c.visible)}>
+                    {c.visible ? "✓ " : ""}{c.label}
+                  </button>
+                ))}
+              </div>
+              <span className="muted small">Drag headers to reorder · drag a header's edge to resize (saved)</span>
+            </div>
+            <AttributesPanel catalogue={attributes?.catalogue || []}
+              categories={attributes?.categories || []} visibility={attributes?.visibility
+                || { library: [], detail: [] }}
+              toggle={attributes?.toggle || (() => {})} stats={attrStats}
+              filters={filters}
+              onFilter={(a, st) => {
+                const at = { ...filters.attrs };
+                if (at[a.id]) delete at[a.id];
+                else if (a.kind === "number" && st) at[a.id] = { min: Number(st.median.toFixed(3)) };
+                else if (a.dist?.top?.length) at[a.id] = { value: a.dist.top[0].label };
+                patch({ attrs: at });
+              }} />
+          </aside>
+        </>
+      )}
 
       {importOpen && (
         <div className="import-drop">
@@ -227,6 +267,7 @@ export function LibraryScreen({ library, attributes, ratings, groups, player, se
         </div>
       )}
 
+      {mode !== "tracks" ? parts : (<>
       <LibraryFilters
         filters={filters} patch={patch} setFilters={setFilters}
         reset={() => { reset(); toast("Filters cleared"); }}
@@ -285,6 +326,7 @@ export function LibraryScreen({ library, attributes, ratings, groups, player, se
             onEdit={setEditId}
             onClose={() => setMenuId(null)} />
         )} />
+      </>)}
     </>
   );
 }

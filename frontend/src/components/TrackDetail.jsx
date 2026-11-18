@@ -7,6 +7,7 @@ import { StructureStrip } from "./StructureStrip";
 import { SectionTable } from "./SectionTable";
 import { TrackEditor } from "./TrackEditor";
 import { fmtAttr } from "../attributes";
+import { libraryStats, TrackCompare } from "./AnalysisPanels";
 import { AudioSource, AudioSourcePicker } from "./AudioSourcePicker";
 import { Disclosure, KeyChip, StatusPill } from "./ui/primitives";
 import { keyOf, pctOf, tierOf } from "./pairs/pairModel";
@@ -58,8 +59,17 @@ const Num = ({ v, unit, color }) => (v == null || v === "—"
 export function TrackDetail({ track, tracks, attributes = null, ratings, groups, player, role,
                               onRole, onBack, onStudio, onOpenTrack, onStatus,
                               onChanged, onDiscover = null, onLinesChanged = null,
-                              onPlayPair = null, onCompareWith = null, onChooseAttributes = null,
-                              onOpenQueue = null, onOpenSegments = null, running = false }) {
+                              onPlayPair = null, onChooseAttributes = null,
+                              onOpenQueue = null, onOpenSegments = null, running = false,
+                              compareSeed = null, onPlayPairCompare = null,
+                              onOpenPairCompare = null }) {
+  // Compare with… (3A: what Analysis › Compare was): this track against
+  // another, the pair both ways round and every attribute side by side.
+  const [compare, setCompare] = useState(null);
+  useEffect(() => { if (compareSeed) setCompare(compareSeed); }, [compareSeed]);
+  useEffect(() => { setCompare((c) => (c && c.a === track?.id ? c : null)); }, [track?.id]);
+  const compareStats = useMemo(() => (compare && attributes
+    ? libraryStats(tracks || [], attributes.catalogue || []) : {}), [compare, tracks, attributes]);
   const [sections, setSections] = useState([]);
   // The "Wrong audio?" picker and the key editor. Closed on every walk to
   // another track: they hold one track's state, which must not sit under
@@ -391,12 +401,11 @@ export function TrackDetail({ track, tracks, attributes = null, ratings, groups,
           <div className="dt-actions">
             {onChooseAttributes && (
               <button className="ui-btn" onClick={onChooseAttributes}
-                title="Pick what shows here in Analysis (the Detail switches)">Choose attributes…</button>
+                title="Pick what shows here: Library → Columns & attributes (the Detail switches)">Choose attributes…</button>
             )}
-            {onCompareWith && (
-              <button className="ui-btn" onClick={() => onCompareWith(track.id)}
-                title="Compare this track with another in Analysis">Compare with…</button>
-            )}
+            <button className="ui-btn" onClick={() => setCompare({ a: track.id, b: null, at: Date.now() })}
+              title="Compare this track with another: the pair both ways round, every attribute side by side">
+              ⇄ Compare with…</button>
           </div>
         </Disclosure>
 
@@ -504,6 +513,23 @@ export function TrackDetail({ track, tracks, attributes = null, ratings, groups,
           )}
         </Disclosure>
       </div>
+      {compare && (
+        <>
+          <div className="drawer-scrim" onClick={() => setCompare(null)} />
+          <aside className="cols-sheet" aria-label="Compare two tracks"
+            onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setCompare(null); } }}>
+            <div className="drawer-head">
+              <h2>Compare {track.title} with…</h2>
+              <span className="grow" />
+              <button className="drawer-x" onClick={() => setCompare(null)} aria-label="Close"
+                title="Close (esc)">✕</button>
+            </div>
+            <TrackCompare tracks={tracks || []} catalogue={attributes?.catalogue || []}
+              categories={attributes?.categories || []} stats={compareStats}
+              onPlayPair={onPlayPairCompare} onOpenPair={onOpenPairCompare} seed={compare} />
+          </aside>
+        </>
+      )}
     </div>
   );
 }

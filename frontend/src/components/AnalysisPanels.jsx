@@ -5,28 +5,31 @@ import { PairCard } from "./PairCard";
 import { KeyChip } from "./ui/primitives";
 import { camelotColor } from "../theme";
 
-// Analysis (revamp step 3). Two tabs:
+// What the Analysis tab was, folded into the screens that use it (master plan
+// 3A). Three pieces:
 //
-// ATTRIBUTES — every attribute the analysis captures (analysis/attributes.py),
-// one row each: name and analyser, coverage (measured / analysed tracks),
-// a 24-bin histogram between the 1st and 99th percentile with the median (or
-// the most common values for a category), and the Library / Detail switches.
-// Library adds the column to the Library table, Detail to Track detail's
-// Attributes group — the same saved visibility (PUT /attributes/visibility),
-// so toggling here adds or removes the column live. Nothing here recomputes
-// anything.
+// AttributesPanel — every attribute the analysis captures
+// (analysis/attributes.py): coverage (measured / analysed tracks), a 24-bin
+// histogram between the 1st and 99th percentile with the median (or the most
+// common values for a category), the Library / Detail switches and a Filter
+// action. It is the Library's "Columns & attributes ▾" picker. The switches
+// are the saved visibility (PUT /attributes/visibility), so a column appears
+// live. Nothing here recomputes anything.
 //
-// COMPARE — two searchable pickers and a swap; the pair both ways round as
-// pair cards (or why it was never scored); then every attribute side by side,
-// differing rows marked, each number placed on a dot strip of where A and B sit
-// in the library's range. `c` on a pair in the dock lands here with it loaded.
+// TrackCompare — two tracks: the pair both ways round as pair cards (or why
+// it was never scored), then every attribute side by side, differing rows
+// marked, each number on a dot strip of where A and B sit in the library.
+// Track detail's "Compare with…" and `c` on a dock pair open it.
+//
+// AnalyzerStatus — can Essentia and allin1 run here, are the models in place,
+// is the cache on (GET /api/analysis/status). Shown in the Queue and Settings.
 
 const BINS = 24;
 const pct = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.round(q * (sorted.length - 1))))];
 
 // Per numeric attribute: p1, p99, median and a 24-bin histogram, from the
 // `attrs` every track carries — the library already in memory.
-function libraryStats(tracks, catalogue) {
+export function libraryStats(tracks, catalogue) {
   const out = {};
   for (const a of catalogue) {
     if (a.kind !== "number") continue;
@@ -51,58 +54,20 @@ function libraryStats(tracks, catalogue) {
 
 const covColor = (p) => (p > 0.95 ? "var(--ok)" : p < 0.6 ? "var(--warn)" : "var(--muted)");
 
-export function AnalysisScreen({ attributes, onRailSlot, tracks = [],
-                                onPlayPair = null, onOpenPair = null, compareSeed = null }) {
-  const { catalogue, categories, visibility, toggle, refresh } = attributes;
-  const [tab, setTab] = useState("attrs");
-  // Whether Essentia and allin1 can run here and whether the models are
-  // installed (GET /api/analysis/status).
+// GET /api/analysis/status, loaded once per mount, with a reload.
+export function useAnalyzerStatus() {
   const [status, setStatus] = useState(null);
-  const [statusError, setStatusError] = useState(null);
-  const loadStatus = useCallback(() => {
-    api.getAnalysisStatus().then((d) => { setStatus(d); setStatusError(null); })
-      .catch((e) => setStatusError(e.message));
+  const [error, setError] = useState(null);
+  const load = useCallback(() => {
+    api.getAnalysisStatus().then((d) => { setStatus(d); setError(null); })
+      .catch((e) => setError(e.message));
   }, []);
-  useEffect(() => { onRailSlot?.(null); refresh(); loadStatus(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  // `c` in the dock (or Compare with… on Track detail) opens the Compare tab.
-  useEffect(() => { if (compareSeed) setTab("compare"); }, [compareSeed]);
-
-  const stats = useMemo(() => libraryStats(tracks, catalogue), [tracks, catalogue]);
-  const analysed = tracks.filter((t) => t.features?.full).length;
-
-  return (
-    <div className="an-screen">
-      <header className="an-head">
-        <h1>Analysis</h1>
-        <div className="an-tabs" role="tablist" aria-label="Analysis view">
-          {[["attrs", "Attributes"], ["compare", "Compare"]].map(([id, label]) => (
-            <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? "on" : ""}
-              onClick={() => setTab(id)}>{label}</button>
-          ))}
-        </div>
-        <span className="muted small">
-          {tab === "attrs"
-            ? `${catalogue.length} attributes · coverage is tracks measured / ${analysed.toLocaleString()} analysed`
-            : "Two tracks, both ways round, and every measurement side by side"}
-        </span>
-        <span className="grow" />
-        <button className="ui-btn an-refresh" onClick={() => { refresh(); loadStatus(); }}
-          title="Re-read coverage and analyser status" aria-label="Refresh">↻</button>
-      </header>
-
-      <AnalyzerStatus status={status} error={statusError} />
-
-      {tab === "attrs"
-        ? <Attributes catalogue={catalogue} categories={categories} visibility={visibility}
-            toggle={toggle} stats={stats} />
-        : <TrackCompare tracks={tracks} catalogue={catalogue} categories={categories}
-            stats={stats} onPlayPair={onPlayPair} onOpenPair={onOpenPair} seed={compareSeed} />}
-    </div>
-  );
+  useEffect(() => { load(); }, [load]);
+  return { status, error, reload: load };
 }
 
 // Essentia, allin1, the models and the cache: what can run here.
-function AnalyzerStatus({ status, error }) {
+export function AnalyzerStatus({ status, error }) {
   if (error) return <div className="an-status"><div className="an-stat"><span className="caps">Status</span><span className="mono muted">unavailable: {error}</span></div></div>;
   if (!status) return null;
   const { analyzer: az, essentia, models } = status;
@@ -156,7 +121,8 @@ function Switch({ on, onClick, label, title }) {
   );
 }
 
-function Attributes({ catalogue, categories, visibility, toggle, stats }) {
+export function AttributesPanel({ catalogue, categories, visibility, toggle, stats,
+                                 filters = null, onFilter = null }) {
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("");
   const [shownOnly, setShownOnly] = useState(false);
@@ -191,6 +157,7 @@ function Attributes({ catalogue, categories, visibility, toggle, stats }) {
           <div className="an-row an-headrow caps">
             <span>Attribute · analyser</span><span title="Tracks measured / tracks analysed">Coverage</span>
             <span>Distribution</span><span className="c">Library</span><span className="c">Detail</span>
+            {onFilter && <span className="c">Filter</span>}
           </div>
           {cats.map((c) => (
             <div key={c}>
@@ -215,6 +182,18 @@ function Attributes({ catalogue, categories, visibility, toggle, stats }) {
                     <div className="c"><Switch on={visibility.detail.includes(a.id)}
                       onClick={() => toggle("detail", a.id)} label={`Show ${a.label} on Track detail`}
                       title="Show on Track detail" /></div>
+                    {onFilter && (
+                      <div className="c">
+                        <button className={`an-filterbtn${filters?.attrs?.[a.id] ? " on" : ""}`}
+                          aria-pressed={!!filters?.attrs?.[a.id]}
+                          disabled={!stats[a.id] && !a.dist?.top?.length}
+                          title={filters?.attrs?.[a.id] ? "Remove this attribute's filter"
+                            : a.kind === "number" ? "Filter the Library to tracks at or above the median"
+                              : "Filter the Library to the most common value"}
+                          onClick={() => onFilter(a, stats[a.id])}>
+                          {filters?.attrs?.[a.id] ? "✓ On" : "＋"}</button>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -308,7 +287,7 @@ export function TrackPicker({ letter, tracks, value, onPick }) {
 
 const noop = () => {};
 
-function TrackCompare({ tracks, catalogue, categories, stats, onPlayPair = null,
+export function TrackCompare({ tracks, catalogue, categories, stats, onPlayPair = null,
                         onOpenPair = null, seed = null }) {
   const analysed = useMemo(() => tracks.filter((t) => t.features?.full), [tracks]);
   const [a, setA] = useState("");

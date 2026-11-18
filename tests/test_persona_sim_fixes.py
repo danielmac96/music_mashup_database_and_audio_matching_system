@@ -483,8 +483,9 @@ def test_compare_goes_to_analysis_and_the_card_carries_notes():
     hook, app = _read("hooks/usePairDock.js"), _read("App.jsx")
     assert 'e.key === "c"' in hook and "onCompare(row)" in hook
     assert "setCompareSeed({ a: c.vocal_song_id, b: c.inst_song_id" in app
-    assert "compareSeed={compareSeed}" in app
-    assert "setA(String(seed.a));" in _read("components/AnalysisScreen.jsx")
+    # 3A: Compare lives on Track detail (the vocal's), not an Analysis tab.
+    assert "compareSeed={compareSeed && compareSeed.a === selectedTrackId" in app
+    assert "setA(String(seed.a));" in _read("components/AnalysisPanels.jsx")
     dock = _read("components/PairDock.jsx")
     assert "notes.noteOf(c)" in dock and "pcx-note" in _read("components/PairCard.jsx")
     assert "export function usePairNotes" in _read("hooks/usePairNotes.js")
@@ -554,13 +555,13 @@ def test_discover_has_roles_gaps_and_a_search_hand_off():
 def test_help_opens_from_the_rail_and_the_question_mark():
     app, rail = _read("App.jsx"), _read("shell/Sidebar.jsx")
     assert "<HelpPanel" in app and 'e.key === "?"' in app
-    assert "rail-help" in rail and "New here" in rail
+    assert 'UtilButton glyph="?"' in rail and "New here" in rail
     help_ = _read("components/HelpPanel.jsx")
     assert "Your first mashup" in help_ and "Reading a pair" in help_
 
 
 def test_analysis_compares_two_tracks():
-    a = _read("components/AnalysisScreen.jsx")
+    a = _read("components/AnalysisPanels.jsx")
     assert "function TrackCompare" in a and "an-diffrow" in a and "Only where they differ" in a
     assert "tracks={library.tracks}" in _read("App.jsx")
 

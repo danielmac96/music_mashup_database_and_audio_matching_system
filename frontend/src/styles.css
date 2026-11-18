@@ -146,7 +146,7 @@ input, select { font-family: inherit; }
   height: 100vh;
   background: var(--bg);
   display: grid;
-  grid-template-columns: 206px minmax(0, 1fr);
+  grid-template-columns: 220px minmax(0, 1fr);
   overflow: hidden;
   transition: grid-template-columns var(--ease);
 }
@@ -179,15 +179,16 @@ input, select { font-family: inherit; }
 
 .rail-nav { display: flex; flex-direction: column; gap: 2px; padding: 8px; flex: none; }
 .rail-item {
-  height: 32px; display: flex; align-items: center; gap: 10px;
-  padding: 0 10px; border: none; border-radius: var(--r-ctl); cursor: pointer;
+  min-height: 38px; display: flex; align-items: center; gap: 11px;
+  padding: 0 12px; border: none; border-radius: var(--r-ctl); cursor: pointer;
   background: transparent; color: var(--fg-2);
-  font-family: var(--font-ui); font-size: 13px; font-weight: 500;
+  font-family: var(--font-ui); font-size: 14px; font-weight: 600;
   text-align: left; width: 100%; white-space: nowrap;
   transition: background var(--ease), color var(--ease);
 }
 .rail-item:hover { background: var(--raised); color: var(--fg); }
 .rail-item.active { background: var(--select); color: var(--fg); }
+.rail-item.active .rail-glyph { color: var(--accent); }
 .rail-glyph { width: 16px; text-align: center; flex: none; font-size: 14px; }
 .rail-itemlabel { flex: 1; min-width: 0; }
 .rail-count {
@@ -213,7 +214,7 @@ input, select { font-family: inherit; }
 .rail-group { flex: none; display: flex; flex-direction: column; gap: 1px; padding: 0 8px; }
 .rail-group.scroll { flex: 1; min-height: 0; overflow: auto; }
 .rail .rail-row {
-  height: 28px; display: flex; align-items: center; gap: 8px;
+  min-height: 30px; padding-block: 4px; display: flex; align-items: center; gap: 8px;
   padding: 0 10px; border: none; border-radius: var(--r-ctl); cursor: pointer;
   background: transparent; color: var(--fg-2);
   font-family: var(--font-ui); font-size: 12.5px; font-weight: 400;
@@ -224,7 +225,7 @@ input, select { font-family: inherit; }
 .rail .rail-row.active { background: var(--select); color: var(--fg); }
 .rail-swatch { width: 8px; height: 8px; border-radius: var(--r-chip); flex: none; margin: 0 2px; }
 .rail-rowglyph { width: 12px; color: var(--muted); flex: none; font-size: 11px; }
-.rail-rowlabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-rowlabel { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.25; }
 
 /* The pipeline readout: "7 running · 271 waiting · 51 failed · clears in ~2.9 h". */
 .rail-pipe {
@@ -253,16 +254,19 @@ input, select { font-family: inherit; }
 .rail-scorer { flex-wrap: wrap; row-gap: 2px; }
 .rail-tuning { flex: 1 1 100%; color: var(--faint); }
 .rail-tuning.ready { color: var(--ok); }
-.rail-btn {
-  height: 26px; min-width: 26px; padding: 0 6px; flex: none; cursor: pointer;
-  border: 1px solid var(--line-2); border-radius: var(--r-ctl);
-  background: none; color: var(--fg-2); font-size: 12px;
-  transition: background var(--ease), border-color var(--ease);
+/* Utilities: symbol + label while open, the label as tooltip collapsed. */
+.rail-utils { flex: 1 1 100%; display: flex; flex-direction: column; gap: 1px; }
+.rail-util {
+  min-height: 32px; display: flex; align-items: center; gap: 11px; padding: 0 12px;
+  border: none; border-radius: var(--r-ctl); background: transparent; cursor: pointer;
+  color: var(--muted); font-family: var(--font-ui); font-size: 13px; font-weight: 500;
+  text-align: left; width: 100%; transition: background var(--ease), color var(--ease);
 }
-.rail-btn.mono { font-size: 10.5px; }
-.rail-btn:hover { background: var(--raised); }
-.rail-btn.on { background: var(--select); border-color: var(--accent); }
-.rail-btn.new { border-color: var(--accent); color: var(--link); }
+.rail-util:hover { background: var(--raised); color: var(--fg); }
+.rail-util.on { background: var(--select); color: var(--fg); }
+.rail-util.new { color: var(--link); }
+.rail-hint { margin-left: auto; font-size: 11px; color: var(--faint); }
+.rail.collapsed .rail-util { justify-content: center; padding: 0; }
 
 /* ── The 46px screen header ────────────────────────────────────────────── */
 .screen-bar {
@@ -2289,7 +2293,7 @@ input, select { font-family: inherit; }
 .an-chip .n { font-size: 10px; color: var(--muted); }
 .an-table { flex: 1; min-height: 0; overflow: auto; }
 .an-inner { min-width: 720px; }
-.an-row { display: grid; grid-template-columns: minmax(200px, 1.3fr) 150px minmax(220px, 2fr) 76px 76px; gap: 14px; align-items: center; padding: 0 16px; }
+.an-row { display: grid; grid-template-columns: minmax(180px, 1.3fr) 130px minmax(200px, 2fr) 64px 64px 64px; gap: 14px; align-items: center; padding: 0 16px; }
 .an-row .c { display: flex; justify-content: center; text-align: center; }
 .an-headrow { position: sticky; top: 0; z-index: 2; height: 30px; background: var(--bar); border-bottom: 1px solid var(--line); }
 .an-cathead { display: flex; align-items: baseline; gap: 8px; padding: 14px 16px 6px; border-bottom: 1px solid var(--line-soft); }
@@ -3398,3 +3402,50 @@ input, select { font-family: inherit; }
 .learn-dot.on { fill: var(--accent); }
 .weight-suggestion .good { color: var(--ok); }
 .weight-suggestion .bad { color: var(--fail); }
+
+/* ── Library modes: Tracks | Vocal parts | Bed parts (3A) ─────────────── */
+.seg-toggle {
+  display: inline-flex; padding: 3px; gap: 2px; background: var(--well);
+  border: 1px solid var(--line); border-radius: var(--r-pill);
+}
+.seg-toggle button {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  font-family: var(--font-ui); font-size: 13px; font-weight: 600;
+  padding: 5px 14px; border-radius: var(--r-pill); transition: background var(--ease), color var(--ease);
+}
+.seg-toggle button:hover { color: var(--fg); }
+.seg-toggle button.on { background: var(--panel); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line-2); }
+.parts-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.parts-view .seg-filters { padding: 0 16px; }
+.parts-item { display: flex; flex-direction: column; gap: 6px; }
+.parts-audition { border: 1px solid var(--line-2); border-radius: var(--r-card); overflow: hidden;
+  background: var(--card); margin-bottom: 6px; }
+.parts-audition .seg-band { border-top: 0; }
+.parts-opts { flex-wrap: wrap; row-gap: 6px; }
+.pd-msgline { padding: 2px 14px 8px; font-size: 12px; }
+
+/* ── Columns & attributes sheet (3A: the Analysis catalogue) ─────────── */
+.cols-sheet {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 60; width: min(1040px, 92vw);
+  background: var(--bg-sunk); border-left: 1px solid var(--line); box-shadow: var(--shadow-modal);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.cols-sheet .an-table { flex: 1; min-height: 0; }
+.cols-core { padding: 10px 16px 12px; display: flex; flex-direction: column; gap: 8px;
+  border-bottom: 1px solid var(--line-soft); }
+.cols-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-toggle {
+  border: 1px solid var(--line-2); background: var(--panel); color: var(--fg-2); cursor: pointer;
+  font-family: var(--font-ui); font-size: 12.5px; font-weight: 500;
+  padding: 4px 12px; border-radius: var(--r-pill);
+}
+.chip-toggle.on { background: var(--select); border-color: var(--accent); color: var(--fg); }
+.an-filterbtn {
+  min-width: 44px; padding: 3px 8px; border-radius: var(--r-pill); cursor: pointer;
+  border: 1px solid var(--line-2); background: var(--panel); color: var(--fg-2);
+  font-family: var(--font-ui); font-size: 12px; font-weight: 600;
+}
+.an-filterbtn.on { border-color: var(--accent); background: var(--select); color: var(--fg); }
+.an-filterbtn:disabled { opacity: 0.45; cursor: default; }
+.cols-sheet .drawer-head { padding: 14px 16px 0; margin-bottom: 10px; }
+.cols-sheet .an-compare { flex: 1; min-height: 0; overflow: auto; padding: 0 16px 16px; }

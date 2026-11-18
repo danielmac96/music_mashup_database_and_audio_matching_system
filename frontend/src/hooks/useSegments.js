@@ -13,7 +13,9 @@ import { unpackSegments } from "../components/segments/segmentModel";
 
 export const MATCH_DEBOUNCE_MS = 150;
 
-export function useSegments() {
+// `enabled`: the Library's Parts mode fetches on its first visit, not at
+// app start (10k tracks' sections are ~18 MB unzipped).
+export function useSegments(enabled = true) {
   const [rows, setRows] = useState({ vocal: [], bed: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -31,7 +33,12 @@ export function useSegments() {
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const loaded = useRef(false);
+  useEffect(() => {
+    if (!enabled || loaded.current) return;
+    loaded.current = true;
+    load();
+  }, [enabled, load]);
   return { ...rows, loading, error, refresh: load };
 }
 
