@@ -389,12 +389,65 @@ def training_set(db_path=None, cfg: Optional[Dict] = None) -> Dict:
             "strong_labels": dict(strong)}
 
 
+try:
+    from sklearn.base import BaseEstimator, ClassifierMixin
+except Exception:  # noqa: BLE001 — scikit-learn absent: nothing here trains
+    BaseEstimator = ClassifierMixin = object
+
+
+class QuantizedHGB(ClassifierMixin, BaseEstimator):
+    """HistGradientBoostingClassifier on columns cut to at most 255 values.
+
+    The gradient booster bins every column into 255 bins anyway; given sample
+    weights, scikit-learn finds those bins with a weighted percentile, which
+    took ~9 s of a 10 s fit on 20,000 × 69 (criterion 2.3's budget is 60 s for
+    the whole retrain). Cutting each column at its own unweighted quantiles
+    first leaves at most 255 distinct values, which the booster bins by
+    their midpoints in milliseconds. The cut is fitted here and applied at
+    predict time, so train and serve see the same columns."""
+
+    def __init__(self, max_iter=150, learning_rate=0.08, max_leaf_nodes=15,
+                 min_samples_leaf=10, l2_regularization=1.0, random_state=0):
+        self.max_iter = max_iter
+        self.learning_rate = learning_rate
+        self.max_leaf_nodes = max_leaf_nodes
+        self.min_samples_leaf = min_samples_leaf
+        self.l2_regularization = l2_regularization
+        self.random_state = random_state
+
+    def _cut(self, X):
+        X = np.asarray(X, dtype=np.float64)
+        out = np.empty_like(X)
+        for j, edges in enumerate(self.edges_):
+            out[:, j] = np.searchsorted(edges, X[:, j], side="right")
+        return out
+
+    def fit(self, X, y, sample_weight=None):
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        X = np.asarray(X, dtype=np.float64)
+        qs = np.linspace(0.0, 1.0, 256)[1:-1]
+        self.edges_ = [np.unique(np.quantile(X[:, j], qs)) for j in range(X.shape[1])]
+        self.model_ = HistGradientBoostingClassifier(
+            max_iter=self.max_iter, learning_rate=self.learning_rate,
+            max_leaf_nodes=self.max_leaf_nodes, min_samples_leaf=self.min_samples_leaf,
+            l2_regularization=self.l2_regularization, early_stopping=False,
+            random_state=self.random_state)
+        self.model_.fit(self._cut(X), y, sample_weight=sample_weight)
+        self.classes_ = self.model_.classes_
+        return self
+
+    def predict_proba(self, X):
+        return self.model_.predict_proba(self._cut(X))
+
+    def decision_function(self, X):
+        return self.model_.decision_function(self._cut(X))
+
+    def predict(self, X):
+        return self.model_.predict(self._cut(X))
+
+
 def _hgb():
-    from sklearn.ensemble import HistGradientBoostingClassifier
-    return HistGradientBoostingClassifier(max_iter=150, learning_rate=0.08,
-                                          max_leaf_nodes=15, min_samples_leaf=10,
-                                          l2_regularization=1.0, early_stopping=False,
-                                          random_state=0)
+    return QuantizedHGB()
 
 
 def _logreg():
