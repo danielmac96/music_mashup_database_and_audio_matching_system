@@ -110,6 +110,40 @@ def _pair_events(conn: sqlite3.Connection) -> None:
                               event, COALESCE(context, ''))""")
 
 
+_LEARN_CANDIDATE_COLUMNS = (("score_rule", "REAL"), ("model_prob", "REAL"))
+_LEARN_MODEL_COLUMNS = (
+    ("kind", "TEXT"), ("alpha", "REAL"), ("n_strong", "INTEGER"),
+    ("n_weak", "INTEGER"), ("auc_strong", "REAL"), ("rule_auc", "REAL"),
+    ("decision", "TEXT"), ("activated_at", "TEXT"),
+)
+
+
+def _learning_loop(conn: sqlite3.Connection) -> None:
+    """The learning loop (readme §5.8). On mashup_candidates: `score_rule`,
+    the rule's own total, kept beside `score_total` (which carries the
+    shrinkage blend once a model is active, and equals score_rule until then),
+    and `model_prob`, the active model's calibrated probability for the row.
+    On models: what each trained model was trained on and how the shadow
+    evaluation judged it, and when it was last activated (rollback reads it).
+
+    Nullable, added only; pair_feedback is not touched. Existing rows get
+    score_rule = score_total, except rows the retired "model replaces the
+    total" path wrote (scorer='model'), whose total is not a rule score —
+    they stay NULL until the next Score library rewrites them."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(mashup_candidates)")}
+    for name, kind in _LEARN_CANDIDATE_COLUMNS:
+        if name not in have:
+            conn.execute(f"ALTER TABLE mashup_candidates ADD COLUMN {name} {kind}")
+    conn.execute("UPDATE mashup_candidates SET score_rule = score_total "
+                 "WHERE score_rule IS NULL AND COALESCE(scorer, '') <> 'model'")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_mc_rule "
+                 "ON mashup_candidates(combo_type, score_rule)")
+    have = {r[1] for r in conn.execute("PRAGMA table_info(models)")}
+    for name, kind in _LEARN_MODEL_COLUMNS:
+        if name not in have:
+            conn.execute(f"ALTER TABLE models ADD COLUMN {name} {kind}")
+
+
 _SLOT_COLUMNS = (
     ("score_slot", "REAL"), ("slot_occupancy", "REAL"),
     ("slot_phrase_match", "REAL"), ("slot_register", "REAL"),
@@ -136,6 +170,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(7, "baseline", _baseline),
     Migration(8, "pair_events", _pair_events),
     Migration(9, "slot_and_dropin", _slot_and_dropin),
+    Migration(10, "learning_loop", _learning_loop),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

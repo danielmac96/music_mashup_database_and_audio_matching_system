@@ -44,6 +44,102 @@ const SCORE_KNOBS = [
   },
 ];
 
+// The learning loop (readme §5.8, matcher/learning.py). Live-read; the
+// blend's α applies at the next retrain or model switch.
+const LEARN_KNOBS = [
+  {
+    key: "learn_k", label: "Trust in your ratings (k)", min: 5, max: 200, step: 5, int: true,
+    help: "The blend gives your model α = n / (n + k) of each score, n being the verdicts it " +
+      "was trained on. Smaller k trusts fewer ratings sooner; at k = 40, 40 verdicts give α = 0.5.",
+  },
+  {
+    key: "learn_alpha_max", label: "Model share cap (α max)", min: 0, max: 1, step: 0.05,
+    help: "The most the model may decide, however many ratings it has. The rules always keep the rest.",
+  },
+  {
+    key: "explore_every", label: "Exploration: 1 slot in", min: 0, max: 20, step: 1, int: true,
+    help: "One dock slot in this many shows a pair the rules like and your model is unsure " +
+      "about, marked ? Exploring — rating it teaches the model the most. 0 turns it off.",
+  },
+  {
+    key: "weak_w_build", label: "Weight: opened in Studio / rendered / exported", min: 0, max: 1, step: 0.05,
+    help: "How much building with a pair counts as liking it, against a verdict's 1.0.",
+  },
+  {
+    key: "weak_w_loop", label: "Weight: looped 20 s or more", min: 0, max: 1, step: 0.05,
+    help: "A long listen, as a mild yes.",
+  },
+  {
+    key: "weak_w_skip", label: "Weight: skipped", min: 0, max: 1, step: 0.05,
+    help: "Stopping a pair's loop within 3 s, as a mild no.",
+  },
+  {
+    key: "weak_w_hide", label: "Weight: hidden", min: 0, max: 1, step: 0.05,
+    help: "Hiding a pair from the dock, as a no.",
+  },
+  {
+    key: "weak_w_shown", label: "Weight: shown in the top 5, ignored", min: 0, max: 0.2, step: 0.01,
+    help: "A very weak no for a pair you saw at the top and did nothing with.",
+  },
+];
+
+// Section weights fitted to your verdicts (GET /api/learning/weight-suggestion,
+// matcher/weight_fit.py). A proposal: the diff and the expected AUC change,
+// applied only on the button, never on its own.
+const SECTION_NAMES = { label: "Label", duration: "Duration", voice: "Voice",
+  phrase: "Phrase", rhythm: "Rhythm", structure: "Transition" };
+
+export function WeightSuggestion({ onApplied }) {
+  const [sug, setSug] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const load = useCallback(async () => {
+    try { setSug(await api.getWeightSuggestion()); setError(null); }
+    catch (e) { setError(e.message); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  if (error) return <div className="error-text">{error}</div>;
+  if (!sug) return <div className="faint" style={{ fontSize: 11 }}>Fitting…</div>;
+  if (!sug.ready) return <div className="faint" style={{ fontSize: 11 }}>{sug.reason}</div>;
+  const apply = async () => {
+    setBusy(true);
+    try {
+      await api.applyWeightSuggestion();
+      toast("Section weights saved — re-score the library to rank with them");
+      onApplied?.();
+      load();
+    } catch (e) { setError(e.message); }
+    finally { setBusy(false); }
+  };
+  const change = sug.auc_change;
+  return (
+    <div className="weight-suggestion">
+      <table className="term-table mono">
+        <thead><tr><th>term</th><th>now</th><th>suggested</th><th>change</th></tr></thead>
+        <tbody>
+          {Object.keys(sug.proposed).map((k) => (
+            <tr key={k}>
+              <td>{SECTION_NAMES[k] || k}</td>
+              <td>{sug.current[k].toFixed(2)}</td>
+              <td>{sug.proposed[k].toFixed(2)}</td>
+              <td className={sug.diff[k] > 0.005 ? "good" : sug.diff[k] < -0.005 ? "bad" : "faint"}>
+                {sug.diff[k] > 0 ? "+" : ""}{sug.diff[k].toFixed(2)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="faint" style={{ fontSize: 11, margin: "4px 0" }}>
+        Expected section-fit AUC {fmt2(sug.auc_current)} → {fmt2(sug.auc_proposed)}
+        {change != null && ` (${change >= 0 ? "+" : ""}${change.toFixed(3)})`} — {sug.measured}.
+      </div>
+      <button className="mini-btn" disabled={busy} onClick={apply}
+        title="Save these section weights. Nothing changes until you re-score the library.">
+        {busy ? "Applying…" : "Apply suggested weights"}
+      </button>
+    </div>
+  );
+}
+
 const GATE_KNOBS = [
   {
     key: "bpm_max_diff", label: "BPM gate", min: 1, max: 60, step: 1,
@@ -52,13 +148,8 @@ const GATE_KNOBS = [
   },
   {
     key: "key_min_score", label: "Key gate", min: 0, max: 1, step: 0.05,
-    help: "Minimum Camelot compatibility to be scored. Ignored on the model path — documented " +
-      "mashups sometimes break the key gate, and the model should be allowed to learn that.",
-  },
-  {
-    key: "bpm_max_diff_model", label: "BPM gate (model)", min: 1, max: 60, step: 1,
-    help: "The wider tempo gate used when a trained model is scoring. The gate exists to bound " +
-      "the matrix, not to express taste the model is supposed to learn.",
+    help: "Minimum Camelot compatibility to be scored. Off by default: effort already prices " +
+      "the transpose, and a learned model can only re-rank pairs the gate let through.",
   },
   {
     key: "timing_tol_ms", label: "Timing gate (ms)", min: 5, max: 250, step: 5,
@@ -374,6 +465,17 @@ export function TuningPanel() {
             What your ratings say
           </h4>
           <TermReport />
+
+          <h4 style={{ margin: "14px 0 2px", fontSize: 12 }}>
+            Suggested from your ratings
+          </h4>
+          <WeightSuggestion onApplied={load} />
+
+          <h4 style={{ margin: "14px 0 2px", fontSize: 12 }}>Learning</h4>
+          {LEARN_KNOBS.map((spec) => (
+            <Knob key={spec.key} spec={spec} setting={settings[spec.key]}
+              value={draft[spec.key]} onChange={setKnob} />
+          ))}
 
           <h4 style={{ margin: "14px 0 2px", fontSize: 12 }}>Candidate gate</h4>
           <div className="faint" style={{ fontSize: 11, marginBottom: 4 }}>

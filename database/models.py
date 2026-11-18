@@ -1576,15 +1576,18 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_timing, timing_ok, timing_err_mean_ms, timing_err_max_ms,
        vocal_phrase_start, vocal_pickup_ms, bed_landing_sec,
        engine, engine_version, pipeline,
-       dropin_mask, camelot_shift
+       dropin_mask, camelot_shift,
+       score_rule, model_prob
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?)
+             ?,?,?,?,?,?,?,?,?,?,?,?,?)
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
    DO UPDATE SET
        score_total=excluded.score_total,
+       score_rule=excluded.score_rule,
+       model_prob=excluded.model_prob,
        vocal_section_idx=excluded.vocal_section_idx,
        inst_section_idx=excluded.inst_section_idx,
        vocal_section_start=excluded.vocal_section_start,
@@ -1753,6 +1756,10 @@ def candidate_row(vocal: dict, inst: dict, scores: dict,
         *(sp.get(col) if sp.get(col) is not None else scores.get(col)
           for col in TIMING_COLUMNS),
         *(scores.get(col) for col in DROPIN_COLUMNS),
+        # The rule's own total (a model's blend, if any, is applied after the
+        # run selects its rows — matcher/learning.blend_table) and the model's
+        # probability, which only that pass writes.
+        scores.get("rule_total", scores["total"]), scores.get("model_prob"),
     )
 
 
@@ -2215,6 +2222,7 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                             vocal_label: str = "", inst_label: str = "",
                             pairs: Optional[Sequence[Tuple[int, int]]] = None,
                             tier: str = "", dropin: Optional[bool] = None,
+                            min_rule: Optional[float] = None,
                             db_path: Path = DB_PATH) -> List[Dict]:
     """Scored candidates joined with song metadata for both sides:
     genre, release_year, plays, likes, a 0-1 popularity percentile
@@ -2320,6 +2328,11 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                   else "mc.score_total")
     if dropin is not None:
         where.append(f"{dropin_expr} = {1 if dropin else 0}")
+    if min_rule is not None:
+        # The exploration pool (api/routes/mashups._with_exploration): rows the
+        # learned model has scored whose RULE total is at least this.
+        where.append("mc.model_prob IS NOT NULL AND mc.score_rule >= ?")
+        params.append(float(min_rule))
     if combo_type:
         where.append("mc.combo_type = ?")
         params.append(combo_type)
@@ -2442,13 +2455,14 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
                       WHERE song_id = mc.vocal_song_id)
                 ) >= {VOCAL_FORWARD_MIN}""")
 
-    # "uncertain" ranks by distance from a coin flip. Rows scored by the
-    # heuristic have no probability to be uncertain about, so they sort last —
-    # asking for the model's blind spots when there is no model should return
-    # nothing useful, not an arbitrary order dressed up as one.
+    # "uncertain" ranks by the learned model's distance from a coin flip
+    # (model_prob, matcher/learning.py). A row the model has not scored has
+    # no probability to be uncertain about, so it sorts last — asking for the
+    # model's blind spots when there is no model should return nothing
+    # useful, not an arbitrary order dressed up as one.
     if order == "uncertain":
-        order_sql = ("CASE WHEN mc.scorer='model' THEN ABS(mc.score_total - 0.5) "
-                     "ELSE 9 END ASC, mc.score_total DESC")
+        order_sql = ("CASE WHEN mc.model_prob IS NOT NULL THEN ABS(mc.model_prob - 0.5) "
+                     "ELSE 9 END ASC, mc.score_total DESC, mc.id")
     elif order in SECTION_TERM_ORDERS:
         # One section term at a time, for "show me the pairs whose phrasing
         # agrees" regardless of what the composite made of them. NULLs sort

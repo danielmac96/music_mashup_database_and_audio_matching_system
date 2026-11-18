@@ -203,7 +203,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
         setRows(got);
         // Implicit signal: the top of this fetch was put in front of the user.
         trackShown(got, "dock");
-        setHasMore(!perVocal && !nextFor && got.length >= LIMIT);
+        setHasMore(!perVocal && !nextFor && got.filter((r) => !r.explore).length >= LIMIT);
         setCursor(0);
         setExpanded(null);
         setOptions({});
@@ -223,8 +223,10 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   const loadMore = useCallback(async () => {
     if (loadingMore || perVocal) return;
     setLoadingMore(true);
+    // An exploration row (row.explore, readme §5.8) is inserted beside the
+    // ranked rows, never in place of one: the offset counts only the ranked.
     const opts = { limit: LIMIT, maxPerSong: MAX_PER_SONG, ...filterOpts(filters),
-                   offset: rowsRef.current.length };
+                   offset: rowsRef.current.filter((r) => !r.explore).length };
     if (selectedTrackId != null) {
       if (role === "instrumental") opts.instSongId = selectedTrackId;
       else opts.vocalSongId = selectedTrackId;
@@ -237,7 +239,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
         const seen = new Set(rs.map(keyOf));
         return [...rs, ...got.filter((r) => !seen.has(keyOf(r)))];
       });
-      setHasMore(got.length >= LIMIT);
+      setHasMore(got.filter((r) => !r.explore).length >= LIMIT);
     } catch (e) {
       toast(`Could not load more pairs: ${e.message}`);
     } finally {

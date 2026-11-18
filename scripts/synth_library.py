@@ -25,9 +25,12 @@ What the library looks like:
   * **planted drop-ins**: pairs built to be the easy win the engine exists to
     find — the bed is in the vocal's key or one Camelot step away, within 2 %
     of its tempo, and has a chorus *it originally sang over*, the same length
-    as the vocal's chorus, with its own phrases starting on the same bars. They
-    are listed in `<out>/synth_manifest.json` so a later change can measure
-    how many it ranks first.
+    as the vocal's chorus, with its own phrases starting on the same bars —
+    and, so it is the vocal's distinctive best partner rather than one of
+    hundreds of equal Drop-ins, an instrumental at the vocal's loudness for
+    its kind with its bands clear of the vocal's. They are listed in
+    `<out>/synth_manifest.json` so a later change can measure how many it
+    ranks first.
 
 `--stub-audio` also writes a tiny silent WAV for every mix, vocal and
 instrumental path, for code that only checks a file exists.
@@ -312,7 +315,7 @@ def track_spec(seed: int, index: int, plant: Optional[dict] = None) -> dict:
         return [round(float(x), 3) for x in v]
 
     plays = int(rng.lognormal(10.0, 2.0))
-    return {
+    spec = {
         "id": index, "seed": seed, "kind": kind, "genre": genre, "style": style,
         "title": f"Synth {index:05d} ({kind.replace('_', ' ')})",
         "artist": f"Artist {int(rng.integers(1, 2500)):04d}",
@@ -339,6 +342,31 @@ def track_spec(seed: int, index: int, plant: Optional[dict] = None) -> dict:
         "waveform": [round(float(x), 4) for x in
                      np.clip(np.abs(rng.normal(0.55, 0.2, N_WAVEFORM)), 0.0, 1.0)],
     }
+    if plant:
+        _plant_match(spec, plant["vocal"])
+    return spec
+
+
+# The vocal and instrumental loudness ranges track_spec draws from: a planted
+# bed's instrumental takes the vocal's place in its own range.
+_VOCAL_LOUD = (0.03, 0.12)
+_INST_LOUD = (0.08, 0.20)
+
+
+def _plant_match(bed: dict, vocal: dict) -> None:
+    """Make a planted bed the vocal's distinctive best partner on the terms
+    the engine already rewards (owner decision, Phase 2): its instrumental sits
+    at the same place in the instrumental loudness range as the vocal in the
+    vocal range (energy_match compares the two within-kind z-scores), and its
+    band occupancy leaves the vocal's bands free (collision_score is
+    1 - Σ min over the 8 bands). Applied after every draw, so no other track's
+    stream moves."""
+    q = (vocal["loudness"]["vocals"] - _VOCAL_LOUD[0]) / (_VOCAL_LOUD[1] - _VOCAL_LOUD[0])
+    q = min(max(q, 0.0), 1.0)
+    bed["loudness"]["instrumental"] = round(_INST_LOUD[0] + q * (_INST_LOUD[1] - _INST_LOUD[0]), 5)
+    v = np.asarray(vocal["bands"]["vocals"], dtype=float)
+    room = np.clip(v.max() - v, 0.0, None) + 0.01
+    bed["bands"]["instrumental"] = [round(float(a), 4) for a in room / room.sum()]
 
 
 def plan_planted(seed: int, n_tracks: int, planted: int) -> Dict[int, Tuple[int, str]]:

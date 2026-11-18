@@ -26,6 +26,7 @@ from api.routes import datasets as dataset_routes  # noqa: E402
 from api.routes import discovery as discovery_routes  # noqa: E402
 from api.routes import events as event_routes  # noqa: E402
 from api.routes import jobs as jobs_routes  # noqa: E402
+from api.routes import learning as learning_routes  # noqa: E402
 from api.routes import mashups as mashup_routes  # noqa: E402
 from api.routes import mixes as mix_routes  # noqa: E402
 from api.routes import models as model_routes  # noqa: E402
@@ -48,7 +49,11 @@ async def lifespan(app: FastAPI):
     # mid-pipeline when the server last stopped (status-derived resume).
     queue_runner.start()
     queue_runner.resume_pending()
+    # The learning loop's debounced retrain check (matcher/learning.tick).
+    from api.workers.learning_worker import start_ticker
+    ticker = start_ticker()
     yield
+    ticker.stop.set()
 
 
 app = FastAPI(title="Mashup Engine API", lifespan=lifespan)
@@ -70,6 +75,7 @@ app.include_router(settings_routes.router, prefix="/api/settings", tags=["settin
 app.include_router(mix_routes.router, prefix="/api/mixes", tags=["mixes"])
 app.include_router(dataset_routes.router, prefix="/api/datasets", tags=["datasets"])
 app.include_router(model_routes.router, prefix="/api/models", tags=["models"])
+app.include_router(learning_routes.router, prefix="/api/learning", tags=["learning"])
 app.include_router(studio_routes.router, prefix="/api/studio", tags=["studio"])
 app.include_router(discovery_routes.router, prefix="/api/discovery", tags=["discovery"])
 app.include_router(crate_routes.router, prefix="/api/crates", tags=["crates"])

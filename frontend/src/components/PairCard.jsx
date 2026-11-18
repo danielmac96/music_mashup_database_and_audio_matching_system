@@ -166,6 +166,11 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
               title={`Drop-in — ${c.dropin_reason || "drops straight into the bed's vocal slot"}`}>
               ⤓ Drop-in</span>
           )}
+          {c.explore && (
+            <span className="pc-explore mono"
+              title={c.explore_reason || "Exploring: the rules like this pair and your model is unsure"}>
+              ? Exploring</span>
+          )}
           {c.scorer === "forced" && (
             <span className="pc-forced mono" title="Scored on request, outside the tempo or key gate — read the DO and WATCH rows">forced</span>
           )}

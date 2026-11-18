@@ -47,6 +47,31 @@ log = logging.getLogger(__name__)
 
 
 # ── Pair feature vector ───────────────────────────────────────────────────────
+
+# Section labels a row can carry, as the model sees them: the common ones
+# one-hot, everything else (intro, outro, bridge, inst, unknown) as "other".
+_BED_LABELS = ("chorus", "verse", "drop", "breakdown", "build")
+_VOCAL_LABELS = ("chorus", "verse")
+
+ROW_FEATURE_NAMES: list[str] = [
+    "row_known",
+    "rule_score",           # the rule's own total for the row (score_rule)
+    "row_key_score",        # measured harmony once the sections are known
+    "score_section", "score_label", "score_duration", "score_voice",
+    "score_phrase", "score_room_section", "score_coverage", "score_energy_match",
+    "score_effort",
+    "harmonic_confidence", "harmony_measured", "bass_clash",
+    "score_timing", "timing_ok", "timing_err_max_s",
+    "score_slot", "slot_occupancy", "slot_phrase_match", "slot_register",
+    "score_window",
+    "dropin", "abs_bed_shift",
+    *(f"bed_label_{x}" for x in _BED_LABELS), "bed_label_other",
+    *(f"vocal_label_{x}" for x in _VOCAL_LABELS), "vocal_label_other",
+]
+
+# A term the row does not carry (a section-less row, a pairing the timing gate
+# never placed) is unmeasured, not bad: the neutral value, never 0 (readme §5).
+_ROW_NEUTRAL = 0.5
 #
 # FEATURE_NAMES is the contract between train and serve. A model stores the
 # names it was trained on and model_scorer refuses to score on a mismatch, so
@@ -117,6 +142,14 @@ FEATURE_NAMES: list[str] = [
     "surprise_genre",
     "surprise_era",
     "surprise_timbre",
+    # ── The learning loop (readme §5.8): the scored ROW — the exact section
+    # pairing the dock lists, with every term the rule stored for it. The
+    # model learns from and serves on what the user saw and heard, so these
+    # are read off the row (stored or live, matcher/segment_match), never
+    # re-derived. `row_known` is 0 for a pair with no scored row (a verdict
+    # on a pairing a re-score has since dropped); its row terms are then the
+    # neutral values below.
+    *ROW_FEATURE_NAMES,
 ]
 
 # Deliberately NOT included: raw mfcc_cosine and the raw min/max energy ratio.
@@ -237,7 +270,7 @@ def _section_terms(top: dict, bed: dict,
                                 len(top_sections), len(bed_sections))
 
 
-def surprise_terms(top: dict, bed: dict) -> dict:
+def surprise_terms(top: dict, bed: dict, scores: Optional[dict] = None) -> dict:
     """How far apart the two tracks are on the axes where difference is good.
 
     Deliberately NOT folded into the compatibility score: these must be able to
@@ -248,7 +281,8 @@ def surprise_terms(top: dict, bed: dict) -> dict:
         "surprise_genre": _genre_distance(top.get("genre"), bed.get("genre")),
         "surprise_era": _era_distance(top.get("release_year"),
                                       bed.get("release_year")),
-        "surprise_timbre": 1.0 - _num(sub_scores(top, bed).get("timbre_score"), 0.5),
+        "surprise_timbre": 1.0 - _num((scores if scores is not None
+                                       else sub_scores(top, bed)).get("timbre_score"), 0.5),
     }
 
 
@@ -308,32 +342,62 @@ def _collision_terms(top: dict, bed: dict) -> dict:
     return out
 
 
-def pair_features(top: dict, bed: dict,
-                  top_sections: Optional[list] = None,
-                  bed_sections: Optional[list] = None,
-                  stats: Optional[LibraryStats] = None,
-                  top_section_idx: Optional[int] = None,
-                  bed_section_idx: Optional[int] = None) -> dict:
-    """Fixed-order feature dict for a (vocal-top, instrumental-bed) pair.
+def row_terms(row: Optional[dict], ctx: Optional[dict] = None) -> dict:
+    """The ROW_FEATURE_NAMES part of a pair's features, read off its scored
+    row (a stored mashup_candidates row, or the same dict scored live).
 
-    ``top`` = the vocal/top layer's features, ``bed`` = the instrumental/bed's.
-    ``*_sections`` are the structure rows (get_sections) for each side.
-    ``stats`` supplies the library normalisation for the repaired timbre/energy
-    terms; it is resolved from the cache when omitted, so train and serve
-    normalise identically either way.
-    ``*_section_idx`` pin the section pair the features describe (used for
-    pair_feedback rows, which record the sections that were auditioned); omitted
-    everywhere else, where build_pairings makes the choice.
+    ``ctx`` carries what the Drop-in verdict reads beside the row, read once
+    per run by the caller (never per row): ``slot_floor``
+    (compat.slot_floor) and ``unsure_below`` (recipe.harmony_unsure_below).
+    The verdict is compat.dropin itself on recipe.bed_shift's transpose — the
+    one definition the card and the SQL filter share (readme §7)."""
+    out = {name: 0.0 for name in ROW_FEATURE_NAMES}
+    if not row:
+        for name in ("rule_score", "row_key_score", "score_section", "score_label",
+                     "score_duration", "score_voice", "score_phrase",
+                     "score_room_section", "score_coverage", "score_energy_match",
+                     "score_timing", "score_slot", "slot_occupancy",
+                     "slot_phrase_match", "slot_register", "score_window"):
+            out[name] = _ROW_NEUTRAL
+        out["bed_label_other"] = out["vocal_label_other"] = 1.0
+        return out
+    from matcher.compat import dropin
+    from matcher.recipe import bed_shift
+    ctx = ctx or {}
 
-    Every value is a finite float keyed by an entry in FEATURE_NAMES. Missing
-    inputs degrade to a neutral number rather than a NaN — a NaN propagates
-    silently through a scikit-learn pipeline and poisons a whole training run.
-    """
-    top, bed = top or {}, bed or {}
-    top_sections = top_sections or []
-    bed_sections = bed_sections or []
-    stats = stats if stats is not None else get_library_stats()
+    def val(key, neutral=_ROW_NEUTRAL):
+        return _num(row.get(key), neutral) if row.get(key) is not None else neutral
 
+    rule = row.get("score_rule")
+    out["row_known"] = 1.0
+    out["rule_score"] = _num(rule if rule is not None else row.get("score_total"))
+    out["row_key_score"] = val("score_key")
+    for name in ("score_section", "score_label", "score_duration", "score_voice",
+                 "score_phrase", "score_room_section", "score_coverage",
+                 "score_energy_match", "score_timing", "score_slot",
+                 "slot_occupancy", "slot_phrase_match", "slot_register",
+                 "score_window"):
+        out[name] = val(name)
+    out["score_effort"] = val("score_effort", 0.0)
+    out["harmonic_confidence"] = val("harmonic_confidence", 0.0)
+    out["harmony_measured"] = 1.0 if row.get("harmonic_shift") is not None else 0.0
+    out["bass_clash"] = val("bass_clash", 0.0)
+    out["timing_ok"] = 1.0 if row.get("timing_ok") == 1 else 0.0
+    out["timing_err_max_s"] = val("timing_err_max_ms", 0.0) / 1000.0
+    shift = bed_shift(row, ctx.get("unsure_below"))
+    out["abs_bed_shift"] = float(abs(shift)) if shift is not None else _MAX_SHIFT
+    is_dropin, _why = dropin({**row, "semitone_shift": shift}, ctx.get("slot_floor"))
+    out["dropin"] = 1.0 if is_dropin else 0.0
+    bed_label = (row.get("inst_section_label") or "").lower()
+    out[f"bed_label_{bed_label}" if bed_label in _BED_LABELS else "bed_label_other"] = 1.0
+    v_label = (row.get("vocal_section_label") or "").lower()
+    out[f"vocal_label_{v_label}" if v_label in _VOCAL_LABELS else "vocal_label_other"] = 1.0
+    return out
+
+
+def _song_terms(top: dict, bed: dict, stats: LibraryStats) -> dict:
+    """Every feature that depends on the two songs alone (not on the section
+    pair or the row)."""
     # The four weighted sub-scores, verbatim — never recomputed here.
     scores = sub_scores(top, bed, stats)
 
@@ -372,8 +436,6 @@ def pair_features(top: dict, bed: dict,
         "top_key_confidence": _num(top.get("key_confidence")),
         "bed_key_confidence": _num(bed.get("key_confidence")),
     }
-    feats.update(_section_terms(top, bed, top_sections, bed_sections,
-                                top_section_idx, bed_section_idx))
     # Effort components, from the same function the ranking uses — the model
     # must see the cost the user sees, not a re-derivation of it. That includes
     # the library-relative confidence normalisation, or the model would train on
@@ -382,7 +444,57 @@ def pair_features(top: dict, bed: dict,
         top, bed, compute_stretch_factor(t_bpm, b_bpm), shift,
         conf_norm=lambda kind, v: float(stats.conf_pct(kind, v))))
     feats.update(_collision_terms(top, bed))
-    feats.update(surprise_terms(top, bed))
+    feats.update(surprise_terms(top, bed, scores))
+    return feats
+
+
+def pair_features(top: dict, bed: dict,
+                  top_sections: Optional[list] = None,
+                  bed_sections: Optional[list] = None,
+                  stats: Optional[LibraryStats] = None,
+                  top_section_idx: Optional[int] = None,
+                  bed_section_idx: Optional[int] = None,
+                  row: Optional[dict] = None,
+                  row_ctx: Optional[dict] = None,
+                  song_cache: Optional[dict] = None) -> dict:
+    """Fixed-order feature dict for a (vocal-top, instrumental-bed) pair.
+
+    ``top`` = the vocal/top layer's features, ``bed`` = the instrumental/bed's.
+    ``*_sections`` are the structure rows (get_sections) for each side.
+    ``stats`` supplies the library normalisation for the repaired timbre/energy
+    terms; it is resolved from the cache when omitted, so train and serve
+    normalise identically either way.
+    ``*_section_idx`` pin the section pair the features describe (used for
+    pair_feedback rows, which record the sections that were auditioned); omitted
+    everywhere else, where build_pairings makes the choice.
+    ``row`` is the pair's scored row and ``row_ctx`` what its Drop-in verdict
+    reads (row_terms). With a row, its sections are the ones described.
+
+    Every value is a finite float keyed by an entry in FEATURE_NAMES. Missing
+    inputs degrade to a neutral number rather than a NaN — a NaN propagates
+    silently through a scikit-learn pipeline and poisons a whole training run.
+    """
+    top, bed = top or {}, bed or {}
+    top_sections = top_sections or []
+    bed_sections = bed_sections or []
+    stats = stats if stats is not None else get_library_stats()
+
+    if row and top_section_idx is None and bed_section_idx is None:
+        top_section_idx = row.get("vocal_section_idx")
+        bed_section_idx = row.get("inst_section_idx")
+    # The song-level half depends on the two songs only. A caller featurising
+    # many rows of the same song pairs (matcher/learning.blend_table) passes a
+    # dict to keep it in, keyed by the two song ids.
+    key = (top.get("song_id"), bed.get("song_id"))
+    song = song_cache.get(key) if song_cache is not None else None
+    if song is None:
+        song = _song_terms(top, bed, stats)
+        if song_cache is not None and key[0] is not None and key[1] is not None:
+            song_cache[key] = song
+    feats = dict(song)
+    feats.update(_section_terms(top, bed, top_sections, bed_sections,
+                                top_section_idx, bed_section_idx))
+    feats.update(row_terms(row, row_ctx))
     return feats
 
 
