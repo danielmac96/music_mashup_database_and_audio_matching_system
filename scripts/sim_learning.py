@@ -79,6 +79,8 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--judgements", type=int, default=200)
     ap.add_argument("--every", type=int, default=20, help="judgements per checkpoint")
+    ap.add_argument("--noise", type=float, default=NOISE,
+                    help="sd of the noise on each verdict (a less consistent listener)")
     ap.add_argument("--out", default=None, help="folder for the library and report")
     ap.add_argument("--library", default=None,
                     help="an already scored synthetic library to copy instead of building one")
@@ -185,7 +187,7 @@ def main(argv=None) -> int:
                                    weights=[1.0 / math.sqrt(k + 1) for k, _r in open_])[0]
                 break
         explored += bool(pick.get("explore"))
-        u = utility(pick, bool(pick.get("dropin"))) + rng.gauss(0.0, NOISE)
+        u = utility(pick, bool(pick.get("dropin"))) + rng.gauss(0.0, args.noise)
         stars = 5 if u >= LOVE_AT else 3 if u >= OK_AT else 1
         stars_given[stars] += 1
         key = (pick["vocal_song_id"], pick["inst_song_id"],
@@ -222,7 +224,7 @@ def main(argv=None) -> int:
         "held_out_vocals": len(held), "train_vocals": len(train_vocals),
         "stars": stars_given, "explored_judged": explored,
         "taste": {"dropin": W_DROPIN, "breakdown_bed": W_BREAKDOWN, "rule": W_RULE,
-                  "noise": NOISE},
+                  "noise": args.noise},
         "checkpoints": checkpoints,
         "criterion": {
             "gain_at_60_ge_0.05": bool(after60) and all(c["gain"] >= 0.05 for c in after60),

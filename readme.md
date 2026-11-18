@@ -1671,15 +1671,17 @@ Phase 2 (2026-11-18, the same VM, synthetic): TBD
     gate compares a new model's AUC with the active one's as measured when it
     was trained, on a smaller set of verdicts; exploration has no measure yet
     of how much it teaches.
-16. **Planted drop-ins are not special enough to measure a ranking with.** On
-    the synthetic library a planted pair sits near the top few per cent of its
-    vocal's partners, not in its top five: hundreds of naturally compatible
-    beds (same key within a step, tempo within 3 %, a sung chorus) qualify as
-    Drop-ins on equal terms, and what separates them is the loudness match,
-    which the generator draws at random for planted pairs too. Either the
-    generator makes planted pairs distinctive (a loudness and timbre match the
-    engine already rewards), or recall is measured as "tagged Drop-in and in
-    the top N %" rather than "in the top five".
+15. **Planted drop-ins, after the generator gave them their edge.** A planted
+    bed's instrumental now sits at its vocal's loudness for its kind, with its
+    bands clear of the vocal's (`synth_library._plant_match`), so it is the
+    vocal's distinctive best partner rather than one of hundreds of equal
+    Drop-ins. At 2,000 tracks, after a full Score library, on each vocal's
+    scoped list of vocal pairs: 35 of 40 in the top five (median rank 1;
+    before: 8 of 40), 36 of 40 tagged Drop-in, 3 not listed at all. Phase 1's
+    bar (90 % / 95 %) is still just missed; the three unlisted pairs are the
+    place to look. A scoped dock also lists instrumental-over-instrumental
+    rows of the same two songs (item 6), which carry no sections and are
+    never Drop-ins.
 
 Not worth doing: raising the `rhythm` or `structure` section weights (`rhythm`
 saturates on 4/4 dance music; `structure` duplicates `label`); persistent
