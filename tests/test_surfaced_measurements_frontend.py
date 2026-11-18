@@ -49,7 +49,9 @@ def test_dock_filters_go_to_the_server():
 def test_load_more_pages_by_offset_and_dedupes_on_the_pair_key():
     fn = DOCK_HOOK[DOCK_HOOK.index("const loadMore"):]
     fn = fn[:fn.index("}, [")]
-    assert "offset: rowsRef.current.length" in fn
+    # The offset counts only ranked rows: an exploration row (row.explore,
+    # readme §5.8) is inserted beside them, never in place of one.
+    assert "offset: rowsRef.current.filter((r) => !r.explore).length" in fn
     assert "keyOf" in fn
     assert "loadMore" in DOCK and "hasMore" in DOCK
 
