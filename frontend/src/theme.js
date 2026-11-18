@@ -62,7 +62,7 @@ export function camelotColor(camelot) {
   const k = parseCamelot(camelot);
   if (!k) return "var(--raised)";
   const hue = camelotHue(k.num);
-  return k.letter === "A" ? `hsl(${hue} 66% 58%)` : `hsl(${hue} 80% 76%)`;
+  return k.letter === "A" ? `hsl(${hue} 64% 66%)` : `hsl(${hue} 78% 80%)`;
 }
 
 // The keys that mix with `camelot` as they are: itself, ±1 hour, relative.

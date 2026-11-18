@@ -146,10 +146,11 @@ def test_one_token_source_in_root():
                  "--raised:", "--line:", "--line-2:", "--line-soft:", "--fg:", "--fg-2:",
                  "--muted:", "--faint:", "--disabled:", "--vocal:", "--bed:", "--accent:",
                  "--ok:", "--warn:", "--fail:", "--run:", "--star:", "--playhead:",
-                 "--tier-strong:", "--tier-good:", "--tier-maybe:", "--tier-long:"):
+                 "--tier-strong:", "--tier-good:", "--tier-maybe:", "--tier-long:", "--dropin:"):
         assert name in root, name
-    assert "--vocal: #ff5fae" in root and "--bed: #2dd4bf" in root
-    assert "--accent: #5b8cff" in root
+    # The owner's pick, "Night session" (3C): rose vocal, sky bed, gold Drop-in.
+    assert "--vocal: #ff7aa8" in root and "--bed: #5cc8f0" in root
+    assert "--accent: #8f9cff" in root and "--dropin: #ffcc5c" in root
     assert ":focus-visible { outline: 2px solid var(--accent)" in CSS
 
 
@@ -168,7 +169,9 @@ def test_new_shell_files_carry_no_hex():
 
 def test_camelot_colour_is_the_mixed_in_key_wheel():
     assert "(165 - (num - 1) * 30)" in THEME
-    assert "hsl(${hue} 66% 58%)" in THEME and "hsl(${hue} 80% 76%)" in THEME
+    # Restyled for the Night session ground (3C); contrast and distinctness
+    # are measured in tests/test_visual_refresh.py.
+    assert "hsl(${hue} 64% 66%)" in THEME and "hsl(${hue} 78% 80%)" in THEME
     assert "color: var(--key-ink)" in CSS
 
 
