@@ -4,8 +4,8 @@ criterion 2.3).
 
 On a COPY of a scored synthetic library (scripts/synth_library.py, then
 Score library), plants `--strong` verdicts and `--weak` pair events on
-stored pairings (a seeded synthetic taste: Drop-ins and breakdown beds
-liked), then times:
+stored pairings (a seeded synthetic taste: breakdown beds liked, plus
+a coin), then times:
 
   * `learning.train` — labels, features, grouped cross-validation (the
     ranker and the logistic baseline), calibration, the shadow gate; and
@@ -82,7 +82,7 @@ def main(argv=None) -> int:
     fb = []
     for j in strong:
         r = rows[j]
-        good = (r[4] == "breakdown") + bool((r[5] or 0) & 1) + (rng.random() < 0.2)
+        good = (r[4] == "breakdown") + (rng.random() < 0.35)
         verdict = "love" if good >= 2 else "ok" if good == 1 else "no"
         fb.append((r[0], r[1], r[2], r[3], verdict, {"love": 5, "ok": 3, "no": 1}[verdict]))
     conn.executemany(
