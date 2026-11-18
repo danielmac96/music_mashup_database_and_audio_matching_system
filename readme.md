@@ -1414,7 +1414,34 @@ change to scoring or listing is compared with this):
 | `POST /api/events` request path p95 | 0.04 ms | 0.09 ms | 0.06 ms | 0.06 ms |
 | Database per 100,000 events | 12.1 MB | 12.1 MB | 12.1 MB | 12.1 MB |
 
-Read with it: the listing rows are over 200,000–267,000 candidate rows (the
+**After Phase 1** (2026-11-17/18, the same VM, synthetic; the slot, Drop-in,
+the pruned run, each track's reserved partners, the bounded listing):
+
+| | 500 | 2,000 | 5,000 | 10,000 tracks |
+|---|---|---|---|---|
+| Score one track, mean (min–max) | 0.97 s (0.31–1.57) | 4.7 s (3.0–6.1) | 10.7 s (3.8–15.2) | 26.8 s (11.4–36.5) |
+| Score library, measured | 147 s, peak 1.01 GB | 595 s, peak 1.61 GB | 2,877 s, peak 2.27 GB † | **4,531 s**, peak 3.52 GB |
+| Song pairs priced, of those gated | 100,656 of 112,770 | 451,011 of 1.84 M | 2.10 M of 11.3 M † | 3.33 M of 45.7 M |
+| Dock listing, library-wide p50 | 117 ms | 175 ms | 131 ms | 125 ms |
+| Dock listing, scoped p50 | 78 ms | 64 ms | 89 ms | 83 ms |
+| Dock route, default order ("Best in library") p50 | 122 ms | 135 ms | 183 ms | 140 ms |
+| Segment matches, vocal lead p50 / p95 | 0.18 / 0.28 s | 0.42 / 0.63 s | 0.73 / 2.16 s | 1.41 / 3.92 s |
+| Segment matches, first call (snapshot) | 0.8 s | 3.0 s | 7.8 s | 15.3 s |
+| `GET /api/tracks` p50 · size (gzip) | 0.46 s · 1.9 MB (0.2) | 0.86 s · 7.4 MB (0.7) | 2.14 s · 18.5 MB (1.8) | 4.35 s · 37.1 MB (3.6) |
+
+† 5,000 tracks was measured with the first, exact version of the reserve
+(it certified each track's best partners; 858,080 of those pairs were priced
+for it). Its re-time with the bounded search was lost to two container
+restarts. The search only prices fewer pairs (at 2,000 tracks: 611 s → 595 s),
+so read it as an upper bound.
+
+The dock rows are timed with `models.get_candidates_enriched` (the baseline's
+call) and through the route, over the table a full run leaves (267,000 to
+481,000 rows: the cap plus each track's reserved partners). `GET /api/tracks`,
+`GET /api/segments` and Segments' first call were not Phase 1's work and did
+not move.
+
+Read the baseline with it: its listing rows are over 200,000–267,000 candidate rows (the
 `max_candidate_rows` cap); the 500-track estimate read 610 ± 98 s against the
 454 s measured, so the larger estimates lean high; one track's scoring cost
 varies several-fold with what it is (an instrumental plays one role, an
