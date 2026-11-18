@@ -20,7 +20,6 @@ const NAV = [
   ["analysis", "Analysis", "◔"],
   ["discovery", "Discover", "⌕"],
   ["mixes", "Mixes", "≡"],
-  ["sets", "Sets", "♫"],
   ["studio", "Studio", "◫"],
 ];
 export const NAV_ITEMS = NAV;

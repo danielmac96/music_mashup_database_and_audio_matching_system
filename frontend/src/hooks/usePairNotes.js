@@ -4,7 +4,7 @@ import { toast } from "../toast";
 import { keyOf, feedbackKey } from "../components/pairs/pairModel";
 
 // Notes on pairs ("opener", "needs a riser", "use the 2nd chorus"), fetched once
-// in App like the ratings, so the dock, Studio and the Sets screen show the
+// in App like the ratings, so the dock, Studio and the mini studio show the
 // same note. Keyed by the pair's four ids (readme §7); never training data.
 export function usePairNotes() {
   const [byPair, setByPair] = useState({});

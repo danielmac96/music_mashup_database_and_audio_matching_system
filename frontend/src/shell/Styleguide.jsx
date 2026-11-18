@@ -145,7 +145,7 @@ export function Styleguide() {
           <PairCard candidate={SAMPLE_PAIR} rating={null} onRate={noop} onToggle={noop}
             onPlay={noop} onStudio={noop} />
           <PairCard candidate={SAMPLE_PAIR} rating={4} onRate={noop} onToggle={noop}
-            onPlay={noop} onStudio={noop} expanded focused onAddToSet={noop}
+            onPlay={noop} onStudio={noop} expanded focused
             onCompare={noop} onHide={noop} onNote={noop} onReason={noop} />
         </div>
       </section>

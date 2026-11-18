@@ -43,7 +43,7 @@ def _percent_rank(sorted_totals: List[float], total: float) -> Optional[float]:
 
 
 # With a learned model active, how many of the rule's best pairings the blend
-# re-orders for each one returned (readme §5.13).
+# re-orders for each one returned (readme §5.12).
 POOL_FACTOR = 4
 
 

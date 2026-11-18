@@ -5,7 +5,7 @@ SoundCloud (or YouTube) link and every track is downloaded, split into stems,
 analysed and cut into sections on its own. The app then ranks which **vocal
 section** of one record sits best over which **bed section** of another, lets
 you judge the pairs by ear in seconds, and builds the winners in a multi-track
-Studio, a DJ set, or an FL Studio session.
+Studio or an FL Studio session.
 
 **This file is the single source of documentation.** `CLAUDE.md` only imports
 it. When behaviour changes, update the relevant section here in place; history
@@ -168,7 +168,7 @@ vocal × bed section pair at once — the only run that also writes
  4. JUDGE     pair dock: loop the moment, rate 1–5, tag why, compare, note, hide
               Segments: any vocal section × any bed section, scored live
  5. BUILD     Studio: conformed lanes → WAV mixdown or FL Studio session
- 6. PLAN      Sets: keepers in running order, graded transitions → cue sheet, rekordbox, FL
+ 6. KEEP      ★ Keepers (rated 4–5) → Export ▾: cue sheet, CSV, rekordbox, Serato, Traktor, FL
  7. LEARN     your verdicts (strong) + what you do with a pair (pair events, weak)
               + documented mix pairs → a ranker, retrained on its own, blended into
               the rule's score by how many verdicts it has seen (§5.8)
@@ -216,7 +216,7 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
 - **Heavy libraries import lazily**, so the API starts (and degrades with
   clear 501/502 messages) without the audio stack.
 - **Frontend state lives once in `App.jsx`**: the library, ratings, groups,
-  sets, notes and the single player, passed to every screen.
+  notes and the single player, passed to every screen.
 
 ---
 
@@ -279,8 +279,7 @@ what the numbers cannot promise), measured harmony, bass clash, effort, the
   them first.
 
 - Keys: `↑↓` move · `←→` step pairings · space loop · `1–5` rate and move on ·
-  `⏎` expand · double-click Studio · `V`/`B` solo · `h` hide · `a` add to the
-  active set · `c` compare · `q w e r t y u` tag **why** (for 8 s after a
+  `⏎` expand · double-click Studio · `V`/`B` solo · `h` hide · `c` compare · `q w e r t y u` tag **why** (for 8 s after a
   rating). Rating the star you already set clears the judgement.
 - **Tier chips** (Strong / Good / Maybe / Long-shot) come from the API's
   `confidence_tier`. **Filters** has two halves that never mix: *Loaded pairs*
@@ -296,10 +295,10 @@ what the numbers cannot promise), measured harmony, bass clash, effort, the
 
 A library of **parts**, not songs: every vocal section on the left, every bed
 section on the right, each its own filterable table. **Select a section and
-the other table becomes its matches**, scored live (§5.13) with a Fit and a
+the other table becomes its matches**, scored live (§5.12) with a Fit and a
 Move column (pairs you hid in the dock stay out; the header counts them). The **mini studio** below loops the armed pair exactly as the
 card would (bed conformed, transposed, nudged), lets you move pitch, tempo,
-nudge, levels and the high-pass, and then rate, note, **+ Set**, **Render
+nudge, levels and the high-pass, and then rate, note, **Render
 WAV** or **Open in Studio**. Reached also from Track detail ("Find beds ▸") and
 ⌘K.
 
@@ -367,16 +366,7 @@ arrives aligned — bed stretched to the vocal, transposed by the card's shift,
 nudged by the stored offset, high-passed on a bass clash. Each lane has tempo,
 pitch, offset, gain, a three-band EQ, a duck under the vocal, fades and cuts,
 with grey ticks at the suggestion. **Render ▾** exports a WAV mastered to −14
-LUFS / −1 dBTP, stems per lane, or an **FL Studio session**. A set opens on
-**A/B deck** rows, each mashup at its own landing tempo.
-
-### Sets
-
-A mix's running order: pairs, whole tracks, breaks and gaps. A duration-width
-timeline with a **fit dot** on every boundary (key ±1 Camelot step and tempo
-±4 %), a flow graph with a draggable **energy curve**, an optional **tempo
-curve**, ⇅ Auto-order, gap fill suggestions, server-rendered transition
-previews, and exports (cue sheet, rekordbox XML, CSV, FL sessions).
+LUFS / −1 dBTP, stems per lane, or an **FL Studio session**.
 
 ### ⚙ Settings drawer
 
@@ -981,22 +971,10 @@ repeated failures.
   left to the mixer.
 - **Pair lists** (`render/exports.py`): CSV, a timed cue sheet, rekordbox XML
   (beat grid + hot cue at the paired section), a Serato crate and a Traktor NML,
-  from a set or the dock's top N.
+  from the dock's top N or ★ Keepers. The cue sheet times each pair as if the
+  list were played back to back, 32 bars apiece at its landing tempo.
 
-### 5.12 Sets and transitions
-
-`matcher/setflow.py`. A pair lands at the vocal's tempo and key, or at its
-point on the set's **tempo curve**. Each move is graded on the tempo change
-(half/double-aware) and the Camelot distance: **smooth** ≤ 1 step and ≤ 3 %,
-**workable** ≤ 2 and ≤ 6 %, else a **jump**, with a suggested move (bed swap,
-vocal swap, 8- or 4-bar blend, echo out, cut) stored on the incoming item when
-you override it. Running time sums each slot's play length (32 bars by default)
-minus overlaps. A record back within 3 slots is flagged. **What comes next**
-keeps only moves inside the fit rule; **gap fill** ranks pairs that fit both
-neighbours by distance to the energy curve. Transition previews render
-server-side (`render/transition.py`) and are cached.
-
-### 5.13 API contracts
+### 5.12 API contracts
 
 Each shape below is pinned by a contract test.
 
@@ -1023,7 +1001,7 @@ Each shape below is pinned by a contract test.
   best `limit` of those.
 - **Mix summary**, **Discover gaps** (`GET /api/discovery/gaps`) and the
   attribute catalogue (`GET /api/analysis/attributes`).
-- **Pair events** (`POST /api/events`, §5.14): always answers 200 with
+- **Pair events** (`POST /api/events`, §5.13): always answers 200 with
   `{accepted, dropped}`.
 - **Learning** (`api/routes/learning.py`, §5.8): `GET /api/learning` (labels,
   α, active model, last train, history); `POST /api/learning/retrain`,
@@ -1032,7 +1010,7 @@ Each shape below is pinned by a contract test.
   carries `score_rule` and `model_prob`; an exploration row carries `explore`
   and `explore_reason`.
 
-### 5.14 Implicit pair events
+### 5.13 Implicit pair events
 
 What you *do* with a pair says something a star does not, so it is logged:
 `pair_events` holds one row per event, keyed by the pair's four ids, with a
@@ -1089,15 +1067,15 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 | `database/alignment.py` | allin1, phrases and frame-sidecar storage |
 | `database/arrays.py` | The float-array store (`feature_arrays`) |
 | `api/server.py` | FastAPI app, routers, health/deps, yt-dlp update, SPA serving with stale-build detection |
-| `api/routes/` | `tracks`, `segments`, `playlists`, `jobs`, `analysis`, `mashups`, `mixes`, `discovery`, `crates`, `sets`, `studio`, `settings`, `prefs`, `events`, `datasets`, `models`, `learning`, `database` |
+| `api/routes/` | `tracks`, `segments`, `playlists`, `jobs`, `analysis`, `mashups`, `mixes`, `discovery`, `crates`, `studio`, `settings`, `prefs`, `events`, `datasets`, `models`, `learning`, `database` |
 | `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py`, `api/queue_eta.py` | Per-stage worker pools + resume, job registry, playlist preview hydration, ETAs |
 | `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage `download/stems/analysis/structure/reverify` workers behind the per-track buttons; `bulk`, `match`, `hook`, `mixdown`, `session`, `mix_resolve`, `mix_ingest`, `discovery`, `ml`, `learning` (retrain, model switch, the tick) |
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py`, `fit_hints.py`, `errors.py` |
 | `downloader/download.py` | SoundCloud-first download, verified YouTube fallback, re-verify |
 | `stems/separate.py` | htdemucs, four sources + summed instrumental |
 | `analysis/` | `essentia_groups.py` (the analyser), `ml_models.py` (EffNet heads), `project.py` (payloads → `features`), `allin1_runner.py`, `structure.py` (the cut and per-section measurements), `phrases.py`, `hooks.py`, `quality.py`, `vocals.py`, `analyze.py` (shared tempo/key helpers), `decode.py`, `frames.py`, `registry.py` + `cache.py` (feature groups), `timeseries.py` (sidecars), `attributes.py`, `compare.py`, `threads.py` |
-| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `learning.py` (labels, ranker, blend, shadow gate, tick), `weight_fit.py`, `term_report.py`, `setflow.py`, `segment_match.py` |
-| `render/` | `dsp.py`, `master.py`, `mixdown.py`, `session.py`, `transition.py`, `exports.py` |
+| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `learning.py` (labels, ranker, blend, shadow gate, tick), `weight_fit.py`, `term_report.py`, `segment_match.py` |
+| `render/` | `dsp.py`, `master.py`, `mixdown.py`, `session.py`, `exports.py` |
 | `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens; `segments/`; `pairs/pairModel.js`; `ui/primitives.jsx`); `hooks/`; `engine/` (`MashupEngine`, decode, grid); `api.js`, `events.js` (the pair-event buffer), `theme.js`, `attributes.js`; `public/soundtouch-processor.js` |
 | `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks), `sim_learning.py` (a synthetic listener judging through the dock while the learning loop retrains: NDCG@10 against the rules) |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS; `essentia_fake.py` |
@@ -1131,12 +1109,12 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
   `track_excluded` · `pair_notes` · `section_lines`.
 - `pair_events` (the four ids, `event`, `value`, `context`, `scorer_version`,
   `rank_shown`, `created_at`) and `pair_event_summary` (old events folded per
-  pair, event and context) — §5.14.
+  pair, event and context) — §5.13.
 - `models` — every trained model: feature names, metrics, and for the
   learning loop's rankers `kind`, `alpha`, `n_strong`, `n_weak`,
   `auc_strong`, `rule_auc`, `decision`, `activated_at` (rollback reads it).
 - `mixes` · `mix_tracks` · `mashup_pairs` · `datasets` · `crates` ·
-  `crate_items` · `sets` / `set_items` · `embeddings` · `analysis_runs` ·
+  `crate_items` · `embeddings` · `analysis_runs` ·
   `app_prefs` (keys: `soundcloud_profile`, `soundcloud_saved_profiles`,
   `attribute_visibility`, `last_score`, `harmony_unsure_below`,
   `slot_dropin_floor`, `learning_state`, `library_view`, `filter_presets`).
@@ -1154,7 +1132,7 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 - **Section indexes are a namespace per engine.** The fallback cut's sections
   are numbered from 0, allin1's from `ALLIN1_SECTION_BASE` (1000), and allin1
   segment ids from `ALLIN1_SEGMENT_ID_BASE`. That keeps `pair_feedback`,
-  `pair_notes`, `set_items` and `mashup_candidates` keyed the same way for
+  `pair_notes` and `mashup_candidates` keyed the same way for
   both, and a judgement can never name the wrong engine's section.
   `remap_feedback_sections(namespace=…)` re-points only its own engine's sides;
   `get_sections` / `sections_for_songs` / `list_segments` read allin1's sections
@@ -1196,10 +1174,9 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
   `upsert_features` pops them into it.
 - **A pair is keyed by its four ids, never by `candidate.id`**:
   `score_all_pairs` truncates `mashup_candidates`. `pairModel.js`
-  `keyOf`/`feedbackKey`, `ux_pair_feedback_section`, `set_items` and
-  `pair_notes` all use the same key (`COALESCE`d sections). A set item freezes
-  its scored row and prefers the live one, looked up in ONE query
-  (`candidates_for_pairs`).
+  `keyOf`/`feedbackKey`, `ux_pair_feedback_section` and
+  `pair_notes` all use the same key (`COALESCE`d sections). Many pairs' live
+  rows are looked up in ONE query (`candidates_for_pairs`).
 - **`pair_feedback` is irreplaceable user input.** Its unique key includes the
   section indexes; any migration must copy, count and refuse to drop the
   original on a short copy. Every write of `sections` goes through
@@ -1208,7 +1185,7 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 - **One path takes a judgement away** — `delete_pair_feedback`, which deletes
   the whole row (and its reasons). Its `WHERE` mirrors the unique index,
   `COALESCE` included. Sending `rating: null` does **not** clear.
-- **A pair event is never felt, and never a judgement** (§5.14). The request
+- **A pair event is never felt, and never a judgement** (§5.13). The request
   path of `POST /api/events` opens no connection; nothing in
   `frontend/src/events.js` throws, awaits, toasts or imports, and no caller
   reads what it returns. A `rate` or `hide` event is a log line beside the
@@ -1661,9 +1638,7 @@ scikit-learn's weighted binning was 90 % of it.
 9. **Check suspect attributes before they feed the matcher**: `dissonance` is
    near-constant, `tonal` says nearly every track is atonal, tuning medians at
    434 Hz.
-10. **Studio and sets:** auto-arrange; a set's moves as automation (crossfades,
-    echo tails) rather than overlapping clips; tempo ramps between mashups;
-    effort re-priced at the curve tempo; a native `.flp` export (PyFLP needs a
+10. **Studio:** a native `.flp` export (PyFLP needs a
     template saved from the user's FL version).
 11. **Compute, not yet done:** cap TensorFlow's threads for EffNet (today
     uncapped beside Demucs/allin1 at cores − 1; unverified here because the

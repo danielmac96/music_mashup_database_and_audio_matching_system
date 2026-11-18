@@ -25,7 +25,7 @@ const DOCK_MIN = 320;
 const DOCK_MAX = 640;
 const DOCK_DEFAULT = 400;
 
-const KEYS = "↑↓ move · ←→ pairing · space loop · 1–5 rate · q–u why · ⏎ expand · V/B solo · h hide · a +set · c compare";
+const KEYS = "↑↓ move · ←→ pairing · space loop · 1–5 rate · q–u why · ⏎ expand · V/B solo · h hide · c compare";
 
 // Values offered by the library-wide menus. Bands, not free ranges, because
 // they are what the server accepts (database/models.py ERA_BANDS etc.).
@@ -117,7 +117,7 @@ function useDockWidth() {
 
 export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
                           onClearScope = null, freshness = null,
-                          onAddToSet = null, setName = null, notes = null,
+                          notes = null,
                           onCompare = null, durationOf = () => null, tracks = null }) {
   const { order, setOrder, rows, loading, error, cursor, setCursor, armedKey,
           play, openStudio, hide, unhide, audio, filters, setFilters, resetFilters,
@@ -185,9 +185,7 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
     el?.scrollIntoView({ block: "nearest" });
   }, [cursor, rows, expanded]);
 
-  const scopeText = dock.nextFor
-    ? `What comes next in “${dock.nextFor.name || "the set"}”`
-    : scopeTrack ? `for ${scopeTrack.title}${scopeTrack.artist ? ` · ${scopeTrack.artist}` : ""}`
+  const scopeText = scopeTrack ? `for ${scopeTrack.title}${scopeTrack.artist ? ` · ${scopeTrack.artist}` : ""}`
       : "Best in library";
   const term = ORDERS.find(([id, , , color]) => color && id === order);
   const sideCfg = df[side];
@@ -263,8 +261,6 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
         onToggle={() => { setCursor(i); toggleExpand(c); }}
         onPlay={() => { setCursor(i); play(c); }}
         onStudio={() => { setCursor(i); openStudio(c); }}
-        onAddToSet={onAddToSet ? () => { setCursor(i); onAddToSet(c); } : null}
-        setName={setName}
         note={notes ? notes.noteOf(c) : ""}
         onNote={notes ? (n) => notes.save(c, n) : null}
         onCompare={onCompare ? () => onCompare(c) : null}
@@ -281,10 +277,7 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
         <div className="pd-head">
           <b className="pd-title">Pairs</b>
           <span className="pd-scopetext" title={scopeText}>{scopeText}</span>
-          {dock.nextFor ? (
-            <button className="pd-scope-x" onClick={dock.clearNextFor}
-              title="Back to the pair list" aria-label="Close what comes next">✕</button>
-          ) : scopeTrack && onClearScope ? (
+          {scopeTrack && onClearScope ? (
             <button className="pd-scope-x" onClick={onClearScope}
               title="Back to the best pairs in the library (esc on Library)"
               aria-label="Clear the selected track">✕</button>
@@ -296,7 +289,7 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
           </button>
         </div>
 
-        {scopeTrack && !dock.nextFor && (
+        {scopeTrack && (
           <div className="pd-roleseg" role="group" aria-label="Look at this track as">
             <button className={`vox${role !== "instrumental" ? " on" : ""}`}
               aria-pressed={role !== "instrumental"} onClick={() => onRole("vocal")}

@@ -83,14 +83,14 @@ def test_the_tier_is_never_computed_client_side():
     assert "confidence_tier" in FILES["SegmentTable.jsx"]
 
 
-def test_ratings_sets_and_notes_go_through_the_shared_hooks():
+def test_ratings_and_notes_go_through_the_shared_hooks():
     screen = FILES["SegmentsScreen.jsx"]
     band = FILES["MiniStudio.jsx"]
-    assert "ratings.rate(armed" in screen and "sets.addPair(armed)" in screen
-    # The third argument is the pair-event context (readme §5.14); the rating
+    assert "ratings.rate(armed" in screen
+    # The third argument is the pair-event context (readme §5.13); the rating
     # still goes through the one shared hook.
     assert 'ratings.rate(pair, n, "parts")' in band and "notes.save(pair" in band
-    assert "sets.addPair(pair)" in band
+    assert "sets." not in band and "sets." not in screen     # Sets are removed
 
 
 def test_the_mini_studio_plays_what_the_card_prints():

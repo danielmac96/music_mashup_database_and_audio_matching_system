@@ -31,8 +31,6 @@ def app(tmp_path, monkeypatch):
     models.init_db()
     import api.routes.mashups as mashups
     importlib.reload(mashups)
-    import api.routes.sets as sets
-    importlib.reload(sets)
     import api.server as server
     importlib.reload(server)
 
@@ -112,21 +110,9 @@ def test_every_listing_row_carries_tier_and_compat(app):
         _check_row(c)
 
 
-def test_by_vocal_and_set_rows_carry_them_too(app):
+def test_by_vocal_rows_carry_them_too(app):
     client, _, songs = app
     for c in client.get("/api/mashups/by-vocal").json()["candidates"]:
-        _check_row(c)
-
-    sid = client.post("/api/sets", json={"name": "s"}).json()["id"]
-    r = client.post(f"/api/sets/{sid}/items", json={
-        "vocal_song_id": songs[0], "inst_song_id": songs[1],
-        "vocal_section_idx": 0, "inst_section_idx": 0})
-    assert r.status_code == 200, r.text
-    items = client.get(f"/api/sets/{sid}").json()["items"]
-    assert items
-    for it in items:
-        _check_row(it)
-    for c in client.get(f"/api/sets/{sid}/next").json()["candidates"]:
         _check_row(c)
 
 

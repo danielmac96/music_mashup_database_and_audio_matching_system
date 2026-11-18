@@ -36,7 +36,7 @@ function readLayout() {
   } catch { return { split: 0.5, band: 230 }; }
 }
 
-export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTrack, onOpenStudio,
+export function SegmentsScreen({ tracks, player, ratings, notes, onOpenTrack, onOpenStudio,
                                  seed = null, active = true, onRailSlot, onStatus }) {
   const segs = useSegments();
   const [filters, setFilters] = useState({ vocal: { ...EMPTY_SEG_FILTERS },
@@ -99,7 +99,7 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
   }, [matches.rows]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The armed pair: the partner side's selection, as the match row the server
-  // scored (the same shape as a dock card, so rating, + Set and Studio need
+  // scored (the same shape as a dock card, so rating and Studio need
   // nothing new).
   const armed = partnerRole && sel[partnerRole]
     ? matchBySeg.get(sel[partnerRole].segment_id) || null : null;
@@ -157,8 +157,7 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
     return () => window.removeEventListener("keydown", onKey);
   }, [active, partnerRole, sel, lead, clearAll]);
 
-  // 1–5 rate the armed pair (again to clear), a adds it to the active set —
-  // the dock's keys, while a table or the band has focus.
+  // 1–5 rate the armed pair (again to clear) — the dock's keys, while a table or the band has focus.
   useEffect(() => {
     if (!armed || !active) return undefined;
     const onKey = (e) => {
@@ -166,11 +165,10 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
       if (e.metaKey || e.ctrlKey || e.altKey || (el && (el.tagName === "INPUT"
         || el.tagName === "TEXTAREA" || el.tagName === "SELECT"))) return;
       if (/^[1-5]$/.test(e.key)) { e.preventDefault(); ratings.rate(armed, Number(e.key), "parts"); }
-      else if (e.key === "a") { e.preventDefault(); sets.addPair(armed); }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [armed, active, ratings, sets]);
+  }, [armed, active, ratings]);
 
   const stemsOf = useMemo(() => new Map(tracks.map((t) => [t.id, t.stems])), [tracks]);
   const playSegment = useCallback((role, r) => {
@@ -346,7 +344,7 @@ export function SegmentsScreen({ tracks, player, ratings, sets, notes, onOpenTra
       <div className="seg-bandgrip" onPointerDown={drag("band")}
         title="Drag to resize the mini studio" role="separator" aria-orientation="horizontal" />
       <MiniStudio pair={armed} lead={lead} sel={sel} player={player} active={active}
-        ratings={ratings} sets={sets} notes={notes}
+        ratings={ratings} notes={notes}
         onOpenStudio={onOpenStudio} onNext={() => stepPartner(1)} onPrev={() => stepPartner(-1)} />
     </div>
   );

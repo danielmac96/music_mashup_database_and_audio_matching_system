@@ -10,7 +10,6 @@ import { PlayerBar } from "./components/PlayerBar";
 import { TrackDetail } from "./components/TrackDetail";
 import { Discovery } from "./components/Discovery";
 import { MixStudio } from "./components/MixStudio";
-import { SetScreen } from "./components/SetScreen";
 import { HelpPanel } from "./components/HelpPanel";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { TuningPanel } from "./components/TuningPanel";
@@ -26,13 +25,12 @@ import { useLibraryGroups } from "./hooks/useLibraryGroups";
 import { useRatings } from "./hooks/useRatings";
 import { useAttributes } from "./hooks/useAttributes";
 import { usePairDock } from "./hooks/usePairDock";
-import { useSets } from "./hooks/useSets";
 import { usePairNotes } from "./hooks/usePairNotes";
 import { useFilterPresets } from "./hooks/useFilterPresets";
 import { usePlayer } from "./hooks/usePlayer";
 import { isActiveJob } from "./hooks/useQueue";
 import { api } from "./api";
-import { onToast } from "./toast";
+import { onToast, toast as showToast } from "./toast";
 import { track } from "./events";
 import { useFreshness } from "./hooks/useFreshness";
 
@@ -165,9 +163,6 @@ export default function App() {
   // narrowed by one and the row menu writes to them. A second copy would still
   // be showing the old shelf after the first one added a track to it.
   const groups = useLibraryGroups();
-  // Sets (mashups in running order) — the dock, Studio and the Sets screen all
-  // add to the same active set.
-  const sets = useSets();
   const notes = usePairNotes();
   // Named Library filters: the Library's Saved ▾, the rail and ⌘K list them.
   const presets = useFilterPresets();
@@ -180,6 +175,16 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [settingsOpen]);
+
+  // Once after the upgrade that removed Sets: say where they were saved.
+  useEffect(() => {
+    api.getSetsBackup().then((b) => {
+      if (!b?.path) return;
+      showToast(`Sets were removed. Your ${b.sets} set${b.sets === 1 ? "" : "s"} `
+        + `(${b.items} slots) were saved to ${b.path}`, { label: "Got it", onClick: () => {} });
+      api.ackSetsBackup().catch(() => {});
+    }).catch(() => {});
+  }, []);
 
   // On load, check whether the app has been configured (first-run wizard gate).
   // If /api/settings is unreachable, assume configured so a transient error
@@ -257,7 +262,7 @@ export default function App() {
 
   const dock = usePairDock({
     selectedTrackId, role: dockRole, ratings, onOpenStudio: pairToStudio, player,
-    onAddToSet: sets.addPair, onCompare: compareInAnalysis,
+    onCompare: compareInAnalysis,
   });
   // A track's length, for the expanded pair card's section waveforms.
   const durationOf = useCallback(
@@ -268,20 +273,6 @@ export default function App() {
   // the library's MASH / PAIRS columns.
   const freshness = useFreshness({
     onScored: () => { dock.reload(); library.refresh(); },
-  });
-
-  // A whole set on one Studio timeline, back to back — what "Next pair" could
-  // never do, because it replaces the arrangement.
-  const chainToStudio = (items) => sendToStudio({
-    chain: items.map((c) => ({
-      vocalId: c.vocal_song_id, instId: c.inst_song_id,
-      semitoneShift: c.semitone_shift ?? 0, recipe: c.recipe ?? null,
-      // On a set's tempo curve, each mashup lands at its own point on it.
-      targetBpm: c.set_bpm ?? null,
-      // How far it comes in before the previous mashup ends (the move's bars).
-      overlapSecs: c.overlap_secs ?? 0,
-      scoredOption: scoredOptionOf(c),
-    })),
   });
 
   // "Next pair" in Studio walks the DOCK's list, so the order you are working
@@ -535,7 +526,6 @@ export default function App() {
               )}
             </main>
             <PairDock dock={dock} ratings={ratings}
-              onAddToSet={sets.addPair} setName={sets.active?.name || null}
               notes={notes}
               scopeTrack={selectedTrack} onClearScope={route === "track" ? null : clearSelection}
               onCompare={compareInAnalysis} durationOf={durationOf}
@@ -551,7 +541,7 @@ export default function App() {
           <div className={`seg-host${route === "segments" ? "" : " away"}`}
             aria-hidden={route !== "segments"}>
             <SegmentsScreen tracks={library.tracks} player={player} ratings={ratings}
-              sets={sets} notes={notes} active={route === "segments"}
+              notes={notes} active={route === "segments"}
               onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}
               onOpenStudio={pairToStudio} seed={segmentsSeed}
               onRailSlot={setRailSlot} onStatus={setHeaderStatus} />
@@ -580,13 +570,6 @@ export default function App() {
             externalNav={discoverNav}
           />
         )}
-        {route === "sets" && (
-          <SetScreen sets={sets} player={player}
-            onOpenStudio={pairToStudio} onOpenChain={chainToStudio}
-            onRailSlot={setRailSlot} onOpenLibrary={() => setRoute("library")}
-            onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}
-            dockPair={dock.rows[dock.cursor] || null} selectedTrack={selectedTrack} />
-        )}
         {route === "studio" && (
           <MixStudio
             seed={studioSeed}
@@ -594,7 +577,7 @@ export default function App() {
             onStatus={setHeaderStatus}
             onNextPair={dock.rows.length > 1 ? () => nextPair(false) : null}
             onAppendNext={dock.rows.length > 1 ? () => nextPair(true) : null}
-            onAddToSet={sets.addPair} notes={notes} setName={sets.active?.name || null}
+            notes={notes}
           />
         )}
 

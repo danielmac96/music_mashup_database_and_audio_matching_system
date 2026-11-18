@@ -47,9 +47,9 @@ def test_the_listing_plays_the_shift_the_card_prints():
     assert unmeasured["semitone_shift"] == -2
 
 
-def test_the_set_lands_with_the_same_shift():
+def test_an_exported_pair_lands_with_the_same_shift():
     from api.routes.mashups import _with_playback_terms
-    from matcher.setflow import landing
+    from render.exports import landing
     item = {"vocal_camelot": "8B", "inst_camelot": "11B", "harmonic_shift": 2,
             "vocal_bpm": 124.0, "vocal_section_start": 10.0, "vocal_section_end": 40.0}
     played = _with_playback_terms([dict(item)])[0]["semitone_shift"]
@@ -190,7 +190,8 @@ def test_no_screen_derives_a_transpose_from_camelot_for_playback():
     audition = _read("hooks/useHookAudition.js")
     assert "semitones: candidate.semitone_shift" in audition
     app = _read("App.jsx")
-    assert app.count("semitoneShift: c.semitone_shift") >= 2
+    assert "semitoneShift: c.semitone_shift" in app
+    assert "semitoneShift: next.semitone_shift" in app
 
 
 # ── the recipe: what is done to a pair, and what to watch for ────────────────
@@ -284,7 +285,7 @@ def test_the_plan_and_the_fl_session_take_the_recipes_level(models):
 
 # ── the recipe on screen, and in the audio ───────────────────────────────────
 
-def test_the_card_and_the_set_show_the_recipe():
+def test_the_card_and_the_mini_studio_show_the_recipe():
     strip = _read("components/pairs/RecipeStrip.jsx")
     assert "recipe.adjustments" in strip and "recipe.warnings" in strip
     assert "title={a.why}" in strip, "every adjustment explains itself"
@@ -292,10 +293,10 @@ def test_the_card_and_the_set_show_the_recipe():
     assert "const doChips = r.adjustments || [];" in card
     assert "const watch = r.warnings || [];" in card
     assert "title={[a.why," in card, "every DO chip explains itself"
-    assert "<RecipeStrip recipe={selItem.recipe} compact" in _read("components/SetScreen.jsx")
+    assert "<RecipeStrip recipe={pair.recipe} compact" in _read("components/segments/MiniStudio.jsx")
     css = (FRONT / "styles.css").read_text(encoding="utf-8")
     for cls in (".pc-recipe", ".pc-adj.free", ".pc-adj.light", ".pc-adj.heavy",
-                ".pc-warn", ".set-recipe", ".pcx-do", ".pcx-watch"):
+                ".pc-warn", ".pcx-do", ".pcx-watch"):
         assert cls in css, cls
 
 
@@ -308,7 +309,8 @@ def test_the_loop_and_studio_arm_the_recipes_levels():
     assert "seed.recipe?.bed_lane_gain" in studio and "seed.recipe?.bed_highpass_hz" in studio
     assert "p.recipe?.bed_lane_gain" in studio
     app = _read("App.jsx")
-    assert app.count("recipe: c.recipe") >= 2 and "recipe: next.recipe" in app
+    # A pair to Studio, and "Append next" (the set chain is gone with Sets).
+    assert "recipe: c.recipe" in app and "recipe: next.recipe" in app
 
 
 def test_lane_gain_reads_in_real_decibels():

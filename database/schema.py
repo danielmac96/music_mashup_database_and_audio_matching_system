@@ -65,7 +65,7 @@ def _baseline(conn: sqlite3.Connection) -> None:
 
 
 def _pair_events(conn: sqlite3.Connection) -> None:
-    """Implicit signals about a pair (readme §5.14): one row per thing done
+    """Implicit signals about a pair (readme §5.13): one row per thing done
     with it — shown, looped, skipped, expanded, opened in Studio, rendered,
     exported, hidden, compared, rated. Keyed by the pair's four ids like every
     other per-pair table (never candidate.id, readme §7).
@@ -166,11 +166,129 @@ def _slot_and_dropin(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE mashup_candidates ADD COLUMN {name} {kind}")
 
 
+SETS_BACKUP_PREF = "sets_backup"
+
+
+def _db_file(conn: sqlite3.Connection) -> Path | None:
+    for row in conn.execute("PRAGMA database_list").fetchall():
+        if row[1] == "main" and row[2]:
+            return Path(row[2])
+    return None
+
+
+def sets_export_dir(conn: sqlite3.Connection) -> Path:
+    """`<data_dir>/exports` for the database this connection is on: the
+    configured data folder when it is the configured database, else the
+    folder holding the file (a test's or a benchmark's library)."""
+    db = _db_file(conn)
+    try:
+        import config
+        if db is not None and Path(config.DB_PATH).resolve() == db.resolve():
+            return Path(config.DATA_DIR) / "exports"
+    except Exception:  # noqa: BLE001 — config is optional here
+        pass
+    if db is None:
+        raise RuntimeError("the database has no file, so there is nowhere to "
+                           "write the sets backup")
+    return db.parent / "exports"
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (name,)).fetchone() is not None
+
+
+def _rows(conn: sqlite3.Connection, sql: str) -> List[dict]:
+    cur = conn.execute(sql)
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def write_sets_backup(conn: sqlite3.Connection, out_dir: Path) -> dict:
+    """Every `sets` and `set_items` row, each item's frozen pair row parsed,
+    written to `out_dir/sets_backup_<UTC timestamp>.json`, then read back
+    and counted against the tables. Raises on any failure (the caller must
+    then drop nothing). Returns {path, sets, items}."""
+    import json
+    import os
+    from datetime import datetime, timezone
+    sets = _rows(conn, "SELECT * FROM sets ORDER BY id")
+    items = _rows(conn, "SELECT * FROM set_items ORDER BY set_id, position, id")
+    for it in items:
+        raw = it.get("payload_json")
+        try:
+            it["payload"] = json.loads(raw) if raw else None
+        except ValueError:
+            it["payload"] = None          # the raw text is kept beside it
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"sets_backup_{stamp}.json"
+    n = 2
+    while path.exists():
+        path = out_dir / f"sets_backup_{stamp}_{n}.json"
+        n += 1
+    doc = {"kind": "mashup-engine sets backup", "written_at": stamp,
+           "counts": {"sets": len(sets), "set_items": len(items)},
+           "sets": [{**s, "items": [i for i in items if i["set_id"] == s["id"]]}
+                    for s in sets],
+           # Items whose set row is missing would vanish from the nesting above.
+           "orphan_items": [i for i in items
+                            if i["set_id"] not in {s["id"] for s in sets}]}
+    tmp = path.with_suffix(".json.part")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, ensure_ascii=False, indent=1, default=str)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+    back = json.loads(path.read_text(encoding="utf-8"))
+    got_sets = len(back["sets"])
+    got_items = sum(len(s["items"]) for s in back["sets"]) + len(back["orphan_items"])
+    want_sets = conn.execute("SELECT COUNT(*) FROM sets").fetchone()[0]
+    want_items = conn.execute("SELECT COUNT(*) FROM set_items").fetchone()[0]
+    if (got_sets, got_items) != (want_sets, want_items):
+        raise RuntimeError(
+            f"sets backup {path} holds {got_sets} sets / {got_items} items, the "
+            f"tables {want_sets} / {want_items}; nothing was dropped")
+    return {"path": str(path), "sets": got_sets, "items": got_items}
+
+
+def _remove_sets(conn: sqlite3.Connection) -> None:
+    """Sets are removed (owner-approved, Phase 3). Their rows are first
+    written to `<data_dir>/exports/sets_backup_<timestamp>.json` and read back
+    and counted; any failure raises, so the migration rolls back with both
+    tables in place and the next start tries again. Only then are `sets` and
+    `set_items` dropped. A library with no sets writes no file. The backup's
+    path is kept in app_prefs (`sets_backup`) so the UI can say it once.
+    Idempotent: with the tables gone there is nothing to do."""
+    have_sets, have_items = _table_exists(conn, "sets"), _table_exists(conn, "set_items")
+    if not (have_sets or have_items):
+        return
+    n_sets = conn.execute("SELECT COUNT(*) FROM sets").fetchone()[0] if have_sets else 0
+    n_items = conn.execute("SELECT COUNT(*) FROM set_items").fetchone()[0] if have_items else 0
+    if n_sets or n_items:
+        if not (have_sets and have_items):
+            raise RuntimeError("only one of sets / set_items exists; refusing to "
+                               "guess, nothing was dropped")
+        info = write_sets_backup(conn, sets_export_dir(conn))
+        log.warning("schema: sets removed — %d sets and %d items backed up to %s",
+                    info["sets"], info["items"], info["path"])
+        import json
+        conn.execute(
+            "INSERT INTO app_prefs (key, value, updated_at) VALUES (?, ?, datetime('now')) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (SETS_BACKUP_PREF, json.dumps({**info, "seen": False})))
+    conn.execute("DROP INDEX IF EXISTS idx_set_items_set")
+    conn.execute("DROP INDEX IF EXISTS ux_set_items_pair")
+    conn.execute("DROP TABLE IF EXISTS set_items")
+    conn.execute("DROP TABLE IF EXISTS sets")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(7, "baseline", _baseline),
     Migration(8, "pair_events", _pair_events),
     Migration(9, "slot_and_dropin", _slot_and_dropin),
     Migration(10, "learning_loop", _learning_loop),
+    Migration(11, "remove_sets", _remove_sets),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

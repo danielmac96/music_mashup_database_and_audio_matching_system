@@ -84,7 +84,7 @@ function PairingSteps({ c, index, count, onStep }) {
 
 export function PairCard({ candidate: c, rating, onRate, focused = false, expanded = false,
                            playing = false, onSelect, onToggle, onPlay, onStudio,
-                           onHide = null, onAddToSet = null, setName = null,
+                           onHide = null,
                            note = "", onNote = null, onCompare = null,
                            reasons = [], onReason = null, durationOf = () => null,
                            hidden = false, justRated = false, optionIndex = 0,
@@ -197,14 +197,14 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
 
       {expanded && (
         <Expanded c={c} rating={rating} note={note} onNote={onNote} reasons={reasons}
-          onReason={onReason} onStudio={onStudio} onAddToSet={onAddToSet} setName={setName}
+          onReason={onReason} onStudio={onStudio}
           onCompare={onCompare} onHide={onHide} durationOf={durationOf} hidden={hidden} />
       )}
     </div>
   );
 }
 
-function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddToSet, setName,
+function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio,
                     onCompare, onHide, durationOf, hidden }) {
   const [draft, setDraft] = useState(note || "");
   useEffect(() => { setDraft(note || ""); }, [note]);
@@ -330,10 +330,6 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
 
       <div className="pcx-actions">
         <button className="btn-primary" onClick={onStudio} title="Open both tracks in Studio">Open in Studio</button>
-        {onAddToSet && (
-          <button className="ui-btn" onClick={onAddToSet}
-            title={`Add to the set “${setName || "My set"}” (a)`}>+ Set</button>
-        )}
         {onCompare && (
           <button className="ui-btn" onClick={onCompare} aria-label="Compare"
             title="Compare the two tracks in Analysis (c)">⇄</button>

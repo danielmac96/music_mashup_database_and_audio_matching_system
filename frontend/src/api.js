@@ -586,11 +586,14 @@ export const api = {
     method: "PUT", body: JSON.stringify(vis),
   }),
 
-  // The Library's columns / order / sort, and named filter presets (§5.13).
+  // The Library's columns / order / sort, and named filter presets (§5.12).
   getLibraryView: () => jsonFetch("/api/prefs/library-view"),
   putLibraryView: (view) => jsonFetch("/api/prefs/library-view", {
     method: "PUT", body: JSON.stringify(view),
   }),
+  // Once after the upgrade that removed Sets: where their backup was written.
+  getSetsBackup: () => jsonFetch("/api/prefs/sets-backup"),
+  ackSetsBackup: () => jsonFetch("/api/prefs/sets-backup/seen", { method: "POST" }),
   getFilterPresets: () => jsonFetch("/api/prefs/filter-presets"),
   saveFilterPreset: (name, filters) => jsonFetch("/api/prefs/filter-presets", {
     method: "POST", body: JSON.stringify({ name, filters }),
@@ -765,59 +768,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ start_sec: s.start_sec, end_sec: s.end_sec, text }),
     }),
-
-  // ── Sets: chosen mashups in running order ──────────────────────────────────
-  getSets: () => jsonFetch("/api/sets"),
-  createSet: (name) =>
-    jsonFetch("/api/sets", { method: "POST", body: JSON.stringify({ name }) }),
-  getSet: (id) => jsonFetch(`/api/sets/${id}`),
-  updateSet: (id, patch) =>
-    jsonFetch(`/api/sets/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
-  deleteSet: (id) => jsonFetch(`/api/sets/${id}`, { method: "DELETE" }),
-  // A pair is named by its four ids (readme §7), never by candidate.id.
-  addToSet: (id, c) =>
-    jsonFetch(`/api/sets/${id}/items`, {
-      method: "POST",
-      body: JSON.stringify({
-        vocal_song_id: c.vocal_song_id, inst_song_id: c.inst_song_id,
-        vocal_section: c.vocal_section_idx ?? null, inst_section: c.inst_section_idx ?? null,
-      }),
-    }),
-  // Any slot — {kind: pair|track|break|gap, …, position} (revamp B3). A pair
-  // is still named by its four ids; `position` inserts there, omitted appends.
-  addSetSlot: (id, body) =>
-    jsonFetch(`/api/sets/${id}/items`, { method: "POST", body: JSON.stringify(body) }),
-  updateSetItem: (id, itemId, patch) =>
-    jsonFetch(`/api/sets/${id}/items/${itemId}`, { method: "PATCH", body: JSON.stringify(patch) }),
-  // Pairs that fit both neighbours of slot `position`, nearest the energy curve.
-  getSetSuggest: (id, position, limit = 6) =>
-    jsonFetch(`/api/sets/${id}/suggest?position=${position}&limit=${limit}`),
-  // The last N bars of the slot before into the first N of this one (B4).
-  setTransitionAudioUrl: (id, itemId, bars = 8) =>
-    `/api/sets/${id}/transition/${itemId}/audio?bars=${bars}`,
-  // FL sessions for every pair in the set: a job → {job_id, archive_url}.
-  exportSetFl: (id) => jsonFetch(`/api/sets/${id}/export?format=fl`),
-  removeFromSet: (id, itemId) =>
-    jsonFetch(`/api/sets/${id}/items/${itemId}`, { method: "DELETE" }),
-  reorderSet: (id, itemIds) =>
-    jsonFetch(`/api/sets/${id}/reorder`, {
-      method: "POST", body: JSON.stringify({ item_ids: itemIds }),
-    }),
-  // How an item comes in from the one before (matcher/setflow.TRANSITIONS);
-  // null returns it to the suggestion.
-  setItemTransition: (id, itemId, move) =>
-    jsonFetch(`/api/sets/${id}/items/${itemId}/transition`, {
-      method: "PUT", body: JSON.stringify(move || {}),
-    }),
-  // Pairs worth adding after the set's last mashup, ranked by fit AND move.
-  getSetNext: (id, limit = 8) => jsonFetch(`/api/sets/${id}/next?limit=${limit}`),
-  suggestSetOrder: (id, start = null) =>
-    jsonFetch(`/api/sets/${id}/suggest-order${start != null ? `?start=${start}` : ""}`),
-  setExportUrl: (id, format, base = "") => {
-    const q = new URLSearchParams({ format });
-    if (base) q.set("base", base);
-    return `/api/sets/${id}/export?${q}`;
-  },
 
   // ── Notes on a pair, and plain exports of the dock's pairs ─────────────────
   getPairNotes: () => jsonFetch("/api/mashups/notes"),

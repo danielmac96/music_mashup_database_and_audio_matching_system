@@ -226,8 +226,8 @@ export function StudioPanel({
   referenceLane, matchKeyToReference, alignLaneToGrid, resetLane, resetAll, dirty,
   trimOf, syncRateFor, onExtend, onSection, cross, setCross,
   buildRating, onRateBuild, onSaveSnapshot, snapshots = [], onLoadSnapshot = () => {},
-  onDeleteSnapshot = () => {}, onNextPair = null, onAppendNext = null, onAddToSet = null,
-  setName = null, pairNote = null, height, onResizeStart, onFit,
+  onDeleteSnapshot = () => {}, onNextPair = null, onAppendNext = null,
+  pairNote = null, height, onResizeStart, onFit,
 }) {
   const [noteDraft, setNoteDraft] = useState(null);
   const [showSnaps, setShowSnaps] = useState(false);
@@ -277,7 +277,7 @@ export function StudioPanel({
                 setNoteDraft(null);
               }}
               onKeyDown={(e) => { e.stopPropagation(); if (e.key === "Enter") e.currentTarget.blur(); }}
-              title="Saved on the pair at the armed timing; shows on its dock card and in sets. Never training data." />
+              title="Saved on the pair at the armed timing; shows on its dock card. Never training data." />
           )}
           <div className="sp-rate">
             <span className="muted small">Rate this build</span>
@@ -310,9 +310,6 @@ export function StudioPanel({
             </div>
           )}
           <div className="sp-row">
-            <button className="ui-btn" onClick={onAddToSet || undefined} disabled={!onAddToSet}
-              title={onAddToSet ? `Add this pair, at the armed timing, to the set “${setName || "My set"}”`
-                : "Arm a timing option to add this pair to a set"}>+ Set</button>
             <button className="ui-btn" onClick={onAppendNext || undefined} disabled={!onAppendNext}
               title="Lay the dock's next pair AFTER this arrangement, to hear the transition">Append next ⇥</button>
           </div>

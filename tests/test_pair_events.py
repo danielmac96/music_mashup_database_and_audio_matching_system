@@ -1,4 +1,4 @@
-"""Implicit pair events (readme §5.14): the `pair_events` table, POST
+"""Implicit pair events (readme §5.13): the `pair_events` table, POST
 /api/events, retention into `pair_event_summary`, and the frontend buffer.
 
 The contract these pin: an event is never felt. A malformed one is dropped, a
@@ -189,7 +189,7 @@ def test_the_request_path_does_no_database_work(client, monkeypatch):
 
 
 def test_a_failed_write_changes_nothing_user_visible(client, monkeypatch):
-    """Readme §5.14 / criterion 0.2, server half: with event storage broken the
+    """Readme §5.13 / criterion 0.2, server half: with event storage broken the
     post still answers 200, and a judgement saved and read around it is
     exactly what it would have been."""
     c, m, _ = client
