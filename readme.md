@@ -890,7 +890,9 @@ what you do with it, retrains on its own, and never ranks worse than the rules.
   `row_known = 0` and neutral row terms; a weak label without its row is left
   out. The song-level half is memoised per song pair (`song_cache`).
 - **The model.** sklearn's `HistGradientBoostingClassifier` with sample weights
-  (a soft label y is y of a positive and 1 − y of a negative), out-of-fold
+  (a soft label y is y of a positive and 1 − y of a negative), on columns cut
+  at their own quantiles first (≤ 255 values each, `learning.QuantizedHGB`:
+  its weighted binning otherwise costs ~9 s a fit), out-of-fold
   AUC with `GroupKFold` by vocal song, calibrated on grouped folds (isotonic
   from 1,000 rows, Platt below), beside a logistic baseline. Nothing trains
   before 10 verdicts with 3 each side.
@@ -1588,7 +1590,24 @@ held-out vocals compares the blended order with the rule's.
 scored library and times a retrain (labels, features, grouped CV of the ranker
 and the logistic baseline, calibration) and the re-blend of every stored row.
 
-Phase 2 (2026-11-18, the same VM, synthetic): TBD
+Phase 2 (2026-11-18, the same VM, synthetic):
+
+| | Measured |
+|---|---|
+| Zero verdicts: Score library vs Phase 1's code on the same library | every column of every row identical — 267,227 rows at 500 tracks, 406,353 at 2,000 (table hash, `score_rule` / `model_prob` aside) |
+| Retrain, 10,000 tracks, 500 verdicts + 20,000 weak labels, 4 cores | **26.3 s** (features 19.7 s; 20,672 rows fitted) |
+| Re-blend every stored row (10,000 tracks, 280,903 vocal rows) | 108 s — a job after an activation; Score library adds it to its own run |
+| Simulated listener, 500 tracks, 200 verdicts, NDCG@10 on 115 held-out vocals | rules 0.521; blended 0.661 at 20 verdicts, 0.925 at 60, 0.931 at 200 — never below the rules |
+| The same, a noisier listener (verdict noise 0.4, not 0.15) | blended 0.571 at 20, 0.904 at 40, 0.889 at 200 |
+
+Read it with: the simulated taste (Drop-ins, breakdown beds) is built from
+terms the model sees as features, so a held-out AUC near 1.0 is the
+easy case; a real listener's taste is not. With 500 random verdicts the
+10k benchmark's ranker reached AUC 0.545 against the logistic baseline's
+0.576 — that taste was mostly a coin. The quantile cut before the booster
+(`learning.QuantizedHGB`) is what brought a fit from ~10 s to ~1 s:
+scikit-learn's weighted binning was 90 % of it.
+
 
 ## 9. Open work
 
