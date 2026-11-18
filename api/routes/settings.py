@@ -162,7 +162,6 @@ class SaveSettingsRequest(BaseModel):
     stem_quality_min: Optional[float] = None
     bpm_max_diff: Optional[float] = None
     key_min_score: Optional[float] = None
-    bpm_max_diff_model: Optional[float] = None
     max_section_pairs: Optional[int] = None
     match_weights: Optional[dict] = None
     # The six section-fit weights. Reported by GET since P2.3 but never
@@ -188,6 +187,19 @@ class SaveSettingsRequest(BaseModel):
     phrase_gap_secs: Optional[float] = None
     allin1_max_secs: Optional[float] = None
     demucs_overlap: Optional[float] = None
+    # The learning loop (readme §5.8). All live-read.
+    learn_k: Optional[float] = None
+    learn_alpha_max: Optional[float] = None
+    weak_w_build: Optional[float] = None
+    weak_w_loop: Optional[float] = None
+    loop_positive_secs: Optional[float] = None
+    weak_w_skip: Optional[float] = None
+    weak_w_hide: Optional[float] = None
+    weak_w_shown: Optional[float] = None
+    retrain_min_strong: Optional[int] = None
+    retrain_min_weak: Optional[int] = None
+    explore_every: Optional[int] = None
+    auto_retrain: Optional[bool] = None
 
 
 def _checked_weights(raw: dict, keys, name: str) -> dict:
@@ -259,10 +271,12 @@ def save_settings(req: SaveSettingsRequest) -> dict:
         new["analysis_cache"] = True if req.analysis_cache else "off"
 
     for name in ("effort_weight", "section_weight", "stem_quality_min",
-                 "bpm_max_diff", "key_min_score", "bpm_max_diff_model",
+                 "bpm_max_diff", "key_min_score",
                  "timing_tol_ms", "timing_weight", "slot_weight",
                  "dropin_bonus", "phrase_gap_secs",
-                 "allin1_max_secs", "demucs_overlap"):
+                 "allin1_max_secs", "demucs_overlap",
+                 "learn_k", "learn_alpha_max", "weak_w_build", "weak_w_loop",
+                 "loop_positive_secs", "weak_w_skip", "weak_w_hide", "weak_w_shown"):
         value = getattr(req, name)
         if value is not None:
             lo, hi = config._TUNABLE_FLOATS[name][2:]
@@ -270,6 +284,17 @@ def save_settings(req: SaveSettingsRequest) -> dict:
                 raise HTTPException(status_code=400,
                                     detail=f"{name} must be between {lo} and {hi}")
             new[name] = float(value)
+    for name in ("retrain_min_strong", "retrain_min_weak", "explore_every"):
+        value = getattr(req, name)
+        if value is not None:
+            lo, hi = config._TUNABLE_INTS[name][2:]
+            if not (lo <= value <= hi):
+                raise HTTPException(status_code=400,
+                                    detail=f"{name} must be {lo}-{hi}")
+            # save_settings keeps 0 (it drops only None and "").
+            new[name] = int(value)
+    if req.auto_retrain is not None:
+        new["auto_retrain"] = True if req.auto_retrain else "off"
     if req.max_section_pairs is not None:
         lo, hi = config._TUNABLE_INTS["max_section_pairs"][2:]
         if not (lo <= req.max_section_pairs <= hi):

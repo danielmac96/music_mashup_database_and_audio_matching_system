@@ -406,13 +406,6 @@ BPM_MAX_DIFF   = 16.0   # e.g. 120 BPM pairs with anything 104–136 (or half/do
 # the Tight preset in the UI.
 KEY_MIN_SCORE  = 0.0
 
-# The gate exists to bound the matrix, not to express taste. On the MODEL path
-# the key half is already dropped (documented mashups sometimes break it); this
-# widens the tempo half too, so the model can learn that you happily halftime a
-# 150 BPM vocal over a 75 BPM bed. Candidate generation stays tractable because
-# bucketing, not this threshold, is what keeps the matrix small.
-BPM_MAX_DIFF_MODEL = 20.0
-
 # ── Mix training-data quality gate ────────────────────────────────────────────
 # A mix-track auto-linked by yt-dlp search (resolve_status='auto') only counts as
 # a trusted ground-truth link — i.e. eligible to become a training positive — when
@@ -577,6 +570,31 @@ DROPIN_TEMPO_PCT = 3.0
 DROPIN_SLOT_PERCENTILE = 0.70
 DROPIN_MAX_SHIFT_ST = 1
 
+# ── The learning loop (readme §5.8) ──────────────────────────────────────────
+# The shrinkage blend: score_total = (1 - a)·rule + a·model, with
+# a = n_strong / (n_strong + LEARN_K), capped at LEARN_ALPHA_MAX, where
+# n_strong is how many of your verdicts the active model was trained on. No
+# verdicts, no model: a = 0 and every total is the rule's, to the bit.
+LEARN_K = 40.0
+LEARN_ALPHA_MAX = 0.8
+# Weak labels from what you DO with a pair (pair_events), as sample weights
+# beside a verdict's 1.0. Conservative: a hundred exports weigh about what
+# thirty verdicts do. A verdict on the same pairing overrides them all.
+WEAK_W_BUILD = 0.30        # open_studio / render / fl_export / export → good
+WEAK_W_LOOP = 0.15         # a loop_play of LOOP_POSITIVE_SECS or more → good
+LOOP_POSITIVE_SECS = 20.0
+WEAK_W_SKIP = 0.10         # skip → bad
+WEAK_W_HIDE = 0.30         # hide → bad
+WEAK_W_SHOWN = 0.03        # shown in the top 5, nothing else done → bad
+# Retrain when this many new verdicts, or this many new non-`shown` events,
+# arrived since the last train — and only while the pipeline queues are idle.
+RETRAIN_MIN_STRONG = 10
+RETRAIN_MIN_WEAK = 200
+AUTO_RETRAIN = True
+# One dock slot in this many shows an uncertain pair (a high rule score the
+# model is unsure about), labelled as such. 0 = never.
+EXPLORE_EVERY = 8
+
 # Weights inside score_section itself (phrase / rhythm / structure,
 # plus the label/duration/voice terms that were already there).
 #
@@ -666,7 +684,6 @@ _TUNABLE_FLOATS = {
     "stem_quality_min":  ("MASHUP_STEM_QUALITY_MIN", "STEM_QUALITY_MIN", 0.0, 1.0),
     "bpm_max_diff":      ("MASHUP_BPM_MAX_DIFF", "BPM_MAX_DIFF", 1.0, 60.0),
     "key_min_score":     ("MASHUP_KEY_MIN_SCORE", "KEY_MIN_SCORE", 0.0, 1.0),
-    "bpm_max_diff_model": ("MASHUP_BPM_MAX_DIFF_MODEL", "BPM_MAX_DIFF_MODEL", 1.0, 60.0),
     "timing_tol_ms":     ("MASHUP_TIMING_TOL_MS", "TIMING_TOL_MS", 5.0, 250.0),
     "timing_weight":     ("MASHUP_TIMING_WEIGHT", "TIMING_WEIGHT", 0.0, 1.0),
     "slot_weight":       ("MASHUP_SLOT_WEIGHT", "SLOT_WEIGHT", 0.0, 1.0),
@@ -674,6 +691,14 @@ _TUNABLE_FLOATS = {
     "phrase_gap_secs":   ("MASHUP_PHRASE_GAP_SECS", "PHRASE_GAP_SECS", 0.1, 4.0),
     "allin1_max_secs":   ("MASHUP_ALLIN1_MAX_SECS", "ALLIN1_MAX_SECS", 30.0, 7200.0),
     "demucs_overlap":    ("MASHUP_DEMUCS_OVERLAP", "DEMUCS_OVERLAP", 0.0, 0.9),
+    "learn_k":           ("MASHUP_LEARN_K", "LEARN_K", 1.0, 10_000.0),
+    "learn_alpha_max":   ("MASHUP_LEARN_ALPHA_MAX", "LEARN_ALPHA_MAX", 0.0, 1.0),
+    "weak_w_build":      ("MASHUP_WEAK_W_BUILD", "WEAK_W_BUILD", 0.0, 1.0),
+    "weak_w_loop":       ("MASHUP_WEAK_W_LOOP", "WEAK_W_LOOP", 0.0, 1.0),
+    "loop_positive_secs": ("MASHUP_LOOP_POSITIVE_SECS", "LOOP_POSITIVE_SECS", 1.0, 600.0),
+    "weak_w_skip":       ("MASHUP_WEAK_W_SKIP", "WEAK_W_SKIP", 0.0, 1.0),
+    "weak_w_hide":       ("MASHUP_WEAK_W_HIDE", "WEAK_W_HIDE", 0.0, 1.0),
+    "weak_w_shown":      ("MASHUP_WEAK_W_SHOWN", "WEAK_W_SHOWN", 0.0, 1.0),
 }
 # However the row cap falls, every track keeps the best row of this many of
 # its best partners on each side (as the vocal, and as the bed). Without it
@@ -689,7 +714,21 @@ _TUNABLE_INTS = {
                           "MAX_SECTION_PAIRS_PER_SONG_PAIR", 1, 8),
     "max_candidate_rows": ("MASHUP_MAX_CANDIDATE_ROWS",
                            "MAX_CANDIDATE_ROWS", 1, 5_000_000),
+    "retrain_min_strong": ("MASHUP_RETRAIN_MIN_STRONG", "RETRAIN_MIN_STRONG", 1, 10_000),
+    "retrain_min_weak":  ("MASHUP_RETRAIN_MIN_WEAK", "RETRAIN_MIN_WEAK", 1, 1_000_000),
+    "explore_every":     ("MASHUP_EXPLORE_EVERY", "EXPLORE_EVERY", 0, 100),
 }
+
+
+def current_auto_retrain() -> bool:
+    """Whether the learning loop retrains on its own (readme §5.8). Live-read;
+    'off' / '0' / 'false' in settings.json or MASHUP_AUTO_RETRAIN turn it off."""
+    raw = os.environ.get("MASHUP_AUTO_RETRAIN")
+    if raw is None:
+        raw = _load_settings().get("auto_retrain")
+    if raw is None:
+        return AUTO_RETRAIN
+    return str(raw).strip().lower() not in ("0", "off", "false", "no")
 
 # Sub-score weights, tuned as a group. Stored as a dict in settings.json.
 _WEIGHT_KEYS = ("bpm_score", "key_score", "energy_score", "timbre_score",
@@ -821,7 +860,6 @@ def current_scoring_settings() -> dict:
         "stem_quality_min": current_float("stem_quality_min"),
         "bpm_max_diff": current_float("bpm_max_diff"),
         "key_min_score": current_float("key_min_score"),
-        "bpm_max_diff_model": current_float("bpm_max_diff_model"),
         "max_section_pairs": current_int("max_section_pairs"),
         "max_candidate_rows": current_int("max_candidate_rows"),
         "reserve_partners": current_int("reserve_partners"),

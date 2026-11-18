@@ -249,6 +249,65 @@ def _with_scope_rank(rows: list, vocal_song_id: Optional[int],
             r["scope_rank"], r["scope_total"] = rank, total
 
 
+def _with_exploration(rows: list, offset: int, limit: int,
+                      vocal_song_id: Optional[int], inst_song_id: Optional[int],
+                      filters: dict) -> list:
+    """One dock slot in `explore_every` shows an uncertain pair (readme §5.8):
+    one the RULE rates at least as highly as the lowest row on this page and
+    the learned model is least sure about (model_prob nearest 0.5), not yet
+    judged and not already on the page. Each is labelled (`explore`,
+    `explore_reason`, scorer "explore" in its pair events), so a verdict on it
+    is the information the model is missing, and the model never starves
+    itself of data. Inserted, never in place of a ranked row: the page still
+    carries every row the order put there, and the next page's offset counts
+    only those (frontend usePairDock). Nothing without an active model."""
+    from config import current_int
+    from matcher.learning import active_blender
+    every = current_int("explore_every")
+    rule_rows = [r for r in rows if r.get("score_rule") is not None
+                 and (r.get("combo_type") or "vocal_over_instrumental")
+                 == "vocal_over_instrumental"]
+    if every < 2 or not rule_rows or active_blender() is None:
+        return rows
+    per_page = max(1, limit // (every - 1))
+    floor = min(float(r["score_rule"]) for r in rule_rows)
+    shown = {(r.get("vocal_song_id"), r.get("inst_song_id"),
+              r.get("vocal_section_idx"), r.get("inst_section_idx")) for r in rows}
+    try:
+        pool = get_candidates_enriched(
+            combo_type="vocal_over_instrumental", order="uncertain",
+            vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
+            rated="unrated", min_rule=floor, max_per_song=0, max_per_song_pair=1,
+            limit=per_page * 3, offset=(offset // (every - 1)), **filters)
+    except Exception:  # noqa: BLE001 — exploration is never worth a failed page
+        logging.getLogger(__name__).warning("exploration pool failed", exc_info=True)
+        return rows
+    pool = [p for p in pool if (p.get("vocal_song_id"), p.get("inst_song_id"),
+                                p.get("vocal_section_idx"), p.get("inst_section_idx"))
+            not in shown][:per_page]
+    if not pool:
+        return rows
+    pool = _with_reasons(_with_playback_terms(pool))
+    for p in pool:
+        p["explore"] = True
+        p["scorer"] = "explore"
+        prob = p.get("model_prob")
+        p["explore_reason"] = (
+            "Exploring: the rules rate this highly and your model is unsure"
+            + (f" ({round(100 * float(prob))} %)" if prob is not None else "")
+            + " — a rating here teaches it the most.")
+    out, k = [], 0
+    for r in rows:
+        if k < len(pool) and (len(out) + 1) % every == 0:
+            out.append(pool[k])
+            k += 1
+        out.append(r)
+    while k < len(pool) and (len(out) + 1) % every == 0:
+        out.append(pool[k])
+        k += 1
+    return out
+
+
 @router.get("")
 def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     limit: int = 50, vocal_song_id: Optional[int] = None,
@@ -318,6 +377,15 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     rows = _with_reasons(_with_playback_terms(rows))
     if adventure > 0 and order in ("score", "easy"):
         rows = _reorder_by_surprise(rows, adventure)
+    if order in ("easy", "score") and not rated and not search \
+            and combo_type in ("", "vocal_over_instrumental") and dropin is None:
+        rows = _with_exploration(
+            rows, offset=offset, limit=max(1, min(limit, 500)),
+            vocal_song_id=vocal_song_id, inst_song_id=inst_song_id,
+            filters=dict(genre=genre, era=era, energy=energy, bpm_band=bpm_band,
+                         vocal_forward=vocal_forward, max_effort=max_effort,
+                         key=key, key_tolerance=key_tolerance,
+                         vocal_label=vocal_label, inst_label=inst_label, tier=tier))
     _with_scope_rank(rows, vocal_song_id, inst_song_id)
     return {"count": len(rows), "candidates": rows,
             "max_per_song": max_per_song, "order": order,

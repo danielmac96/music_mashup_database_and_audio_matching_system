@@ -42,6 +42,11 @@ def _percent_rank(sorted_totals: List[float], total: float) -> Optional[float]:
     return min(below / (n - 1), 1.0)
 
 
+# With a learned model active, how many of the rule's best pairings the blend
+# re-orders for each one returned (readme §5.13).
+POOL_FACTOR = 4
+
+
 def _fingerprint(db, engine: Optional[str] = None) -> tuple:
     """Changes whenever anything the ranking reads changes: a scoring input
     (songs.pairs_input_at — every writer bumps it, readme §7), a re-cut or a
@@ -50,7 +55,8 @@ def _fingerprint(db, engine: Optional[str] = None) -> tuple:
     line (which the Segments list shows) — and, for the allin1 engine, its
     sections, the vocal phrases, its tempos (matcher.match._full_by_song
     refines the scoring BPM with them), the pipeline each track is live on and
-    the engine itself."""
+    the engine itself — and the active learned model, whose blend rewrites
+    stored totals in place."""
     from config import current_segmentation_engine
     from database.models import get_conn
     conn = get_conn(db)
@@ -78,7 +84,12 @@ def _fingerprint(db, engine: Optional[str] = None) -> tuple:
                          FROM songs WHERE separation_pipeline IS NOT NULL),
                       (SELECT COUNT(*) || ':' || COALESCE(SUM(vocal_song_id), 0)
                          || ':' || COALESCE(SUM(inst_song_id), 0)
-                         FROM pair_hidden)"""
+                         FROM pair_hidden),
+                      -- The learned model in force: activating, rolling back
+                      -- or retraining re-blends the stored totals in place.
+                      (SELECT COUNT(*) || ':' || COALESCE(MAX(id), 0) || ':'
+                         || COALESCE(GROUP_CONCAT(id || '@' || COALESCE(activated_at, '')), '')
+                         FROM models WHERE active = 1)"""
         ).fetchone()) + (engine or current_segmentation_engine(),)
     finally:
         conn.close()
@@ -299,7 +310,13 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
     bounded.sort(key=lambda t: -t[0])
 
     sections_of = snap.sections.get
-    k = max(1, int(limit))
+    # With a learned model active (matcher/learning.py) the rule picks the
+    # pool and the blend re-orders it, exactly as the stored table is the
+    # rule's top slice blended: the rule's best POOL_FACTOR × limit pairings
+    # are found here, blended below, and the best `limit` of those returned.
+    from matcher.learning import active_blender
+    blender = active_blender(db)
+    k = max(1, int(limit)) * (POOL_FACTOR if blender is not None else 1)
     best: list = []                     # min-heap of (total, tiebreak, n, item)
     for n, (bound, top, bed, scores, v_sec, b_sec, fit, stretch) in enumerate(bounded):
         if len(best) >= k and bound + 1e-9 < best[0][0]:
@@ -340,7 +357,7 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
          for t, b, v, i, *_ in kept], db_path=db) if kept else {}
     genres = _genres({x for t, b, *_ in kept
                       for x in (t["song_id"], b["song_id"])}, db)
-    rows = []
+    rows, live = [], []
     for top, bed, v_sec, b_sec, fit, stretch, scores, placement, slot, timing in kept:
         key = (top["song_id"], bed["song_id"], v_sec["section_index"],
                b_sec["section_index"])
@@ -363,11 +380,31 @@ def rank_partners(segment_id: int, role: str, limit: int = 200,
             row = models.candidate_dict(top, bed, s, section_pair=sp)
             row["vocal_genre"] = genres.get(top["song_id"])
             row["inst_genre"] = genres.get(bed["song_id"])
-            row["score_percentile"] = _percent_rank(snap.totals, row["score_total"])
             row["stored"] = False
+            live.append((row, top, bed))
         row["segment_id"] = (b_sec if role == "vocal" else v_sec).get("id")
         rows.append(row)
+    if blender is not None and live:
+        # The live rows get the blend blend_table stores, from the same
+        # features (matcher/features.pair_features on the row).
+        from matcher.features import pair_features
+        from matcher.learning import blend_rows
+        from matcher.compat import slot_floor
+        from matcher.recipe import harmony_unsure_below
+        row_ctx = {"slot_floor": slot_floor(db_path=db),
+                   "unsure_below": harmony_unsure_below(db_path=db)}
+        sides = {id(r): (t, b) for r, t, b in live}
+
+        def _feats(r):
+            t, b = sides[id(r)]
+            return pair_features(t, b, sections_of(t["song_id"], []),
+                                 sections_of(b["song_id"], []), snap.stats,
+                                 row=r, row_ctx=row_ctx)
+        blend_rows([r for r, _t, _b in live], _feats, blender)
+    for r, _t, _b in live:
+        r["score_percentile"] = _percent_rank(snap.totals, r["score_total"])
     rows.sort(key=lambda r: -(r.get("score_total") or 0.0))
+    rows = rows[:max(1, int(limit))]
     return {**base, "rows": rows, "scored": len(bounded), "gated": max(gated, 0),
             "hidden": hidden}
 

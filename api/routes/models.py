@@ -38,6 +38,23 @@ def _row_out(r) -> dict:
     return d
 
 
+def _reblend() -> None:
+    """A model switch moves every stored total (the shrinkage blend,
+    matcher/learning.py): re-blend in the background, as a job."""
+    import threading
+    job_id = jobs.new_job(kind="learn", message="Re-ranking the stored pairs")
+
+    def run():
+        from matcher import learning
+        learning._BLENDERS.clear()
+        try:
+            jobs.update(job_id, status="running")
+            jobs.done(job_id, learning.blend_table())
+        except Exception as exc:  # noqa: BLE001
+            jobs.fail(job_id, f"{type(exc).__name__}: {exc}")
+    threading.Thread(target=run, daemon=True, name="learning-reblend").start()
+
+
 @router.get("")
 def list_models() -> dict:
     conn = get_conn()
@@ -83,6 +100,7 @@ def deactivate_model(model_id: int) -> dict:
         raise HTTPException(status_code=404, detail="model not found")
     conn.execute("UPDATE models SET active=0 WHERE id=?", (model_id,))
     conn.commit()
+    _reblend()
     out = _row_out(conn.execute(
         "SELECT id, name, version, dataset_id, algo, metrics_json, file_path, "
         "active, created_at FROM models WHERE id=?", (model_id,)).fetchone())
@@ -121,8 +139,10 @@ def activate_model(model_id: int) -> dict:
         conn.close()
         raise HTTPException(status_code=404, detail="model not found")
     conn.execute("UPDATE models SET active=0 WHERE active=1")
-    conn.execute("UPDATE models SET active=1 WHERE id=?", (model_id,))
+    conn.execute("UPDATE models SET active=1, activated_at=datetime('now') WHERE id=?",
+                 (model_id,))
     conn.commit()
+    _reblend()
     out = _row_out(conn.execute(
         "SELECT id, name, version, dataset_id, algo, metrics_json, file_path, "
         "active, created_at FROM models WHERE id=?", (model_id,)).fetchone())

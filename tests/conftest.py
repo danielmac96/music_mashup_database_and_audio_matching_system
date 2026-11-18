@@ -40,6 +40,9 @@ def _suite_defaults(request, monkeypatch):
     # Renders keep the phase vocoder under test (exact, ffmpeg-independent);
     # tests/test_phase6_export.py opts into Rubber Band.
     monkeypatch.setenv("MASHUP_STRETCH", "librosa")
+    # The learning loop never retrains on its own under test (the server's
+    # once-a-minute tick, matcher/learning.tick); tests that mean it opt in.
+    monkeypatch.setenv("MASHUP_AUTO_RETRAIN", "0")
     if request.node.get_closest_marker("real_essentia"):
         if not _essentia_importable():
             if os.environ.get("MASHUP_REQUIRE_ESSENTIA"):

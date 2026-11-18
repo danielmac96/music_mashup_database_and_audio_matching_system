@@ -169,8 +169,9 @@ vocal × bed section pair at once — the only run that also writes
               Segments: any vocal section × any bed section, scored live
  5. BUILD     Studio: conformed lanes → WAV mixdown or FL Studio session
  6. PLAN      Sets: keepers in running order, graded transitions → cue sheet, rekordbox, FL
- 7. LEARN     documented mix pairs + your verdicts → dataset → learned scorer
-              (what you do with a pair — loop, skip, open, export — is logged as pair events)
+ 7. LEARN     your verdicts (strong) + what you do with a pair (pair events, weak)
+              + documented mix pairs → a ranker, retrained on its own, blended into
+              the rule's score by how many verdicts it has seen (§5.8)
 ```
 
 ### Architecture
@@ -268,7 +269,12 @@ what the numbers cannot promise), measured harmony, bass clash, effort, the
 40 ms") with the 8- or 16-bar window worth building, and the scores.
 
 - **Easy first** is the default order: by tier, Drop-ins first inside each
-  tier, then the score (which is already fit minus effort). **⤓ Drop-ins**
+  tier, then the score (which is already fit minus effort — and, once a
+  model of your taste is active, its blend, §5.8).
+- **? Exploring**: with a model active, one slot in eight (`explore_every`)
+  is a pair the rules rate at least as highly as the page's lowest row and
+  your model is least sure about — marked, and inserted beside the ranked
+  rows, never in place of one. Rating it teaches the model the most. **⤓ Drop-ins**
   narrows the whole library to Drop-in pairs (§5.7); *Sort: Drop-ins* lists
   them first.
 
@@ -379,9 +385,15 @@ hidden**, **Bulk reprocess** (re-analyse, re-separate, allin1 or re-download
 only what needs it — counts come from `bulk_worker.staleness`), **⟳ Refresh
 metadata** (re-fetch genre/year/plays for rows whose import was throttled —
 `songs.metadata_partial`), **Tuning** (match and section weights, effort
-weight, gates, the timing gate, the vacated-slot weight and Drop-in bonus, and
-*What your ratings say* — the term report),
-**Train from imported mixes**, and a read-only **database browser**.
+weight, gates, the timing gate, the vacated-slot weight and Drop-in bonus,
+*What your ratings say* — the term report — **Suggested from your ratings**,
+a section-weight set fitted to your verdicts shown as a diff with its
+expected AUC change and applied only on its button, and the learning knobs),
+**Learning** (verdicts and pair events collected, the model's share α of
+every score, the active model and its held-out AUC against the rules', the
+last retrain and why, an AUC trend, the terms that agree with your ears;
+⟳ Retrain now, ↶ Roll back, Rules only), **Train from imported mixes**, and a
+read-only **database browser**. Rating stays one keypress (`1–5`).
 
 ---
 
@@ -413,6 +425,10 @@ Resolution order: **environment variable > `settings.json` > default.**
 | Timing gate / weight / phrase gap | `MASHUP_TIMING_TOL_MS` / `MASHUP_TIMING_WEIGHT` / `MASHUP_PHRASE_GAP_SECS` | `timing_tol_ms` / `timing_weight` / `phrase_gap_secs` | `25` ms / `0.30` / `0.6` s |
 | Vacated slot weight / Drop-in bonus | `MASHUP_SLOT_WEIGHT` / `MASHUP_DROPIN_BONUS` | `slot_weight` / `dropin_bonus` | `0.20` (0 scores as before the term existed) / `0.02` (an order key, never the stored score) |
 | Partners every track keeps under the row cap | `MASHUP_RESERVE_PARTNERS` | `reserve_partners` | `8` per side (0 = the cap alone) |
+| Learning blend: k / α cap | `MASHUP_LEARN_K` / `MASHUP_LEARN_ALPHA_MAX` | `learn_k` / `learn_alpha_max` | `40` / `0.8` (α = n_strong / (n_strong + k)) |
+| Weak-label weights | `MASHUP_WEAK_W_BUILD`, `…_LOOP`, `…_SKIP`, `…_HIDE`, `…_SHOWN`; `MASHUP_LOOP_POSITIVE_SECS` | `weak_w_build`, `weak_w_loop`, `weak_w_skip`, `weak_w_hide`, `weak_w_shown`; `loop_positive_secs` | `0.30`, `0.15`, `0.10`, `0.30`, `0.03`; `20` s (a verdict is 1.0) |
+| Auto-retrain: on / new verdicts / new events | `MASHUP_AUTO_RETRAIN` / `MASHUP_RETRAIN_MIN_STRONG` / `MASHUP_RETRAIN_MIN_WEAK` | `auto_retrain` / `retrain_min_strong` / `retrain_min_weak` | on / `10` / `200` (non-`shown` events) |
+| Exploration: one dock slot in | `MASHUP_EXPLORE_EVERY` | `explore_every` | `8` (0 = off) |
 | Scoring knobs | `MASHUP_EFFORT_WEIGHT`, `MASHUP_SECTION_WEIGHT`, `MASHUP_BPM_MAX_DIFF`, `MASHUP_KEY_MIN_SCORE`, `MASHUP_STEM_QUALITY_MIN`, `MASHUP_MAX_SECTION_PAIRS`, `MASHUP_MAX_CANDIDATE_ROWS`, … | `effort_weight`, `match_weights`, `section_weights`, … | `config.py` (§5.7) |
 | Export time-stretch | `MASHUP_STRETCH` | — | `auto` (Rubber Band when ffmpeg has it, else librosa) |
 | Firecrawl key (Mixes) | `FIRECRAWL_API_KEY` | `firecrawl_api_key` | — |
@@ -842,21 +858,82 @@ The gate and every row's arithmetic are untouched: with the reserve off, the
 stored table is the one pricing every pair stores (pinned by a test that runs
 both on one library).
 What changes is what is never built — and the timing counts in the log and in
-`last_score`, which now cover the pairs that were priced. A per-track run, a
-library too small to overflow the cap, and a run under a learned model (a
-probability has no ceiling) price every pair. Within one pair, each section's
+`last_score`, which now cover the pairs that were priced. A per-track run and
+a library too small to overflow the cap price every pair. A learned model
+does not stop the pruning: the rule selects the rows, and the model's blend
+is applied to the rows it kept (§5.8). Within one pair, each section's
 own work (its bar lines, its phrase, its label and voice terms, its unit
 chroma) is done once per run, not once per partner, and a row is put in its
 stored shape only when it is kept.
 
-### 5.8 Learned scorer
+### 5.8 The learning loop
 
-`matcher/features.pair_features` (one function for train and serve) →
-`build_dataset` (positives: trusted documented `w/` pairs grouped by mix, plus
-your love/ok verdicts; negatives: your "no" verdicts plus sampled undocumented
-pairs) → `matcher/model_scorer.py` (logistic regression or gradient boosting,
-GroupKFold by mix, calibrated) → activated, it sets `score_total` to the
-model's probability. A model trained on different feature names is refused.
+`matcher/learning.py`. The ranking learns from what you say about a pair and
+what you do with it, retrains on its own, and never ranks worse than the rules.
+
+- **Labels.** *Strong*: every `pair_feedback` verdict — love = 1, ok = 0.6,
+  no = 0 (it reads `verdict`, never `rating`, §7). *Weak*, from `pair_events`
+  and their folded summary: building with a pair (`open_studio`, `render`,
+  `fl_export`, `export`) is good (`weak_w_build` 0.30), a `loop_play` of
+  `loop_positive_secs` (20 s) or more mildly good (0.15), a `skip` mildly bad
+  (0.10), a `hide` bad (0.30), and `shown` in the top five with nothing else
+  done a very weak bad (0.03). Per pairing they add up to a soft label
+  (good ÷ (good + bad)) with that weight; a verdict on the pairing (or a
+  section-less verdict on its song pair) overrides them. Documented mix pairs
+  stay positives, with sampled undocumented negatives at the skip weight.
+- **Features.** `matcher/features.pair_features` — one function for train and
+  serve — now also reads the pairing's **scored row**: the rule's total
+  (`score_rule`), measured harmony, the section terms, effort, timing, the slot
+  and its parts, the phrase window, the Drop-in verdict (`compat.dropin`, with
+  `recipe.bed_shift`) and the two section labels (`ROW_FEATURE_NAMES`, appended
+  at the end). A verdict whose pairing a re-score dropped trains with
+  `row_known = 0` and neutral row terms; a weak label without its row is left
+  out. The song-level half is memoised per song pair (`song_cache`).
+- **The model.** sklearn's `HistGradientBoostingClassifier` with sample weights
+  (a soft label y is y of a positive and 1 − y of a negative), on columns cut
+  at their own quantiles first (≤ 255 values each, `learning.QuantizedHGB`:
+  its weighted binning otherwise costs ~9 s a fit), out-of-fold
+  AUC with `GroupKFold` by vocal song, calibrated on grouped folds (isotonic
+  from 1,000 rows, Platt below), beside a logistic baseline. Nothing trains
+  before 10 verdicts with 3 each side.
+- **The shrinkage blend.** `score_total = (1 − α)·score_rule + α·model_prob`,
+  α = n_strong / (n_strong + `learn_k`), capped at `learn_alpha_max`, n_strong
+  the verdicts the active model learned from. No model, or α = 0: every total
+  is the rule's to the bit (`score_rule` = `score_total`, `model_prob` NULL).
+  The **rule picks the rows** — the gate, the pruned run, the cap and each
+  track's reserve are the rule's — and the blend re-orders them: Score library
+  and a per-track score apply it to the rows they just wrote, and activating,
+  rolling back or retraining re-blends the stored table in place
+  (`blend_table`, the one writer of a blended total; a job). Segments blends
+  its live rows with the same `Blender` over the rule's best 4 × limit
+  (`segment_match.POOL_FACTOR`), so a live row and its stored twin agree to
+  the digit. A model with no verdicts behind it (one trained by **Train from
+  imported mixes** alone) has α = 0 and changes nothing.
+- **Shadow evaluation.** A trained model is activated only when its held-out
+  AUC on your verdicts is at least the active model's (as measured when that
+  one was trained) — or, with none active, the rule's — and at least the
+  rule's on the same verdicts. Every model records its feature names (a
+  mismatch is refused), counts, metrics, α and the decision in words;
+  **rollback** re-activates the model active before it (or the rules).
+- **Auto-retrain** (`learning.tick`, once a minute from the server): when
+  `retrain_min_strong` (10) new verdicts or `retrain_min_weak` (200) new
+  non-`shown` events have arrived since the last train, and only while no
+  stage queue holds a track and no pipeline, scoring or bulk job runs — never
+  beside a separation. `app_prefs.learning_state` keeps the last train's
+  watermarks and result.
+- **Exploration** (`api/routes/mashups._with_exploration`): with a model
+  active, one dock slot in `explore_every` (8) is an unjudged pair the rule
+  rates at least as highly as the page's lowest row and the model is least
+  sure about (`model_prob` nearest 0.5, the `uncertain` order), labelled
+  (`explore`, `explore_reason`; its events carry scorer `explore`). Inserted
+  beside the ranked rows, never instead of one; the next page's offset counts
+  only ranked rows.
+- **Suggested from your ratings** (`matcher/weight_fit.py`): on judged pairs
+  still scored, a logistic fit of the verdict on the six section terms with
+  every weight ≥ 0, normalised; its expected change is the section fit's AUC
+  out of fold (by vocal song) against your current weights' on the same
+  verdicts. Needs 10 of each; shown in Tuning, applied only on its button.
+- **Cost** (4-core VM, synthetic): see §8.
 
 ### 5.9 Mix import and link resolution
 
@@ -941,11 +1018,19 @@ Each shape below is pinned by a contract test.
   `GET /api/segments?role=vocal|bed` (packed rows, cached per library state,
   gzipped) and `GET /api/segments/{id}/matches` — the scorer's own arithmetic,
   live, exact top-k. A pair hidden in the dock is left out here too (`hidden`
-  counts them beside `gated`).
+  counts them beside `gated`). With a learned model active it is the rule's
+  exact top 4 × limit, blended exactly as the stored rows are (§5.8), and the
+  best `limit` of those.
 - **Mix summary**, **Discover gaps** (`GET /api/discovery/gaps`) and the
   attribute catalogue (`GET /api/analysis/attributes`).
 - **Pair events** (`POST /api/events`, §5.14): always answers 200 with
   `{accepted, dropped}`.
+- **Learning** (`api/routes/learning.py`, §5.8): `GET /api/learning` (labels,
+  α, active model, last train, history); `POST /api/learning/retrain`,
+  `/rollback`, `/activate/{id}`, `/deactivate` (jobs, kind `learn`);
+  `GET /api/learning/weight-suggestion` and `POST …/apply`. Every vocal row
+  carries `score_rule` and `model_prob`; an exploration row carries `explore`
+  and `explore_reason`.
 
 ### 5.14 Implicit pair events
 
@@ -953,8 +1038,7 @@ What you *do* with a pair says something a star does not, so it is logged:
 `pair_events` holds one row per event, keyed by the pair's four ids, with a
 `value` (seconds listened, stars), the `context` it happened in, the
 `scorer_version` that ranked it (`heuristic`, or `model:<version>`) and the
-`rank_shown`. Nothing reads them yet — they are collected so the learning loop
-has history to start from.
+`rank_shown`. The learning loop reads them as weak labels (§5.8).
 
 | Event | Written when | `value` |
 |---|---|---|
@@ -1005,17 +1089,17 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 | `database/alignment.py` | allin1, phrases and frame-sidecar storage |
 | `database/arrays.py` | The float-array store (`feature_arrays`) |
 | `api/server.py` | FastAPI app, routers, health/deps, yt-dlp update, SPA serving with stale-build detection |
-| `api/routes/` | `tracks`, `segments`, `playlists`, `jobs`, `analysis`, `mashups`, `mixes`, `discovery`, `crates`, `sets`, `studio`, `settings`, `prefs`, `events`, `datasets`, `models`, `database` |
+| `api/routes/` | `tracks`, `segments`, `playlists`, `jobs`, `analysis`, `mashups`, `mixes`, `discovery`, `crates`, `sets`, `studio`, `settings`, `prefs`, `events`, `datasets`, `models`, `learning`, `database` |
 | `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py`, `api/queue_eta.py` | Per-stage worker pools + resume, job registry, playlist preview hydration, ETAs |
-| `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage `download/stems/analysis/structure/reverify` workers behind the per-track buttons; `bulk`, `match`, `hook`, `mixdown`, `session`, `mix_resolve`, `mix_ingest`, `discovery`, `ml` |
+| `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage `download/stems/analysis/structure/reverify` workers behind the per-track buttons; `bulk`, `match`, `hook`, `mixdown`, `session`, `mix_resolve`, `mix_ingest`, `discovery`, `ml`, `learning` (retrain, model switch, the tick) |
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py`, `fit_hints.py`, `errors.py` |
 | `downloader/download.py` | SoundCloud-first download, verified YouTube fallback, re-verify |
 | `stems/separate.py` | htdemucs, four sources + summed instrumental |
 | `analysis/` | `essentia_groups.py` (the analyser), `ml_models.py` (EffNet heads), `project.py` (payloads → `features`), `allin1_runner.py`, `structure.py` (the cut and per-section measurements), `phrases.py`, `hooks.py`, `quality.py`, `vocals.py`, `analyze.py` (shared tempo/key helpers), `decode.py`, `frames.py`, `registry.py` + `cache.py` (feature groups), `timeseries.py` (sidecars), `attributes.py`, `compare.py`, `threads.py` |
-| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `term_report.py`, `setflow.py`, `segment_match.py` |
+| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `learning.py` (labels, ranker, blend, shadow gate, tick), `weight_fit.py`, `term_report.py`, `setflow.py`, `segment_match.py` |
 | `render/` | `dsp.py`, `master.py`, `mixdown.py`, `session.py`, `transition.py`, `exports.py` |
 | `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens; `segments/`; `pairs/pairModel.js`; `ui/primitives.jsx`); `hooks/`; `engine/` (`MashupEngine`, decode, grid); `api.js`, `events.js` (the pair-event buffer), `theme.js`, `attributes.js`; `public/soundtouch-processor.js` |
-| `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks) |
+| `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks), `sim_learning.py` (a synthetic listener judging through the dock while the learning loop retrains: NDCG@10 against the rules) |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS; `essentia_fake.py` |
 
 **Tables** (`database/schema.sql`):
@@ -1039,7 +1123,8 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 - `mashup_candidates` — one row per section pair: sub-scores, effort, section
   terms, harmony, alignment, timing, the slot (`score_slot` and its three
   parts), the phrase window, `dropin_mask` / `camelot_shift`, engine, scorer +
-  model version. Indexed for
+  model version, `score_rule` (the rule's total) and `model_prob` (the active
+  model's probability; `score_total` is their blend, §5.8). Indexed for
   the dock scoped to a side, the library-wide list and one pairing.
 - `pair_feedback` (verdict, stars, section indexes, `reasons_json`,
   `sections_stale`, engine, feature snapshot) · `pair_hidden` ·
@@ -1047,11 +1132,14 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 - `pair_events` (the four ids, `event`, `value`, `context`, `scorer_version`,
   `rank_shown`, `created_at`) and `pair_event_summary` (old events folded per
   pair, event and context) — §5.14.
-- `mixes` · `mix_tracks` · `mashup_pairs` · `datasets` · `models` · `crates` ·
+- `models` — every trained model: feature names, metrics, and for the
+  learning loop's rankers `kind`, `alpha`, `n_strong`, `n_weak`,
+  `auc_strong`, `rule_auc`, `decision`, `activated_at` (rollback reads it).
+- `mixes` · `mix_tracks` · `mashup_pairs` · `datasets` · `crates` ·
   `crate_items` · `sets` / `set_items` · `embeddings` · `analysis_runs` ·
   `app_prefs` (keys: `soundcloud_profile`, `soundcloud_saved_profiles`,
   `attribute_visibility`, `last_score`, `harmony_unsure_below`,
-  `slot_dropin_floor`, `library_view`, `filter_presets`).
+  `slot_dropin_floor`, `learning_state`, `library_view`, `filter_presets`).
 
 ---
 
@@ -1125,7 +1213,8 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
   `frontend/src/events.js` throws, awaits, toasts or imports, and no caller
   reads what it returns. A `rate` or `hide` event is a log line beside the
   `pair_feedback` / `pair_hidden` row its own route wrote — events never write
-  either. Event and context names are stored and learned from, so, like
+  either. The learning loop reads them as weak labels only (§5.8); a verdict
+  on the same pairing always overrides them. Event and context names are stored and learned from, so, like
   verdicts, they are added to and never renamed (`models.PAIR_EVENTS`,
   `PAIR_EVENT_CONTEXTS`; a test pins the frontend's to them).
 - **Stars sit beside the verdict**: 5,4 → love · 3 → ok · 2,1 → no.
@@ -1185,6 +1274,11 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
   `segment_match._Snapshot.cache`): it holds each section dict beside what it
   derived, and lives exactly as long as the sections it was built from. Never
   share one across runs or mutate a section while one is alive.
+- **Exploration is an insertion, not an order term** (§5.8). Its rows are
+  added beside the ranked page and labelled; the ranked rows and their order
+  are exactly the listing's, and the frontend's next offset counts only them.
+  An exploration rule that replaced or re-ordered rows would need the
+  bounded-listing check below.
 - **A computed listing order must be bounded by `score_total`.**
   `_bounded_listing` leaves rows under a score out and proves they could not
   have ranked higher. A new order, or a new term in an order expression, that
@@ -1197,6 +1291,32 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
   compute SQL's `PERCENT_RANK`. The ranks are rebuilt when the table's row
   count, newest id or sum of totals moves; a writer that rewrites
   `inst_energy` alone, in place, would have to clear `models._RANKS_CACHE`.
+
+### Learning (§5.8)
+
+- **One blend, one writer.** `learning.blend` is the formula;
+  `learning.blend_table` is the only writer of a blended `score_total`;
+  Segments blends its live rows with the same `Blender` (a test checks a live
+  row equals its stored twin with a model active). `score_rule` is always the
+  rule's own total and never holds a blend; with no model or α = 0,
+  `score_total` = `score_rule` to the bit.
+- **The rule picks the rows; the model re-orders them.** Nothing the model
+  says changes the gate, the pruned run's ceilings, the cap or the reserve —
+  that is what lets a pruned run stay pruned with a model active. A model that
+  should reach rows the rule dropped needs its own ceiling in
+  `_score_pruned` first.
+- **A model reaches the ranking only through the shadow gate or a click.**
+  `train` activates only on held-out AUC ≥ the active model's (or the rule's)
+  and ≥ the rule's; `activate`, `rollback` and `deactivate` are the user's.
+  Every activation re-blends the stored table; the Segments fingerprint
+  includes the active model.
+- **Training reads `verdict`** (`STRONG_LABELS`), never `rating`.
+- **`pair_features` grows at the end only** (`FEATURE_NAMES`); its row terms
+  are read off the scored row (stored or live), never re-derived, and the
+  Drop-in feature is `compat.dropin` itself.
+- **The retrain never runs beside the pipeline.** `learning.pipeline_idle`
+  is the gate; a new job kind that means "the machine is busy" goes in
+  `learning._BUSY_KINDS`.
 
 ### Pipeline and scoring
 
@@ -1452,6 +1572,43 @@ browser sends.
 
 ---
 
+**The learning loop** (§5.8; synthetic, no Docker or audio):
+
+```bash
+python scripts/sim_learning.py --tracks 500 --judgements 200 --every 20   # criterion 2.1
+python scripts/bench_learning.py --library <scored synthetic library> \
+    --strong 500 --weak 20000 --out /tmp/bench_learning                  # criterion 2.3
+```
+
+`sim_learning.py` builds (or copies, `--library`) a scored synthetic library
+and lets a synthetic listener — Drop-ins and breakdown beds liked, a little of
+the rule's score, noise on every verdict — judge 200 pairs from the live dock
+(exploration included), logging `shown`, loops, skips and Studio opens; at
+every checkpoint the loop retrains through the shadow gate, and NDCG@10 on
+held-out vocals compares the blended order with the rule's.
+`bench_learning.py` plants verdicts and weak-label events on a copy of a
+scored library and times a retrain (labels, features, grouped CV of the ranker
+and the logistic baseline, calibration) and the re-blend of every stored row.
+
+Phase 2 (2026-11-18, the same VM, synthetic):
+
+| | Measured |
+|---|---|
+| Zero verdicts: Score library vs Phase 1's code on the same library | every column of every row identical — 267,227 rows at 500 tracks, 406,353 at 2,000 (table hash, `score_rule` / `model_prob` aside) |
+| Retrain, 10,000 tracks, 500 verdicts + 20,000 weak labels, 4 cores | **26.3 s** (features 19.7 s; 20,672 rows fitted) |
+| Re-blend every stored row (10,000 tracks, 280,903 vocal rows) | 108 s — a job after an activation; Score library adds it to its own run |
+| Simulated listener, 500 tracks, 200 verdicts, NDCG@10 on 115 held-out vocals | rules 0.521; blended 0.661 at 20 verdicts, 0.925 at 60, 0.931 at 200 — never below the rules |
+| The same, a noisier listener (verdict noise 0.4, not 0.15) | blended 0.571 at 20, 0.904 at 40, 0.889 at 200 |
+
+Read it with: the simulated taste (Drop-ins, breakdown beds) is built from
+terms the model sees as features, so a held-out AUC near 1.0 is the
+easy case; a real listener's taste is not. With 500 random verdicts the
+10k benchmark's ranker reached AUC 0.545 against the logistic baseline's
+0.576 — that taste was mostly a coin. The quantile cut before the booster
+(`learning.QuantizedHGB`) is what brought a fit from ~10 s to ~1 s:
+scikit-learn's weighted binning was 90 % of it.
+
+
 ## 9. Open work
 
 1. **Measure a fresh library end to end** — `scripts/bench_one_pass.py` over
@@ -1480,9 +1637,10 @@ browser sends.
    reprocess → re-analyse**. A library scored before that is still on the old
    arithmetic, and loosening the tolerance against it would be fitting the gate
    to a bug.
-4. **Judge pairs.** `pair_feedback` needs a few dozen verdicts (10+ loved and
-   10+ rejected) before the term report, the learned scorer or a weight fit mean
-   anything. Then weight what the report says agrees with your ears.
+4. **Judge pairs.** The first model trains at 10 verdicts (3+ each side) and
+   earns about half of each score at 40 (`learn_k`); the term report and
+   *Suggested from your ratings* need 10 loved and 10 rejected. Nothing about
+   the loop has met a real listener yet: the numbers in §8 are a synthetic one.
 5. **Import the documented Big Bootie mixes** (~17) to build training positives.
 6. **allin1 features that do not reach the ear yet**: the dock loop, Studio and
    the mini studio start the vocal at its section, not its phrase pickup;
@@ -1517,29 +1675,32 @@ browser sends.
 12. **Foundations as they hurt:** server-side Studio projects (snapshots are
     per-browser `localStorage`), multi-resolution waveform peaks, job
     persistence across restarts, automatic lyrics for section lines.
-13. Segments: with a learned model active, live and stored rows are ranked on
-    two scales.
-14. **Scale, what is left** (synthetic libraries, §8). Score library now
-    finishes at 10,000 tracks, but: a run under a **learned model** still
-    prices every pair (a probability has no ceiling to prune with) and will
-    not finish at that size; a full run's **peak memory** is a few GB at
+13. **Scale, what is left** (synthetic libraries, §8). Score library
+    finishes at 10,000 tracks, with or without a learned model (§5.8), but: a
+    full run's **peak memory** is a few GB at
     10,000 tracks (every section in memory, plus one float32 ceiling per
     vocal × bed song pair); a **per-track** score is never pruned — a track's
     rows are all written at import, and only the next Score library trims
     them to the cap and the reserve. **`GET /api/tracks`** is 4 s and 37 MB at
     10,000 tracks (3.5 MB gzipped, but the route does not compress), and
     **Segments' first match** still builds a snapshot of every section.
-15. **Pair events have no reader yet** (§5.14): they are collected for the
-    learning loop. The mini studio's loop is not timed.
-16. **Planted drop-ins are not special enough to measure a ranking with.** On
-    the synthetic library a planted pair sits near the top few per cent of its
-    vocal's partners, not in its top five: hundreds of naturally compatible
-    beds (same key within a step, tempo within 3 %, a sung chorus) qualify as
-    Drop-ins on equal terms, and what separates them is the loudness match,
-    which the generator draws at random for planted pairs too. Either the
-    generator makes planted pairs distinctive (a loudness and timbre match the
-    engine already rewards), or recall is measured as "tagged Drop-in and in
-    the top N %" rather than "in the top five".
+14. **Learning, what is left** (§5.8): the mini studio's loop is not timed,
+    so its listens are no weak label; the model only re-orders the rows the
+    rule kept (a pair the rule's cap dropped cannot be lifted); the shadow
+    gate compares a new model's AUC with the active one's as measured when it
+    was trained, on a smaller set of verdicts; exploration has no measure yet
+    of how much it teaches.
+15. **Planted drop-ins, after the generator gave them their edge.** A planted
+    bed's instrumental now sits at its vocal's loudness for its kind, with its
+    bands clear of the vocal's (`synth_library._plant_match`), so it is the
+    vocal's distinctive best partner rather than one of hundreds of equal
+    Drop-ins. At 2,000 tracks, after a full Score library, on each vocal's
+    scoped list of vocal pairs: 35 of 40 in the top five (median rank 1;
+    before: 8 of 40), 36 of 40 tagged Drop-in, 3 not listed at all. Phase 1's
+    bar (90 % / 95 %) is still just missed; the three unlisted pairs are the
+    place to look. A scoped dock also lists instrumental-over-instrumental
+    rows of the same two songs (item 6), which carry no sections and are
+    never Drop-ins.
 
 Not worth doing: raising the `rhythm` or `structure` section weights (`rhythm`
 saturates on 4/4 dance music; `structure` duplicates `label`); persistent

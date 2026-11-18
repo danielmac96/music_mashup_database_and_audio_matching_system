@@ -209,62 +209,43 @@ def test_model_score_batch_matches_one_at_a_time(seeded):
     assert model_score_batch([], bundle) == []
 
 
-def test_score_all_pairs_with_an_active_model(seeded):
-    """The model path must persist the model's probability as score_total, tag
-    the rows, and widen the gate to the BPM window — a documented mashup often
-    breaks the key rule, which is exactly what the model is there to learn."""
+def test_an_on_off_model_no_longer_replaces_the_total(seeded):
+    """Phase 2 (readme §5.8) retired the switch that replaced score_total with
+    a model's probability and widened the gate for it. The rule picks and
+    prices every row; a model only blends in through the shrinkage blend, and
+    a model trained without verdicts behind it (this one: documented mixes
+    only) has α = 0 — every total stays the rule's, to the bit, and the gate
+    is the rule's whatever is active."""
     from database.models import get_conn
-    from matcher.features import pair_features
     from matcher.match import score_all_pairs
-    from matcher.model_scorer import model_score
     db_path, ids = seeded
 
-    # A key-incompatible but tempo-compatible track: 3B against 8A scores 0.25.
-    odd = _add_song(db_path, 7, bpm=122.0, camelot="3B")
-    bundle = _activate_model(db_path)
-
-    # The key gate is passed explicitly here. Since P1.1 it defaults OFF for the
-    # heuristic too (effort already prices the transpose, so gating on key as
-    # well charged twice for it), and comparing two ungated runs would not test
-    # anything. The claim under test is that the MODEL path ignores the gate
-    # whatever it is set to.
-    heuristic = score_all_pairs(db_path=db_path, scorer="heuristic",
-                                key_min_score=0.55)
-    modelled = score_all_pairs(db_path=db_path, scorer="model",
-                               key_min_score=0.55)
-    assert modelled["_scorer"] == "model"
-    assert modelled["_model_version"] == bundle["version"]
-    assert len(modelled["vocal_over_instrumental"]) > \
-        len(heuristic["vocal_over_instrumental"])
-    assert any(r["inst_song_id"] == odd or r["vocal_song_id"] == odd
-               for r in modelled["vocal_over_instrumental"])
-
+    _add_song(db_path, 7, bpm=122.0, camelot="3B")   # key-gated at 0.55 either way
+    _activate_model(db_path)
+    heuristic = score_all_pairs(db_path=db_path, scorer="heuristic", key_min_score=0.55)
+    rows_h = _rows(db_path)
+    modelled = score_all_pairs(db_path=db_path, scorer="model", key_min_score=0.55)
+    assert modelled["_scorer"] == "heuristic"
+    assert len(modelled["vocal_over_instrumental"]) == len(heuristic["vocal_over_instrumental"])
+    assert _rows(db_path) == rows_h
     conn = get_conn(db_path)
-    rows = conn.execute(
-        "SELECT * FROM mashup_candidates "
-        "WHERE combo_type='vocal_over_instrumental'").fetchall()
-    ii = conn.execute(
-        "SELECT DISTINCT scorer FROM mashup_candidates "
-        "WHERE combo_type='instrumental_over_instrumental'").fetchall()
+    rows = conn.execute("SELECT score_total, score_rule, model_prob, scorer "
+                        "FROM mashup_candidates").fetchall()
     conn.close()
-    assert rows and all(r["scorer"] == "model" for r in rows)
-    assert all(r["model_version"] == bundle["version"] for r in rows)
-    # instrumental↔instrumental has no training signal — it stays heuristic.
-    assert [r["scorer"] for r in ii] == ["heuristic"]
+    assert rows and all(r["score_total"] == r["score_rule"] for r in rows)
+    assert all(r["model_prob"] is None and r["scorer"] != "model" for r in rows)
 
-    from database.models import get_all_features
-    from matcher.match import get_library_stats
-    stats = get_library_stats(db_path=db_path, refresh=True)
-    by_song = {(f["song_id"], f["stem_type"]): f
-               for stem in ("vocals", "instrumental")
-               for f in get_all_features(stem_type=stem, db_path=db_path)}
-    for r in rows:
-        v = by_song[(r["vocal_song_id"], "vocals")]
-        i = by_song[(r["inst_song_id"], "instrumental")]
-        expected = model_score(pair_features(v, i, [], [], stats), bundle)
-        assert r["score_total"] == pytest.approx(round(expected, 4), abs=1e-9)
-        # The four heuristic sub-scores are still written, for display.
-        assert 0.0 <= r["score_key"] <= 1.0
+
+def _rows(db_path):
+    from database.models import get_conn
+    conn = get_conn(db_path)
+    try:
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(mashup_candidates)")
+                if r[1] not in ("id", "created_at", "updated_at")]
+        return [tuple(r) for r in conn.execute(
+            f"SELECT {', '.join(cols)} FROM mashup_candidates ORDER BY id")]
+    finally:
+        conn.close()
 
 
 def test_train_rejects_unknown_dataset(db_path):
@@ -526,11 +507,12 @@ def test_unknown_genre_or_era_is_neutral():
     assert s["surprise_genre"] == 0.5 and s["surprise_era"] == 0.5
 
 
-def test_model_path_widens_the_tempo_gate(seeded):
-    """The gate bounds the matrix; it must not express taste the model is meant
-    to learn. A pair the heuristic rejects on tempo must still reach the model."""
-    from config import BPM_MAX_DIFF, BPM_MAX_DIFF_MODEL
-    assert BPM_MAX_DIFF_MODEL > BPM_MAX_DIFF
+def test_there_is_no_separate_gate_for_a_model():
+    """The model path's wider tempo gate went with the on/off switch: a model
+    can only re-rank what the rule's gate let through (readme §5.8)."""
+    import config
+    assert not hasattr(config, "BPM_MAX_DIFF_MODEL")
+    assert "bpm_max_diff_model" not in config._TUNABLE_FLOATS
 
 
 def test_dataset_is_csv_with_a_readable_header(seeded):

@@ -105,7 +105,7 @@ def test_every_tunable_knob_is_reported(client):
     got = c.get("/api/settings").json()
     for key in ("effort_weight", "section_weight",
                 "stem_quality_min", "bpm_max_diff", "key_min_score",
-                "bpm_max_diff_model", "max_section_pairs", "match_weights",
+                "max_section_pairs", "match_weights",
                 "section_weights"):
         assert key in got, f"{key} missing from /api/settings"
         assert "value" in got[key] and "source" in got[key]

@@ -1041,43 +1041,6 @@ def _harmony_ceiling(v_mat, v_spans, b_mat, b_spans, rows: slice) -> np.ndarray:
     return out
 
 
-def _apply_model_scores(pairs, bundle, sections_of, stats: LibraryStats,
-                        on_block=None, batch: int = 4096,
-                        pinned_sections=None) -> None:
-    """Replace each pair's heuristic total with the learned model's probability.
-
-    Mutates the scores dicts in place. Batched because scikit-learn's per-call
-    overhead dwarfs the arithmetic for a single row — the model path scores
-    every pair inside the BPM window, which is a lot of single rows.
-
-    `pinned_sections(top, bed)` supplies the section pair the row will actually
-    be built for. Without it, pair_features falls back to running
-    `choose_section_pair` itself — an O(usable_v x usable_i) scan, per candidate,
-    duplicating a search the caller is about to do anyway when it emits the row.
-    On the widened gate (P1.1) that duplicate scan is the single most expensive
-    thing in a scoring run, and it can disagree with the emitted row's sections
-    when the two searches see different tie-breaks."""
-    from matcher.features import pair_features
-    from matcher.model_scorer import model_score_batch
-
-    n = len(pairs)
-    for start in range(0, n, batch):
-        chunk = pairs[start:start + batch]
-        feats = []
-        for top, bed, _ in chunk:
-            v_idx, i_idx = (pinned_sections(top, bed) if pinned_sections
-                            else (None, None))
-            feats.append(pair_features(
-                top, bed,
-                sections_of(top.get("song_id")),
-                sections_of(bed.get("song_id")), stats,
-                top_section_idx=v_idx, bed_section_idx=i_idx))
-        for (_, _, scores), prob in zip(chunk, model_score_batch(feats, bundle)):
-            scores["total"] = round(float(prob), 4)
-        if on_block is not None:
-            on_block(min(start + batch, n), n)
-
-
 # ── Score all qualifying pairs ────────────────────────────────────────────────
 
 # How far allin1's BPM may sit from Essentia's before the two are treated as
@@ -1321,7 +1284,6 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     STEM_QUALITY_MIN = cfg["stem_quality_min"]
     BPM_MAX_DIFF = cfg["bpm_max_diff"]
     KEY_MIN_SCORE = cfg["key_min_score"]
-    BPM_MAX_DIFF_MODEL = cfg["bpm_max_diff_model"]
     MAX_SECTION_PAIRS_PER_SONG_PAIR = cfg["max_section_pairs"]
     # The section weights and the mashup patterns, read ONCE for the run and
     # handed to every section search. Read per section pair (the old default)
@@ -1346,18 +1308,13 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     bpm_max = float(bpm_max_diff) if bpm_max_diff is not None else BPM_MAX_DIFF
     key_min = float(key_min_score) if key_min_score is not None else KEY_MIN_SCORE
 
-    # Resolve which scorer to use. 'auto'/'model' try to load the active model;
-    # both fall back to the heuristic when none is available.
-    bundle = None
-    if scorer in ("auto", "model"):
-        try:
-            from matcher.model_scorer import load_active_model
-            bundle = load_active_model(db_path=db)
-        except Exception:  # noqa: BLE001 — never let model loading break scoring
-            bundle = None
-    use_model = bundle is not None
-    active_scorer = "model" if use_model else "heuristic"
-    model_version = bundle.get("version") if use_model else None
+    # The rule prices and selects every row. A learned model no longer
+    # replaces the total: once the rows are chosen, the active model's
+    # shrinkage blend is applied to them (matcher/learning.blend_table, below),
+    # so the gate, the pruning and the cap are the rule's whatever is active.
+    # scorer='heuristic' skips the blend; 'auto' and 'model' apply it.
+    active_scorer = "heuristic"
+    model_version = None
 
     only = {int(x) for x in song_ids} if song_ids is not None else None
     if only is None:
@@ -1453,21 +1410,12 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
             _usable_cache[key] = usable_sections(_sections(song_id), vocal_side)
         return _usable_cache[key]
 
-    # Memoised per song pair under a learned model only: its pass and the
-    # pricing pass both want this answer for the same two songs. Without a
-    # model each pair is searched once, and remembering millions of them is
-    # what a large run's memory went on.
-    _section_pair_cache: Dict[tuple, list] = {}
-
     def _section_pairs(top: dict, bed: dict) -> list:
         """Every section pairing worth a row for these two songs (E.3).
 
         Empty until both sides have structure, in which case the caller emits a
         single section-less row and readers fall back to each track's hook.
         """
-        key = (top["song_id"], bed["song_id"])
-        if use_model and key in _section_pair_cache:
-            return _section_pair_cache[key]
         from matcher.sections import top_section_pairs
         v_use = _usable(top["song_id"], True)
         i_use = _usable(bed["song_id"], False)
@@ -1487,20 +1435,7 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                                             str(top.get("camelot") or ""),
                                             str(bed.get("camelot") or ""))),
                                     lazy=TIMING_BASE is not None)
-        if use_model:
-            _section_pair_cache[key] = out
         return out
-
-    def _best_section_idx(top: dict, bed: dict):
-        """The winning section pair's indices, for the model's feature vector.
-
-        top_section_pairs returns best-first, so [0] is the pair the top-ranked
-        row for these two songs will be built from — which is the moment the
-        model should be judging."""
-        pairs = _section_pairs(top, bed)
-        if not pairs:
-            return None, None
-        return pairs[0].get("vocal_section_idx"), pairs[0].get("inst_section_idx")
 
     def _price(top, bed, scores, seq: tuple, combo_type, row_scorer,
                row_version, weights, with_sections=False) -> None:
@@ -1563,20 +1498,7 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                     reserve.push(side, song_id, best_item[0], best_item[1], best_item)
 
     # ── vocal over instrumental ───────────────────────────────────────────────
-    # This is the only combo the learned model scores (it was trained on
-    # documented vocal-over-bed mashups). The model path widens the gate to the
-    # BPM window alone, then replaces total with the model's probability — the
-    # four heuristic sub-scores stay for display either way.
-    # The gate bounds the matrix; it must not express taste the model is
-    # supposed to learn. On the model path the key half is already off, and the
-    # tempo half widens too — otherwise the model can never see, let alone
-    # learn, a pair the heuristic rejected on tempo alone. An explicit
-    # bpm_max_diff from the caller always wins.
-    model_bpm_gate = (max(bpm_max, BPM_MAX_DIFF_MODEL)
-                      if use_model and bpm_max_diff is None else None)
-    voi_gate = _gate(key_gate=None if use_model else key_min,
-                     upper_triangle=False, weights=VOCAL_WEIGHTS,
-                     bpm_gate=model_bpm_gate)
+    voi_gate = _gate(key_gate=key_min, upper_triangle=False, weights=VOCAL_WEIGHTS)
     if only is None:
         passes = [(v_block, i_block)]
     else:
@@ -1588,12 +1510,13 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     timing_weight = float(TIMING_BASE["weight"]) if TIMING_BASE is not None else 0.0
     # A run that could store more rows than the cap keeps only the best of
     # them, so it need not price a song pair whose ceiling is under the cut
-    # (_score_pruned). A smaller run — one track, a small library — and a
-    # learned model's (its probability has no ceiling) price every pair.
+    # (_score_pruned). A smaller run — one track, a small library — prices
+    # every pair. A learned model does not stop the pruning: it only blends
+    # the rows the rule kept (matcher/learning.blend_table).
     can_overflow = sum(len(t.feats) * len(b.feats) for t, b in passes) \
         * max(1, MAX_SECTION_PAIRS_PER_SONG_PAIR) > max_rows
     slot_weight = float(TIMING_BASE["slot_weight"]) if TIMING_BASE is not None else 0.0
-    pruned = PRUNE_RUNS and can_overflow and not use_model \
+    pruned = PRUNE_RUNS and can_overflow \
         and 0.0 <= timing_weight <= 1.0 and 0.0 <= slot_weight <= 1.0 \
         and all(w >= 0 for w in SECTION_WEIGHTS_RUN.values())
 
@@ -1648,14 +1571,10 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
         if _wanted:
             _sections_cache.update(sections_for_songs(_wanted, db_path=db, engine=ENGINE))
         _load_phrases({x["song_id"] for t, b, _sc in voi for x in (t, b)})
-        if voi and not use_model:
+        if voi:
             picks = np.random.default_rng(len(voi)).choice(
                 len(voi), size=min(SLOT_SAMPLE_PAIRS, len(voi)), replace=False)
             _sample_slots((voi[int(k)][0], voi[int(k)][1]) for k in sorted(picks))
-        if use_model:
-            _apply_model_scores(voi, bundle, _sections, lib_stats,
-                                _report(30, 10, "Applying the learned model"),
-                                pinned_sections=_best_section_idx)
         # The section search is per song pair and was the silent half of a
         # run: the bar sat at 55% for the whole of it. Report every ~1%.
         tick = max(1, len(voi) // 100)
@@ -1730,6 +1649,23 @@ def _score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
     if progress:
         progress(90, f"Writing {len(rows)} candidates…")
     bulk_upsert_candidates(rows, db_path=db)
+    rows = None
+    # The learned model's shrinkage blend over the rows just written — the
+    # one place a stored total moves off the rule's (matcher/learning.py).
+    # No active model, or no verdicts behind it: alpha is 0 and nothing is
+    # touched, so every total stays the rule's to the bit.
+    if scorer != "heuristic":
+        try:
+            from matcher.learning import blend_table
+            blended = blend_table(db, song_ids=only,
+                                  progress=_report(91, 8, "Applying the learned model"))
+        except Exception:  # noqa: BLE001 — a model must never break scoring
+            log.exception("could not apply the learned model's blend; "
+                          "rows keep the rule's totals")
+            blended = None
+        if blended and blended.get("alpha"):
+            active_scorer = "blend"
+            model_version = blended.get("version")
     # The tracks this run covered now have pairs for their current inputs
     # (songs.scored_at). One statement, on its own connection, after the rows
     # are committed — never a per-track call, and never a write of
@@ -2142,6 +2078,11 @@ def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict
     finally:
         conn.close()
     bulk_upsert_candidates(rows, db_path=db)
+    try:
+        from matcher.learning import blend_table
+        blend_table(db, pairs=[(vocal_song_id, inst_song_id)])
+    except Exception:  # noqa: BLE001
+        log.exception("could not blend the forced pair")
     return sorted(built, key=lambda r: -(r.get("total") or 0))
 
 

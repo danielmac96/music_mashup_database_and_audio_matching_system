@@ -14,6 +14,7 @@ import { SetScreen } from "./components/SetScreen";
 import { HelpPanel } from "./components/HelpPanel";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { TuningPanel } from "./components/TuningPanel";
+import { LearningPanel } from "./components/LearningPanel";
 import { MlPanel } from "./components/MlPanel";
 import { BulkReprocess } from "./components/BulkReprocess";
 import { SetupWizard } from "./components/SetupWizard";
@@ -623,6 +624,19 @@ export default function App() {
 
             <div className="drawer-body">
               <TuningPanel />
+            </div>
+
+            <div className="drawer-section">
+              <h3>Learning</h3>
+              <span className="hint">
+                Your verdicts (1–5 on the dock) and what you do with a pair
+                train a model that re-ranks the pairs the rules kept. It retrains
+                on its own and is only used when it beats the rules on pairs it
+                has not seen.
+              </span>
+            </div>
+            <div className="drawer-body">
+              <LearningPanel />
             </div>
 
             <div className="drawer-section">

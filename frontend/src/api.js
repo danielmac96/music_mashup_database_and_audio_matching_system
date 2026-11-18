@@ -130,6 +130,16 @@ export const api = {
   // Does each scored term agree with the ratings? (matcher/term_report.py)
   getTermReport: () => jsonFetch("/api/mashups/term-report"),
 
+  // The learning loop (matcher/learning.py): status, retrain, rollback, the
+  // rules alone, and section weights fitted to the verdicts.
+  getLearning: () => jsonFetch("/api/learning"),
+  retrainNow: () => jsonFetch("/api/learning/retrain", { method: "POST" }),
+  rollbackModel: () => jsonFetch("/api/learning/rollback", { method: "POST" }),
+  rulesOnly: () => jsonFetch("/api/learning/deactivate", { method: "POST" }),
+  getWeightSuggestion: () => jsonFetch("/api/learning/weight-suggestion"),
+  applyWeightSuggestion: () =>
+    jsonFetch("/api/learning/weight-suggestion/apply", { method: "POST" }),
+
   // Why a judged pair got its star — keys of models.FEEDBACK_REASONS
   // (pairModel.VERDICT_REASONS). 404 when the pair is not rated.
   savePairReasons: ({ vocalSongId, instSongId, vocalSection = null,
