@@ -7,6 +7,7 @@ import {
   tierOf,
 } from "./pairs/pairModel";
 import { compatColor, fmtTime } from "../theme";
+import { whyTerms } from "../tune";
 
 // One pair, as a card — variant C of the revamp: each side on its own line with
 // its own genre, key and BPM in aligned columns, then a result line (match %,
@@ -82,13 +83,48 @@ function PairingSteps({ c, index, count, onStep }) {
   );
 }
 
+// "Why this pair" (master plan 3B): what drove the rank, as one thin bar —
+// the song-level match terms, the section fit, the vacated slot, the effort
+// discount and the learned model's adjustment (score_total − score_rule), from
+// the per-term values on the row and the weights the dock ranked with
+// (tune.whyTerms). It explains a rank; it never computes one.
+const WHY_PARTS = [
+  ["match", "match", "Song-level match terms: tempo, key / measured harmony, energy, room"],
+  ["section", "section", "Section fit: label, length, voice, timing"],
+  ["slot", "slot", "The vacated slot: lands where the bed's own vocal was"],
+  ["learned", "learned", "Your learned model's adjustment"],
+  ["effort", "effort", "The effort discount: stretch, transpose, unsure grid"],
+];
+
+function WhyBar({ c, base }) {
+  const t = base ? whyTerms(c, base) : null;
+  if (!t) return null;
+  const pos = WHY_PARTS.filter(([k]) => k !== "effort" && t[k] > 0.0005);
+  const neg = WHY_PARTS.filter(([k]) => (k === "effort" || k === "learned") && t[k] < -0.0005);
+  const sum = [...pos, ...neg].reduce((a, [k]) => a + Math.abs(t[k]), 0) || 1;
+  const words = WHY_PARTS.filter(([k]) => Math.abs(t[k]) > 0.0005)
+    .map(([k, label]) => `${label} ${t[k] > 0 ? "+" : "−"}${Math.abs(t[k]).toFixed(2)}`).join(", ");
+  return (
+    <div className="pc-whybar" role="img" aria-label={`Why this pair: ${words}`}
+      title={`Why this pair — ${words} = ${t.total.toFixed(3)}`}>
+      {pos.map(([k, , why]) => (
+        <i key={k} className={`w-${k}`} style={{ flexGrow: t[k] / sum }} title={`${why}: +${t[k].toFixed(3)}`} />
+      ))}
+      {neg.map(([k, , why]) => (
+        <i key={k} className={`w-${k} neg`} style={{ flexGrow: Math.abs(t[k]) / sum }}
+          title={`${why}: −${Math.abs(t[k]).toFixed(3)}`} />
+      ))}
+    </div>
+  );
+}
+
 export function PairCard({ candidate: c, rating, onRate, focused = false, expanded = false,
                            playing = false, onSelect, onToggle, onPlay, onStudio,
-                           onHide = null, onAddToSet = null, setName = null,
+                           onHide = null,
                            note = "", onNote = null, onCompare = null,
                            reasons = [], onReason = null, durationOf = () => null,
                            hidden = false, justRated = false, optionIndex = 0,
-                           optionCount = 1, onStep = null }) {
+                           optionCount = 1, onStep = null, tuneBase = null }) {
   const tier = tierOf(c);
   const ck = c.compat?.key || {};
   const cb = c.compat?.bpm || {};
@@ -188,6 +224,8 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
         </div>
       </div>
 
+      <WhyBar c={c} base={tuneBase} />
+
       {!expanded && justRated && rating && onReason && (
         <div className="pc-why" onClick={(e) => e.stopPropagation()}
           onDoubleClick={(e) => e.stopPropagation()}>
@@ -197,14 +235,14 @@ export function PairCard({ candidate: c, rating, onRate, focused = false, expand
 
       {expanded && (
         <Expanded c={c} rating={rating} note={note} onNote={onNote} reasons={reasons}
-          onReason={onReason} onStudio={onStudio} onAddToSet={onAddToSet} setName={setName}
+          onReason={onReason} onStudio={onStudio}
           onCompare={onCompare} onHide={onHide} durationOf={durationOf} hidden={hidden} />
       )}
     </div>
   );
 }
 
-function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddToSet, setName,
+function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio,
                     onCompare, onHide, durationOf, hidden }) {
   const [draft, setDraft] = useState(note || "");
   useEffect(() => { setDraft(note || ""); }, [note]);
@@ -330,10 +368,6 @@ function Expanded({ c, rating, note, onNote, reasons, onReason, onStudio, onAddT
 
       <div className="pcx-actions">
         <button className="btn-primary" onClick={onStudio} title="Open both tracks in Studio">Open in Studio</button>
-        {onAddToSet && (
-          <button className="ui-btn" onClick={onAddToSet}
-            title={`Add to the set “${setName || "My set"}” (a)`}>+ Set</button>
-        )}
         {onCompare && (
           <button className="ui-btn" onClick={onCompare} aria-label="Compare"
             title="Compare the two tracks in Analysis (c)">⇄</button>

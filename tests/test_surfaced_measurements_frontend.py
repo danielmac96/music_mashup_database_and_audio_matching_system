@@ -146,7 +146,7 @@ def test_queue_shows_typical_time_per_pool():
 
 
 def test_analysis_shows_the_analyser_status():
-    an = _read("components/AnalysisScreen.jsx")
+    an = _read("components/AnalysisPanels.jsx")
     assert "api.getAnalysisStatus" in an and '"/api/analysis/status"' in API
     assert "az.blocked" in an
     # analysed_stems is { stem_type: n }; rendering the object crashed React.

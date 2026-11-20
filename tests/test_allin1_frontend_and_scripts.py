@@ -34,7 +34,7 @@ def test_tuning_offers_the_timing_knobs_and_no_engine_switch():
 
 def test_the_engines_tab_and_its_endpoints_are_gone():
     assert not (SRC / "components" / "EngineCompare.jsx").exists()
-    assert '"engines"' not in _read("components/AnalysisScreen.jsx")
+    assert '"engines"' not in _read("components/AnalysisPanels.jsx")
     api = _read("api.js")
     assert "/api/analysis/engines/" not in api and "engine-report" not in api
 

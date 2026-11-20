@@ -13,17 +13,24 @@ import { api } from "../api";
 // At the bottom: the pipeline readout (opens the Queue), the scorer line, and
 // ⌘K / ◇ styleguide (dev builds) / ? help / ⚙ settings / «».
 
+// Five destinations, in the order the work happens (master plan 3A): get
+// music in (Library, Discover), build (Studio), the documented mixes, and the
+// pipeline. Segments became the Library's Parts mode and Analysis its column
+// picker, Track detail's Compare and the Queue's status strip;
+// RETIRED_ROUTES sends anything that still asks for them to the new home.
 const NAV = [
   ["library", "Library", "▤"],
-  ["segments", "Segments", "▥"],
-  ["queue", "Queue", "⧗"],
-  ["analysis", "Analysis", "◔"],
   ["discovery", "Discover", "⌕"],
-  ["mixes", "Mixes", "≡"],
-  ["sets", "Sets", "♫"],
   ["studio", "Studio", "◫"],
+  ["mixes", "Mixes", "≡"],
+  ["queue", "Queue", "⧗"],
 ];
 export const NAV_ITEMS = NAV;
+export const RETIRED_ROUTES = {
+  segments: { route: "library", mode: "vocal", why: "Segments is now Library → Vocal parts / Bed parts" },
+  analysis: { route: "library", columns: true, why: "Analysis is now Library → Columns ▾ and Track detail → Compare with…" },
+  sets: { route: "library", keepers: true, why: "Sets were removed; ★ Keepers holds your pairs" },
+};
 
 const RAIL_KEY = "mashup.rail.v1";
 
@@ -84,7 +91,8 @@ export function Sidebar({ route, onRoute, counts = {}, children,
                           onOpenSettings, settingsOpen, status = null,
                           judged = null, tuning = null, onHelp = null, helpSeen = true,
                           collapsed = false, onToggle, pipeline = null,
-                          onOpenPalette, onStyleguide = null }) {
+                          onOpenPalette, onStyleguide = null, onKeepers = null,
+                          keepersOn = false }) {
   // The footer says which scorer is ranking pairs and how many judgements it
   // has, because "why is this list ordered like that" is otherwise unanswerable
   // from inside the app.
@@ -120,7 +128,7 @@ export function Sidebar({ route, onRoute, counts = {}, children,
           <button key={id}
             className={`rail-item${route === id ? " active" : ""}`}
             aria-current={route === id ? "page" : undefined}
-            title={label}
+            title={label} aria-label={label}
             onClick={() => onRoute(id)}>
             <span className="rail-glyph">{glyph}</span>
             {open && <span className="rail-itemlabel">{label}</span>}
@@ -162,25 +170,29 @@ export function Sidebar({ route, onRoute, counts = {}, children,
             )}
           </div>
         )}
-        <button className="rail-btn mono" onClick={onOpenPalette}
-          title="Command palette (⌘K / ctrl+K)">⌘K</button>
-        {onStyleguide && (
-          <button className={`rail-btn${route === "styleguide" ? " on" : ""}`}
-            onClick={onStyleguide} title="Styleguide — tokens and primitives">◇</button>
-        )}
-        {onHelp && (
-          <button className={`rail-btn rail-help${helpSeen ? "" : " new"}`} onClick={onHelp}
-            title="How it works — first mashup, what a pair's numbers mean, keys (?)">
-            {helpSeen || collapsed ? "?" : "? New here"}
-          </button>
-        )}
-        <button className={`rail-btn${settingsOpen ? " on" : ""}`}
-          onClick={onOpenSettings}
-          title="Settings, tuning and the database browser">⚙</button>
-        <button className="rail-btn" onClick={onToggle}
-          title={collapsed ? "Expand the rail" : "Collapse the rail"}>
-          {collapsed ? "»" : "«"}
-        </button>
+        {/* Utilities: a symbol AND a label while the rail is open; collapsed,
+            the label is the tooltip and the accessible name (3C). */}
+        <div className="rail-utils">
+          <UtilButton glyph="⌘" label="Search" hint="⌘K" open={open} onClick={onOpenPalette}
+            title="Command palette (⌘K / ctrl+K): go anywhere, find a track or a pair" />
+          {onKeepers && (
+            <UtilButton glyph="★" label="Keepers" open={open} on={keepersOn} onClick={onKeepers}
+              title="★ Keepers: every pair you rated 4–5, in the dock" />
+          )}
+          {onHelp && (
+            <UtilButton glyph="?" label={helpSeen ? "Help" : "New here? Help"} open={open}
+              className={helpSeen ? "" : "new"} onClick={onHelp}
+              title="How it works — first mashup, what a pair's numbers mean, keys (?)" />
+          )}
+          <UtilButton glyph="⚙" label="Settings" open={open} on={settingsOpen}
+            onClick={onOpenSettings} title="Settings: scoring, learning, analyser status, the database" />
+          {onStyleguide && (
+            <UtilButton glyph="◇" label="Styleguide" open={open} on={route === "styleguide"}
+              onClick={onStyleguide} title="Styleguide — tokens and primitives" />
+          )}
+          <UtilButton glyph={collapsed ? "»" : "«"} label="Collapse" open={open} onClick={onToggle}
+            title={collapsed ? "Expand the rail" : "Collapse the rail"} />
+        </div>
       </div>
     </aside>
   );
@@ -207,6 +219,17 @@ export function RailRow({ swatch, glyph, label, count, active = false,
       {glyph && <span className="rail-rowglyph">{glyph}</span>}
       <span className="rail-rowlabel">{label}</span>
       {count != null && <span className="rail-count">{fmtCount(count)}</span>}
+    </button>
+  );
+}
+
+function UtilButton({ glyph, label, hint = null, open, on = false, className = "", onClick, title }) {
+  return (
+    <button className={`rail-util${on ? " on" : ""}${className ? ` ${className}` : ""}`}
+      onClick={onClick} title={title} aria-label={label} aria-pressed={on || undefined}>
+      <span className="rail-glyph" aria-hidden="true">{glyph}</span>
+      {open && <span className="rail-itemlabel">{label}</span>}
+      {open && hint && <span className="rail-hint mono">{hint}</span>}
     </button>
   );
 }

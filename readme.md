@@ -5,7 +5,7 @@ SoundCloud (or YouTube) link and every track is downloaded, split into stems,
 analysed and cut into sections on its own. The app then ranks which **vocal
 section** of one record sits best over which **bed section** of another, lets
 you judge the pairs by ear in seconds, and builds the winners in a multi-track
-Studio, a DJ set, or an FL Studio session.
+Studio or an FL Studio session.
 
 **This file is the single source of documentation.** `CLAUDE.md` only imports
 it. When behaviour changes, update the relevant section here in place; history
@@ -166,9 +166,9 @@ vocal × bed section pair at once — the only run that also writes
  2. PROCESS   per track, on bounded priority queues (the table above)
  3. SCORE     Score library → every vocal section × bed section → mashup_candidates
  4. JUDGE     pair dock: loop the moment, rate 1–5, tag why, compare, note, hide
-              Segments: any vocal section × any bed section, scored live
+              Parts: any vocal section × any bed section, scored live
  5. BUILD     Studio: conformed lanes → WAV mixdown or FL Studio session
- 6. PLAN      Sets: keepers in running order, graded transitions → cue sheet, rekordbox, FL
+ 6. KEEP      ★ Keepers (rated 4–5) → Export ▾: cue sheet, CSV, rekordbox, Serato, Traktor, FL
  7. LEARN     your verdicts (strong) + what you do with a pair (pair events, weak)
               + documented mix pairs → a ranker, retrained on its own, blended into
               the rule's score by how many verdicts it has seen (§5.8)
@@ -216,23 +216,45 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
 - **Heavy libraries import lazily**, so the API starts (and degrades with
   clear 501/502 messages) without the audio stack.
 - **Frontend state lives once in `App.jsx`**: the library, ratings, groups,
-  sets, notes and the single player, passed to every screen.
+  notes and the single player, passed to every screen.
 
 ---
 
 ## 3. Using the app
 
-A left **rail** (Library · Segments · Queue · Analysis · Discover · Mixes ·
-Sets · Studio, plus crates, saved views, **?** help and ⚙ Settings) and one
-**player bar** shared by every screen. **⌘K** opens a command palette, `/`
+A left **rail** of five destinations — **Library · Discover · Studio · Mixes ·
+Queue** — each a symbol and a label, then the Library's saved views and
+crates, the pipeline readout, and labelled utilities (**⌘ Search** ⌘K,
+**★ Keepers**, **? Help**, **⚙ Settings**, collapse; collapsed, each label is
+its tooltip). One **player bar** is shared by every screen. Segments, Analysis
+and Sets are no longer tabs: Segments is the Library's **Parts** mode,
+Analysis is the Library's **Columns & attributes** sheet, Track detail's
+**Compare with…** and the analyser status in the Queue and Settings, and Sets
+were removed (their rows were backed up to
+`<data_dir>/exports/sets_backup_<UTC>.json` by migration 11, and the UI said
+where once). An old link or ⌘K entry for any of them lands on its new home
+(`Sidebar.RETIRED_ROUTES`; `#segments`, `#analysis`, `#sets`). **⌘K** opens a command palette, `/`
 focuses search, space plays/pauses, esc steps back. **?** opens *How it
 works*: a short quick start with the full walkthrough, every number on a pair
 card explained, and each screen's keys.
 
-Colours, type and spacing are the `:root` tokens in `styles.css`; no component
-writes a hex colour (canvas code reads tokens with `theme.cssVar`). Camelot
-chips use the Mixed In Key wheel (`theme.camelotColor`). `?styleguide` in a dev
-build shows every token and primitive.
+**The look is "Night session"** (the owner's pick of three directions, Phase
+3): dark only — one `:root` token set in `styles.css`, no light theme —
+deep blue-slate surfaces, rose for the vocal, sky for the bed, gold for a
+Drop-in (the one warm accent), periwinkle for focus and the primary action,
+and a green → amber → red fit meter for the tiers; Figtree for text, IBM Plex
+Mono for numbers; one radius scale (`--r-chip/ctl/card/modal/pill`) that
+every border-radius reads. Every text and glyph colour meets WCAG AA on every
+surface (`tests/test_visual_refresh.py`). No component writes a hex colour
+(canvas code reads tokens with `theme.cssVar`). Camelot chips keep the Mixed
+In Key wheel's 12 hues, lightened for the dark ground (`theme.camelotColor`).
+`?styleguide` in a dev build shows every token and primitive.
+
+**Text is never cut off.** Labels, pills, card lines and menu items wrap or
+grow; the one sanctioned clip is a Library name at a narrow column, which
+shows in full on hover and keyboard focus. `tests/ui/ui_check.cjs` walks 12
+screens at 1280×800 and 1920×1080 and lists any other clipped text
+(`tests/test_ui_overflow.py`; its `EXEMPT` list names each fallback).
 
 ### Library
 
@@ -243,15 +265,25 @@ track then walks the pipeline with per-track progress; failures show a reason
 and **Retry**; a row's **⋯** menu re-runs one stage, edits BPM/key, changes the
 source link, adds to a crate or deletes the track.
 
-- A **virtualised table** of fixed 32 px rows, filtered and sorted in memory.
+- **Tracks | Vocal parts | Bed parts** — what the table lists (Parts below).
+- A **virtualised table** of fixed two-line 44 px rows (title over artist),
+  filtered and sorted in memory; columns are resizable and the widths saved.
   Columns: art, title/artist, BPM, key, energy (0–10, ranked in this library),
   genre, VOX% (sung share), Best pair (percentile), Pairs V/B, rating, status;
   more can be added, including any analysed attribute. The view (columns,
   order, widths, sort) is saved on the server.
 - **The search box reads filters**: `8A 124-128 house 2015+ vox`, `8A~` (keys
-  that mix with 8A). Chips add BPM, key, genre/style, year, plays,
-  vocal-forward, stems, status and any analysed attribute. **Saved ▾** keeps
-  filter presets.
+  that mix with 8A), `rated` / `unrated` / `loved`. It is **one language** for
+  the Library, Parts and the dock (`useLibraryFilters.parseQuery`): the pair
+  words `dropin`, `strong` / `good` / `maybe` / `longshot`, `free` / `light` /
+  `heavy` and `q60+` (stem quality) are read everywhere and applied where they
+  mean something; where they do not, the preview says where they do. Chips add
+  BPM, key, genre/style, year, plays, vocal-forward, stems, status and any
+  analysed attribute. **Saved ▾** keeps filter presets.
+- **Columns & attributes ▾** opens every analysed attribute
+  (`analysis/attributes.py`) with its coverage and a histogram inline, and
+  three switches each: **Library** (a column), **Detail** (Track detail),
+  **Filter** (at or above the median, or the commonest value).
 - `×2?` / `÷2?` before a BPM flags a suspected half/double-time read; one click
   fixes it, then **Score library**.
 - Click a row to **scope the pair dock** to it; click its title to open
@@ -279,29 +311,45 @@ what the numbers cannot promise), measured harmony, bass clash, effort, the
   them first.
 
 - Keys: `↑↓` move · `←→` step pairings · space loop · `1–5` rate and move on ·
-  `⏎` expand · double-click Studio · `V`/`B` solo · `h` hide · `a` add to the
-  active set · `c` compare · `q w e r t y u` tag **why** (for 8 s after a
-  rating). Rating the star you already set clears the judgement.
+  `⏎` expand · double-click Studio · `V`/`B` solo · `h` hide · `c` compare
+  (Track detail → Compare with…) · `q w e r t y u` tag **why** (for 8 s after
+  a rating). Rating the star you already set clears the judgement.
 - **Tier chips** (Strong / Good / Maybe / Long-shot) come from the API's
   `confidence_tier`. **Filters** has two halves that never mix: *Loaded pairs*
   narrows what is fetched; *Library-wide* goes to SQL.
 - The search finds pairs by title or artist; **`A + B`** finds the pairs of
   exactly those two songs, and offers **Score A + B anyway** when the gates
-  kept them apart.
+  kept them apart. Pair words in it (`dropin 8A~ strong free loved
+  124-128`) are previewed and pinned on ⏎ as removable filters.
+- **Tune ▾** re-ranks the loaded pairs as you drag: the five match terms, the
+  section-fit share, the vacated slot, the effort penalty and the Drop-in
+  bonus. It is the server's own arithmetic on the per-term values each row
+  carries (`frontend/src/tune.js`, §5.12): at the weights the server ranked
+  with, the order is the server's exactly. **Apply to library** saves the
+  weights and runs Score library — another weight can change which rows a run
+  keeps. "Re-ranked by your tuned weights — not saved" says when it is on.
+- **Why this pair**: a thin bar on every card — the match terms, the section
+  fit, the vacated slot, the learned model's adjustment (`score_total −
+  score_rule`) and the effort discount; the numbers are its tooltip.
 - A strip under the header says when pairs are stale (`↻ Re-score · N
-  changed`). **★ Keepers** lists everything you rated 4–5. **Export ▾** writes
-  the top N as CSV, cue sheet, rekordbox or FL sessions.
+  changed`). **★ Keepers** (here or on the rail) lists everything you rated
+  4–5 — collecting pairs is rating them. **Export ▾** writes the top N as CSV,
+  cue sheet, rekordbox, Serato, Traktor or FL sessions.
 
-### Segments
+### Library → Parts (what Segments was)
 
-A library of **parts**, not songs: every vocal section on the left, every bed
-section on the right, each its own filterable table. **Select a section and
-the other table becomes its matches**, scored live (§5.13) with a Fit and a
-Move column (pairs you hid in the dock stay out; the header counts them). The **mini studio** below loops the armed pair exactly as the
-card would (bed conformed, transposed, nudged), lets you move pitch, tempo,
-nudge, levels and the high-pass, and then rate, note, **+ Set**, **Render
-WAV** or **Open in Studio**. Reached also from Track detail ("Find beds ▸") and
-⌘K.
+**Vocal parts** / **Bed parts** list every vocal (or bed) section of every
+track in the same virtualised table and search language (`chorus 8A 124-128
+16bars q60+`). **Select a part and the dock becomes its matches**: every
+section on the other side, scored live (§5.12) as pair cards (pairs you hid
+stay out; the header counts scored, gated and hidden), with a stretch limit,
+a transpose switch and tier chips. **⏎** on a card opens the **mini studio**
+inside it: it loops the pair exactly as the card would (bed conformed,
+transposed, nudged), lets you move pitch, tempo, nudge, levels and the
+high-pass, and then rate, note, **Render WAV** or **Open in Studio**. Keys in
+the parts dock: `↑↓`, `⏎`, space, `1–5`, `[ ]`, esc. Reached also from Track
+detail's per-section **Find beds ▸ / Find vocals ▸** and ⌘K. The mode and the
+selected part survive a trip to Studio.
 
 ### Queue
 
@@ -311,16 +359,9 @@ waiting, typical time per track, when the line clears, the bottleneck), other
 jobs (Score library, bulk reprocess, exports, mix ingest), and one row per
 track as a **timeline** of its six stages with a one-sentence summary and an
 ETA. Selecting a row opens the inspector: each stage's state and time, the
-full traceback of a failure, **⟳ Retry from {stage}**.
-
-### Analysis
-
-A status strip (Essentia installed? models present? cache on? allin1
-available?) and two tabs. **Attributes**: every attribute the analysis
-captures (`analysis/attributes.py`), with coverage, a histogram and two
-switches — **Library** (adds a column) and **Detail** (adds it to Track
-detail). **Compare**: two tracks side by side over every attribute, plus the
-two as a pair both ways round.
+full traceback of a failure, **⟳ Retry from {stage}**. Under the header, the
+**analyser status**: whether Essentia and allin1 can run here, the genre and
+mood models, the cache, analysed stems and embeddings (also in Settings).
 
 ### Track detail
 
@@ -332,7 +373,10 @@ section to loop it), the **section table** (with each section's own BPM, key,
 sung range and your typed lyric **line**), and five folding groups:
 attributes, stems & quality, **source & provenance** (where the audio came
 from; **Wrong audio?** lists verified YouTube alternatives; **✓ Sounds right**
-confirms a substitute), partners, and actions.
+confirms a substitute), partners, and actions. **⇄ Compare with…** (or `c` on
+a dock pair) opens a sheet: this track against any other — the pair both ways
+round as pair cards (or why it was never scored), then every attribute side
+by side with where each sits in the library.
 
 ### Discover
 
@@ -367,20 +411,12 @@ arrives aligned — bed stretched to the vocal, transposed by the card's shift,
 nudged by the stored offset, high-passed on a bass clash. Each lane has tempo,
 pitch, offset, gain, a three-band EQ, a duck under the vocal, fades and cuts,
 with grey ticks at the suggestion. **Render ▾** exports a WAV mastered to −14
-LUFS / −1 dBTP, stems per lane, or an **FL Studio session**. A set opens on
-**A/B deck** rows, each mashup at its own landing tempo.
-
-### Sets
-
-A mix's running order: pairs, whole tracks, breaks and gaps. A duration-width
-timeline with a **fit dot** on every boundary (key ±1 Camelot step and tempo
-±4 %), a flow graph with a draggable **energy curve**, an optional **tempo
-curve**, ⇅ Auto-order, gap fill suggestions, server-rendered transition
-previews, and exports (cue sheet, rekordbox XML, CSV, FL sessions).
+LUFS / −1 dBTP, stems per lane, or an **FL Studio session**.
 
 ### ⚙ Settings drawer
 
-**↻ Score library** (with a Tight / Balanced / Wide match width), **restore
+**What can run here** (the analyser status), **↻ Score library** (with a
+Tight / Balanced / Wide match width), **restore
 hidden**, **Bulk reprocess** (re-analyse, re-separate, allin1 or re-download
 only what needs it — counts come from `bulk_worker.staleness`), **⟳ Refresh
 metadata** (re-fetch genre/year/plays for rows whose import was throttled —
@@ -981,27 +1017,30 @@ repeated failures.
   left to the mixer.
 - **Pair lists** (`render/exports.py`): CSV, a timed cue sheet, rekordbox XML
   (beat grid + hot cue at the paired section), a Serato crate and a Traktor NML,
-  from a set or the dock's top N.
+  from the dock's top N or ★ Keepers. The cue sheet times each pair as if the
+  list were played back to back, 32 bars apiece at its landing tempo.
 
-### 5.12 Sets and transitions
-
-`matcher/setflow.py`. A pair lands at the vocal's tempo and key, or at its
-point on the set's **tempo curve**. Each move is graded on the tempo change
-(half/double-aware) and the Camelot distance: **smooth** ≤ 1 step and ≤ 3 %,
-**workable** ≤ 2 and ≤ 6 %, else a **jump**, with a suggested move (bed swap,
-vocal swap, 8- or 4-bar blend, echo out, cut) stored on the incoming item when
-you override it. Running time sums each slot's play length (32 bars by default)
-minus overlaps. A record back within 3 slots is flagged. **What comes next**
-keeps only moves inside the fit rule; **gap fill** ranks pairs that fit both
-neighbours by distance to the energy curve. Transition previews render
-server-side (`render/transition.py`) and are cached.
-
-### 5.13 API contracts
+### 5.12 API contracts
 
 Each shape below is pinned by a contract test.
 
 - **View preferences** (`api/routes/prefs.py`): `GET/PUT
-  /api/prefs/library-view` (columns keyed by id), filter presets.
+  /api/prefs/library-view` (columns keyed by id), filter presets, and
+  `GET /api/prefs/sets-backup` + `POST …/seen` (where migration 11 wrote the
+  removed Sets, until the UI has said so once).
+- **The Library payload** (`GET /api/tracks`, `api/routes/tracks.py`): every
+  track with its features, stems, sections summary, pair summary and
+  attributes. The encoded body and its gzip are kept until SQLite's
+  `PRAGMA data_version` — read on one long-lived connection of the route's own
+  — says any connection committed, and built once at server start
+  (`warm_library_cache`). Served gzipped when the browser asks.
+- **The Tune base**: every dock listing (`GET /api/mashups`) carries `tune` —
+  the generic normalised `match` weights, `section`, `slot`, `effort`,
+  `dropinBonus` and the active model's `alpha` — the weights its totals were
+  ranked with. `frontend/src/tune.js` re-ranks loaded rows from them: tuned =
+  `score_total + (1 − α)·(rule(w) − rule(base))`, ordered by tuned + the
+  Drop-in bonus, then `score_total`, then `id` — `order=score`'s keys
+  (`tests/test_tune_rerank.py` runs it under Node against the route).
 - **Pair confidence** (`matcher/compat.py`): every pair row carries
   `confidence_tier` (`strong` ≥ 75th percentile, `good` ≥ 65, `maybe` ≥ 50,
   else `long_shot`, one tier down when the harmony is unsure) and `compat`
@@ -1023,7 +1062,7 @@ Each shape below is pinned by a contract test.
   best `limit` of those.
 - **Mix summary**, **Discover gaps** (`GET /api/discovery/gaps`) and the
   attribute catalogue (`GET /api/analysis/attributes`).
-- **Pair events** (`POST /api/events`, §5.14): always answers 200 with
+- **Pair events** (`POST /api/events`, §5.13): always answers 200 with
   `{accepted, dropped}`.
 - **Learning** (`api/routes/learning.py`, §5.8): `GET /api/learning` (labels,
   α, active model, last train, history); `POST /api/learning/retrain`,
@@ -1032,7 +1071,7 @@ Each shape below is pinned by a contract test.
   carries `score_rule` and `model_prob`; an exploration row carries `explore`
   and `explore_reason`.
 
-### 5.14 Implicit pair events
+### 5.13 Implicit pair events
 
 What you *do* with a pair says something a star does not, so it is logged:
 `pair_events` holds one row per event, keyed by the pair's four ids, with a
@@ -1054,7 +1093,7 @@ What you *do* with a pair says something a star does not, so it is logged:
 | `compare` | `c` / ⇄ Compare | — |
 | `rate` | a star is set or taken back | stars, 0 = cleared |
 
-Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
+Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`.
 
 - **The frontend buffers** (`frontend/src/events.js`): `track()` pushes onto an
   in-memory list (capped at 400), flushed every 5 s with a `keepalive` fetch
@@ -1089,18 +1128,18 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 | `database/alignment.py` | allin1, phrases and frame-sidecar storage |
 | `database/arrays.py` | The float-array store (`feature_arrays`) |
 | `api/server.py` | FastAPI app, routers, health/deps, yt-dlp update, SPA serving with stale-build detection |
-| `api/routes/` | `tracks`, `segments`, `playlists`, `jobs`, `analysis`, `mashups`, `mixes`, `discovery`, `crates`, `sets`, `studio`, `settings`, `prefs`, `events`, `datasets`, `models`, `learning`, `database` |
+| `api/routes/` | `tracks`, `segments`, `playlists`, `jobs`, `analysis`, `mashups`, `mixes`, `discovery`, `crates`, `studio`, `settings`, `prefs`, `events`, `datasets`, `models`, `learning`, `database` |
 | `api/queue_runner.py`, `api/jobs.py`, `api/preview_hydrator.py`, `api/queue_eta.py` | Per-stage worker pools + resume, job registry, playlist preview hydration, ETAs |
 | `api/workers/` | `pipeline_worker` + `stages` (the auto-chain); single-stage `download/stems/analysis/structure/reverify` workers behind the per-track buttons; `bulk`, `match`, `hook`, `mixdown`, `session`, `mix_resolve`, `mix_ingest`, `discovery`, `ml`, `learning` (retrain, model switch, the tick) |
 | `ingest/` | `soundcloud.py` (yt-dlp metadata + search), `soundcloud_api.py` (**frozen** v2 resolver), `soundcloud_browse.py`, `soundcloud_recommend.py`, `match_score.py`, `tracklist_parse.py`, `firecrawl_scrape.py`, `sources.py`, `fit_hints.py`, `errors.py` |
 | `downloader/download.py` | SoundCloud-first download, verified YouTube fallback, re-verify |
 | `stems/separate.py` | htdemucs, four sources + summed instrumental |
 | `analysis/` | `essentia_groups.py` (the analyser), `ml_models.py` (EffNet heads), `project.py` (payloads → `features`), `allin1_runner.py`, `structure.py` (the cut and per-section measurements), `phrases.py`, `hooks.py`, `quality.py`, `vocals.py`, `analyze.py` (shared tempo/key helpers), `decode.py`, `frames.py`, `registry.py` + `cache.py` (feature groups), `timeseries.py` (sidecars), `attributes.py`, `compare.py`, `threads.py` |
-| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `learning.py` (labels, ranker, blend, shadow gate, tick), `weight_fit.py`, `term_report.py`, `setflow.py`, `segment_match.py` |
-| `render/` | `dsp.py`, `master.py`, `mixdown.py`, `session.py`, `transition.py`, `exports.py` |
-| `frontend/src/` | `App.jsx`; `shell/`; `components/` (screens; `segments/`; `pairs/pairModel.js`; `ui/primitives.jsx`); `hooks/`; `engine/` (`MashupEngine`, decode, grid); `api.js`, `events.js` (the pair-event buffer), `theme.js`, `attributes.js`; `public/soundtouch-processor.js` |
+| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `learning.py` (labels, ranker, blend, shadow gate, tick), `weight_fit.py`, `term_report.py`, `segment_match.py` |
+| `render/` | `dsp.py`, `master.py`, `mixdown.py`, `session.py`, `exports.py` |
+| `frontend/src/` | `App.jsx`; `shell/` (`Sidebar` — the rail and `RETIRED_ROUTES`); `components/` (screens; `parts/` — the Library's Parts mode and its dock; `segments/` — the parts table, filters, mini studio; `AnalysisPanels.jsx` — the attribute picker, Compare, the analyser status; `pairs/pairModel.js`, `pairs/TuneDrawer.jsx`; `ui/primitives.jsx`); `hooks/`; `engine/` (`MashupEngine`, decode, grid); `api.js`, `events.js` (the pair-event buffer), `tune.js` (the Tune drawer's re-rank and the Why bar), `theme.js`, `attributes.js`; `public/soundtouch-processor.js` |
 | `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks), `sim_learning.py` (a synthetic listener judging through the dock while the learning loop retrains: NDCG@10 against the rules) |
-| `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS; `essentia_fake.py` |
+| `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS; `essentia_fake.py`; `ui/` — Playwright scripts run under Node: `ui_check.cjs` (no truncated text, and the screenshots), `library_perf.cjs` (first rows, filter, sort, scroll) |
 
 **Tables** (`database/schema.sql`):
 
@@ -1131,12 +1170,12 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
   `track_excluded` · `pair_notes` · `section_lines`.
 - `pair_events` (the four ids, `event`, `value`, `context`, `scorer_version`,
   `rank_shown`, `created_at`) and `pair_event_summary` (old events folded per
-  pair, event and context) — §5.14.
+  pair, event and context) — §5.13.
 - `models` — every trained model: feature names, metrics, and for the
   learning loop's rankers `kind`, `alpha`, `n_strong`, `n_weak`,
   `auc_strong`, `rule_auc`, `decision`, `activated_at` (rollback reads it).
 - `mixes` · `mix_tracks` · `mashup_pairs` · `datasets` · `crates` ·
-  `crate_items` · `sets` / `set_items` · `embeddings` · `analysis_runs` ·
+  `crate_items` · `embeddings` · `analysis_runs` ·
   `app_prefs` (keys: `soundcloud_profile`, `soundcloud_saved_profiles`,
   `attribute_visibility`, `last_score`, `harmony_unsure_below`,
   `slot_dropin_floor`, `learning_state`, `library_view`, `filter_presets`).
@@ -1151,10 +1190,15 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
   new numbered migration. `schema.sql` is read only by an empty database. A
   shipped migration is never edited; each is idempotent; none calls
   `executescript` (it commits early and breaks the per-migration transaction).
+- **Sets are gone, and a removal backs up first** (migration 11,
+  `schema._remove_sets`): the rows are written to
+  `<data_dir>/exports/sets_backup_<UTC>.json`, read back and counted, and any
+  failure raises so the migration rolls back with the tables in place. A
+  migration that drops user data follows the same pattern.
 - **Section indexes are a namespace per engine.** The fallback cut's sections
   are numbered from 0, allin1's from `ALLIN1_SECTION_BASE` (1000), and allin1
   segment ids from `ALLIN1_SEGMENT_ID_BASE`. That keeps `pair_feedback`,
-  `pair_notes`, `set_items` and `mashup_candidates` keyed the same way for
+  `pair_notes` and `mashup_candidates` keyed the same way for
   both, and a judgement can never name the wrong engine's section.
   `remap_feedback_sections(namespace=…)` re-points only its own engine's sides;
   `get_sections` / `sections_for_songs` / `list_segments` read allin1's sections
@@ -1196,10 +1240,9 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
   `upsert_features` pops them into it.
 - **A pair is keyed by its four ids, never by `candidate.id`**:
   `score_all_pairs` truncates `mashup_candidates`. `pairModel.js`
-  `keyOf`/`feedbackKey`, `ux_pair_feedback_section`, `set_items` and
-  `pair_notes` all use the same key (`COALESCE`d sections). A set item freezes
-  its scored row and prefers the live one, looked up in ONE query
-  (`candidates_for_pairs`).
+  `keyOf`/`feedbackKey`, `ux_pair_feedback_section` and
+  `pair_notes` all use the same key (`COALESCE`d sections). Many pairs' live
+  rows are looked up in ONE query (`candidates_for_pairs`).
 - **`pair_feedback` is irreplaceable user input.** Its unique key includes the
   section indexes; any migration must copy, count and refuse to drop the
   original on a short copy. Every write of `sections` goes through
@@ -1208,7 +1251,7 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 - **One path takes a judgement away** — `delete_pair_feedback`, which deletes
   the whole row (and its reasons). Its `WHERE` mirrors the unique index,
   `COALESCE` included. Sending `rating: null` does **not** clear.
-- **A pair event is never felt, and never a judgement** (§5.14). The request
+- **A pair event is never felt, and never a judgement** (§5.13). The request
   path of `POST /api/events` opens no connection; nothing in
   `frontend/src/events.js` throws, awaits, toasts or imports, and no caller
   reads what it returns. A `rate` or `hide` event is a log line beside the
@@ -1406,7 +1449,28 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Segments), `mixes`.
 - **The dock's orders are the server's, except Effort** (`SECTION_TERM_ORDERS`);
   an unmeasured term sorts last.
 - **The Library view is keyed by column id**, and the table is virtualised on
-  fixed 32 px rows (`TrackTable.ROW_H`).
+  fixed two-line 44 px rows (`TrackTable.ROW_H` ≡ `.tt-row`'s height; the parts
+  table reuses the row, `SegmentTable.ROW_H`). Change the row and both
+  constants and their contract tests together.
+- **The Library payload is kept by `data_version`, never a timestamp**
+  (`tracks.library_payload`): many writers stamp no time. Anything new the
+  route reads must come from the database, or the cache must key on it too.
+- **Tune re-ranks with the server's arithmetic, never its own**
+  (`frontend/src/tune.js`): a new term in the rule's total
+  (`match._apply_section_fit`, `sections.slot_fit`) or in `order=score` changes
+  `tune.js` and `mashups.tune_base` in the same commit, or the drawer's order
+  drifts from the server's (`tests/test_tune_rerank.py`).
+- **One filter language** (`useLibraryFilters.parseQuery`): the Library, the
+  parts tables and the dock read the same parser. A new word goes there, with
+  where it applies (`PAIR_TOKENS`); a surface that cannot answer a word says
+  so in its preview, never ignores it.
+- **No text is cut off.** A label, pill, card line or menu item wraps or
+  grows. A new clip goes in `tests/ui/ui_check.cjs`'s `EXEMPT` with the hover /
+  focus fallback that shows the whole text.
+- **Retired tabs redirect** (`Sidebar.RETIRED_ROUTES`): a route that leaves the
+  rail gets an entry there, so old links and ⌘K land somewhere.
+- **Dark only, one token set.** No light theme, no second `:root`; a new
+  colour is a token that passes AA on every surface (`test_visual_refresh.py`).
 - **Attributes are defined once**, in `analysis/attributes.py`.
 - **Filtering never fetches**; library, judgements and groups are fetched once
   in `App.jsx`; a hidden pane must not own the keyboard.
@@ -1609,6 +1673,26 @@ easy case; a real listener's taste is not. With 500 random verdicts the
 scikit-learn's weighted binning was 90 % of it.
 
 
+**The Library and the dock in a browser** (Phase 3; the served bundle,
+Playwright under Node, no audio needed):
+
+```bash
+node tests/ui/library_perf.cjs http://localhost:8000 3        # first rows, filter, sort, scroll
+node tests/ui/ui_check.cjs http://localhost:8000 /tmp/shots   # no truncated text + a PNG per screen
+```
+
+Phase 3 (2026-11-20, the same VM; 10,000 synthetic tracks with the candidates
+table padded to 481,000 rows, as `bench_scale.py` does):
+
+| | Measured |
+|---|---|
+| `GET /api/tracks`, 10,000 tracks | 2.5 ms and 3.5 MB gzipped once kept (it was 4.35 s and 37 MB); a rebuild after a write is ~3.7 s, done at server start and after a commit |
+| Library first rows after navigation | 930 / 675 / 743 ms (three loads) |
+| Library filter (5 queries) / sort (5 headers), median | 11 ms / 36 ms |
+| Scrolling 10,000 rows, 3 s at 120 px a frame | 181 frames, 1 over 25 ms (33 ms worst), 34 rows in the DOM |
+| Tune: re-rank 500 loaded pairs, p95 of 20 | 2.9 ms |
+| Clipped text, 12 screens × 2 viewports | 0 outside `EXEMPT` (253 before the fixes) |
+
 ## 9. Open work
 
 1. **Measure a fresh library end to end** — `scripts/bench_one_pass.py` over
@@ -1661,9 +1745,7 @@ scikit-learn's weighted binning was 90 % of it.
 9. **Check suspect attributes before they feed the matcher**: `dissonance` is
    near-constant, `tonal` says nearly every track is atonal, tuning medians at
    434 Hz.
-10. **Studio and sets:** auto-arrange; a set's moves as automation (crossfades,
-    echo tails) rather than overlapping clips; tempo ramps between mashups;
-    effort re-priced at the curve tempo; a native `.flp` export (PyFLP needs a
+10. **Studio:** a native `.flp` export (PyFLP needs a
     template saved from the user's FL version).
 11. **Compute, not yet done:** cap TensorFlow's threads for EffNet (today
     uncapped beside Demucs/allin1 at cores − 1; unverified here because the
@@ -1681,9 +1763,10 @@ scikit-learn's weighted binning was 90 % of it.
     10,000 tracks (every section in memory, plus one float32 ceiling per
     vocal × bed song pair); a **per-track** score is never pruned — a track's
     rows are all written at import, and only the next Score library trims
-    them to the cap and the reserve. **`GET /api/tracks`** is 4 s and 37 MB at
-    10,000 tracks (3.5 MB gzipped, but the route does not compress), and
-    **Segments' first match** still builds a snapshot of every section.
+    them to the cap and the reserve. **`GET /api/tracks`** is kept and
+    gzipped now, but a rebuild after any write still costs ~3.7 s at 10,000
+    tracks (pair events commit too, so a busy session rebuilds often), and
+    **a part's first match** still builds a snapshot of every section.
 14. **Learning, what is left** (§5.8): the mini studio's loop is not timed,
     so its listens are no weak label; the model only re-orders the rows the
     rule kept (a pair the rule's cap dropped cannot be lifted); the shadow
@@ -1701,6 +1784,14 @@ scikit-learn's weighted binning was 90 % of it.
     place to look. A scoped dock also lists instrumental-over-instrumental
     rows of the same two songs (item 6), which carry no sections and are
     never Drop-ins.
+
+16. **Phase 3 leftovers.** Saved views store the Tracks mode's filters,
+    columns and sort; the Parts tables' filters and the dock's Tune weights
+    are not saved per mode yet. The parts dock's cards carry no Why bar (the
+    live matches are not sent with the run's weights). A song titled with a
+    pair word ("Free", "Strong") is read as a filter by the dock's search until
+    the search supports quoting. Scrolling
+    10,000 rows drops one frame in 181 (33 ms).
 
 Not worth doing: raising the `rhythm` or `structure` section weights (`rhythm`
 saturates on 4/4 dance music; `structure` duplicates `label`); persistent

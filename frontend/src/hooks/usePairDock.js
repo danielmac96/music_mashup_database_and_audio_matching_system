@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { toast } from "../toast";
-import { onNextForSet } from "../dockModes";
 import { keyOf, pairKey, REASON_KEYS, reasonsFor, SCORE_TERMS } from "../components/pairs/pairModel";
 import { TIERS } from "../theme";
 import { track, trackEach, trackShown } from "../events";
+import { tuneOrder } from "../tune";
+import { parseQuery } from "./useLibraryFilters";
 
 // The pair dock: what it shows, where the cursor is, and what the keyboard does.
 //
@@ -60,6 +61,34 @@ export const DOCK_FILTERS = {
   // Only Drop-in pairs — the server's rule (matcher/compat.dropin), in SQL.
   dropin: false,
 };
+
+// The dock's search box in the Library's language (3B, useLibraryFilters.
+// parseQuery): pair words become real filters on ⏎ — Drop-ins, tiers, effort,
+// rated, the key the pair lands in (8A, or 8A~ for ±1) and the vocal's BPM
+// range — and only the leftover text is searched by title and artist.
+const EFFORT_MAX = { free: 0.25, light: 0.5 };
+export function pairQuery(q) {
+  const { parsed, rest } = parseQuery(q, []);
+  const patch = {};
+  const read = [];
+  if (parsed.dropin) { patch.dropin = true; read.push("Drop-ins only"); }
+  if (parsed.rated) { patch.rated = parsed.rated; read.push(parsed.rated); }
+  if (parsed.effort) {
+    if (EFFORT_MAX[parsed.effort]) {
+      patch.maxEffort = EFFORT_MAX[parsed.effort];
+      read.push(parsed.effort === "free" ? "free builds" : "free or light builds");
+    } else read.push("heavy: no filter for it — Sort: Effort lists cheapest first");
+  }
+  if (parsed.keys?.length) {
+    patch.key = parsed.keyNeighbours?.[0] || parsed.keys[0];
+    patch.keyTol = parsed.keyNeighbours ? 1 : 0;
+    read.push(`lands in ${patch.key}${patch.keyTol ? " ±1" : ""}`);
+  }
+  if (parsed.tiers) read.push(parsed.tiers.join(", "));
+  if (parsed.bpm) read.push(`vocal ${parsed.bpm[0]}–${parsed.bpm[1]} BPM`);
+  if (parsed.qualityMin != null) read.push("stem quality applies to parts");
+  return { patch, tiers: parsed.tiers || [], bpm: parsed.bpm || null, rest, read };
+}
 
 // The loaded-pairs filters (client side, never a request).
 const EMPTY_SIDE = { genres: [], bpm: null, keys: [] };
@@ -122,7 +151,7 @@ const TIER_INDEX = Object.fromEntries(TIERS.map((t, i) => [t.id, i]));
 // `player` is the app-wide one from usePlayer. The dock borrows it, so the bar
 // at the bottom is showing the same pair the dock's cursor is on.
 export function usePairDock({ selectedTrackId, role = "vocal", ratings,
-                              onOpenStudio, player, onAddToSet = null,
+                              onOpenStudio, player,
                               onCompare = null }) {
   const [order, setOrder] = useState("score");
   const [rows, setRows] = useState([]);
@@ -150,12 +179,6 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   // section line typed on Track detail).
   const [nonce, setNonce] = useState(0);
   const reload = useCallback(() => setNonce((n) => n + 1), []);
-  // "What comes next" for a set: the list becomes that set's next candidates
-  // until it is closed (or the scope changes). { id, name } or null.
-  const [nextFor, setNextFor] = useState(null);
-  useEffect(() => onNextForSet((id, name) => setNextFor({ id, name })), []);
-  useEffect(() => { setNextFor(null); }, [selectedTrackId, role]);
-  const clearNextFor = useCallback(() => setNextFor(null), []);
   const [loadingMore, setLoadingMore] = useState(false);
   const setFilters = useCallback(
     (patch) => setFiltersState((f) => ({ ...f, ...patch })), []);
@@ -191,9 +214,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       else opts.vocalSongId = selectedTrackId;
     }
     if (order !== CLIENT_ORDER) opts.order = order;
-    const request = nextFor
-      ? api.getSetNext(nextFor.id, 20)
-      : perVocal
+    const request = perVocal
         ? api.getBestBedPerVocal({ limit: LIMIT, minScore: filters.minScore })
         : api.getMashups(opts);
     request
@@ -201,9 +222,11 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
         if (cancelled) return;
         const got = d.candidates || [];
         setRows(got);
+        // The weights these totals were ranked with: the Tune drawer's base.
+        if (d.tune) setTuneBase(d.tune);
         // Implicit signal: the top of this fetch was put in front of the user.
         trackShown(got, "dock");
-        setHasMore(!perVocal && !nextFor && got.filter((r) => !r.explore).length >= LIMIT);
+        setHasMore(!perVocal && got.filter((r) => !r.explore).length >= LIMIT);
         setCursor(0);
         setExpanded(null);
         setOptions({});
@@ -213,7 +236,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       .catch((e) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [selectedTrackId, role, order, filters, perVocal, nonce, nextFor]);
+  }, [selectedTrackId, role, order, filters, perVocal, nonce]);
 
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
@@ -285,7 +308,12 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   // Under the Score order the cards are grouped under tier headers: the tier
   // is the API's confidence_tier, so a measured close-call can sit a tier below
   // its percentile — grouping keeps the order inside each tier.
-  const grouped = order === "score" && !nextFor;
+  // The Tune drawer (readme §3): weights that re-rank the LOADED rows
+  // client-side with the server's own arithmetic (frontend/src/tune.js);
+  // null = off, the server's order. Tuned, the tier grouping steps aside.
+  const [tuneBase, setTuneBase] = useState(null);
+  const [tuneW, setTuneW] = useState(null);
+  const grouped = order === "score" && !tuneW;
   const visible = useMemo(() => {
     let out = tierOn.length ? filtered.filter((c) => tierOn.includes(c.confidence_tier)) : filtered;
     if (grouped) {
@@ -293,13 +321,14 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
         (TIER_INDEX[a[0].confidence_tier] ?? 9) - (TIER_INDEX[b[0].confidence_tier] ?? 9) || a[1] - b[1])
         .map(([c]) => c);
     }
+    if (tuneW && tuneBase) out = tuneOrder(out, tuneW, tuneBase, tuneBase.alpha);
     return out;
-  }, [filtered, tierOn, grouped]);
+  }, [filtered, tierOn, grouped, tuneW, tuneBase]);
 
   // What the cards SHOW: each listed row swapped for the section pairing its
   // stepper is on. Filters, tier chips and grouping above run on the listed
   // rows, so stepping never moves a card; everything below — the keys, ▶,
-  // stars, hide, Studio, + Set — acts on the pairing on screen.
+  // stars, hide, Studio — acts on the pairing on screen.
   const display = useMemo(() => visible.map((c) => {
     const k = pairKey(c);
     const i = optIdx[k];
@@ -495,7 +524,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   }, [player, onOpenStudio]);
 
   // The keyboard model, from the dock's own footer: ↑↓ move, space loop, 1–5
-  // rate (and advance), ⏎ expand, V/B solo, h hide, a + set, c compare.
+  // rate (and advance), ⏎ expand, V/B solo, h hide, c compare.
   // `enabled` stops it firing while another screen is on top. The Library
   // table stops its own keys, so these act when the table is not focused.
   const bindKeys = useCallback((enabled, { space = true } = {}) => {
@@ -519,9 +548,6 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
       if (e.key === "Enter") { e.preventDefault(); toggleExpand(row); return; }
       if ((e.key === "c" || e.key === "C") && row && onCompare) {
         e.preventDefault(); onCompare(row); return;
-      }
-      if ((e.key === "a" || e.key === "A") && row && onAddToSet) {
-        e.preventDefault(); onAddToSet(row); return;
       }
       if (e.key === "v" || e.key === "V") {
         e.preventDefault();
@@ -551,7 +577,7 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cursor, move, play, toggleExpand, hide, audio, onAddToSet, onCompare, rateAndAdvance,
+  }, [cursor, move, play, toggleExpand, hide, audio, onCompare, rateAndAdvance,
       lastRated, ratings, stepOption]);
 
   return {
@@ -570,6 +596,6 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     play, move, openStudio, hide, unhide, rateAndAdvance, bindKeys, audio,
     reload, autoAdvance, setAutoAdvance,
     optionOf, stepOption,
-    nextFor, clearNextFor,
+    tuneBase, tuneW, setTuneW,
   };
 }

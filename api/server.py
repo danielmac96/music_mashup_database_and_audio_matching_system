@@ -33,7 +33,6 @@ from api.routes import models as model_routes  # noqa: E402
 from api.routes import playlists as playlist_routes  # noqa: E402
 from api.routes import prefs as prefs_routes  # noqa: E402
 from api.routes import segments as segment_routes  # noqa: E402
-from api.routes import sets as set_routes  # noqa: E402
 from api.routes import settings as settings_routes  # noqa: E402
 from api.routes import studio as studio_routes  # noqa: E402
 from api.routes import tracks as track_routes  # noqa: E402
@@ -52,6 +51,11 @@ async def lifespan(app: FastAPI):
     # The learning loop's debounced retrain check (matcher/learning.tick).
     from api.workers.learning_worker import start_ticker
     ticker = start_ticker()
+    # The Library payload, built once off the request path (3.2: first rows
+    # under a second at 10,000 tracks; api/routes/tracks.library_payload).
+    import threading as _threading
+    from api.routes.tracks import warm_library_cache
+    _threading.Thread(target=warm_library_cache, name="warm-library", daemon=True).start()
     yield
     ticker.stop.set()
 
@@ -79,7 +83,6 @@ app.include_router(learning_routes.router, prefix="/api/learning", tags=["learni
 app.include_router(studio_routes.router, prefix="/api/studio", tags=["studio"])
 app.include_router(discovery_routes.router, prefix="/api/discovery", tags=["discovery"])
 app.include_router(crate_routes.router, prefix="/api/crates", tags=["crates"])
-app.include_router(set_routes.router, prefix="/api/sets", tags=["sets"])
 app.include_router(segment_routes.router, prefix="/api/segments", tags=["segments"])
 app.include_router(prefs_routes.router, prefix="/api/prefs", tags=["prefs"])
 app.include_router(event_routes.router, prefix="/api/events", tags=["events"])

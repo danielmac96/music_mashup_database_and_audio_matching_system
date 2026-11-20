@@ -104,11 +104,10 @@ def test_the_suite_pins_the_vocoder_and_the_engine_can_be_forced(monkeypatch):
 # ── Serato and Traktor ────────────────────────────────────────────────────────
 
 def _items():
-    return [{"kind": "pair", "vocal_song_id": 1, "inst_song_id": 2,
+    return [{"vocal_song_id": 1, "inst_song_id": 2,
              "vocal_section_start": 30.0, "vocal_section_label": "chorus",
              "inst_section_start": 60.0, "inst_section_label": "drop"},
-            {"kind": "break", "label": "air horn", "duration_secs": 20},
-            {"kind": "pair", "vocal_song_id": 3, "inst_song_id": 2,
+            {"vocal_song_id": 3, "inst_song_id": 2,
              "vocal_section_start": 10.0, "inst_section_start": 90.0}]
 
 
@@ -157,19 +156,29 @@ def test_the_traktor_nml_carries_tempo_key_cues_and_the_playlist():
     assert keys[0] == "C:/:Music/:mashup/:1/:vocals.wav"
 
 
-def test_both_formats_are_offered_from_the_dock_and_the_set():
-    sets = (ROOT / "api" / "routes" / "sets.py").read_text(encoding="utf-8")
-    assert "^(csv|cue|rekordbox|serato|traktor|fl)$" in sets
+def test_both_formats_are_offered_from_the_dock():
     mash = (ROOT / "api" / "routes" / "mashups.py").read_text(encoding="utf-8")
     assert '("csv", "cue", "rekordbox", "serato", "traktor")' in mash
     dock = (SRC / "components" / "PairDock.jsx").read_text(encoding="utf-8")
     assert '["serato", "Serato"' in dock and '["traktor", "Traktor"' in dock
-    sc = (SRC / "components" / "SetScreen.jsx").read_text(encoding="utf-8")
-    assert 'exportAs("serato")' in sc and 'exportAs("traktor")' in sc
     assert 'serato: "crate", traktor: "nml"' in (SRC / "api.js").read_text(encoding="utf-8")
 
 
 # ── hear the export ───────────────────────────────────────────────────────────
+
+def test_the_cue_sheet_times_each_pair_back_to_back():
+    from render.exports import PLAY_BARS, cue_sheet, pairs_csv
+    rows = [{"vocal_artist": "V", "vocal_title": f"v{n}", "inst_artist": "B",
+             "inst_title": f"b{n}", "vocal_bpm": 120.0, "vocal_camelot": "8A",
+             "vocal_section_start": 10.0, "vocal_section_end": 40.0} for n in range(3)]
+    sheet = cue_sheet(rows, "Keepers")
+    one = PLAY_BARS * 240.0 / 120.0               # 64 s a pair
+    assert "3 mashups · 3:12 running time" in sheet
+    assert "[ 1:04]  2. V - v1" in sheet and "w/ B - b1" in sheet
+    csv_text = pairs_csv(rows)
+    assert csv_text.splitlines()[0].endswith(",start,note")
+    assert ",2:08," in csv_text.splitlines()[3] and one == 64.0
+
 
 def test_studio_can_play_the_rendered_wav_and_shows_its_level():
     ms = (SRC / "components" / "MixStudio.jsx").read_text(encoding="utf-8")

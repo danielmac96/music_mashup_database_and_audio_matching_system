@@ -44,6 +44,9 @@ const SWATCHES = [
   ["Muted", "--muted", "Labels, units", true], ["Faint", "--faint", "Hints", true],
   ["Vocal", "--vocal", "Every vocal chip, lane, wave", true],
   ["Bed", "--bed", "Every instrumental chip, lane, wave", true],
+  ["Drop-in", "--dropin", "The Drop-in pill and filter — the one warm accent", true],
+  ["Tier strong", "--tier-strong", "Fit meter: strong", true], ["Tier good", "--tier-good", "Fit meter: good", true],
+  ["Tier maybe", "--tier-maybe", "Fit meter: maybe", true], ["Tier long-shot", "--tier-long", "Fit meter: long shot", true],
   ["Accent", "--accent", "Focus, selection, one primary action", true],
   ["OK", "--ok", "Status: done", true], ["Warn", "--warn", "Status: attention", true],
   ["Fail", "--fail", "Status: failed", true], ["Running", "--run", "Status: in progress", true],
@@ -71,7 +74,7 @@ export function Styleguide() {
   return (
     <div className="styleguide">
       <header className="sg-head">
-        <span className="caps">Revamp step 0 · ?styleguide</span>
+        <span className="caps">Night session · ?styleguide</span>
         <h1>Styleguide</h1>
         <p className="muted">Tokens from styles.css and the shared primitives. Every screen
           is built only from these.</p>
@@ -145,7 +148,7 @@ export function Styleguide() {
           <PairCard candidate={SAMPLE_PAIR} rating={null} onRate={noop} onToggle={noop}
             onPlay={noop} onStudio={noop} />
           <PairCard candidate={SAMPLE_PAIR} rating={4} onRate={noop} onToggle={noop}
-            onPlay={noop} onStudio={noop} expanded focused onAddToSet={noop}
+            onPlay={noop} onStudio={noop} expanded focused
             onCompare={noop} onHide={noop} onNote={noop} onReason={noop} />
         </div>
       </section>

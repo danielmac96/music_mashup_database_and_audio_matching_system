@@ -125,7 +125,9 @@ function sentenceOf(r) {
   return r.phase === "done" ? "Done" : "Waiting";
 }
 
-export function QueueScreen({ library, onOpen, onRailSlot }) {
+// `analyzer`: the analyser status strip (Essentia, allin1, models, cache) —
+// what can run here, beside what is running (3A: it was Analysis's).
+export function QueueScreen({ library, onOpen, onRailSlot, analyzer = null }) {
   const { tracks, refresh: refreshLibrary } = library;
   const q = useQueue();
   // Stage timings for the segment widths and the "per track" figure on each
@@ -284,6 +286,7 @@ export function QueueScreen({ library, onOpen, onRailSlot }) {
           ⟳ Retry all failed{failedIds.length ? ` (${failedIds.length})` : ""}
         </button>
       </header>
+      {analyzer}
 
       {q.error && <div className="error-text q-pad">Couldn't read the queue: {q.error}</div>}
 

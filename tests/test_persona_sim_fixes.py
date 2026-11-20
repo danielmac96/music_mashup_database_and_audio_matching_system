@@ -160,70 +160,12 @@ def test_rail_counter_follows_the_live_ratings():
     assert "judged ?? scorer?.n_judgments" in _read("shell/Sidebar.jsx")
 
 
-# ── 6. sets: chosen mashups in running order ────────────────────────────────
+# ── 6. pair lists: notes and exports ─────────────────────────────────────────
 
 def _item(iid, bpm, cam, start=0.0, end=16.0, **kw):
-    return {"item_id": iid, "position": iid, "target_bpm": bpm, "vocal_camelot": cam,
+    return {"target_bpm": bpm, "vocal_camelot": cam,
             "inst_camelot": cam, "vocal_section_start": start, "vocal_section_end": end,
             "vocal_song_id": iid, "inst_song_id": 100 + iid, **kw}
-
-
-def test_transitions_are_graded_on_tempo_and_key():
-    from matcher.setflow import transition
-    assert transition(_item(1, 128, "8A"), _item(2, 128, "9A"))["grade"] == "smooth"
-    assert transition(_item(1, 128, "8A"), _item(2, 126, "8B"))["grade"] == "smooth"
-    assert transition(_item(1, 124, "8A"), _item(2, 128, "10A"))["grade"] == "workable"
-    assert transition(_item(1, 124, "8A"), _item(2, 128, "2A"))["grade"] == "jump"
-    # Half time is not a tempo change.
-    assert transition(_item(1, 87, "8A"), _item(2, 174, "8A"))["tempo_pct"] == 0.0
-    assert transition(_item(1, None, "8A"), _item(2, 128, "8A"))["grade"] == "unknown"
-
-
-def test_flow_adds_up_running_time_and_start_times():
-    from matcher.setflow import flow
-    f = flow([_item(1, 128, "8A", 0, 15), _item(2, 128, "8A", 30, 60)])
-    # A smooth move is an 8-bar blend (15 s at 128 BPM): the second mashup
-    # comes in under the first — capped at half the shorter one, 7.5 s.
-    assert f["transitions"][0]["move"]["type"] == "blend"
-    assert f["transitions"][0]["overlap_secs"] == 7.5
-    # Each slot plays 32 bars (60 s at 128): the second comes in at 60 − 7.5.
-    assert f["total_secs"] == 112.5 and f["starts"] == [0, 52.5]
-    assert f["grades"]["smooth"] == 1
-
-
-def test_suggested_order_keeps_moves_small():
-    from matcher.setflow import flow, suggest_order
-    items = [_item(1, 128, "8A"), _item(2, 128, "3A"), _item(3, 128, "9A"),
-             _item(4, 128, "4A"), _item(5, 128, "10A")]
-    ids = suggest_order(items, start_item_id=1)
-    assert ids[:3] == [1, 3, 5]
-    by = {i["item_id"]: i for i in items}
-    assert flow([by[i] for i in ids])["grades"]["jump"] <= flow(items)["grades"]["jump"]
-
-
-def test_set_items_are_keyed_by_the_four_ids_and_survive_a_rescore(one_vocal_many_beds):
-    from database import models
-    db, vocal, beds = one_vocal_many_beds
-    s = models.create_set("Vol 1", db_path=db)
-    assert models.create_set("Vol 1", db_path=db)["name"] == "Vol 1 2"
-    r = models.add_set_item(s["id"], vocal, beds[0], db_path=db)
-    assert r["duplicate"] is False
-    assert models.add_set_item(s["id"], vocal, beds[0], db_path=db)["duplicate"] is True
-    models.add_set_item(s["id"], vocal, beds[1], db_path=db)
-    got = models.get_set(s["id"], db_path=db)
-    assert [i["inst_song_id"] for i in got["items"]] == beds[:2]
-    assert got["items"][0]["inst_title"] == f"S{beds[0]}" and not got["items"][0]["stale"]
-    # A re-score truncates mashup_candidates: the items keep their frozen rows.
-    models.clear_candidates(db_path=db)
-    got = models.get_set(s["id"], db_path=db)
-    assert all(i["stale"] for i in got["items"])
-    assert got["items"][1]["inst_title"] == f"S{beds[1]}"
-    ids = [i["item_id"] for i in got["items"]]
-    assert models.reorder_set(s["id"], ids[::-1], db_path=db)
-    assert not models.reorder_set(s["id"], ids[:1], db_path=db)
-    assert [i["item_id"] for i in models.get_set(s["id"], db_path=db)["items"]] == ids[::-1]
-    assert models.remove_set_item(s["id"], ids[0], db_path=db)
-    assert len(models.get_set(s["id"], db_path=db)["items"]) == 1
 
 
 def test_pair_notes_round_trip_and_clear(db_path):
@@ -254,7 +196,8 @@ def test_exports_csv_cue_and_rekordbox():
     assert head.split(",") == list(CSV_COLUMNS)
     assert "Singer,Vox,chorus,0:30,0:45" in first and ",+2," in first and "opener" in first
     cue = cue_sheet(items, "Vol 1")
-    assert "[ 0:00]  1. Singer - Vox" in cue and "↓ smooth" in cue and "[ 0:52]" in cue
+    # 32 bars at 128 BPM = 60 s a pair, back to back.
+    assert "[ 0:00]  1. Singer - Vox" in cue and "[ 1:00]" in cue
 
     def resolve(sid, stem):
         return {"path": f"/data/audio/{stem}/{sid}.wav", "title": f"T{sid}",
@@ -276,42 +219,30 @@ def test_exports_csv_cue_and_rekordbox():
     assert playlist.get("Name") == "Vol 1" and playlist.get("Entries") == "4"
 
 
-def test_sets_routes_add_reorder_and_export(db_path):
-    c, m = _app(("sets", "/api/sets"), ("mashups", "/api/mashups"))
+def test_the_dock_exports_the_pairs_on_screen(db_path):
+    c, m = _app(("mashups", "/api/mashups"))
     ids = [m.upsert_song(f"S{n}", f"A{n}", f"https://sc/{n}", 200, "House",
                          status="analysed", db_path=m.DB_PATH) for n in range(3)]
     for bed in ids[1:]:
         m.upsert_candidate(_side(ids[0]), _side(bed),
                            {"total": 0.9, "bpm_score": 1.0, "key_score": 1.0,
                             "energy_score": 0.5, "timbre_score": 0.5}, db_path=m.DB_PATH)
-    s = c.post("/api/sets", json={"name": "Vol 1"}).json()
-    for bed in ids[1:]:
-        r = c.post(f"/api/sets/{s['id']}/items",
-                   json={"vocal_song_id": ids[0], "inst_song_id": bed}).json()
-    assert len(r["items"]) == 2 and "flow" in r
-    assert r["items"][0]["semitone_shift"] == 0, "items carry the dock's playback terms"
-    order = [i["item_id"] for i in r["items"]][::-1]
-    assert c.post(f"/api/sets/{s['id']}/reorder", json={"item_ids": order}).status_code == 200
-    assert c.post(f"/api/sets/{s['id']}/reorder", json={"item_ids": order[:1]}).status_code == 400
-    csv_r = c.get(f"/api/sets/{s['id']}/export", params={"format": "csv"})
-    assert csv_r.status_code == 200 and "attachment" in csv_r.headers["content-disposition"]
-    assert c.get(f"/api/sets/{s['id']}/export", params={"format": "cue"}).status_code == 200
-    rb = c.get(f"/api/sets/{s['id']}/export", params={"format": "rekordbox"})
-    assert rb.status_code == 200 and rb.headers["x-skipped-tracks"] == "4", "no audio on disk"
-    # The dock's export: the same files, from the pairs on screen.
-    ex = c.post("/api/mashups/export", json={"format": "csv", "pairs": [
-        {"vocal_song_id": ids[0], "inst_song_id": ids[1]}]})
+    pairs = [{"vocal_song_id": ids[0], "inst_song_id": b} for b in ids[1:]]
+    ex = c.post("/api/mashups/export", json={"format": "csv", "pairs": pairs[:1]})
     assert ex.status_code == 200 and ex.text.count("\n") == 2
-    assert c.delete(f"/api/sets/{s['id']}").json()["ok"]
+    assert "attachment" in ex.headers["content-disposition"]
+    assert c.post("/api/mashups/export", json={"format": "cue", "pairs": pairs}).status_code == 200
+    rb = c.post("/api/mashups/export", json={"format": "rekordbox", "pairs": pairs})
+    assert rb.status_code == 200 and rb.headers["x-skipped-tracks"] == "4", "no audio on disk"
 
 
-def test_sets_screen_is_wired():
-    app, nav = _read("App.jsx"), _read("shell/Sidebar.jsx")
-    assert '["sets", "Sets"' in nav and 'route === "sets"' in app
-    assert "onAddToSet: sets.addPair" in app
-    dock = _read("hooks/usePairDock.js")
-    assert 'e.key === "a"' in dock and "onAddToSet(row)" in dock
-    assert "+ Set</button>" in _read("components/PairCard.jsx")
+def test_append_next_survives_the_sets_removal():
+    """Sets are gone (readme §3; tests/test_sets_removal.py greps for them);
+    Studio's "Append next" still lays the dock's next pair after the
+    arrangement."""
+    app = _read("App.jsx")
+    assert "onAddToSet" not in app and 'route === "sets"' not in app
+    assert 'e.key === "a"' not in _read("hooks/usePairDock.js")
     studio = _read("components/MixStudio.jsx")
     assert "const layPairs" in studio and "seed?.chain" in studio
     assert "onAppendNext" in _read("components/StudioPanel.jsx")
@@ -552,8 +483,9 @@ def test_compare_goes_to_analysis_and_the_card_carries_notes():
     hook, app = _read("hooks/usePairDock.js"), _read("App.jsx")
     assert 'e.key === "c"' in hook and "onCompare(row)" in hook
     assert "setCompareSeed({ a: c.vocal_song_id, b: c.inst_song_id" in app
-    assert "compareSeed={compareSeed}" in app
-    assert "setA(String(seed.a));" in _read("components/AnalysisScreen.jsx")
+    # 3A: Compare lives on Track detail (the vocal's), not an Analysis tab.
+    assert "compareSeed={compareSeed && compareSeed.a === selectedTrackId" in app
+    assert "setA(String(seed.a));" in _read("components/AnalysisPanels.jsx")
     dock = _read("components/PairDock.jsx")
     assert "notes.noteOf(c)" in dock and "pcx-note" in _read("components/PairCard.jsx")
     assert "export function usePairNotes" in _read("hooks/usePairNotes.js")
@@ -623,13 +555,13 @@ def test_discover_has_roles_gaps_and_a_search_hand_off():
 def test_help_opens_from_the_rail_and_the_question_mark():
     app, rail = _read("App.jsx"), _read("shell/Sidebar.jsx")
     assert "<HelpPanel" in app and 'e.key === "?"' in app
-    assert "rail-help" in rail and "New here" in rail
+    assert 'UtilButton glyph="?"' in rail and "New here" in rail
     help_ = _read("components/HelpPanel.jsx")
     assert "Your first mashup" in help_ and "Reading a pair" in help_
 
 
 def test_analysis_compares_two_tracks():
-    a = _read("components/AnalysisScreen.jsx")
+    a = _read("components/AnalysisPanels.jsx")
     assert "function TrackCompare" in a and "an-diffrow" in a and "Only where they differ" in a
     assert "tracks={library.tracks}" in _read("App.jsx")
 

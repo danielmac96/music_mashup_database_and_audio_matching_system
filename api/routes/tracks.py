@@ -1,11 +1,13 @@
 """Track endpoints: list, queue download/separate, stream audio."""
 from __future__ import annotations
 
+import logging
+import threading
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from database.models import (
@@ -22,6 +24,7 @@ from api.workers import (
     analysis_worker, download_worker, reverify_worker, stems_worker, structure_worker,
 )
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 
 # Four-stem separation (Phase D) adds drums/bass/other. They exist only for
@@ -214,8 +217,69 @@ def _dominant_class(classes: dict) -> Optional[str]:
     return max(known.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
+# ── The Library payload, kept while the database is unchanged ────────────────
+# Building it reads every song, feature row, section and the whole candidates
+# table: ~3.7 s at 10,000 tracks. It depends on nothing but stored rows, so
+# the encoded body (and its gzip) is kept and served again until a commit from
+# ANY connection changes the file — SQLite's `PRAGMA data_version` on one
+# long-lived connection of our own says exactly that, for every writer, with
+# no timestamp a writer could forget to stamp. The server warms it at start
+# (warm_library_cache), so the first page load after a start is served from it.
+_LIB_LOCK = threading.Lock()
+_LIB_CACHE: dict = {}
+_DV_CONNS: dict = {}
+
+
+def _data_version(db_path) -> Optional[int]:
+    import sqlite3
+    key = str(db_path)
+    try:
+        conn = _DV_CONNS.get(key)
+        if conn is None:
+            conn = _DV_CONNS[key] = sqlite3.connect(key, check_same_thread=False)
+        return int(conn.execute("PRAGMA data_version").fetchone()[0])
+    except Exception:  # noqa: BLE001 — no version: never serve from the cache
+        _DV_CONNS.pop(key, None)
+        return None
+
+
+def library_payload() -> tuple[bytes, bytes]:
+    """(json, gzip) of GET /api/tracks, rebuilt only when the database moved."""
+    import gzip
+    import json
+    from database import models
+    db = models.DB_PATH
+    with _LIB_LOCK:
+        dv = _data_version(db)
+        hit = _LIB_CACHE.get(str(db))
+        if dv is not None and hit and hit["dv"] == dv:
+            return hit["body"], hit["gz"]
+        body = json.dumps(build_tracks_payload(), separators=(",", ":"),
+                          default=str).encode("utf-8")
+        gz = gzip.compress(body, compresslevel=5)
+        if dv is not None:
+            _LIB_CACHE[str(db)] = {"dv": dv, "body": body, "gz": gz}
+        return body, gz
+
+
+def warm_library_cache() -> None:
+    """Build the Library payload once, off the request path (server start)."""
+    try:
+        library_payload()
+    except Exception:  # noqa: BLE001 — a cold cache only costs the first load
+        log.exception("could not warm the library payload")
+
+
 @router.get("")
-def list_tracks() -> dict:
+def list_tracks(request: Request):
+    body, gz = library_payload()
+    if "gzip" in (request.headers.get("accept-encoding") or ""):
+        return Response(gz, media_type="application/json",
+                        headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+    return Response(body, media_type="application/json")
+
+
+def build_tracks_payload() -> dict:
     from analysis import attributes
     songs = get_all_songs()
     stems = _stems_by_song()

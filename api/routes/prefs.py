@@ -183,3 +183,28 @@ def delete_filter_preset(preset_id: str) -> dict:
         raise HTTPException(status_code=404, detail="preset not found")
     set_pref(FILTER_PRESETS_KEY, {"presets": kept})
     return {"ok": True, "id": preset_id}
+
+
+# ── The Sets backup notice (migration 11) ─────────────────────────────────────
+
+@router.get("/sets-backup")
+def sets_backup() -> dict:
+    """Where migration 11 wrote the removed Sets, until the UI has said so
+    once: {"path", "sets", "items"} or {"path": null}."""
+    from database import models
+    from database.schema import SETS_BACKUP_PREF
+    got = models.get_pref(SETS_BACKUP_PREF) or {}
+    if not got.get("path") or got.get("seen"):
+        return {"path": None}
+    return {"path": got["path"], "sets": got.get("sets"), "items": got.get("items")}
+
+
+@router.post("/sets-backup/seen")
+def sets_backup_seen() -> dict:
+    """The notice was shown: it is not shown again (the record is kept)."""
+    from database import models
+    from database.schema import SETS_BACKUP_PREF
+    got = models.get_pref(SETS_BACKUP_PREF)
+    if got and not got.get("seen"):
+        models.set_pref(SETS_BACKUP_PREF, {**got, "seen": True})
+    return {"ok": True}

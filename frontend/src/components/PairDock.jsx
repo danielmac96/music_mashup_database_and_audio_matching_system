@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { PairCard } from "./PairCard";
+import { TuneDrawer } from "./pairs/TuneDrawer";
 import { JobBadge } from "./JobBadge";
 import {
-  DOCK_FILTERS, ORDERS, activeFilterCount, loadedFilterCount, sideCount,
+  DOCK_FILTERS, ORDERS, activeFilterCount, loadedFilterCount, pairQuery, sideCount,
 } from "../hooks/usePairDock";
 import { keyOf, pairKey } from "./pairs/pairModel";
 import { TIERS, camelotColor } from "../theme";
@@ -25,7 +26,7 @@ const DOCK_MIN = 320;
 const DOCK_MAX = 640;
 const DOCK_DEFAULT = 400;
 
-const KEYS = "↑↓ move · ←→ pairing · space loop · 1–5 rate · q–u why · ⏎ expand · V/B solo · h hide · a +set · c compare";
+const KEYS = "↑↓ move · ←→ pairing · space loop · 1–5 rate · q–u why · ⏎ expand · V/B solo · h hide · c compare";
 
 // Values offered by the library-wide menus. Bands, not free ranges, because
 // they are what the server accepts (database/models.py ERA_BANDS etc.).
@@ -117,7 +118,7 @@ function useDockWidth() {
 
 export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
                           onClearScope = null, freshness = null,
-                          onAddToSet = null, setName = null, notes = null,
+                          notes = null,
                           onCompare = null, durationOf = () => null, tracks = null }) {
   const { order, setOrder, rows, loading, error, cursor, setCursor, armedKey,
           play, openStudio, hide, unhide, audio, filters, setFilters, resetFilters,
@@ -126,6 +127,7 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
   const listRef = useRef(null);
   const { width, onResize } = useDockWidth();
   const [open, setOpen] = useState(false);
+  const [tuneOpen, setTuneOpen] = useState(false);
   const [side, setSideTab] = useState("v");
   const [search, setSearch] = useState(filters.search);
   const [options, setOptions] = useState(null);
@@ -140,11 +142,22 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
   const scopeTitle = scopeTrack?.title || null;
 
   // Debounced into the filter set: a request per keystroke would race itself.
+  // Pair words in it are previewed, and pinned on ⏎; only the rest searches.
+  const parsedSearch = useMemo(() => pairQuery(search), [search]);
   useEffect(() => {
-    if (search === filters.search) return undefined;
-    const t = setTimeout(() => setFilters({ search }), 250);
+    const text = parsedSearch.rest;
+    if (text === filters.search) return undefined;
+    const t = setTimeout(() => setFilters({ search: text }), 250);
     return () => clearTimeout(t);
-  }, [search, filters.search, setFilters]);
+  }, [parsedSearch, filters.search, setFilters]);
+  const pinSearch = () => {
+    const q = parsedSearch;
+    if (!q.read.length) return;
+    setFilters({ ...q.patch, search: q.rest });
+    q.tiers.forEach((t) => { if (!tierOn.includes(t)) toggleTier(t); });
+    if (q.bpm) setSide("v", { bpm: q.bpm });
+    setSearch(q.rest);
+  };
 
   // Which genres / eras / labels the scored pairs contain — fetched when the
   // panel first opens, so a menu never offers a value that matches nothing.
@@ -185,9 +198,7 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
     el?.scrollIntoView({ block: "nearest" });
   }, [cursor, rows, expanded]);
 
-  const scopeText = dock.nextFor
-    ? `What comes next in “${dock.nextFor.name || "the set"}”`
-    : scopeTrack ? `for ${scopeTrack.title}${scopeTrack.artist ? ` · ${scopeTrack.artist}` : ""}`
+  const scopeText = scopeTrack ? `for ${scopeTrack.title}${scopeTrack.artist ? ` · ${scopeTrack.artist}` : ""}`
       : "Best in library";
   const term = ORDERS.find(([id, , , color]) => color && id === order);
   const sideCfg = df[side];
@@ -263,13 +274,11 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
         onToggle={() => { setCursor(i); toggleExpand(c); }}
         onPlay={() => { setCursor(i); play(c); }}
         onStudio={() => { setCursor(i); openStudio(c); }}
-        onAddToSet={onAddToSet ? () => { setCursor(i); onAddToSet(c); } : null}
-        setName={setName}
         note={notes ? notes.noteOf(c) : ""}
         onNote={notes ? (n) => notes.save(c, n) : null}
         onCompare={onCompare ? () => onCompare(c) : null}
         onHide={() => (dock.isHidden(c) ? unhide(c) : hide(c))}
-        durationOf={durationOf} />,
+        durationOf={durationOf} tuneBase={dock.tuneW || dock.tuneBase} />,
     );
   });
 
@@ -281,10 +290,7 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
         <div className="pd-head">
           <b className="pd-title">Pairs</b>
           <span className="pd-scopetext" title={scopeText}>{scopeText}</span>
-          {dock.nextFor ? (
-            <button className="pd-scope-x" onClick={dock.clearNextFor}
-              title="Back to the pair list" aria-label="Close what comes next">✕</button>
-          ) : scopeTrack && onClearScope ? (
+          {scopeTrack && onClearScope ? (
             <button className="pd-scope-x" onClick={onClearScope}
               title="Back to the best pairs in the library (esc on Library)"
               aria-label="Clear the selected track">✕</button>
@@ -296,7 +302,7 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
           </button>
         </div>
 
-        {scopeTrack && !dock.nextFor && (
+        {scopeTrack && (
           <div className="pd-roleseg" role="group" aria-label="Look at this track as">
             <button className={`vox${role !== "instrumental" ? " on" : ""}`}
               aria-pressed={role !== "instrumental"} onClick={() => onRole("vocal")}
@@ -344,9 +350,12 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
         )}
 
         <div className="pd-filterbar">
-          <input className="pd-search" value={search} placeholder="Find a song, or A + B"
+          <input className="pd-search" value={search} placeholder="Song, A + B, or dropin 8A~ strong free"
             onChange={(e) => setSearch(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Escape") { setSearch(""); e.currentTarget.blur(); } }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { setSearch(""); e.currentTarget.blur(); }
+              else if (e.key === "Enter") { e.preventDefault(); pinSearch(); }
+            }}
             title="Title or artist, on either side — searched across every scored pair, not just this page. Two songs as &quot;A + B&quot; (or &quot;A w/ B&quot;) finds the pairs of exactly those two, either way round." />
           <button className={`pd-keepers${filters.rated === "loved" ? " on" : ""}`}
             onClick={() => setFilters({ rated: filters.rated === "loved" ? "" : "loved" })}
@@ -367,12 +376,24 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
               <option key={id} value={id} title={why}>{id === "score" ? "Sort: Easy first" : label}</option>
             ))}
           </select>
+          <button className={`pd-exportbtn${tuneOpen || dock.tuneW ? " on" : ""}`}
+            aria-expanded={tuneOpen} onClick={() => { setTuneOpen((o) => !o); setOpen(false); }}
+            title="Tune: weight sliders that re-rank the loaded pairs instantly; Apply to library re-scores">
+            {dock.tuneW ? "Tuned ▾" : "Tune ▾"}
+          </button>
           <button className={`pd-exportbtn${exportOpen ? " on" : ""}`}
             onClick={() => setExportOpen((o) => !o)}
             title="Export the top pairs under these filters: CSV, cue sheet, rekordbox, Serato, Traktor or FL session folders">
             Export ▾
           </button>
         </div>
+
+        {parsedSearch.read.length > 0 && (
+          <div className="pd-reads" aria-live="polite">
+            <span className="muted">Reads:</span> {parsedSearch.read.join(" · ")}
+            <span className="muted"> — ⏎ applies</span>
+          </div>
+        )}
 
         {exportOpen && (
           <div className="pd-exportmenu">
@@ -457,6 +478,16 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
       )}
 
       <div className="pd-listwrap">
+        {tuneOpen && (
+          <TuneDrawer base={dock.tuneBase} value={dock.tuneW} onChange={dock.setTuneW}
+            onClose={() => setTuneOpen(false)} />
+        )}
+        {dock.tuneW && !tuneOpen && (
+          <div className="pd-tuned">
+            <span>Re-ranked by your tuned weights — not saved.</span>
+            <button className="ui-link" onClick={() => dock.setTuneW(null)}>Back to the server's order</button>
+          </div>
+        )}
         {open && (
           <div className="pd-filters">
             <div className="pd-fhead"><b>Pair filters</b>

@@ -1,4 +1,4 @@
-"""Implicit pair events: POST /api/events (readme §5.14).
+"""Implicit pair events: POST /api/events (readme §5.13).
 
 The frontend buffers what is done with a pair — shown, looped, skipped,
 expanded, opened in Studio, rendered, exported, hidden, compared, rated — and

@@ -28,7 +28,9 @@ CSS = _read("styles.css")
 def test_queue_is_a_rail_destination_after_library():
     nav = SIDEBAR[SIDEBAR.index("const NAV = ["):]
     nav = nav[:nav.index("];")]
-    assert nav.index('"library"') < nav.index('"queue"') < nav.index('"discovery"')
+    # The rail of five (master plan 3A): the pipeline comes last.
+    ids = [x for x in ("library", "discovery", "studio", "mixes", "queue")]
+    assert [nav.index(f'"{i}"') for i in ids] == sorted(nav.index(f'"{i}"') for i in ids)
     assert 'route === "queue"' in APP
     assert "<QueueScreen" in APP
 

@@ -195,6 +195,8 @@ export function LibraryFilters({ filters, patch, setFilters, reset, onPin, facet
   if (f.plays) pills.push({ label: `≥ ${fmtPlays(f.plays)} plays`, onRemove: rm({ plays: null }) });
   if (f.vocalForward) pills.push({ label: "Vocal-forward", onRemove: rm({ vocalForward: false }) });
   if (f.hasStems) pills.push({ label: "Has stems", onRemove: rm({ hasStems: false }) });
+  if (f.rated) pills.push({ label: { rated: "Rated by you", unrated: "Not rated yet", loved: "Loved 4–5★" }[f.rated] || f.rated,
+    onRemove: rm({ rated: "" }) });
   f.status.forEach((k) => pills.push({ label: STATUS.find((s) => s[0] === k)?.[1] || k,
     onRemove: rm({ status: f.status.filter((x) => x !== k) }) }));
   for (const [id, cond] of Object.entries(f.attrs)) {

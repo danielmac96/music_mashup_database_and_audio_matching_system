@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MixImporter } from "./components/MixImporter";
 import { LibraryScreen } from "./components/LibraryScreen";
-import { SegmentsScreen } from "./components/segments/SegmentsScreen";
+import { PartsView } from "./components/parts/PartsView";
+import { PartsDock } from "./components/parts/PartsDock";
+import { useSegments } from "./hooks/useSegments";
 import { QueueScreen } from "./components/QueueScreen";
-import { AnalysisScreen } from "./components/AnalysisScreen";
+import { AnalyzerStatus, useAnalyzerStatus } from "./components/AnalysisPanels";
 import { PairDock } from "./components/PairDock";
 import { scoredOptionOf } from "./components/pairs/pairModel";
 import { PlayerBar } from "./components/PlayerBar";
 import { TrackDetail } from "./components/TrackDetail";
 import { Discovery } from "./components/Discovery";
 import { MixStudio } from "./components/MixStudio";
-import { SetScreen } from "./components/SetScreen";
 import { HelpPanel } from "./components/HelpPanel";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { TuningPanel } from "./components/TuningPanel";
@@ -18,7 +19,7 @@ import { LearningPanel } from "./components/LearningPanel";
 import { MlPanel } from "./components/MlPanel";
 import { BulkReprocess } from "./components/BulkReprocess";
 import { SetupWizard } from "./components/SetupWizard";
-import { NAV_ITEMS, Sidebar, usePipelineReadout, useRailCollapsed } from "./shell/Sidebar";
+import { NAV_ITEMS, RETIRED_ROUTES, Sidebar, usePipelineReadout, useRailCollapsed } from "./shell/Sidebar";
 import { CommandPalette } from "./shell/CommandPalette";
 import { Styleguide } from "./shell/Styleguide";
 import { useLibrary } from "./hooks/useLibrary";
@@ -26,13 +27,12 @@ import { useLibraryGroups } from "./hooks/useLibraryGroups";
 import { useRatings } from "./hooks/useRatings";
 import { useAttributes } from "./hooks/useAttributes";
 import { usePairDock } from "./hooks/usePairDock";
-import { useSets } from "./hooks/useSets";
 import { usePairNotes } from "./hooks/usePairNotes";
 import { useFilterPresets } from "./hooks/useFilterPresets";
 import { usePlayer } from "./hooks/usePlayer";
 import { isActiveJob } from "./hooks/useQueue";
 import { api } from "./api";
-import { onToast } from "./toast";
+import { onToast, toast as showToast } from "./toast";
 import { track } from "./events";
 import { useFreshness } from "./hooks/useFreshness";
 
@@ -45,6 +45,15 @@ const initialRoute = () => {
     }
   } catch { /* no location */ }
   return "library";
+};
+// An old deep link (#segments, #analysis, #sets, ?route=…) lands on the
+// retired route's new home (Sidebar.RETIRED_ROUTES), once, at start.
+const initialRetired = () => {
+  try {
+    const q = new URLSearchParams(window.location.search).get("route")
+      || window.location.hash.replace(/^#\/?/, "");
+    return RETIRED_ROUTES[q] ? q : null;
+  } catch { return null; }
 };
 
 // The global search box for a route: Discover's own, else the Library's.
@@ -97,6 +106,14 @@ export function strongerRole(t) {
 
 export default function App() {
   const [route, setRouteState] = useState(initialRoute);
+  // Library modes (3A): tracks, or every vocal / bed section as a "part".
+  const [libMode, setLibMode] = useState("tracks");
+  const [selectedPart, setSelectedPart] = useState(null);
+  const [partsSeed, setPartsSeed] = useState(null);
+  // The Library's Columns & attributes sheet, opened from elsewhere.
+  const [columnsReq, setColumnsReq] = useState(null);
+  const segs = useSegments(libMode !== "tracks");
+  const analyzer = useAnalyzerStatus();
   const rail = useRailCollapsed();
   const [paletteOpen, setPaletteOpen] = useState(false);
   // null = still loading, true/false = configured flag from GET /api/settings.
@@ -165,9 +182,6 @@ export default function App() {
   // narrowed by one and the row menu writes to them. A second copy would still
   // be showing the old shelf after the first one added a track to it.
   const groups = useLibraryGroups();
-  // Sets (mashups in running order) — the dock, Studio and the Sets screen all
-  // add to the same active set.
-  const sets = useSets();
   const notes = usePairNotes();
   // Named Library filters: the Library's Saved ▾, the rail and ⌘K list them.
   const presets = useFilterPresets();
@@ -180,6 +194,16 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [settingsOpen]);
+
+  // Once after the upgrade that removed Sets: say where they were saved.
+  useEffect(() => {
+    api.getSetsBackup().then((b) => {
+      if (!b?.path) return;
+      showToast(`Sets were removed. Your ${b.sets} set${b.sets === 1 ? "" : "s"} `
+        + `(${b.items} slots) were saved to ${b.path}`, { label: "Got it", onClick: () => {} });
+      api.ackSetsBackup().catch(() => {});
+    }).catch(() => {});
+  }, []);
 
   // On load, check whether the app has been configured (first-run wizard gate).
   // If /api/settings is unreachable, assume configured so a transient error
@@ -194,6 +218,14 @@ export default function App() {
   // Library stays mounted underneath), so moving between them keeps the slot.
   const LIB_ROUTES = ["library", "track"];
   const setRoute = (next) => {
+    // A retired route (an old ⌘K entry, a link) goes to its new home.
+    const retired = RETIRED_ROUTES[next];
+    if (retired) {
+      if (retired.mode) setMode(retired.mode);
+      if (retired.columns) { setMode("tracks"); setColumnsReq(Date.now()); }
+      if (retired.keepers) openKeepers();
+      next = retired.route;
+    }
     if (!(LIB_ROUTES.includes(route) && LIB_ROUTES.includes(next))) {
       setHeaderStatus(null);
       setRailSlot(null);
@@ -239,25 +271,35 @@ export default function App() {
     tweaks,
   });
 
-  // A section handed to Segments (Track detail's "Find beds ▸", ⌘K): it opens
-  // as the lead, its matches ranked. sectionIndex null = the track's
-  // best-suited section for that role. `at` re-seeds the same one.
-  const [segmentsSeed, setSegmentsSeed] = useState(null);
-  const [segmentsVisited, setSegmentsVisited] = useState(false);
-  useEffect(() => { if (route === "segments") setSegmentsVisited(true); }, [route]);
-  const openSegments = (s) => { setSegmentsSeed({ ...s, at: Date.now() }); setRoute("segments"); };
+  // Switching the Library's mode drops a part selected in the other one.
+  function setMode(m) {
+    setLibMode(m);
+    setSelectedPart((p) => (p && m === p._role ? p : null));
+  }
+  // A section handed to Parts mode (Track detail's "Find beds ▸", ⌘K): it is
+  // selected and the dock ranks its partners. sectionIndex null = the
+  // track's best-suited section for that role. `at` re-seeds the same one.
+  const openParts = (s) => {
+    const role = s.role === "instrumental" ? "bed" : s.role;
+    setMode(role);
+    setPartsSeed({ ...s, role, at: Date.now() });
+    setRoute("library");
+  };
+  const selectPart = (r) => setSelectedPart(r ? { ...r, _role: libMode } : null);
 
-  // `c` on a pair (or ⇄ Compare): Analysis › Compare, vocal against bed.
+  // `c` on a pair (or ⇄ Compare): Track detail → Compare with…, vocal
+  // against bed (3A: what Analysis › Compare was).
   const [compareSeed, setCompareSeed] = useState(null);
   const compareInAnalysis = (c) => {
     track("compare", c, { context: "dock" });
+    setSelectedTrackId(c.vocal_song_id);
     setCompareSeed({ a: c.vocal_song_id, b: c.inst_song_id, at: Date.now() });
-    setRoute("analysis");
+    setRoute("track");
   };
 
   const dock = usePairDock({
     selectedTrackId, role: dockRole, ratings, onOpenStudio: pairToStudio, player,
-    onAddToSet: sets.addPair, onCompare: compareInAnalysis,
+    onCompare: compareInAnalysis,
   });
   // A track's length, for the expanded pair card's section waveforms.
   const durationOf = useCallback(
@@ -268,20 +310,6 @@ export default function App() {
   // the library's MASH / PAIRS columns.
   const freshness = useFreshness({
     onScored: () => { dock.reload(); library.refresh(); },
-  });
-
-  // A whole set on one Studio timeline, back to back — what "Next pair" could
-  // never do, because it replaces the arrangement.
-  const chainToStudio = (items) => sendToStudio({
-    chain: items.map((c) => ({
-      vocalId: c.vocal_song_id, instId: c.inst_song_id,
-      semitoneShift: c.semitone_shift ?? 0, recipe: c.recipe ?? null,
-      // On a set's tempo curve, each mashup lands at its own point on it.
-      targetBpm: c.set_bpm ?? null,
-      // How far it comes in before the previous mashup ends (the move's bars).
-      overlapSecs: c.overlap_secs ?? 0,
-      scoredOption: scoredOptionOf(c),
-    })),
   });
 
   // "Next pair" in Studio walks the DOCK's list, so the order you are working
@@ -308,8 +336,23 @@ export default function App() {
   // listeners racing for the space bar is exactly the bug this avoids.
   // On Track detail the dock still answers its keys — except space, which
   // plays the track there.
-  useEffect(() => dock.bindKeys(route === "library" || route === "track",
-    { space: route === "library" }), [dock.bindKeys, route]);
+  useEffect(() => dock.bindKeys((route === "library" || route === "track") && libMode === "tracks",
+    { space: route === "library" }), [dock.bindKeys, route, libMode]);
+
+  // An old deep link to a retired tab, once at start.
+  useEffect(() => {
+    const r = initialRetired();
+    if (r) setRoute(r);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ★ Keepers (rail, ⌘K): the dock on every pair you rated 4–5.
+  function openKeepers() {
+    setMode("tracks");
+    setSelectedTrackId(null);
+    dock.setFilters({ rated: "loved" });
+    setRouteState("library");
+  }
 
   // Studio's timeline IS its player, and it drives an engine of its own. Two
   // transports on screen would fight over the space bar and over the speakers,
@@ -323,8 +366,7 @@ export default function App() {
   // it for its own "loop this pair".
   useEffect(() => {
     // Segments routes space itself: the mini studio when a pair is armed.
-    if (route === "library" || route === "track" || route === "studio"
-      || route === "segments") return undefined;
+    if (route === "library" || route === "track" || route === "studio") return undefined;
     const onKey = (e) => {
       const el = e.target;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA"
@@ -454,6 +496,7 @@ export default function App() {
         judged={ratings.count}
         tuning={ratings.tuning}
         onHelp={openHelp} helpSeen={helpSeen}
+        onKeepers={openKeepers} keepersOn={route === "library" && dock.filters.rated === "loved"}
         status={headerStatus?.text ? (
           // The screen's status readout lives in the rail, not floating over
           // the top-right of the screen — there it covered the pair dock's
@@ -506,6 +549,12 @@ export default function App() {
                   presets={presets}
                   applyPreset={libraryPreset}
                   onHelp={openHelp}
+                  mode={libMode} onMode={setMode} openColumns={columnsReq}
+                  parts={libMode !== "tracks" ? (
+                    <PartsView role={libMode} segs={segs} player={player} tracks={library.tracks}
+                      selected={selectedPart} onSelect={selectPart} seed={partsSeed}
+                      onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }} />
+                  ) : null}
                 />
               </div>
               {route === "track" && (
@@ -526,35 +575,27 @@ export default function App() {
                   onDiscover={discoverSearch}
                   onLinesChanged={dock.reload}
                   onPlayPair={(c) => dock.play(c, "track_detail")}
-                  onCompareWith={(id) => { setCompareSeed({ a: id, b: null, at: Date.now() }); setRoute("analysis"); }}
-                  onChooseAttributes={() => setRoute("analysis")}
+                  compareSeed={compareSeed && compareSeed.a === selectedTrackId ? compareSeed : null}
+                  onPlayPairCompare={dock.play} onOpenPairCompare={pairToStudio}
+                  onChooseAttributes={() => { setMode("tracks"); setColumnsReq(Date.now()); setRoute("library"); }}
                   onOpenQueue={openQueue}
-                  onOpenSegments={openSegments}
+                  onOpenSegments={openParts}
                   running={library.pipeJobs.some((j) => j.song_id === selectedTrackId && j.status === "running")}
                 />
               )}
             </main>
+            {libMode !== "tracks" && route === "library" ? (
+              <PartsDock part={selectedPart} role={libMode} ratings={ratings} notes={notes}
+                player={player} onOpenStudio={pairToStudio}
+                onClear={() => setSelectedPart(null)} active={route === "library"} />
+            ) : (
             <PairDock dock={dock} ratings={ratings}
-              onAddToSet={sets.addPair} setName={sets.active?.name || null}
               notes={notes}
               scopeTrack={selectedTrack} onClearScope={route === "track" ? null : clearSelection}
               onCompare={compareInAnalysis} durationOf={durationOf}
               freshness={freshness}
               role={dockRole} onRole={setDockRole} tracks={library.tracks} />
-          </div>
-        )}
-        {/* Mounted from the first visit on and hidden when not on show, so
-            Studio and back finds the same selection, filters and armed pair
-            (12 of 12 simulated users lost it when it unmounted). `active`
-            takes its keys and status away while hidden. */}
-        {segmentsVisited && (
-          <div className={`seg-host${route === "segments" ? "" : " away"}`}
-            aria-hidden={route !== "segments"}>
-            <SegmentsScreen tracks={library.tracks} player={player} ratings={ratings}
-              sets={sets} notes={notes} active={route === "segments"}
-              onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}
-              onOpenStudio={pairToStudio} seed={segmentsSeed}
-              onRailSlot={setRailSlot} onStatus={setHeaderStatus} />
+            )}
           </div>
         )}
         {route === "queue" && (
@@ -562,13 +603,8 @@ export default function App() {
             library={library}
             onOpen={(id) => { setSelectedTrackId(id); setRoute("track"); }}
             onRailSlot={setRailSlot}
+            analyzer={<AnalyzerStatus status={analyzer.status} error={analyzer.error} />}
           />
-        )}
-        {route === "analysis" && (
-          <AnalysisScreen attributes={attributes} onRailSlot={setRailSlot}
-            compareSeed={compareSeed}
-            tracks={library.tracks}
-            onPlayPair={dock.play} onOpenPair={pairToStudio} />
         )}
         {route === "discovery" && (
           <Discovery
@@ -580,13 +616,6 @@ export default function App() {
             externalNav={discoverNav}
           />
         )}
-        {route === "sets" && (
-          <SetScreen sets={sets} player={player}
-            onOpenStudio={pairToStudio} onOpenChain={chainToStudio}
-            onRailSlot={setRailSlot} onOpenLibrary={() => setRoute("library")}
-            onOpenTrack={(id) => { setSelectedTrackId(id); setRoute("track"); }}
-            dockPair={dock.rows[dock.cursor] || null} selectedTrack={selectedTrack} />
-        )}
         {route === "studio" && (
           <MixStudio
             seed={studioSeed}
@@ -594,7 +623,7 @@ export default function App() {
             onStatus={setHeaderStatus}
             onNextPair={dock.rows.length > 1 ? () => nextPair(false) : null}
             onAppendNext={dock.rows.length > 1 ? () => nextPair(true) : null}
-            onAddToSet={sets.addPair} notes={notes} setName={sets.active?.name || null}
+            notes={notes}
           />
         )}
 
@@ -621,6 +650,15 @@ export default function App() {
 
             {/* Renders nothing (heading included) when no track needs it. */}
             <BulkReprocess onQueued={() => library.refresh()} />
+
+            <div className="drawer-section">
+              <h3>What can run here</h3>
+              <span className="hint">Whether Essentia and allin1 import, the genre and
+                mood models, and the feature cache (also on the Queue).</span>
+            </div>
+            <div className="drawer-body">
+              <AnalyzerStatus status={analyzer.status} error={analyzer.error} />
+            </div>
 
             <div className="drawer-body">
               <TuningPanel />
@@ -671,6 +709,13 @@ export default function App() {
           goTo={[
             ...NAV_ITEMS.map(([id, label, glyph]) => ({
               key: `go:${id}`, glyph, label, run: () => setRoute(id) })),
+            { key: "go:vocal-parts", glyph: "▥", label: "Vocal parts", hint: "Library",
+              run: () => { setMode("vocal"); setRoute("library"); } },
+            { key: "go:bed-parts", glyph: "▥", label: "Bed parts", hint: "Library",
+              run: () => { setMode("bed"); setRoute("library"); } },
+            { key: "go:keepers", glyph: "★", label: "★ Keepers", hint: "pairs rated 4–5", run: openKeepers },
+            { key: "go:columns", glyph: "◔", label: "Columns & attributes", hint: "Library",
+              run: () => { setMode("tracks"); setColumnsReq(Date.now()); setRoute("library"); } },
             ...(STYLEGUIDE ? [{ key: "go:styleguide", glyph: "◇", label: "Styleguide",
               hint: "tokens and primitives", run: () => setRoute("styleguide") }] : []),
           ]}
@@ -681,10 +726,13 @@ export default function App() {
             ...(selectedTrack ? [{ key: "a:segments", glyph: "▥",
               label: dockRole === "vocal" ? `Find beds for ${selectedTrack.title}`
                 : `Find vocals for ${selectedTrack.title}`,
-              hint: "Segments",
+              hint: "Parts",
               // The dock says "instrumental", Segments says "bed".
-              run: () => openSegments({ songId: selectedTrack.id, sectionIndex: null,
+              run: () => openParts({ songId: selectedTrack.id, sectionIndex: null,
                                         role: dockRole === "instrumental" ? "bed" : "vocal" }) }] : []),
+            ...(selectedTrack ? [{ key: "a:compare", glyph: "⇄",
+              label: `Compare ${selectedTrack.title} with…`, hint: "Track detail",
+              run: () => { setCompareSeed({ a: selectedTrack.id, b: null, at: Date.now() }); setRoute("track"); } }] : []),
             { key: "a:rail", glyph: "«", label: "Toggle rail", run: rail.toggle },
             ...(player.source ? [{ key: "a:play", glyph: "▶", label: "Play / pause",
               hint: "space", run: () => (player.playing ? player.pause() : player.resume()) }] : []),

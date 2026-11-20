@@ -1,4 +1,4 @@
-// Implicit pair events (readme §5.14): what is done with a pair, buffered here
+// Implicit pair events (readme §5.13): what is done with a pair, buffered here
 // and posted to POST /api/events every few seconds and on unload.
 //
 // The one rule: NOTHING in this file may be felt. No call here throws, awaits,

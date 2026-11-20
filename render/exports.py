@@ -1,25 +1,24 @@
 """
 render/exports.py — chosen pairs as files other tools read.
 
-Three formats over the same list of pair rows (a set's items, or the dock's
-top N), so a set and a filtered dock export cannot disagree about what a pair
-is:
+Five formats over the same list of pair rows (the dock's top N, or the
+★ Keepers), so a CSV and a rekordbox playlist cannot disagree about what a
+pair is:
 
   * CSV — one row per pair: both sides, sections, landing tempo and key, the
     bed's transpose, measured harmony, note. Opens in a spreadsheet.
-  * cue sheet — plain text, one line per mashup with its start time in the
-    running order. For planning a mix on paper or pasting into a tracklist.
+  * cue sheet — plain text, one entry per mashup with its start time if the
+    list were played back to back, `PLAY_BARS` bars each at its landing tempo.
   * rekordbox XML — the vocal's acapella and the bed's full track as a
     playlist, each with a beat grid from the analysis and a hot cue at the
     chosen section (memory cues at every section). rekordbox imports it via
     Preferences → Advanced → rekordbox xml. The files are referenced where they
-    are, not copied. Serato and Traktor are not written.
+    are, not copied.
+  * Serato crate and Traktor NML — the same files and cues.
 
-A pair row is the dict `get_candidates_enriched` / `get_set` returns. A set
-can also hold tracks, breaks and gaps (matcher/setflow): a track is a row with
-only the bed side filled; a break is a row of its own (a cue with no track);
-a gap — a slot not filled yet — is left out of every file, and rekordbox
-leaves out breaks as well.
+A pair row is the dict `get_candidates_enriched` / `candidate_for_pair`
+returns. A pair lands at the vocal's tempo and key with the bed transposed by
+`matcher/recipe.bed_shift` — the one transpose (readme §7).
 """
 from __future__ import annotations
 
@@ -30,15 +29,18 @@ from typing import Callable, Dict, List, Optional, Sequence
 from urllib.parse import quote
 from xml.sax.saxutils import quoteattr
 
-from matcher.setflow import flow, kind_of
+from matcher.recipe import bed_shift
 
 CSV_COLUMNS = (
     "position", "vocal_artist", "vocal_title", "vocal_section", "vocal_start",
     "vocal_end", "bed_artist", "bed_title", "bed_section", "bed_start", "bed_end",
     "landing_bpm", "landing_key", "bed_shift_st", "bed_bpm", "bed_key",
     "harmony_pct", "bass_clash", "nudge_ms", "loop_bed_x", "score_pct",
-    "set_start", "note", "move_in", "overlap_bars", "vocal_tempo_pct", "kind",
+    "start", "note",
 )
+# How long one mashup plays in the cue sheet's running time, in bars of its
+# landing tempo: the vocal section is what is layered, not how long it stays on.
+PLAY_BARS = 32
 
 
 def mmss(secs: Optional[float]) -> str:
@@ -48,47 +50,26 @@ def mmss(secs: Optional[float]) -> str:
     return f"{n // 60}:{n % 60:02d}"
 
 
-def _blank() -> Dict:
-    return {c: "" for c in CSV_COLUMNS}
+def landing(item: Dict) -> Dict:
+    """Where a pair lands: the vocal's tempo (or the stored target) and key,
+    the bed's transpose, and how long it plays."""
+    bpm = item.get("target_bpm") or item.get("vocal_bpm")
+    start, end = item.get("vocal_section_start"), item.get("vocal_section_end")
+    dur = (end - start) if start is not None and end is not None and end > start else None
+    plays = PLAY_BARS * 240.0 / float(bpm) if bpm else dur
+    return {"bpm": float(bpm) if bpm else None,
+            "camelot": item.get("vocal_camelot") or None,
+            "secs": plays, "bed_shift": bed_shift(item)}
 
 
 def _rows(items: Sequence[Dict]) -> List[Dict]:
-    """One row per slot that plays (pairs, tracks) or pauses (breaks), in
-    running order; gaps are not written. `position` counts what is written."""
-    f = flow(items)
-    out = []
-    moves = [None] + [t["move"] for t in f["transitions"]]
-    n = 0
-    for k, (it, land) in enumerate(zip(items, f["landings"])):
-        kind = kind_of(it)
-        if kind == "gap":
-            continue
-        n += 1
-        if kind == "break":
-            out.append({**_blank(), "position": n, "kind": "break",
-                        "set_start": mmss(f["starts"][k]),
-                        "note": it.get("label") or "break",
-                        "vocal_end": mmss(land["secs"])})
-            continue
-        if kind == "track":
-            out.append({**_blank(), "position": n, "kind": "track",
-                        "bed_artist": it.get("artist") or "", "bed_title": it.get("title") or "",
-                        "landing_bpm": f"{land['bpm']:.1f}" if land["bpm"] else "",
-                        "landing_key": land["camelot"] or "",
-                        "bed_bpm": f"{it['bpm']:.1f}" if it.get("bpm") else "",
-                        "bed_key": it.get("camelot") or "",
-                        "set_start": mmss(f["starts"][k])})
-            continue
-        move = moves[k]
-        v_pct = None
-        if it.get("set_bpm") and it.get("vocal_bpm"):
-            from matcher.match import effective_bpm
-            v_pct = (float(it["set_bpm"]) / effective_bpm(float(it["set_bpm"]),
-                                                          float(it["vocal_bpm"])) - 1) * 100
+    """One row per pair, in list order, with its start if played back to back."""
+    out, t = [], 0.0
+    for n, it in enumerate(items, start=1):
+        land = landing(it)
         fit = it.get("score_key") if it.get("harmonic_shift") is not None else None
         out.append({
             "position": n,
-            "kind": "pair",
             "vocal_artist": it.get("vocal_artist") or "",
             "vocal_title": it.get("vocal_title") or "",
             "vocal_section": it.get("vocal_section_label") or "",
@@ -112,15 +93,15 @@ def _rows(items: Sequence[Dict]) -> List[Dict]:
                           if (it.get("section_loop_repeats") or 1) > 1 else "",
             "score_pct": "" if it.get("score_percentile") is None
                          else str(round(float(it["score_percentile"]) * 100)),
-            "set_start": mmss(f["starts"][k]),
+            "start": mmss(t),
             "note": it.get("note") or "",
-            # How this mashup comes in (matcher/setflow: suggested or chosen),
-            # and — on a tempo curve — how far the vocal is stretched to land.
-            "move_in": move["label"] if move else "",
-            "overlap_bars": str(move["bars"]) if move and move["bars"] else "",
-            "vocal_tempo_pct": "" if v_pct is None or abs(v_pct) < 0.05 else f"{v_pct:+.1f}",
         })
+        t += land["secs"] or 0.0
     return out
+
+
+def _total_secs(items: Sequence[Dict]) -> float:
+    return sum(landing(it)["secs"] or 0.0 for it in items)
 
 
 def pairs_csv(items: Sequence[Dict]) -> str:
@@ -133,44 +114,20 @@ def pairs_csv(items: Sequence[Dict]) -> str:
 
 
 def cue_sheet(items: Sequence[Dict], title: str = "") -> str:
-    """One line per mashup, timed from the top of the set. A track is one
-    line; a break is a cue with no track; gaps are not printed."""
-    f = flow(items)
-    written = [k for k, it in enumerate(items) if kind_of(it) != "gap"]
+    """Two lines per mashup (the vocal, then `w/` the bed), each timed as if
+    the list were played back to back, plus what building it takes."""
     rows = _rows(items)
-    trans = [None] + f["transitions"]
     lines = []
     if title:
         lines += [title, "=" * len(title)]
-    pairs = sum(1 for r in rows if r["kind"] == "pair")
-    lines.append(f"{pairs} mashups · {mmss(f['total_secs'])} running time")
+    lines.append(f"{len(rows)} mashups · {mmss(_total_secs(items))} running time")
     lines.append("")
-    for r, k in zip(rows, written):
-        t = trans[k]
-        if r["kind"] == "break":
-            lines.append(f"[{r['set_start']:>5}] {r['position']:>2}. — {r['note']} "
-                         f"({r['vocal_end']}) —")
-            continue
-        if r["kind"] == "track":
-            lines.append(f"[{r['set_start']:>5}] {r['position']:>2}. {r['bed_artist']} - "
-                         f"{r['bed_title']}" + (f" · {r['landing_bpm']} BPM" if r["landing_bpm"] else "")
-                         + (f" · {r['landing_key']}" if r["landing_key"] else ""))
-            continue
-        if t is not None and t.get("grade") != "none":
-            tempo = "" if t["tempo_pct"] is None else f"{t['tempo_pct']:+.1f}% tempo"
-            key = "" if t["key_steps"] is None else f"{t['key_steps']:g} key steps"
-            mv = t.get("move")
-            how = ""
-            if mv:
-                how = f" — {mv['label']}" + (f" {mv['bars']} bars" if mv["bars"] else "")
-            lines.append(f"      ↓ {t['grade']}" + (f" ({', '.join(x for x in (tempo, key) if x)})"
-                                                    if tempo or key else "") + how)
-        head = (f"[{r['set_start']:>5}] {r['position']:>2}. "
-                f"{r['vocal_artist']} - {r['vocal_title']} ({r['vocal_section']} {r['vocal_start']}–{r['vocal_end']})")
-        lines.append(head)
-        bed = (f"            w/ {r['bed_artist']} - {r['bed_title']} ({r['bed_section']} "
-               f"{r['bed_start']}–{r['bed_end']})")
-        lines.append(bed)
+    for r in rows:
+        lines.append(f"[{r['start']:>5}] {r['position']:>2}. "
+                     f"{r['vocal_artist']} - {r['vocal_title']} "
+                     f"({r['vocal_section']} {r['vocal_start']}–{r['vocal_end']})")
+        lines.append(f"            w/ {r['bed_artist']} - {r['bed_title']} ({r['bed_section']} "
+                     f"{r['bed_start']}–{r['bed_end']})")
         detail = [x for x in (
             r["landing_bpm"] and f"{r['landing_bpm']} BPM",
             r["landing_key"],
@@ -209,7 +166,7 @@ def _file_url(path: str, base: Optional[str] = None, root: Optional[str] = None)
 
 
 def _collect(items: Sequence[Dict], resolve: Callable[[int, str], Optional[Dict]]):
-    """The files a set or pair list plays, once each, in first-play order, with
+    """The files a pair list plays, once each, in first-play order, with
     the cues each carries (≤ 8), and the playlist order as track ids — one
     collection for rekordbox, Serato and Traktor, so the three exports name
     the same files and cues. Returns (tracks, order, skipped)."""
@@ -234,15 +191,7 @@ def _collect(items: Sequence[Dict], resolve: Callable[[int, str], Optional[Dict]
             t["cues"].append((cue_name, float(cue_at)))
         order.append(t["tid"])
 
-    n = 0
-    for it in items:
-        kind = kind_of(it)
-        if kind in ("break", "gap"):
-            continue
-        n += 1
-        if kind == "track":
-            add(it["song_id"], "full", "", None, "")
-            continue
+    for n, it in enumerate(items, start=1):
         add(it["vocal_song_id"], "vocals", "Acapella", it.get("vocal_section_start"),
             f"#{n} VOX {it.get('vocal_section_label') or ''}".strip())
         add(it["inst_song_id"], "full", "", it.get("inst_section_start"),
@@ -388,7 +337,7 @@ def traktor_nml(items: Sequence[Dict], playlist: str,
                 resolve: Callable[[int, str], Optional[Dict]],
                 base: Optional[str] = None, root: Optional[str] = None) -> Dict:
     """A Traktor collection (.nml, version 19) holding each file with its
-    tempo, key and the paired sections as hot cues, and one playlist in set
+    tempo, key and the paired sections as hot cues, and one playlist in list
     order. Import it from Traktor's browser (Import Collection).
     Returns {"xml": str, "files": [...], "skipped": n}."""
     tracks, order, skipped = _collect(items, resolve)

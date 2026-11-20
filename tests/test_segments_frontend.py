@@ -1,4 +1,5 @@
-"""The Segments screen, pinned from Python (readme §4 Segments).
+"""The Library's Parts mode — what the Segments screen became (master plan
+3A) — pinned from Python (readme §3 Library → Parts).
 
 Most of these read the JSX and CSS, as the other frontend contract tests do.
 The filtering model is also RUN: esbuild (Vite's own dependency) bundles
@@ -29,22 +30,28 @@ APP = _read("App.jsx")
 SIDEBAR = _read("shell/Sidebar.jsx")
 CSS = _read("styles.css")
 FILES = {p.name: p.read_text(encoding="utf-8") for p in SEG.glob("*.js*")}
+PARTS = {p.name: p.read_text(encoding="utf-8")
+         for p in (SRC / "components" / "parts").glob("*.js*")}
 HOOKS = {n: _read(f"hooks/{n}") for n in ("useSegments.js", "useMiniStudio.js")}
 
 
-def test_segments_sits_under_library_in_the_rail_and_renders():
+def test_parts_are_a_library_mode_and_the_old_route_redirects():
     nav = SIDEBAR[SIDEBAR.index("const NAV = ["):]
     nav = nav[:nav.index("];")]
     ids = re.findall(r'\["(\w+)", "', nav)
-    assert ids[:2] == ["library", "segments"], ids
-    assert 'route === "segments"' in APP and "<SegmentsScreen" in APP
-    # ⌘K's "Go to" is built from NAV_ITEMS, so it gets the screen for free.
-    assert "NAV_ITEMS.map" in APP
+    assert ids == ["library", "discovery", "studio", "mixes", "queue"], ids
+    lib = _read("components/LibraryScreen.jsx")
+    assert '["tracks", "Tracks"], ["vocal", "Vocal parts"], ["bed", "Bed parts"]' in lib
+    assert "<PartsView" in APP and "<PartsDock" in APP
+    assert 'segments: { route: "library", mode: "vocal"' in SIDEBAR
+    assert "SegmentsScreen" not in APP
+    # ⌘K's "Go to" is built from NAV_ITEMS, plus the two parts modes.
+    assert "NAV_ITEMS.map" in APP and 'key: "go:vocal-parts"' in APP
 
 
 def test_the_tables_are_virtualised_on_fixed_rows():
     table = FILES["SegmentTable.jsx"]
-    assert "export const ROW_H = 32;" in table
+    assert "export const ROW_H = 44;" in table      # the Library row, .tt-row
     assert "rows.slice(first, first + count)" in table
     assert "height: rows.length * ROW_H" in table
     # Rows are memoised and call handlers through a ref.
@@ -83,14 +90,15 @@ def test_the_tier_is_never_computed_client_side():
     assert "confidence_tier" in FILES["SegmentTable.jsx"]
 
 
-def test_ratings_sets_and_notes_go_through_the_shared_hooks():
-    screen = FILES["SegmentsScreen.jsx"]
+def test_ratings_and_notes_go_through_the_shared_hooks():
+    screen = PARTS["PartsDock.jsx"]
     band = FILES["MiniStudio.jsx"]
-    assert "ratings.rate(armed" in screen and "sets.addPair(armed)" in screen
-    # The third argument is the pair-event context (readme §5.14); the rating
+    assert 'ratings.rate(focused, Number(e.key), "parts")' in screen
+    assert 'ratings.rate(c, n, "parts")' in screen
+    # The third argument is the pair-event context (readme §5.13); the rating
     # still goes through the one shared hook.
     assert 'ratings.rate(pair, n, "parts")' in band and "notes.save(pair" in band
-    assert "sets.addPair(pair)" in band
+    assert "sets." not in band and "sets." not in screen     # Sets are removed
 
 
 def test_the_mini_studio_plays_what_the_card_prints():
@@ -128,7 +136,7 @@ def test_the_wav_render_places_the_trim_start_as_the_offset():
 def test_one_sound_at_a_time():
     band = FILES["MiniStudio.jsx"]
     assert "player.stop()" in band and "ms.pause()" in band
-    assert '|| route === "segments") return undefined;' in APP
+    assert 'if (route === "library" || route === "track" || route === "studio") return undefined;' in APP
 
 
 def test_no_hex_and_every_class_is_styled():
@@ -150,7 +158,7 @@ def test_no_hex_and_every_class_is_styled():
 
 def test_help_names_the_screen_and_its_keys():
     help_ = _read("components/HelpPanel.jsx")
-    assert '["Segments", ' in help_
+    assert '["Parts (Library → Vocal / Bed parts)", ' in help_
 
 
 # ── behaviour: the model, run under Node ─────────────────────────────────────
@@ -286,9 +294,8 @@ def test_the_dock_role_is_translated_for_segments():
     from a dock on As bed handed over "instrumental" and the screen crashed
     reading segs.instrumental (the 2026-10-21 merge simulation)."""
     assert 'role: dockRole === "instrumental" ? "bed" : "vocal"' in APP
-    screen = FILES["SegmentsScreen.jsx"]
-    assert 'seed.role === "instrumental" ? "bed" : seed.role' in screen
-    assert "if (!segs[role]) return;" in screen
+    assert 's.role === "instrumental" ? "bed" : s.role' in APP
+    assert "(segs[role] || [])" in PARTS["PartsView.jsx"]
 
 
 def test_ways_in_from_track_detail_and_the_palette():
@@ -296,10 +303,10 @@ def test_ways_in_from_track_detail_and_the_palette():
     assert 'onMatch(s, "vocal")' in table and 'onMatch(s, "bed")' in table
     detail = _read("components/TrackDetail.jsx")
     assert "onOpenSegments({ songId: track.id, sectionIndex: s.section_index, role: asRole })" in detail
-    assert "onOpenSegments={openSegments}" in APP and "seed={segmentsSeed}" in APP
+    assert "onOpenSegments={openParts}" in APP and "seed={partsSeed}" in APP
     assert 'key: "a:segments"' in APP
-    screen = FILES["SegmentsScreen.jsx"]
-    assert "seeded.current === seed.at" in screen and "setLead(role)" in screen
+    view = PARTS["PartsView.jsx"]
+    assert "seeded.current === seed.at" in view and "onSelect(hit);" in view
 
 
 def test_the_mini_studio_declares_every_hook_before_its_early_return():
@@ -311,14 +318,16 @@ def test_the_mini_studio_declares_every_hook_before_its_early_return():
     assert not re.search(r"\buse(Effect|State|Ref|Memo|Callback|MiniStudio)\(", body[early:])
 
 
-def test_segments_survives_a_trip_to_studio():
-    assert "segmentsVisited &&" in APP and 'active={route === "segments"}' in APP
-    assert ".seg-host.away { display: none; }" in CSS
-    screen = FILES["SegmentsScreen.jsx"]
-    # Hidden, it owns no keys and reports no status.
-    assert screen.count("if (!active) return") + screen.count("|| !active) return") >= 4
-    assert "if (active) onRailSlot" in screen
+def test_parts_survive_a_trip_to_studio():
+    """The mode and the selected part live in App, so Studio and back finds
+    them; off the Library the parts dock owns no keys and the band is silent."""
+    assert 'const [libMode, setLibMode] = useState("tracks");' in APP
+    assert "const [selectedPart, setSelectedPart] = useState(null);" in APP
+    assert 'active={route === "library"}' in APP
+    assert "if (!active || !part) return undefined;" in PARTS["PartsDock.jsx"]
     assert "if (!active && ms.playing) ms.pause()" in FILES["MiniStudio.jsx"]
+    # The section list is fetched on the first visit to Parts, not at start.
+    assert 'useSegments(libMode !== "tracks")' in APP
 
 
 def test_no_component_is_declared_inside_a_render():

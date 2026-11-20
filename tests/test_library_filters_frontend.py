@@ -171,14 +171,15 @@ def test_a_grip_drag_never_reaches_the_sort_header():
 
 def test_the_table_is_virtualised_with_fixed_rows():
     """5,000 tracks: only the rows in (and just around) the scroll window are in
-    the DOM, at a fixed 32px."""
-    assert "export const ROW_H = 32;" in TABLE
+    the DOM, at a fixed 44px (two lines: title over artist)."""
+    # Two lines a row since the 3C refresh: title over artist.
+    assert "export const ROW_H = 44;" in TABLE
     assert "tracks.slice(first, first + count)" in TABLE
     assert "height: tracks.length * ROW_H" in TABLE
     assert "const Row = memo(" in TABLE
     css = _read("styles.css")
     row = css[css.index("\n.tt-row {"):]
-    assert "height: 32px" in row[:row.index("}")]
+    assert "height: 44px" in row[:row.index("}")]
 
 
 def test_the_view_lives_on_the_server():

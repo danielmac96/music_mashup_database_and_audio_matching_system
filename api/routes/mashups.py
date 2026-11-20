@@ -3,6 +3,7 @@ and fetch an actionable section-level plan for a pair."""
 from __future__ import annotations
 
 import logging
+import re
 from typing import List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -308,6 +309,23 @@ def _with_exploration(rows: list, offset: int, limit: int,
     return out
 
 
+def tune_base() -> dict:
+    """The weights the stored totals were ranked with, and the learned
+    model's share α — what the dock's Tune drawer re-ranks from
+    (frontend/src/tune.js; readme §3). Match weights are the generic,
+    normalised set; the client applies the vocal path's timbre → collision
+    move itself, as config._for_combo does."""
+    from config import current_float, current_match_weights
+    from matcher.learning import active_blender
+    blender = active_blender()
+    return {"match": current_match_weights(),
+            "section": current_float("section_weight"),
+            "slot": current_float("slot_weight"),
+            "effort": current_float("effort_weight"),
+            "dropinBonus": current_float("dropin_bonus"),
+            "alpha": blender.alpha if blender else 0.0}
+
+
 @router.get("")
 def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     limit: int = 50, vocal_song_id: Optional[int] = None,
@@ -389,7 +407,7 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     _with_scope_rank(rows, vocal_song_id, inst_song_id)
     return {"count": len(rows), "candidates": rows,
             "max_per_song": max_per_song, "order": order,
-            "adventure": adventure, "offset": offset}
+            "adventure": adventure, "offset": offset, "tune": tune_base()}
 
 
 @router.get("/filters")
@@ -920,12 +938,11 @@ class PairExportBody(BaseModel):
 
 @router.post("/export")
 def export_pairs(body: PairExportBody):
-    """The pairs the dock is showing, as CSV / cue sheet / rekordbox XML — the
-    same files a set exports (render/exports.py)."""
+    """The pairs the dock (or ★ Keepers) is showing, as CSV / cue sheet /
+    rekordbox XML / Serato crate / Traktor NML (render/exports.py)."""
     if body.format not in ("csv", "cue", "rekordbox", "serato", "traktor"):
         raise HTTPException(status_code=400,
                             detail="format must be csv, cue, rekordbox, serato or traktor")
-    from api.routes.sets import export_response
     from database.models import candidate_for_pair, get_pair_notes
     notes = {(n["vocal_song_id"], n["inst_song_id"], n["vocal_section"],
               n["inst_section"]): n["note"] for n in get_pair_notes()}
@@ -940,3 +957,38 @@ def export_pairs(body: PairExportBody):
     if not items:
         raise HTTPException(status_code=404, detail="none of those pairs are scored")
     return export_response(items, body.format, body.name, body.base)
+
+
+_UNSAFE = re.compile(r"[^A-Za-z0-9 _.-]+")
+
+
+def export_response(items: list, format: str, name: str, base: Optional[str] = None):
+    """One pair list as a downloadable file in `format`."""
+    import config
+    from fastapi.responses import PlainTextResponse, Response
+    from render.exports import (cue_sheet, library_resolver, pairs_csv, rekordbox_xml,
+                                serato_crate, traktor_nml)
+    stem = _UNSAFE.sub("_", name).strip("_ ") or "pairs"
+
+    def attach(body: str, ext: str, media: str, extra: Optional[dict] = None):
+        headers = {"Content-Disposition": f'attachment; filename="{stem}.{ext}"'}
+        headers.update(extra or {})
+        return PlainTextResponse(body, media_type=media, headers=headers)
+
+    if format == "csv":
+        return attach(pairs_csv(items), "csv", "text/csv")
+    if format == "cue":
+        return attach(cue_sheet(items, name), "txt", "text/plain")
+    if format == "serato":
+        out = serato_crate(items, library_resolver(), base=base, root=str(config.AUDIO_DIR))
+        return Response(out["data"], media_type="application/octet-stream", headers={
+            "Content-Disposition": f'attachment; filename="{stem}.crate"',
+            "X-Skipped-Tracks": str(out["skipped"])})
+    if format == "traktor":
+        out = traktor_nml(items, name, library_resolver(), base=base, root=str(config.AUDIO_DIR))
+        return attach(out["xml"], "nml", "application/xml",
+                      {"X-Skipped-Tracks": str(out["skipped"])})
+    out = rekordbox_xml(items, name, library_resolver(), base=base,
+                        root=str(config.AUDIO_DIR))
+    return attach(out["xml"], "xml", "application/xml",
+                  {"X-Skipped-Tracks": str(out["skipped"])})

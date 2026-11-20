@@ -171,26 +171,18 @@ def test_the_queue_says_when_the_next_track_gets_pairs():
     assert "next pairs in" in (SRC / "shell" / "Sidebar.jsx").read_text(encoding="utf-8")
 
 
-# ── A/B decks ─────────────────────────────────────────────────────────────────
+# ── Studio lanes after the Sets removal ──────────────────────────────────────
 
-def test_a_set_opens_on_two_deck_rows():
+def test_studio_has_one_row_per_lane_and_no_deck_mode():
+    """Studio's A/B deck mode existed to lay a whole set on two rows; it went
+    with Sets (master plan 3D). Every lane is its own row, and a lane's state
+    is the arrangement keys only."""
     ms = (SRC / "components" / "MixStudio.jsx").read_text(encoding="utf-8")
     import re
     keys = re.search(r"const LANE_KEYS = \[([^\]]*)\];", ms).group(1)
-    assert '"deck"' in keys and '"slot"' in keys
-    lay = ms[ms.index("const layPairs = useCallback"):ms.index("// Deck clips hold decoded audio")]
-    assert 'const deck = decked ? (slot % 2 ? "B" : "A") : null;' in lay
-    assert "cursor -= p.overlapSecs" in lay, "each move overlaps the next mashup"
-    # Rows group every deck's clips; the panel shows only the selected slot.
-    assert "{timelineRows.map((row) => {" in ms and "if (row.deck) return renderDeckRow(row);" in ms
-    assert "|| (selLane?.deck && l.slot === selLane.slot)" in ms
-    # Deck clips decode near the playhead only, and let go of their audio after.
-    assert "await loadLaneMedia(id, track.id, stem, { audio: !lane.deck });" in ms
-    assert "releaseStem(url)" in ms
-    assert "export function releaseStem(url)" in (SRC / "engine" / "decode.js").read_text(encoding="utf-8")
-    sc = (SRC / "components" / "SetScreen.jsx").read_text(encoding="utf-8")
-    assert "export const STUDIO_CHAIN_MAX = 64;" in sc
-    assert "overlap_secs: k > from ? (f.transitions[k - 1]?.overlap_secs ?? 0) : 0" in sc
-    assert "overlapSecs: c.overlap_secs ?? 0" in (SRC / "App.jsx").read_text(encoding="utf-8")
+    assert '"deck"' not in keys and '"slot"' not in keys
+    assert "renderDeckRow" not in ms and "timelineRows" not in ms
+    assert "{lanes.map((l) => {" in ms
+    assert "await loadLaneMedia(id, track.id, stem);" in ms
     from render.dsp import MAX_CLIPS
-    assert MAX_CLIPS >= 128, "a whole decked set renders as one mixdown"
+    assert MAX_CLIPS >= 128

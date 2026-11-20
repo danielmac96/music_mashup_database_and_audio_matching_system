@@ -17,7 +17,7 @@ import { fmtSpan } from "./segmentModel";
 const dB = (g) => (g > 0 ? `${(20 * Math.log10(g)).toFixed(1)} dB` : "−∞");
 const RENDER_POLL_MS = 1000;
 
-export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOpenStudio,
+export function MiniStudio({ pair, lead, sel, player, ratings, notes, onOpenStudio,
                              onNext, onPrev, active = true }) {
   const ms = useMiniStudio(pair);
   const s = ms.settings;
@@ -72,7 +72,7 @@ export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOp
               ? `Now pick a ${lead === "vocal" ? "bed" : "vocal"} from the matches on the ${lead === "vocal" ? "right" : "left"} — the pair loops here.`
               : "Select a vocal segment (or a bed): the other table narrows to what fits it. Pick one of those and the pair loops here, ready to tweak."}
           </span>
-          <span className="faint mono">space play · [ ] next / previous match · 1–5 rate · a add to set · esc clear</span>
+          <span className="faint mono">space play · [ ] next / previous match · 1–5 rate · esc clear</span>
         </div>
       </section>
     );
@@ -251,8 +251,6 @@ export function MiniStudio({ pair, lead, sel, player, ratings, sets, notes, onOp
           onBlur={() => { if (note !== notes.noteOf(pair)) notes.save(pair, note); }}
           onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />
         <div className="seg-band-row">
-          <button className="ui-btn" onClick={() => sets.addPair(pair)}
-            title={sets.active ? `Add to ${sets.active.name} (a)` : "Add to a new set (a)"}>+ Set</button>
           <button className="ui-btn" onClick={renderWav} disabled={rendering}
             title="Bounce the loop as you hear it to a WAV">{rendering ? "Rendering…" : "Render WAV"}</button>
           <button className="btn-primary" onClick={() => { track("open_studio", pair, { context: "parts" }); onOpenStudio(pair, tweaks); }}
