@@ -2499,6 +2499,7 @@ input, select { font-family: inherit; }
 }
 .sc-chip.owned { background: var(--accent-bg); color: var(--ok); cursor: pointer; }
 .sc-chip.warn { background: var(--warn-bg); color: var(--warn-soft); }
+.sc-chip.gap { background: var(--ok-bg); color: var(--ok-soft); }
 .sc-crates { display: inline-flex; gap: 3px; min-width: 0; overflow: hidden; }
 .sc-fit { flex: none; font-size: 10px; color: var(--muted); white-space: nowrap; }
 .sc-fit.fits { color: var(--ok); }
@@ -3545,3 +3546,17 @@ input, select { font-family: inherit; }
 .ov-seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .ov-phrase { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-2); }
 @media (max-width: 1100px) { .ov-body { grid-template-columns: minmax(0, 1fr); } }
+
+/* Settings → Storage (StoragePanel.jsx) */
+.storage-panel { display: flex; flex-direction: column; gap: 8px; }
+.storage-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.storage-table th { text-align: left; color: var(--muted); font-weight: 500;
+  border-bottom: 1px solid var(--line); padding: 4px 6px; }
+.storage-table td { padding: 4px 6px; border-bottom: 1px solid var(--line-soft); color: var(--fg-2); }
+.storage-table .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+.storage-toggle { display: flex; align-items: center; gap: 8px; color: var(--fg); }
+.storage-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* Queue → compute readout (QueueScreen.ComputeReadout) */
+.q-compute { display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline; }
+.q-warn { color: var(--warn-soft); background: var(--warn-bg); border-radius: var(--r-chip); padding: 2px 8px; }

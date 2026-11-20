@@ -59,6 +59,14 @@ def suggest(job_id: str, seeds: Sequence[Dict], kinds: Sequence[str]) -> None:
         jobs.fail(job_id, f"Suggestion error: {type(exc).__name__}: {exc}")
         return
 
+    try:
+        # The value preview (readme §3 Discover): what each suggestion says
+        # about itself and which library gaps it could fill — never a BPM or
+        # key nobody measured.
+        from api.routes.discovery import _with_fit_hints
+        _with_fit_hints([t for t in result.get("tracks") or [] if isinstance(t, dict)])
+    except Exception:  # noqa: BLE001
+        log.debug("value preview not added", exc_info=True)
     jobs.done(job_id, {
         **result,
         "summary": (f"{len(result['tracks'])} tracks, "

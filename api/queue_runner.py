@@ -154,6 +154,12 @@ def _dispatch(job_id: str, song_id: int) -> None:
         # scores the track first if an input changed since its last run).
         _put("analysis", job_id, song_id)
         return
+    if stage == "stems":
+        # An import whose provisional pairs already hold likely Drop-ins with
+        # separated tracks goes ahead of the rest of its batch (the first
+        # useful pair, not just the first pair). Never lowers a priority.
+        from api.workers.stem_priority import promote_for_stems
+        promote_for_stems(job_id, song_id)
     # Recorded before the put: a free worker can take the item at once, and its
     # 'running' must not be overwritten by a late 'waiting'.
     jobs.stage_wait(job_id, stage)

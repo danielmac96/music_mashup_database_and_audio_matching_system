@@ -197,6 +197,13 @@ export function TrackRow({ row, checked, onToggle, onArtist, onRelated,
             ))}
           </span>
         ) : null}
+        {!owned && row.gap_fill?.n > 0 && (
+          <span className="sc-chip gap" title={`Could partner ${row.gap_fill.n} library track(s) that have few partners: `
+            + (row.gap_fill.groups || []).join(" · ")
+            + " — from what the upload says about itself and its genre; nothing outside the library is analysed"}>
+            ◎ fills {row.gap_fill.n} gap{row.gap_fill.n === 1 ? "" : "s"}
+          </span>
+        )}
         {fit && (fit.bpm || fit.camelot || fit.fits != null) && (
           <span className={`sc-fit mono${fit.fits > 0 ? " fits" : ""}`}
             title={"What the upload prints about itself (nothing outside the library is analysed)"

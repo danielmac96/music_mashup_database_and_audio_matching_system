@@ -236,6 +236,34 @@ def set_allin1_state(song_id: int, state: Optional[str], error: Optional[str] = 
         conn.close()
 
 
+# allin1_error prefixes of a skip, by reason (stages.do_allin1). Stable: the
+# Queue readout counts skips by them.
+ALLIN1_SKIP_TOO_LONG = "Skipped: too long"
+ALLIN1_SKIP_UNUSABLE = "Skipped: no usable stem"
+
+
+def allin1_state_counts(db_path: Optional[Path] = None) -> Dict[str, int]:
+    """Tracks per allin1 state, with the skips split by reason (criterion
+    5.3): {"queued", "done", "failed", "skipped", "skipped_too_long",
+    "skipped_unusable"}. A skip saves a full allin1 run each."""
+    conn = _conn(db_path)
+    try:
+        out = {"queued": 0, "done": 0, "failed": 0, "skipped": 0,
+               "skipped_too_long": 0, "skipped_unusable": 0}
+        for state, n in conn.execute(
+                "SELECT allin1_state, COUNT(*) FROM songs "
+                "WHERE allin1_state IS NOT NULL GROUP BY allin1_state"):
+            out[str(state)] = int(n)
+        for key, prefix in (("skipped_too_long", ALLIN1_SKIP_TOO_LONG),
+                            ("skipped_unusable", ALLIN1_SKIP_UNUSABLE)):
+            out[key] = int(conn.execute(
+                "SELECT COUNT(*) FROM songs WHERE allin1_state='skipped' "
+                "AND allin1_error LIKE ?", (prefix + "%",)).fetchone()[0])
+        return out
+    finally:
+        conn.close()
+
+
 def storage_bytes(song_id: int, db_path: Optional[Path] = None) -> Dict[str, int]:
     """Bytes this feature stores for one song (core row / embedding / sections /
     phrases) — the brief's < 100 KB per track budget is checked against it."""

@@ -245,6 +245,11 @@ export const api = {
     return jsonFetch("/api/settings", { method: "POST", body: JSON.stringify(body) });
   },
 
+  // What the library keeps on disk, and what keep_analysis_stems = off frees.
+  getStorage: () => jsonFetch("/api/settings/storage"),
+  pruneAnalysisStems: () =>
+    jsonFetch("/api/settings/storage/prune", { method: "POST" }),
+
   // Which generation of features the library is missing, per feature group.
   getStaleness: () => jsonFetch("/api/tracks/staleness"),
 

@@ -130,6 +130,10 @@ export function Suggestions({ player, onStatus, onOpenLibrary, onNavigate, short
   // shortlist it.
   const shortlistable = group === "tracks" ? visible.filter((r) => !r.in_library) : [];
   const allShortlisted = shortlistable.length > 0 && shortlistable.every((r) => shortlist.has(r));
+  // The value preview: the suggestions that would fill a gap in the library
+  // (gap_fill, from what each upload prints and its genre — never a measured
+  // tempo or key), shortlisted in one click, then imported in one more.
+  const gapFillers = shortlistable.filter((r) => (r.gap_fill?.n || 0) > 0);
 
   const count = useCallback((k) => (result?.[k] || []).length, [result]);
 
@@ -245,8 +249,15 @@ export function Suggestions({ player, onStatus, onOpenLibrary, onNavigate, short
             </span>
             <span className="grow" />
             {group === "tracks" && (
-              <button className="ui-btn" disabled={!shortlistable.length}
-                onClick={() => shortlist.addMany(shortlistable)}>Shortlist all shown</button>
+              <>
+                <button className="ui-btn" disabled={!gapFillers.length}
+                  title="Shortlist every suggestion that would fill a gap in your library — then Import"
+                  onClick={() => shortlist.addMany(gapFillers)}>
+                  ◎ Shortlist the {gapFillers.length} that fill gaps
+                </button>
+                <button className="ui-btn" disabled={!shortlistable.length}
+                  onClick={() => shortlist.addMany(shortlistable)}>Shortlist all shown</button>
+              </>
             )}
           </div>
 

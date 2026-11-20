@@ -93,3 +93,50 @@ def fits(hint: dict, library: Iterable[dict]) -> Optional[int]:
             continue
         count += 1
     return count
+
+
+def _genre_words(text: Optional[str]) -> set:
+    return {w for w in re.split(r"[^a-z0-9]+", (text or "").lower()) if len(w) > 2}
+
+
+def gap_fills(hint: dict, genre: Optional[str], groups: Iterable[dict]) -> dict:
+    """Which library gaps (api/routes/discovery.library_gaps) an upload could
+    fill, from what it says about itself only — never an invented tempo or
+    key: {"n": lonely library tracks it could partner, "groups": [labels]}.
+
+    A gap group needs a bed (its vocals found few) or a vocal. The upload
+    qualifies when its printed role does not rule the need out (an acapella
+    is no bed, an instrumental no vocal; an unmarked song can be either once
+    separated) and it matches the group on the one measure it has: its
+    printed tempo against the group's band (half/double time allowed, 6 %),
+    or — with no printed tempo — its genre against the group's genre. A
+    printed key then narrows the group's tracks to those within one Camelot
+    step."""
+    role = hint.get("role")
+    bpm = hint.get("bpm")
+    n_key = _num(hint.get("camelot"))
+    words = _genre_words(genre)
+    total, labels = 0, []
+    for g in groups or []:
+        need = g.get("need")
+        if (need == "bed" and role == "acapella") or (need == "vocal" and role == "instrumental"):
+            continue
+        if bpm:
+            lo, hi = float(g.get("bpm_lo") or 0), float(g.get("bpm_hi") or 0)
+            if not any(lo * 0.94 <= bpm * m < hi * 1.06 for m in (0.5, 1, 2)):
+                continue
+        else:
+            gw = _genre_words(g.get("genre"))
+            if not words or not gw or not (words & gw):
+                continue
+        tracks = g.get("tracks") or []
+        if n_key is not None:
+            tracks = [t for t in tracks if _num(t.get("camelot")) is None
+                      or min(abs(n_key - _num(t["camelot"])),
+                             12 - abs(n_key - _num(t["camelot"]))) <= 1]
+        if not tracks:
+            continue
+        total += len(tracks)
+        labels.append(f"{'beds' if need == 'bed' else 'vocals'} at "
+                      f"{int(g.get('bpm_lo') or 0)}–{int(g.get('bpm_hi') or 0)} BPM")
+    return {"n": total, "groups": labels}

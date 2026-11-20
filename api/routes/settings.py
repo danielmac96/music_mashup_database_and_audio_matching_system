@@ -53,6 +53,39 @@ class ValidatePathRequest(BaseModel):
     path: str
 
 
+@router.get("/storage")
+def get_storage() -> dict:
+    """What the library keeps on disk per kind and per track
+    (database/storage.py), and what keep_analysis_stems = off would free:
+    the drums / bass / other of every track allin1 already refined."""
+    from database.storage import storage_report
+    return storage_report()
+
+
+@router.post("/storage/prune")
+def prune_storage() -> dict:
+    """Delete the drums / bass / other of the tracks allin1 already refined
+    (keep_analysis_stems = off, applied now). A job; the vocals and
+    instrumental are never touched."""
+    import threading
+
+    from api import jobs
+    from database.storage import prune_analysis_stems
+    job_id = jobs.new_job(kind="storage", message="Deleting analysis stems")
+
+    def _run():
+        try:
+            jobs.update(job_id, status="running")
+            out = prune_analysis_stems(
+                progress=lambda pct, msg: jobs.update(job_id, progress=pct, message=msg))
+            jobs.done(job_id, out)
+        except Exception as exc:  # noqa: BLE001
+            jobs.fail(job_id, f"{type(exc).__name__}: {exc}")
+
+    threading.Thread(target=_run, name="prune-stems", daemon=True).start()
+    return {"job_id": job_id}
+
+
 @router.post("/validate-path")
 def validate_path(req: ValidatePathRequest) -> dict:
     """Check a proposed audio-library folder: expandable, absolute-able,
@@ -198,6 +231,7 @@ class SaveSettingsRequest(BaseModel):
     weak_w_shown: Optional[float] = None
     retrain_min_strong: Optional[int] = None
     retrain_min_weak: Optional[int] = None
+    hook_warm_top_n: Optional[int] = None
     explore_every: Optional[int] = None
     auto_retrain: Optional[bool] = None
 
@@ -284,7 +318,8 @@ def save_settings(req: SaveSettingsRequest) -> dict:
                 raise HTTPException(status_code=400,
                                     detail=f"{name} must be between {lo} and {hi}")
             new[name] = float(value)
-    for name in ("retrain_min_strong", "retrain_min_weak", "explore_every"):
+    for name in ("retrain_min_strong", "retrain_min_weak", "explore_every",
+                 "hook_warm_top_n"):
         value = getattr(req, name)
         if value is not None:
             lo, hi = config._TUNABLE_INTS[name][2:]

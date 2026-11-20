@@ -330,10 +330,15 @@ def do_stems(song_id: int, on_progress: ProgressCb = None) -> dict:
         with _STAGE_GATES["stems"], _timed("stems", song_id,
                                            analyzer=wanted_tag) as tinfo:
             tinfo["audio_secs"] = _audio_secs(raw_path)
-            stems = separate(
-                song_id=row["id"], title=row["title"], audio_path=raw_path,
-                artist=row["artist"] or "", on_progress=on_progress, force=force,
-            )
+            # Demucs' threads come out of the one core budget
+            # (analysis/threads.py), so analyses beside it never oversubscribe.
+            from analysis.threads import hold
+            from config import DEMUCS_THREADS
+            with hold(DEMUCS_THREADS, "demucs"):
+                stems = separate(
+                    song_id=row["id"], title=row["title"], audio_path=raw_path,
+                    artist=row["artist"] or "", on_progress=on_progress, force=force,
+                )
             tinfo["failed"] = not stems
             if stems and stems.get("separator") is None:
                 tinfo["grp"] = "stems.reused"
@@ -437,8 +442,8 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
     (analysis/registry.py) cached by the audio's content hash: a stem whose
     bytes, group versions and parameters are unchanged is re-projected from the
     cache without being decoded. The row written is the same either way."""
-    from analysis.threads import cap_analysis_threads
-    cap_analysis_threads()          # analysis/threads.py: workers × threads ≤ cores
+    from analysis.threads import cap_analysis_threads, hold
+    cap = cap_analysis_threads()    # analysis/threads.py: per-worker BLAS cap
     from analysis.cache import cached, content_hash
     from analysis.project import (core_from_essentia, essentia_core_complete,
                                   extras_from_essentia)
@@ -450,8 +455,8 @@ def _analyze_stems(song_id: int, stem_paths: dict, stem_types, on_progress: Prog
     failed: list[str] = []
     fully_cached = True
     mix_ess: dict = {}
-    with _STAGE_GATES[gate], _timed(stage_grp, song_id,
-                                    analyzer="essentia") as stage_info:
+    with _STAGE_GATES[gate], hold(cap, gate), _timed(stage_grp, song_id,
+                                                     analyzer="essentia") as stage_info:
         for stem_type in stem_types:
             fp = stem_paths.get(stem_type, "")
             path = Path(fp) if fp else None
@@ -818,8 +823,9 @@ def do_structure(song_id: int, on_progress: ProgressCb = None,
         from analysis.cache import cached
         # Shares the analysis gate — structure is the same librosa-bound work —
         # or the quick tier's, when it runs there.
-        with _STAGE_GATES[gate], _timed("structure", song_id,
-                                              analyzer=analyzer) as tinfo:
+        from analysis.threads import hold, worker_thread_cap
+        with _STAGE_GATES[gate], hold(worker_thread_cap(), "structure"), \
+                _timed("structure", song_id, analyzer=analyzer) as tinfo:
             # [] is detect_sections' "found nothing": never cached.
             sections, hit, _ms = cached(group, key, lambda: detect_sections(
                 inputs["full"], inputs["vocals"],
@@ -882,9 +888,13 @@ def _after_final_sections(song_id: int, stem_paths: dict,
     # keyed by (song, stem), so without it a re-run keeps the previous 16 bars.
     clips = {}
     try:
-        from api.workers.hook_worker import warm_hooks
-        with _timed("hooks", song_id):
-            clips = warm_hooks(song_id, force=True)
+        # Lazy outside the library's top pairs (hook_worker.warm_or_defer_hooks):
+        # a deferred cut is timed as hooks.deferred, so the Queue can count it.
+        from api.workers.hook_worker import warm_or_defer_hooks
+        with _timed("hooks", song_id) as tinfo:
+            clips = warm_or_defer_hooks(song_id)
+            if clips.get("deferred"):
+                tinfo["grp"] = "hooks.deferred"
     except Exception:  # noqa: BLE001
         log.exception("hook clips failed for %s", song_id)
     return {"hooks": hooks, "clips": clips}
@@ -954,14 +964,44 @@ def store_phrases(song_id: int, vocals_path: Optional[Path], grid_source: str,
 ALLIN1_RETRIES = 1
 
 
+def allin1_cannot_help(song_id: int, db_path=None) -> Optional[str]:
+    """Why allin1 could not change this track's pairs, or None when it can.
+
+    Its sections only matter through a usable vocal section or a usable bed
+    section, and both stand on a stem the matcher will use: the vocal stem
+    at or above `stem_quality_min` for the vocal side, the instrumental for
+    the bed side. Skipped only when BOTH stems are measured and BOTH are
+    under the minimum — unmeasured quality is never bad (§5), a single usable
+    stem is enough, and the minimum at 0 skips nothing. The quality is the
+    first cut's (§5.3: measured once final sections exist), and the track
+    keeps that cut's sections whatever happens here."""
+    from config import current_float
+    qmin = current_float("stem_quality_min")
+    if not qmin or qmin <= 0:
+        return None
+    conn = get_conn(db_path) if db_path is not None else get_conn()
+    try:
+        q = {r["stem_type"]: r["quality"] for r in conn.execute(
+            "SELECT stem_type, quality FROM stems WHERE song_id=? "
+            "AND stem_type IN ('vocals', 'instrumental')", (song_id,))}
+    finally:
+        conn.close()
+    v, i = q.get("vocals"), q.get("instrumental")
+    if v is None or i is None or v >= qmin or i >= qmin:
+        return None
+    return (f"vocal stem quality {v:.2f} and instrumental {i:.2f} are both "
+            f"under stem_quality_min {qmin:.2f}")
+
+
 def do_allin1(song_id: int, on_progress: ProgressCb = None,
-              yield_to_stems: bool = False) -> dict:
+              yield_to_stems: bool = False, force: bool = False) -> dict:
     """Beats, downbeats and labelled sections from allin1 for the live
     pipeline's audio; then the sections measured as the Essentia cut is
     (sections_allin1) and the vocal phrases on allin1's bar grid.
 
     Not status-bearing. Records ``songs.allin1_state``: done | skipped (too
-    long — a DJ set) | failed (raises StageError; the pipeline treats it as
+    long — a DJ set — or no usable stem, allin1_cannot_help; ``force`` runs
+    it anyway) | failed (raises StageError; the pipeline treats it as
     non-fatal and the track keeps its Essentia sections). One automatic retry
     before failing. Shares the stems gate, so it never runs beside Demucs."""
     from analysis import allin1_runner as runner
@@ -987,8 +1027,14 @@ def do_allin1(song_id: int, on_progress: ProgressCb = None,
     secs = row["duration_secs"] or _audio_secs(full)
     max_secs = current_float("allin1_max_secs")
     if secs and secs > max_secs:
-        msg = (f"Skipped: {secs / 60:.0f} min is over allin1_max_secs "
-               f"({max_secs / 60:.0f} min) — a set, not a track?")
+        msg = (f"{alignment.ALLIN1_SKIP_TOO_LONG}: {secs / 60:.0f} min is over "
+               f"allin1_max_secs ({max_secs / 60:.0f} min) — a set, not a track?")
+        alignment.set_allin1_state(song_id, "skipped", msg)
+        return {"skipped": msg}
+
+    unusable = allin1_cannot_help(song_id)
+    if unusable and not force:
+        msg = f"{alignment.ALLIN1_SKIP_UNUSABLE}: {unusable}"
         alignment.set_allin1_state(song_id, "skipped", msg)
         return {"skipped": msg}
 
@@ -1023,7 +1069,8 @@ def do_allin1(song_id: int, on_progress: ProgressCb = None,
         last = None
         for attempt in range(ALLIN1_RETRIES + 1):
             try:
-                with runner.PeakRss() as rss:
+                from analysis.threads import hold
+                with hold(ALLIN1_THREADS, "allin1"), runner.PeakRss() as rss:
                     t0 = time.perf_counter()
                     result = runner.run(full, sources if have4 else None,
                                         device=current_allin1_device(),
