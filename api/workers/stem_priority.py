@@ -26,12 +26,21 @@ log = logging.getLogger(__name__)
 
 
 def stem_promise(song_id: int, db_path=None) -> dict:
-    """{"dropin_partners", "partners", "best"}: how many distinct already
-    separated partners this track's provisional rows pair with on the Drop-in
-    rule's song half, how many separated partners it has provisional rows
-    with at all, and the best of those likely Drop-ins' provisional totals.
-    Reads stored rows only — one indexed query per track."""
+    """{"dropin_partners", "partners", "best", "role"}: how many distinct
+    already separated partners this track's provisional rows pair with on the
+    Drop-in rule's song half, how many separated partners it has provisional
+    rows with at all, the best of those likely Drop-ins' provisional totals,
+    and the role the upload declares in its title or tags
+    (ingest/fit_hints.parse).
+
+    An upload that calls itself an INSTRUMENTAL promises no Drop-in whatever
+    its rows say: it has no vocal to drop in, and as a bed none of its
+    sections is a vacated vocal slot (the slot term, §5.7) — so its
+    dropin_partners is 0. Before the stems nothing else can tell: the quick
+    tier's sections carry no vocal presence. Reads stored rows only — one
+    indexed query per track."""
     from database.models import get_conn
+    from ingest.fit_hints import parse
     from matcher.compat import dropin_songs_sql
     from matcher.match import PROVISIONAL_SCORER
     from matcher.recipe import harmony_unsure_below
@@ -40,6 +49,9 @@ def stem_promise(song_id: int, db_path=None) -> dict:
     likely = dropin_songs_sql("mc")
     conn = get_conn(db_path) if db_path is not None else get_conn()
     try:
+        song = conn.execute("SELECT title, tags FROM songs WHERE id=?",
+                            (song_id,)).fetchone()
+        role = parse({"title": song[0], "tags": song[1]})["role"] if song else None
         row = conn.execute(
             f"""SELECT COUNT(DISTINCT CASE WHEN {likely} THEN p.id END),
                        COUNT(DISTINCT p.id),
@@ -56,8 +68,11 @@ def stem_promise(song_id: int, db_path=None) -> dict:
         ).fetchone()
     finally:
         conn.close()
-    return {"dropin_partners": int(row[0] or 0), "partners": int(row[1] or 0),
-            "best": None if row[2] is None else round(float(row[2]), 4)}
+    instrumental = role == "instrumental"
+    return {"dropin_partners": 0 if instrumental else int(row[0] or 0),
+            "partners": int(row[1] or 0),
+            "best": None if instrumental or row[2] is None else round(float(row[2]), 4),
+            "role": role}
 
 
 def priority_for(promise: dict) -> int:
@@ -98,3 +113,32 @@ def promote_for_stems(job_id: str, song_id: int) -> Optional[int]:
     except Exception:  # noqa: BLE001
         log.debug("stem promise not computed for song %s", song_id, exc_info=True)
         return None
+
+
+def declares_instrumental(song_id: int, db_path=None) -> bool:
+    """Whether the upload calls itself an instrumental in its title or tags
+    (ingest/fit_hints.parse — what Discover reads too). Never raises."""
+    try:
+        from database.models import get_conn
+        from ingest.fit_hints import parse
+        conn = get_conn(db_path) if db_path is not None else get_conn()
+        try:
+            row = conn.execute("SELECT title, tags FROM songs WHERE id=?",
+                               (song_id,)).fetchone()
+        finally:
+            conn.close()
+        return bool(row) and parse({"title": row[0], "tags": row[1]})["role"] == "instrumental"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def import_priority(song_id: int, priority: int) -> int:
+    """The priority an import is queued at: PRIORITY_INGEST, or
+    PRIORITY_INGEST_INSTRUMENTAL for an upload that calls itself an
+    instrumental — it cannot give a Drop-in (stem_promise), so its batch's
+    other tracks reach the cores first. Any other priority is returned
+    unchanged."""
+    from config import PRIORITY_INGEST, PRIORITY_INGEST_INSTRUMENTAL
+    if int(priority) == PRIORITY_INGEST and declares_instrumental(song_id):
+        return PRIORITY_INGEST_INSTRUMENTAL
+    return int(priority)

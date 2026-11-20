@@ -204,7 +204,10 @@ React (Vite) ──fetch /api/*──► FastAPI routers ──► database/mode
   quick tier's provisional pairs already hold likely Drop-ins with tracks
   that are separated (`api/workers/stem_priority.py`): it is separated ahead
   of the rest of its batch, in three bands by how many, so the first
-  *useful* pair lands first, not just the first pair.
+  *useful* pair lands first, not just the first pair. An upload that calls
+  itself an **instrumental** (its title or tags, `ingest/fit_hints.parse`)
+  promises none — no vocal to drop in, no vacated vocal slot as a bed — and
+  is queued last in its batch (priority 11, still ahead of any backfill).
 - **Threads, not processes, on one core budget.** librosa/numpy/Essentia
   release the GIL, and threads share the decode cache. Each analysis worker
   caps its BLAS/OpenMP pools at cores ÷ workers, EffNet's TensorFlow at the

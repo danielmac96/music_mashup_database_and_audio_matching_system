@@ -68,6 +68,11 @@ def _bind(lib: Path) -> None:
 
 # ── States ────────────────────────────────────────────────────────────────────
 
+# Section columns measured on the stems: a quick-tier (mix-only) cut has none.
+_STEM_SECTION_COLS = ("provisional", "section_class", "vocal_presence",
+                      "vocal_activity", "chroma_vocal_json", "chroma_bed_json",
+                      "band_energy_vocal_json", "band_energy_bed_json", "f0_json")
+
 _SET_ASIDE = {
     "allin1": ("sections_allin1", "allin1_analysis"),
     "stems": ("stems",),
@@ -91,12 +96,16 @@ def _set_aside(conn, ids, what: str) -> None:
                      f"stem_type IN ('vocals','instrumental') AND song_id IN ({q})", ids)
         conn.execute("DELETE FROM features WHERE stem_type IN ('vocals','instrumental') "
                      f"AND song_id IN ({q})", ids)
+        cols = ", ".join(_STEM_SECTION_COLS)
         conn.execute("CREATE TABLE IF NOT EXISTS _sim_sections AS "
-                     "SELECT id, provisional, section_class FROM sections WHERE 0")
-        conn.execute("INSERT INTO _sim_sections SELECT id, provisional, section_class "
+                     f"SELECT id, {cols} FROM sections WHERE 0")
+        conn.execute(f"INSERT INTO _sim_sections SELECT id, {cols} "
                      f"FROM sections WHERE song_id IN ({q})", ids)
-        conn.execute("UPDATE sections SET provisional=1, section_class='unknown' "
-                     f"WHERE song_id IN ({q})", ids)
+        # What a quick tier cannot know without stems: nothing vocal.
+        nulls = ", ".join(f"{c}=NULL" for c in _STEM_SECTION_COLS
+                          if c not in ("provisional", "section_class"))
+        conn.execute(f"UPDATE sections SET provisional=1, section_class='unknown', "
+                     f"{nulls} WHERE song_id IN ({q})", ids)
         conn.execute(f"UPDATE songs SET status='downloaded', quick_state='done' "
                      f"WHERE id IN ({q})", ids)
     conn.commit()
@@ -109,10 +118,9 @@ def _restore(conn, what: str) -> None:
     if what == "stems":
         conn.execute("INSERT INTO features SELECT * FROM _sim_features")
         conn.execute("DROP TABLE _sim_features")
-        conn.execute("UPDATE sections SET provisional=(SELECT b.provisional FROM "
-                     "_sim_sections b WHERE b.id=sections.id), section_class=(SELECT "
-                     "b.section_class FROM _sim_sections b WHERE b.id=sections.id) "
-                     "WHERE id IN (SELECT id FROM _sim_sections)")
+        sets = ", ".join(f"{c}=(SELECT b.{c} FROM _sim_sections b WHERE b.id=sections.id)"
+                         for c in _STEM_SECTION_COLS)
+        conn.execute(f"UPDATE sections SET {sets} WHERE id IN (SELECT id FROM _sim_sections)")
         conn.execute("DROP TABLE _sim_sections")
         conn.execute("UPDATE songs SET status='analysed' WHERE id IN "
                      "(SELECT DISTINCT song_id FROM stems)")
@@ -164,10 +172,13 @@ def measure_states(imports: list, log=print) -> dict:
     _set_aside(conn, imports, "allin1")
     _set_aside(conn, imports, "stems")
     _score_all("provisional")
+    from api.workers.stem_priority import import_priority
+    from config import PRIORITY_INGEST
     for sid in imports:
         promise = stem_promise(sid)
         out["promise"][sid] = promise
         out["priority"][sid] = priority_for(promise)
+        out.setdefault("initial", {})[sid] = import_priority(sid, PRIORITY_INGEST)
     # 2. After the first cut (stems back, allin1 still aside).
     _restore(conn, "stems")
     _score_all("first_cut", out["dropins_first"])
@@ -206,9 +217,12 @@ def stage_durations(imports: list) -> dict:
 
 
 def simulate(order: list, durs: dict, score_secs: dict, priority: dict,
-             workers: dict) -> tuple:
+             workers: dict, initial: dict = None) -> tuple:
     """Replay one batch through the per-stage queues (api/queue_runner.py):
-    a priority heap per stage, (priority, arrival) order; Demucs and allin1
+    a priority heap per stage, (priority, arrival) order — ``initial`` is
+    each track's priority at enqueue (default PRIORITY_INGEST), ``priority``
+    what the stems queue's promotion gives it after its quick tier (applied
+    only to a track still at PRIORITY_INGEST); Demucs and allin1
     share the stems gate, analysis and structure share the analysis gate; a
     backfill allin1 waits while separations are queued; a track is scored on
     the quick worker after its quick tier, on the structure worker after its
@@ -223,7 +237,7 @@ def simulate(order: list, durs: dict, score_secs: dict, priority: dict,
     gate_free = dict(gates)
     queues = {s: [] for s in workers}
     seq = iter(range(10 ** 9))
-    prio = {sid: PRIORITY_INGEST for sid in order}
+    prio = {sid: (initial or {}).get(sid, PRIORITY_INGEST) for sid in order}
     first, refined = {}, {}
     events = []          # (time, seq, kind, payload)
     t = 0.0
@@ -232,7 +246,7 @@ def simulate(order: list, durs: dict, score_secs: dict, priority: dict,
         heapq.heappush(queues[stage], (p, next(seq), sid))
 
     for sid in order:
-        put("download", sid, PRIORITY_INGEST)
+        put("download", sid, prio[sid])
 
     def phases(stage, sid):
         """[(seconds, holds the gate?)] of one stage run on its worker."""
@@ -277,7 +291,7 @@ def simulate(order: list, durs: dict, score_secs: dict, priority: dict,
             gate_free[gate_of[stage]] += 1
         else:
             busy[stage] -= 1
-            if stage == "quick":
+            if stage == "quick" and prio[sid] == PRIORITY_INGEST:
                 prio[sid] = priority[sid]          # stem_priority on the way in
             if stage == "structure":
                 first[sid] = t
@@ -341,6 +355,7 @@ def main(argv=None) -> int:
         states = {"floor": raw["floor"],
                   "promise": {int(k): v for k, v in raw["promise"].items()},
                   "priority": {int(k): v for k, v in raw["priority"].items()},
+                  "initial": {int(k): v for k, v in raw.get("initial", {}).items()},
                   "score_secs": {s: {int(k): v for k, v in d.items()}
                                  for s, d in raw["score_secs"].items()},
                   "dropins_first": {tuple(p) for p in raw["dropins_first"]},
@@ -351,6 +366,7 @@ def main(argv=None) -> int:
         states_file.write_text(json.dumps({
             "imports": imports, "floor": states["floor"],
             "promise": states["promise"], "priority": states["priority"],
+            "initial": states.get("initial", {}),
             "score_secs": states["score_secs"],
             "dropins_first": sorted(states["dropins_first"]),
             "dropins_refined": sorted(states["dropins_refined"]),
@@ -367,9 +383,10 @@ def main(argv=None) -> int:
         order = list(imports)
         random.Random(1000 + i).shuffle(order)
         res = {}
-        for name, prio in (("phase0", fifo_prio), ("partner_aware", states["priority"])):
+        for name, prio, init in (("phase0", fifo_prio, None),
+                                 ("partner_aware", states["priority"], states.get("initial"))):
             first, refined = simulate(order, d["durations"], states["score_secs"],
-                                      prio, workers)
+                                      prio, workers, init)
             res[name] = first_dropins(states["dropins_first"], states["dropins_refined"],
                                       imp, first, refined)
             res[name + "_batch_done"] = max(refined.values())
@@ -408,6 +425,10 @@ def main(argv=None) -> int:
                                          r["partner_aware"][-1] for r in runs), 1)},
         "improvement_first_median": _med("improvement_first"),
         "improvement_first_worst": round(min(r["improvement_first"] for r in runs), 4),
+        "improvement_first_mean": round(statistics.mean(r["improvement_first"] for r in runs), 4),
+        "first_dropin_secs_mean": {k: round(statistics.mean(r[k][0] for r in runs), 1)
+                                   for k in ("phase0", "partner_aware")},
+        "orders_improved": sum(1 for r in runs if r["improvement_first"] > 0),
         "improvement_fifth_median": _med("improvement_fifth"),
         "batch_done_secs_median": {"phase0": round(statistics.median(r["phase0_batch_done"] for r in runs), 1),
                                    "partner_aware": round(statistics.median(
@@ -424,7 +445,11 @@ def main(argv=None) -> int:
           f"| {summary['fifth_dropin_secs_median']['partner_aware']} s |",
           f"| Whole batch refined, median | {summary['batch_done_secs_median']['phase0']} s "
           f"| {summary['batch_done_secs_median']['partner_aware']} s |",
+          f"| First Drop-in pair, mean | {summary['first_dropin_secs_mean']['phase0']} s "
+          f"| {summary['first_dropin_secs_mean']['partner_aware']} s |",
           "", f"Improvement to the first Drop-in: median {summary['improvement_first_median']}, "
+          f"mean {summary['improvement_first_mean']}, "
+          f"{summary['orders_improved']} of {args.orders} orders faster, "
           f"worst {summary['improvement_first_worst']}; to the fifth: median "
           f"{summary['improvement_fifth_median']}.",
           f"Promoted: {summary['promised']} of {len(imports)} "

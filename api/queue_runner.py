@@ -73,7 +73,10 @@ def enqueue_song(song_id: int, priority: int = PRIORITY_INGEST) -> str:
     next, at ``priority`` (config.PRIORITY_*). Returns the job id."""
     job_id = jobs.new_job(kind="pipeline", message="Queued for processing",
                           song_id=song_id, stage="queued")
-    jobs.update(job_id, priority=int(priority))
+    # An import that calls itself an instrumental goes last in its batch
+    # (api/workers/stem_priority.import_priority): it cannot give a Drop-in.
+    from api.workers.stem_priority import import_priority
+    jobs.update(job_id, priority=import_priority(song_id, priority))
     _dispatch(job_id, song_id)
     return job_id
 

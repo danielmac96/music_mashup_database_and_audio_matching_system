@@ -520,6 +520,8 @@ PRIORITY_PROMISE_HIGH = 7   # >= STEM_PROMISE_MANY likely Drop-in partners
 PRIORITY_PROMISE_MID  = 8   # >= STEM_PROMISE_SOME
 PRIORITY_PROMISE_LOW  = 9   # at least one
 PRIORITY_INGEST   = 10    # tracks arriving from an import
+PRIORITY_INGEST_INSTRUMENTAL = 11  # an import that calls itself an instrumental:
+                                   # it cannot give a Drop-in, so it goes last in its batch
 PRIORITY_BACKFILL = 30    # bulk re-processing of the library
 STEM_PROMISE_MANY = _resolve_int("MASHUP_STEM_PROMISE_MANY", "stem_promise_many", 8)
 STEM_PROMISE_SOME = _resolve_int("MASHUP_STEM_PROMISE_SOME", "stem_promise_some", 3)

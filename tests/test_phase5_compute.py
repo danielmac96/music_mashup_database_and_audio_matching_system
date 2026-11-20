@@ -70,6 +70,34 @@ def test_stem_promise_counts_likely_dropins_with_separated_partners(tmp_path, mo
     assert p["best"] == 0.7
 
 
+def test_an_upload_that_calls_itself_instrumental_promises_nothing(tmp_path, monkeypatch):
+    """No vocal to drop in, and no vacated vocal slot as a bed: whatever its
+    provisional rows say, it is not promoted, and it is queued last in its
+    batch — but never behind a backfill, and a button keeps its priority."""
+    config, models = _setup(tmp_path, monkeypatch)
+    from api.workers import stem_priority
+    inst = _song(models, "Night Drive (Instrumental)", status="downloaded")
+    song = _song(models, "Night Drive", status="downloaded")
+    lib = _song(models, "lib")
+    _row(models, inst, lib)
+    _row(models, song, lib, vsec=1)
+    assert stem_priority.stem_promise(inst)["dropin_partners"] == 0
+    assert stem_priority.stem_promise(inst)["role"] == "instrumental"
+    assert stem_priority.stem_promise(song)["dropin_partners"] == 1
+    ip = stem_priority.import_priority
+    assert ip(inst, config.PRIORITY_INGEST) == config.PRIORITY_INGEST_INSTRUMENTAL
+    assert config.PRIORITY_INGEST < config.PRIORITY_INGEST_INSTRUMENTAL < config.PRIORITY_BACKFILL
+    assert ip(song, config.PRIORITY_INGEST) == config.PRIORITY_INGEST
+    assert ip(inst, config.PRIORITY_USER) == config.PRIORITY_USER
+    from api import jobs, queue_runner
+    from api.workers import pipeline_worker
+    monkeypatch.setattr(pipeline_worker, "next_stage", lambda sid: "download")
+    job = queue_runner.enqueue_song(inst)
+    assert jobs.get(job)["priority"] == config.PRIORITY_INGEST_INSTRUMENTAL
+    while queue_runner.waiting("download"):
+        queue_runner.take("download", block=False)
+
+
 def test_priority_bands_sit_between_prefetch_and_ingest(tmp_path, monkeypatch):
     config, models = _setup(tmp_path, monkeypatch)
     from api.workers.stem_priority import priority_for
