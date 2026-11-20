@@ -25,13 +25,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-# Two orthogonal timbres: cosine 0.0 over c1-12, well under AUDIO_CONFIRM_MIN
-# (0.80). Random music clears 0.80 93% of the time (readme §5.6), so a
-# disagreement has to be constructed, not sampled.
-VA = [0.0] + [1.0] + [0.0] * 11
-VB = [0.0] + [0.0, 1.0] + [0.0] * 10
+# Two orthogonal EffNet embeddings: cosine 0.0, well under AUDIO_CONFIRM_MIN.
+VA = [1.0] + [0.0] * 15
+VB = [0.0, 1.0] + [0.0] * 14
 
-# (title, artist, mfcc or None) — one fixture holding every branch that
+# (title, artist, embedding or None) — one fixture holding every branch that
 # discriminates the incremental path from the full rebuild.
 FIXTURE = [
     # Same artist, non-generic title: variants whatever the audio says (a
@@ -75,8 +73,14 @@ def _seed(db_path, rows):
                           source_url=f"u://{i}", raw_path=f"/tmp/{i}.mp3",
                           duration_secs=200, db_path=db_path)
         if mfcc is not None:
-            upsert_features(sid, "full", {"mfcc": list(mfcc), "bpm": 124.0},
+            upsert_features(sid, "full", {"mfcc": [0.0] * 13, "bpm": 124.0},
                             db_path=db_path)
+            from database.models import get_conn, pack_vector
+            conn = get_conn(db_path)
+            conn.execute("INSERT INTO embeddings (song_id, kind, dim, vector) "
+                         "VALUES (?, 'effnet', ?, ?)", (sid, len(mfcc), pack_vector(mfcc)))
+            conn.commit()
+            conn.close()
         ids.append(sid)
     return ids
 

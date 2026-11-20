@@ -70,8 +70,12 @@ def test_normalise_artist():
 
 # ── cluster_variants ─────────────────────────────────────────────────────────
 
-def _song(sid, title, artist, mfcc=None):
+def _song(sid, title, artist, emb=None, mfcc=None):
+    """``emb`` is the stored EffNet embedding (attach_embeddings' key); an
+    ``mfcc`` is carried only to show the retired MFCC check is not read."""
     s = {"song_id": sid, "title": title, "artist": artist}
+    if emb is not None:
+        s["embedding"] = emb
     if mfcc is not None:
         s["mfcc"] = mfcc
     return s
@@ -106,23 +110,40 @@ def test_singletons_are_absent_from_the_mapping():
 
 def test_reupload_by_a_different_uploader_needs_audio_agreement():
     """The uploader name is not the recording artist. Same title + different
-    artist clusters only when the stored timbre agrees."""
-    same = [float(i) for i in range(13)]
+    artist clusters only when the stored EffNet embeddings agree."""
+    same = [float(i % 7) for i in range(64)]
     songs = [
-        _song(1, "Levels", "Avicii", mfcc=same),
-        _song(2, "Levels", "EDM Uploads HQ", mfcc=same),
+        _song(1, "Levels", "Avicii", emb=same),
+        _song(2, "Levels", "EDM Uploads HQ", emb=same),
     ]
     assert cluster_variants(songs) == {1: 1, 2: 1}
+
+
+def test_the_mfcc_no_longer_confirms_a_reupload():
+    """§9 item 8: the track-mean MFCC let 93 % of random pairs through, so it
+    was no gate. Agreeing MFCCs with disagreeing (or absent) embeddings do not
+    cluster; the embedding's cosine alone decides."""
+    same_mfcc = [float(i) for i in range(13)]
+    a = [1.0] + [0.0] * 63
+    b = [0.0, 1.0] + [0.0] * 62
+    assert cluster_variants([_song(1, "Levels", "Avicii", emb=a, mfcc=same_mfcc),
+                             _song(2, "Levels", "Uploads", emb=b, mfcc=same_mfcc)]) == {}
+    assert cluster_variants([_song(1, "Levels", "Avicii", mfcc=same_mfcc),
+                             _song(2, "Levels", "Uploads", mfcc=same_mfcc)]) == {}
+    from matcher.dedup import AUDIO_CONFIRM_MIN, embedding_cosine
+    near = [x + (0.01 if k == 3 else 0.0) for k, x in enumerate([float(i % 7) for i in range(64)])]
+    c = embedding_cosine({"embedding": [float(i % 7) for i in range(64)]}, {"embedding": near})
+    assert c > AUDIO_CONFIRM_MIN
 
 
 def test_cover_version_does_not_cluster():
     """Same title, different artist, different timbre — a cover is a genuinely
     different recording and must stay pairable."""
-    a = [0.0] + [1.0] * 12
-    b = [0.0] + [-1.0] * 12
+    a = [1.0] * 32 + [0.0] * 32
+    b = [0.0] * 32 + [1.0] * 32
     songs = [
-        _song(1, "Levels", "Avicii", mfcc=a),
-        _song(2, "Levels", "Some Cover Band", mfcc=b),
+        _song(1, "Levels", "Avicii", emb=a),
+        _song(2, "Levels", "Some Cover Band", emb=b),
     ]
     assert cluster_variants(songs) == {}
 
@@ -153,11 +174,11 @@ def test_cluster_id_is_the_smallest_member_and_is_order_stable():
 
 def test_clustering_is_transitive():
     """A~B via artist and B~C via audio must put all three together."""
-    same = [float(i) for i in range(13)]
+    same = [float(i % 7) for i in range(64)]
     songs = [
-        _song(1, "Levels", "Avicii", mfcc=same),
-        _song(2, "Levels (Extended Mix)", "Avicii", mfcc=same),
-        _song(3, "Levels", "Random Reupload", mfcc=same),
+        _song(1, "Levels", "Avicii", emb=same),
+        _song(2, "Levels (Extended Mix)", "Avicii", emb=same),
+        _song(3, "Levels", "Random Reupload", emb=same),
     ]
     clusters = cluster_variants(songs)
     assert clusters == {1: 1, 2: 1, 3: 1}
@@ -246,3 +267,37 @@ def test_rebuild_only_writes_changed_rows(db_path):
     assert first["n_changed"] == 2 and first["n_clusters"] == 1
     again = rebuild_variant_clusters(db_path=db_path)
     assert again["n_changed"] == 0
+
+
+def test_the_dedup_report_reads_a_library_without_writing(tmp_path, capsys):
+    """scripts/dedup_report.py: the same-title pairs the check decides against
+    random ones, read-only, so the threshold can be checked on real records."""
+    import importlib.util
+    from database.models import get_conn, init_db, pack_vector, upsert_song
+    db = tmp_path / "r.db"
+    init_db(db)
+    vecs = {"Levels|Avicii": [1.0, 0.0, 0.0, 0.2], "Levels|Uploads HQ": [1.0, 0.0, 0.0, 0.21],
+            "Titanium|Sia": [0.0, 1.0, 0.0, 0.0], "Titanium|Cover Band": [0.0, 0.0, 1.0, 0.0]}
+    conn_ids = []
+    for n, (key, vec) in enumerate(vecs.items()):
+        title, artist = key.split("|")
+        sid = upsert_song(title, artist, f"https://sc/{n}", 200, "Pop", db_path=db)
+        conn_ids.append((sid, vec))
+    conn = get_conn(db)
+    for sid, vec in conn_ids:
+        conn.execute("INSERT INTO embeddings (song_id, kind, dim, vector) VALUES (?, 'effnet', ?, ?)",
+                     (sid, len(vec), pack_vector(vec)))
+    conn.commit()
+    conn.close()
+    before = db.stat().st_mtime_ns
+    spec = importlib.util.spec_from_file_location(
+        "dedup_report", Path(__file__).parent.parent / "scripts" / "dedup_report.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.main(["--db", str(db), "--random", "50"]) == 0
+    out = capsys.readouterr().out
+    assert "4 songs, 4 with an EffNet embedding" in out
+    assert "same-title, different artist (2)" in out
+    assert "variant     Avicii — Levels" in out or "variant     Uploads HQ — Levels" in out
+    assert "kept apart" in out
+    assert db.stat().st_mtime_ns == before
