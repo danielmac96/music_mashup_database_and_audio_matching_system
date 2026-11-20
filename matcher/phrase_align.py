@@ -160,32 +160,53 @@ def vocal_phrase_options(vocal: Dict, phrases: Optional[Sequence[Dict]],
 
 
 def play_spans(placement: Dict, stretch: float) -> Optional[Dict]:
-    """Where a placed pairing starts sounding — the one definition the dock's
-    loop, the mini studio, Studio, the overlay and the FL session read
-    (readme §5.7, "Playing the placement").
+    """Where a placed pairing starts — and, with a window, stops — sounding:
+    the one definition the dock's loop, the mini studio, Studio, the overlay
+    and the FL session read (readme §5.7, "Playing the placement").
 
-    The vocal starts at its phrase PICKUP (``vocal_phrase_start``, never
-    after the phrase's downbeat), and the bed at the point that sits under
-    it once conformed: the landing, less the pickup played at the bed's rate.
-    So the two clips start together and the vocal's phrase downbeat meets the
-    bed's landing ``play_lead`` seconds in. None when the pairing has no
-    placement (no grid). A stored row has always passed the timing gate; a
-    landing that fails it is one the user chose in the overlay, and is played
-    where they put it."""
+    The vocal starts at its phrase PICKUP (never after the phrase's downbeat),
+    and the bed at the point that sits under it once conformed: the bed bar
+    the placement puts under that downbeat, less the pickup played at the
+    bed's rate. So the two clips start together and the downbeat meets its bed
+    bar ``play_lead`` seconds in.
+
+    A placement that carries its phrase window (best_window's
+    ``window_vocal_start / _onset / _end``) plays the window: from the
+    window's first phrase (at its pickup) to its end, the bed under it by the
+    same alignment — a window is a stretch of the placement, never another
+    one. ``vocal_play_end`` / ``bed_play_end`` say where it stops (None: the
+    sections' ends). None when the pairing has no placement (no grid). A
+    stored row has always passed the timing gate; a landing that fails it is
+    one the user chose in the overlay, and is played where they put it."""
     d_v = placement.get("alignment_downbeat")
     land = placement.get("bed_landing_sec")
     if d_v is None or land is None:
         return None
     d_v, land = float(d_v), float(land)
     rate = max(float(stretch or 1.0), 1e-6)
-    onset = placement.get("vocal_phrase_start")
-    onset = d_v if onset is None else min(float(onset), d_v)
-    lead = max(0.0, d_v - onset)
-    if land - lead * rate < 0.0:        # the bed cannot start before its file
-        lead = land / rate
-    return {"vocal_play_start": round(d_v - lead, 4),
-            "bed_play_start": round(land - lead * rate, 4),
-            "play_lead": round(lead, 4)}
+    w_start = placement.get("window_vocal_start")
+    w_onset = placement.get("window_vocal_onset")
+    w_end = placement.get("window_vocal_end")
+    end_v = end_b = None
+    if w_start is not None and w_onset is not None and w_end is not None \
+            and float(w_end) > float(w_start):
+        down = float(w_start)
+        onset = min(float(w_onset), down)
+        end_v = float(w_end)
+        end_b = round(land + (end_v - d_v) * rate, 4)
+        end_v = round(end_v, 4)
+    else:
+        down = d_v
+        onset = placement.get("vocal_phrase_start")
+        onset = d_v if onset is None else min(float(onset), d_v)
+    under = land + (down - d_v) * rate          # the bed bar under that downbeat
+    lead = max(0.0, down - onset)
+    if under - lead * rate < 0.0:               # the bed cannot start before its file
+        lead = under / rate
+    return {"vocal_play_start": round(down - lead, 4),
+            "bed_play_start": round(under - lead * rate, 4),
+            "play_lead": round(lead, 4),
+            "vocal_play_end": end_v, "bed_play_end": end_b}
 
 
 def place(vocal: Dict, bed: Dict, stretch: float = 1.0,
@@ -547,14 +568,24 @@ def best_window(placement: Dict, vocal: Dict, bed: Dict, stretch: float,
                 vocal_phrases, bed_phrases, tol_ms: float = 25.0,
                 cache: Optional[Dict] = None) -> Optional[Dict]:
     """The 8- or 16-bar window of a placed pairing to build: a vocal phrase
-    start over a bed bar where the two grids hold bar for bar, the vocal is
-    sung and — when the bed had a vocal of its own — it sang there too.
+    start, over the bed bar THIS placement puts under it, where the two grids
+    hold bar for bar, the vocal is sung and — when the bed had a vocal of its
+    own — it sang there too.
 
-    Returns {window_bars, vocal_window_bar, bed_window_bar, score_window}
-    (bar indexes from each section's first downbeat), or None when no window
-    of either length fits inside both sections and holds within ``tol_ms``."""
-    if placement.get("alignment_downbeat") is None \
-            or placement.get("bed_landing_sec") is None:
+    A window is a stretch of the placement, never a placement of its own: the
+    dock loop, the mini studio, Studio and the FL session play it (play_spans)
+    with the pair's own alignment, so the bed bar is not chosen — it is the
+    one under the vocal bar. Every bar line of the window is judged where the
+    placement puts it, against ``tol_ms``.
+
+    Returns {window_bars, vocal_window_bar, bed_window_bar, score_window,
+    window_vocal_start, window_vocal_onset, window_vocal_end} — bar indexes
+    from each section's first downbeat; the vocal's first window downbeat,
+    where it starts sounding (its phrase pickup, never after the downbeat) and
+    where the window ends, in the vocal's seconds — or None when no window of
+    either length fits inside both sections and holds."""
+    d_v, land = placement.get("alignment_downbeat"), placement.get("bed_landing_sec")
+    if d_v is None or land is None:
         return None
     v_dbs, b_dbs = _downbeats(vocal), _downbeats(bed)
     if len(v_dbs) < WINDOW_BARS[-1] or len(b_dbs) < WINDOW_BARS[-1]:
@@ -562,43 +593,62 @@ def best_window(placement: Dict, vocal: Dict, bed: Dict, stretch: float,
     v = _phrased(vocal, vocal_phrases, cache)
     b = _phrased(bed, bed_phrases, cache)
     rate = max(float(stretch or 1.0), 1e-6)
+    d_v, land_c = float(d_v), float(land) / rate
     V = np.asarray(v_dbs, dtype=float)
     B = np.asarray(b_dbs, dtype=float) / rate
+    tol = float(tol_ms) / 1000.0
+    v_bar = _bar_secs(v_dbs) or 2.0
+    v_end = float(vocal.get("end_sec") or 0.0)
+    # The vocal under the bed's end (the overlap stops there).
+    v_end = min(v_end, d_v + (float(bed.get("end_sec") or 0.0) / rate - land_c))
 
-    def _index(dbs, t):
-        return min(range(len(dbs)), key=lambda k: abs(dbs[k] - t))
+    def _index(arr, t):
+        return int(np.argmin(np.abs(arr - t)))
 
     # Where a window may start: the phrase the pairing hangs off first, then
-    # each side's own phrase starts; a bed nobody sang on offers its 8-bar grid.
-    v_starts = [_index(v_dbs, placement["alignment_downbeat"])] + v.bar_index
-    b_starts = [_index(b_dbs, placement["bed_landing_sec"])] + (
-        b.bar_index or list(range(0, len(b_dbs), 8)))
-    v_starts = list(dict.fromkeys(v_starts))[:WINDOW_STARTS]
-    b_starts = list(dict.fromkeys(b_starts))[:WINDOW_STARTS]
+    # the vocal's own phrase starts (with each one's pickup).
+    first = _index(V, d_v)
+    onset0 = placement.get("vocal_phrase_start")
+    starts = [(first, d_v if onset0 is None else min(float(onset0), d_v))]
+    for k, pick in zip(v.bar_index, v.pickups):
+        starts.append((k, float(V[k]) + min(0.0, float(pick))))
+    seen, cand = set(), []
+    for k, on in starts:
+        if k not in seen:
+            seen.add(k)
+            cand.append((k, on))
+    cand = cand[:WINDOW_STARTS]
 
     best = None
     for bars in WINDOW_BARS:
-        for vi in v_starts:
-            if vi + bars > len(v_dbs):
+        for vi, onset in cand:
+            if vi + bars > len(V):
                 continue
-            a = V[vi:vi + bars] - V[vi]
+            under = land_c + (V[vi] - d_v)          # where the placement puts it
+            bi = _index(B, under)
+            if bi + bars > len(B):
+                continue
+            errs = np.abs((V[vi:vi + bars] - d_v) - (B[bi:bi + bars] - land_c))
+            max_ms = float(errs.max() * 1000.0)
+            if max_ms > tol_ms:
+                continue
+            stop = float(V[vi + bars]) if vi + bars < len(V) else float(V[vi + bars - 1]) + v_bar
+            if stop > v_end + tol:
+                continue                              # runs off the overlap
+            tight = timing_score(float(errs.mean() * 1000.0), max_ms, tol_ms, None)
             sung = sum(v.sung[vi:vi + bars]) / bars if v.starts else 0.5
-            for bi in b_starts:
-                if bi + bars > len(b_dbs):
-                    continue
-                errs = np.abs(a - (B[bi:bi + bars] - B[bi]))
-                max_ms = float(errs.max() * 1000.0)
-                if max_ms > tol_ms:
-                    continue
-                tight = timing_score(float(errs.mean() * 1000.0), max_ms, tol_ms, None)
-                slot = sum(b.sung[bi:bi + bars]) / bars if b.measured else 0.5
-                score = 0.4 * tight + 0.3 * sung + 0.3 * slot
-                if best is None or score > best[0] + 1e-9:
-                    best = (score, bars, vi, bi)
+            slot = sum(b.sung[bi:bi + bars]) / bars if b.measured else 0.5
+            score = 0.4 * tight + 0.3 * sung + 0.3 * slot
+            if best is None or score > best[0] + 1e-9:
+                best = (score, bars, vi, bi, onset, min(stop, v_end))
     if best is None:
         return None
-    return {"window_bars": best[1], "vocal_window_bar": best[2],
-            "bed_window_bar": best[3], "score_window": round(best[0], 4)}
+    score, bars, vi, bi, onset, stop = best
+    return {"window_bars": bars, "vocal_window_bar": vi,
+            "bed_window_bar": bi, "score_window": round(score, 4),
+            "window_vocal_start": round(float(V[vi]), 4),
+            "window_vocal_onset": round(min(float(onset), float(V[vi])), 4),
+            "window_vocal_end": round(float(stop), 4)}
 
 
 def overlay_clicks(vocal_downbeats: Sequence[float], bed_downbeats: Sequence[float],

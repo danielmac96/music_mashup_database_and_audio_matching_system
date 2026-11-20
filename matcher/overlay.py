@@ -331,7 +331,7 @@ def build(bed_id: int, vocal_id: int, vs: int, bs: int, phrase: int = 0,
                 for t, p in zip(vph.starts, vph.pickups) if t >= d_v - 1e-3]
             row["window"] = best_window(pl, v_sec, b_sec, stretch, v_phrases,
                                         b_phrases, tol)
-            row["spans"] = play_spans(pl, stretch)
+            row["spans"] = play_spans({**pl, **(row["window"] or {})}, stretch)
             placements.append(row)
     _blend(placements, ctx, db, int(vocal_id), int(bed_id))
 

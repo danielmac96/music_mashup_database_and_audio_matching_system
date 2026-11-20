@@ -147,6 +147,9 @@ export function scoredOptionOf(c) {
     // Studio trims both lanes to these, so it opens on the vocal's pickup.
     vocal_play_start: c.vocal_play_start ?? null,
     bed_play_start: c.bed_play_start ?? null,
+    // ...and, with its phrase window, where it stops (null: the sections' ends).
+    vocal_play_end: c.vocal_play_end ?? null,
+    bed_play_end: c.bed_play_end ?? null,
     // A landing chosen in Track detail's overlay — the FL export re-prices it.
     placement: c.offset_bars != null
       ? { phrase: c.phrase ?? 0, offset_bars: c.offset_bars } : null,

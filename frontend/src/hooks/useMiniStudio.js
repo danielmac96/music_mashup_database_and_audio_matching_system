@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
-import { bedOffsetFor, hookUrl, playStartsOf } from "./useHookAudition";
+import { bedOffsetFor, hookUrl, playEndsOf, playStartsOf } from "./useHookAudition";
 
 const VOCAL_GAIN = 0.85;
 const BED_GAIN = 0.8;
@@ -50,7 +50,7 @@ export function clipsOf(pair, s) {
   const bedRate = s.bedRate * (1 + s.tempoPct / 100);
   return {
     vStart, bStart, bedRate,
-    vEnd: pair.vocal_section_end, bEnd: pair.inst_section_end,
+    vEnd: playEndsOf(pair)[0], bEnd: playEndsOf(pair)[1],
     bedOffset: bedOffsetFor(pair, s.nudgeMs / 1000, vStart, bStart, s.vocalRate, bedRate),
   };
 }

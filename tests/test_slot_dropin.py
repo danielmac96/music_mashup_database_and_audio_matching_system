@@ -96,11 +96,24 @@ def test_the_window_is_a_sung_stretch_over_the_beds_own():
     vp = _phrases(v, every=8)
     # The bed's own vocal only sang its second half.
     bp = [p for p in _phrases(b, every=8) if p["downbeat_sec"] >= b["downbeats"][16]]
+    # A window is a stretch of its placement, never a placement of its own
+    # (§9 item 7: the dock, Studio and the FL session play it): landed on the
+    # bed's first bar, its bed bar is the one under the vocal — not where the
+    # bed sang, which only a landing there can reach.
     placement = place(v, b, 1.0, vp)
     w = best_window(placement, v, b, 1.0, vp, bp)
     assert w["window_bars"] == 16 and w["vocal_window_bar"] == 0
+    assert w["bed_window_bar"] == 0                         # under the vocal
+    assert w["score_window"] == pytest.approx(0.7)          # tight, sung, unslotted
+    there = place(v, b, 1.0, vp, landings=[16])
+    w = best_window(there, v, b, 1.0, vp, bp)
     assert w["bed_window_bar"] == 16                        # where it sang
     assert 0.9 < w["score_window"] <= 1.0
+    # Its seconds, for playback: the first window downbeat, the onset (the
+    # phrase pickup, never after the bar) and the end, all the vocal's.
+    assert w["window_vocal_start"] == pytest.approx(v["downbeats"][0])
+    assert w["window_vocal_onset"] <= w["window_vocal_start"]
+    assert w["window_vocal_end"] == pytest.approx(v["end_sec"], abs=1e-3)
     # No window where the grids do not hold.
     drift = _section(40.0, 32, bpm=121.5, song_id=3)
     assert best_window(place(v, drift, 1.0, vp), v, drift, 1.0, vp, []) is None
@@ -451,7 +464,7 @@ def test_migration_nine_adds_only_nullable_candidate_columns(tmp_path, monkeypat
     from database import schema
     assert schema.SCHEMA_VERSION >= 9
     src = (ROOT / "database" / "schema.py").read_text(encoding="utf-8")
-    body = src.split("def _slot_and_dropin")[1].split("\nMIGRATIONS")[0]
+    body = src.split("def _slot_and_dropin")[1].split("\n_WINDOW_SPAN_COLUMNS")[0]
     assert "executescript" not in body and "pair_feedback" not in body
     assert body.count("ALTER TABLE") == 1 and "mashup_candidates ADD COLUMN" in body
     db = tmp_path / "m.db"

@@ -263,6 +263,15 @@ def compute_library_stats(db_path=None) -> LibraryStats:
                 vals.append(v)
         if len(vals) >= MIN_CONF_SAMPLES:
             conf[kind] = np.sort(np.asarray(vals, dtype=np.float64))
+    # allin1's downbeat confidence lives in allin1_analysis, one per track.
+    try:
+        from database.alignment import allin1_downbeat_conf_by_song
+        vals = [v for v in allin1_downbeat_conf_by_song(db_path=db_path or DB_PATH).values()
+                if math.isfinite(v)]
+        if len(vals) >= MIN_CONF_SAMPLES:
+            conf["downbeat"] = np.sort(np.asarray(vals, dtype=np.float64))
+    except Exception:  # noqa: BLE001 — no allin1 table yet: nothing to rank
+        log.debug("no allin1 downbeat confidences to rank", exc_info=True)
     return LibraryStats(mfcc_mean, mfcc_std, loudness, len(mats), conf)
 
 
@@ -452,6 +461,7 @@ def composite_score(feat_a: dict, feat_b: dict,
     scores["effort_tempo_fold"] = round(parts["tempo_fold_cost"], 4)
     scores["effort_grid"] = round(parts["grid_cost"], 4)
     scores["effort_key_certainty"] = round(parts["key_certainty_cost"], 4)
+    scores["effort_downbeat"] = round(parts["downbeat_cost"], 4)
     return scores
 
 
@@ -493,7 +503,7 @@ class _StemBlock:
 
     __slots__ = ("feats", "song_id", "bpm", "code", "loud_z", "loud_raw",
                  "mfcc_v", "mfcc_norm", "mfcc_ok", "variant",
-                 "bpm_conf", "key_conf", "bands", "quality")
+                 "bpm_conf", "key_conf", "db_conf", "bands", "quality")
 
 
 def _conf(value) -> float:
@@ -568,6 +578,10 @@ def _prepare_block(feats: List[dict], code_index: Dict[str, int],
         [_conf(f.get("bpm_confidence")) for f in feats], dtype=np.float64))
     b.key_conf = stats.conf_pct("key", np.array(
         [_conf(f.get("key_confidence")) for f in feats], dtype=np.float64))
+    # allin1's downbeat confidence (_full_by_song), ranked the same way; a
+    # track allin1 did not cut is certain.
+    b.db_conf = stats.conf_pct("downbeat", np.array(
+        [_conf(f.get("downbeat_confidence")) for f in feats], dtype=np.float64))
 
     # Phase D: band occupancy (all-zero row = unmeasured, which collision_block
     # reads as the neutral 0.5) and this stem's separation quality.
@@ -799,7 +813,8 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
             effort, parts = effort_block(
                 top.bpm[rows][:, None], bed.bpm[None, :], stretch, semis, known,
                 top.bpm_conf[rows][:, None], bed.bpm_conf[None, :],
-                top.key_conf[rows][:, None], bed.key_conf[None, :], folded)
+                top.key_conf[rows][:, None], bed.key_conf[None, :], folded,
+                top.db_conf[rows][:, None], bed.db_conf[None, :])
             total = fit * (1.0 - effort_weight * effort)
             if terms_only:
                 yield rows, keep, {"fit": fit, "key": key_s, "total": total,
@@ -828,6 +843,7 @@ def _iter_scored_pairs(top: _StemBlock, bed: _StemBlock, *,
                     "effort_grid": round(float(parts["grid_cost"][i, j]), 4),
                     "effort_key_certainty": round(
                         float(parts["key_certainty_cost"][i, j]), 4),
+                    "effort_downbeat": round(float(parts["downbeat_cost"][i, j]), 4),
                 }
         if on_block is not None:
             on_block(rows.stop, n_top)
@@ -1075,6 +1091,14 @@ def _full_by_song(full_rows, db_path=None) -> Dict[int, dict]:
     if not out:
         return out
     try:
+        # allin1's downbeat confidence rides along (the effort's downbeat
+        # term), on its own key: it is not the grid confidence.
+        from database.alignment import allin1_downbeat_conf_by_song
+        for song_id, c in allin1_downbeat_conf_by_song(out.keys(), db_path=db_path).items():
+            out[song_id] = {**out[song_id], "downbeat_confidence": c}
+    except Exception:  # noqa: BLE001 — a cost term, never a reason not to score
+        log.warning("could not read allin1 downbeat confidences", exc_info=True)
+    try:
         from database.alignment import allin1_bpm_by_song
         refined = allin1_bpm_by_song(out.keys(), db_path=db_path)
     except Exception:  # noqa: BLE001 — a refinement, never a reason not to score
@@ -1131,6 +1155,8 @@ def _with_full_bpm(feat: dict, full_by_song: Dict[int, dict]) -> dict:
         out["key"] = full_feat.get("key")
         out["mode"] = full_feat.get("mode")
         out["key_confidence"] = full_feat.get("key_confidence")
+    if full_feat.get("downbeat_confidence") is not None:
+        out["downbeat_confidence"] = full_feat["downbeat_confidence"]
     return out
 
 

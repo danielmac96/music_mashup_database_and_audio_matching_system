@@ -440,9 +440,15 @@ def _song_terms(top: dict, bed: dict, stats: LibraryStats) -> dict:
     # must see the cost the user sees, not a re-derivation of it. That includes
     # the library-relative confidence normalisation, or the model would train on
     # raw confidences while the ranking used percentiles.
-    feats.update(effort_components(
+    effort = effort_components(
         top, bed, compute_stretch_factor(t_bpm, b_bpm), shift,
-        conf_norm=lambda kind, v: float(stats.conf_pct(kind, v))))
+        conf_norm=lambda kind, v: float(stats.conf_pct(kind, v)))
+    # The downbeat term (allin1's downbeat confidence) is not a feature of its
+    # own: FEATURE_NAMES only grows at the end, and a new name would refuse
+    # every trained model. The model sees it through score_rule and the row's
+    # score_effort, which include it.
+    effort.pop("downbeat_cost", None)
+    feats.update(effort)
     feats.update(_collision_terms(top, bed))
     feats.update(surprise_terms(top, bed, scores))
     return feats

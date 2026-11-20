@@ -63,7 +63,7 @@ def test_play_spans_start_the_vocal_at_its_pickup_and_the_bed_under_it():
           "vocal_phrase_start": 39.5, "timing_ok": 1}
     got = play_spans(pl, 1.02)
     assert got == {"vocal_play_start": 39.5, "bed_play_start": round(30.0 - 0.5 * 1.02, 4),
-                   "play_lead": 0.5}
+                   "play_lead": 0.5, "vocal_play_end": None, "bed_play_end": None}
     # A late entry (onset after the downbeat) starts on the bar, not after it.
     assert play_spans({**pl, "vocal_phrase_start": 40.2}, 1.0)["play_lead"] == 0.0
     # The bed cannot start before its own file: the lead shrinks to fit.
@@ -74,6 +74,19 @@ def test_play_spans_start_the_vocal_at_its_pickup_and_the_bed_under_it():
     # is never stored; in the overlay it was chosen by ear, and plays there.
     assert play_spans({**pl, "bed_landing_sec": None}, 1.0) is None
     assert play_spans({**pl, "timing_ok": 0}, 1.02) == got
+    # With its phrase window (§9 item 7) the pair plays the window: from the
+    # window's first phrase at its pickup, the bed under it by the same
+    # alignment, to the window's end.
+    win = {**pl, "window_vocal_start": 48.0, "window_vocal_onset": 47.75,
+           "window_vocal_end": 63.5}
+    w = play_spans(win, 1.02)
+    assert w["vocal_play_start"] == 47.75 and w["play_lead"] == 0.25
+    assert w["bed_play_start"] == round(30.0 + 8.0 * 1.02 - 0.25 * 1.02, 4)
+    assert w["vocal_play_end"] == 63.5
+    assert w["bed_play_end"] == round(30.0 + 23.5 * 1.02, 4)
+    # A window that is not one (no end, or an end before its start) is ignored.
+    assert play_spans({**win, "window_vocal_end": None}, 1.02) == got
+    assert play_spans({**win, "window_vocal_end": 47.0}, 1.02) == got
 
 
 def test_a_forced_landing_is_a_landing_and_the_default_is_untouched(lib):

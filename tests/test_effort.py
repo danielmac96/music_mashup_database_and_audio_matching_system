@@ -116,8 +116,9 @@ def test_expensive_pair_scores_high_and_labels_heavy():
     total, parts = effort_penalty(_feat(120.0, 0.4, 0.3), _feat(107.0, 0.5, 0.4),
                                   stretch=1.12, semitones=5)
     # saturated stretch (0.30) + 0.8 pitch (0.24) + 0.6 grid (0.09)
-    # + 0.7 key (0.07) = 0.70
+    # + 0.7 key (0.07) = 0.70 — no downbeat confidence is no downbeat cost
     assert total == pytest.approx(0.70)
+    assert parts["downbeat_cost"] == 0.0
     assert effort_label(total) == "Heavy"
     assert dominant_component(parts) in ("stretch_cost", "pitch_cost")
 
@@ -132,8 +133,17 @@ def test_labels_partition_the_range():
 
 def test_weights_sum_to_one():
     """Otherwise the total is not on the 0-1 scale the label thresholds and the
-    score discount both assume."""
-    assert sum(EFFORT_WEIGHTS.values()) == pytest.approx(1.0)
+    score discount both assume. The downbeat term (§9 item 6) sits on top of
+    the five, so a pair without it costs what it always did; the total is
+    clipped to 1, so the scale holds."""
+    five = {k: w for k, w in EFFORT_WEIGHTS.items() if k != "downbeat_cost"}
+    assert sum(five.values()) == pytest.approx(1.0)
+    assert EFFORT_WEIGHTS["downbeat_cost"] == pytest.approx(0.05)
+    worst = effort_penalty({"bpm": 100.0, "bpm_confidence": 0.0, "key_confidence": 0.0,
+                            "downbeat_confidence": 0.0},
+                           {"bpm": 200.0, "bpm_confidence": 0.0, "key_confidence": 0.0,
+                            "downbeat_confidence": 0.0}, stretch=None, semitones=None)[0]
+    assert 0.0 <= worst <= 1.0
 
 
 # ── Block form agrees with the scalar form ───────────────────────────────────
@@ -239,3 +249,48 @@ def test_a_free_build_can_outrank_a_better_but_costly_match(db_path):
     # Components are persisted so the UI can name the dominant cost.
     assert rows[costly]["effort_stretch"] > 0.0
     assert rows[costly]["effort_pitch"] > 0.0
+
+
+
+def test_an_unsure_bar_one_costs_effort_ranked_in_the_library():
+    """§9 item 6: allin1's downbeat confidence is an effort term, ranked in
+    the library like the grid confidence — the less sure of bar 1 either
+    side is, the more it costs; a track allin1 did not cut is certain."""
+    from matcher.effort import EFFORT_WEIGHTS, effort_block
+    sure, unsure = _feat(124.0, 0.9, 0.9), _feat(124.0, 0.9, 0.9)
+    sure["downbeat_confidence"], unsure["downbeat_confidence"] = 0.9, 0.2
+    rank = {0.9: 0.95, 0.2: 0.10}
+    norm = lambda kind, v: rank.get(v, v) if kind == "downbeat" else v  # noqa: E731
+    t_sure, p_sure = effort_penalty(sure, sure, stretch=1.0, semitones=0, conf_norm=norm)
+    t_bad, p_bad = effort_penalty(sure, unsure, stretch=1.0, semitones=0, conf_norm=norm)
+    assert p_sure["downbeat_cost"] == pytest.approx(0.05)
+    assert p_bad["downbeat_cost"] == pytest.approx(0.90)
+    assert t_bad - t_sure == pytest.approx(EFFORT_WEIGHTS["downbeat_cost"] * 0.85)
+    # On top of the five, which are unchanged: without it nothing moves.
+    assert abs(sum(w for k, w in EFFORT_WEIGHTS.items() if k != "downbeat_cost") - 1.0) < 1e-9
+    # The block form agrees with the scalar one.
+    import numpy as np
+    one = np.ones((1, 1))
+    total, parts = effort_block(one * 124, one * 124, one, one * 0, one > 0,
+                                one * 0.9, one * 0.9, one * 0.9, one * 0.9, one < 0,
+                                one * 0.95, one * 0.10)
+    _t, ref = effort_penalty(sure, unsure, stretch=1.0, semitones=0,
+                             conf_norm=lambda k, v: {0.9: 0.95, 0.2: 0.10}[v] if k == "downbeat" else v)
+    assert float(parts["downbeat_cost"][0, 0]) == pytest.approx(ref["downbeat_cost"])
+
+
+def test_the_downbeat_confidence_reaches_the_scorer_through_full_by_song(monkeypatch):
+    """_full_by_song (the one builder of the scorer's full-mix map) carries
+    allin1's conf_mean as `downbeat_confidence`, and _with_full_bpm hands it
+    to the stem rows the effort reads — never into bpm_confidence."""
+    import database.alignment as al
+    from matcher import match
+    monkeypatch.setattr(al, "allin1_downbeat_conf_by_song",
+                        lambda ids=None, db_path=None: {1: 0.31})
+    monkeypatch.setattr(al, "allin1_bpm_by_song", lambda ids=None, db_path=None: {})
+    full = match._full_by_song([{"song_id": 1, "bpm": 124.0, "bpm_confidence": 0.8},
+                                {"song_id": 2, "bpm": 124.0, "bpm_confidence": 0.8}])
+    assert full[1]["downbeat_confidence"] == 0.31 and full[1]["bpm_confidence"] == 0.8
+    assert "downbeat_confidence" not in full[2]
+    stem = match._with_full_bpm({"song_id": 1, "bpm": 62.0, "stem_type": "vocals"}, full)
+    assert stem["downbeat_confidence"] == 0.31

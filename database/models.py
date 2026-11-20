@@ -126,6 +126,7 @@ FEATURES_SCORING_COLUMNS = (
 EFFORT_COLUMNS = (
     "score_effort", "effort_stretch", "effort_pitch",
     "effort_tempo_fold", "effort_grid", "effort_key_certainty",
+    "effort_downbeat",
 )
 
 # Phase E harmony columns, in the order candidate_row binds them.
@@ -1569,8 +1570,9 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_slot, slot_occupancy, slot_phrase_match, slot_register,
        slot_phrase_err_ms,
        window_bars, vocal_window_bar, bed_window_bar, score_window,
+       window_vocal_start, window_vocal_onset, window_vocal_end,
        score_effort, effort_stretch, effort_pitch,
-       effort_tempo_fold, effort_grid, effort_key_certainty,
+       effort_tempo_fold, effort_grid, effort_key_certainty, effort_downbeat,
        harmonic_shift, harmonic_confidence, bass_clash,
        score_timing, timing_ok, timing_err_mean_ms, timing_err_max_ms,
        vocal_phrase_start, vocal_pickup_ms, bed_landing_sec,
@@ -1579,7 +1581,7 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        score_rule, model_prob
    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
-             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+             ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
              ?,?,?,?,?,?,?,?,?,?,?,?,?)
    ON CONFLICT(combo_type, vocal_song_id, inst_song_id,
                COALESCE(vocal_section_idx, -1), COALESCE(inst_section_idx, -1))
@@ -1623,6 +1625,9 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        vocal_window_bar=excluded.vocal_window_bar,
        bed_window_bar=excluded.bed_window_bar,
        score_window=excluded.score_window,
+       window_vocal_start=excluded.window_vocal_start,
+       window_vocal_onset=excluded.window_vocal_onset,
+       window_vocal_end=excluded.window_vocal_end,
        dropin_mask=excluded.dropin_mask,
        camelot_shift=excluded.camelot_shift,
        score_effort=excluded.score_effort,
@@ -1631,6 +1636,7 @@ _CANDIDATE_INSERT_SQL = """INSERT INTO mashup_candidates (
        effort_tempo_fold=excluded.effort_tempo_fold,
        effort_grid=excluded.effort_grid,
        effort_key_certainty=excluded.effort_key_certainty,
+       effort_downbeat=excluded.effort_downbeat,
        harmonic_shift=excluded.harmonic_shift,
        harmonic_confidence=excluded.harmonic_confidence,
        bass_clash=excluded.bass_clash,
@@ -1679,13 +1685,16 @@ SECTION_PAIR_COLUMNS = (
     "score_slot", "slot_occupancy", "slot_phrase_match", "slot_register",
     "slot_phrase_err_ms",
     "window_bars", "vocal_window_bar", "bed_window_bar", "score_window",
+    # Where the window plays (phrase_align.play_spans), in the vocal's seconds.
+    "window_vocal_start", "window_vocal_onset", "window_vocal_end",
 )
 
 # The part of SECTION_PAIR_COLUMNS only a PLACED pairing has (the allin1
 # engine's section search): the slot and the phrase window.
 SLOT_COLUMNS = ("score_slot", "slot_occupancy", "slot_phrase_match",
                 "slot_register", "slot_phrase_err_ms",
-                "window_bars", "vocal_window_bar", "bed_window_bar", "score_window")
+                "window_bars", "vocal_window_bar", "bed_window_bar", "score_window",
+                "window_vocal_start", "window_vocal_onset", "window_vocal_end")
 
 # What the Drop-in rule reads that is a fact of the two SONGS, stored at
 # scoring time so the rule can run in SQL (matcher/compat.dropin_mask): which
