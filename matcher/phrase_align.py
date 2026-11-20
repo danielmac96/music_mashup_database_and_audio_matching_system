@@ -70,6 +70,28 @@ def _downbeats(section: Dict) -> List[float]:
             if start - 1e-3 <= float(t) <= end + 1e-3]
 
 
+CLOSE_TOL_BARS = 0.125   # a section end this near "last downbeat + a bar" is a bar line
+
+
+def closing_grid(downbeats: Sequence[float], end: float) -> List[float]:
+    """A bed section's bar lines to judge a vocal's against: its downbeats plus
+    the line that closes it. A section's downbeats stop one bar short of its
+    end — the next section owns that line — so an overlap cut by the bed's end
+    would match the vocal's closing bar line to the bed's line a bar earlier
+    and gate the pair for one bar it never plays wrong. The end is added only
+    when it IS a bar line (within CLOSE_TOL_BARS of the next expected one);
+    a section cut mid-bar keeps its downbeats alone. Landings, bar counts and
+    the bar length still read the downbeats themselves."""
+    dbs = [float(t) for t in downbeats]
+    bar = _bar_secs(dbs)
+    if bar is None or bar <= 0:
+        return dbs
+    end = float(end or 0.0)
+    if end > dbs[-1] + 1e-3 and abs(end - (dbs[-1] + bar)) <= CLOSE_TOL_BARS * bar:
+        return dbs + [end]
+    return dbs
+
+
 def _bar_secs(downbeats: Sequence[float]) -> Optional[float]:
     if len(downbeats) < 2:
         return None
@@ -210,6 +232,7 @@ def place(vocal: Dict, bed: Dict, stretch: float = 1.0,
     d_v = phrase["downbeat"]
     v_bar = _bar_secs(v_dbs)
     b_bar = _bar_secs(b_dbs)
+    b_grid = closing_grid(b_dbs, b_end)
 
     # The vocal grid from its phrase downbeat on, and its length (to the end of
     # the section) — the vocal is the timeline, so it is not scaled unless the
@@ -228,7 +251,7 @@ def place(vocal: Dict, bed: Dict, stretch: float = 1.0,
         if k >= len(b_dbs) or k < 0:
             break
         land = b_dbs[k]
-        b_rel = scale_grid([t for t in b_dbs if t >= land - 1e-3],
+        b_rel = scale_grid([t for t in b_grid if t >= land - 1e-3],
                            1.0 if conform == "vocal" else rate, land)
         b_span = (b_end - land) / (1.0 if conform == "vocal" else rate)
         span = min(v_span, b_span)
@@ -310,7 +333,7 @@ def _bed_side(section: Dict, cache: Dict) -> _Bed:
     b.start = float(section.get("start_sec") or 0.0)
     b.end = float(section.get("end_sec") or 0.0)
     b.dbs = _downbeats(section)
-    b.arr = np.asarray(b.dbs, dtype=float)
+    b.arr = np.asarray(closing_grid(b.dbs, b.end) if b.dbs else [], dtype=float)
     b.bar = _bar_secs(b.dbs)
     b.n = len(b.dbs)
     b.fast = _ascending(b.arr, _MIN_GAP)
