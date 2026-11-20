@@ -1774,6 +1774,29 @@ table padded to 481,000 rows, as `bench_scale.py` does):
 | Tune: re-rank 500 loaded pairs, p95 of 20 | 2.9 ms |
 | Clipped text, 12 screens × 2 viewports | 0 outside `EXEMPT` (253 before the fixes) |
 
+**Track detail's overlay** (Phase 4; synthetic, no Docker needed — the
+audition needs stems on disk):
+
+```bash
+python scripts/bench_overlay.py --library /tmp/synth10k --pairs 60    # payload, phrase starts
+node tests/ui/overlay_perf.cjs http://localhost:8000 4                # drag frames, space-to-sound
+```
+
+Phase 4 (2026-11-20, the same VM; 10,000 synthetic tracks, the candidates
+table padded to 481,000 rows; the browser numbers on a 300-track library with
+full-length silent 44.1 kHz FLAC stems written at the stem paths):
+
+| | Measured |
+|---|---|
+| Overlay payload, 200 planted pairs at 10,000 tracks | uncached p50 76 ms / p95 98 ms (max 153); cached p50 7.1 / p95 8.7 ms |
+| Payload size, placements priced | 83 KB (11 KB gzipped), 13 landings (median) |
+| Planted drop-ins: incoming phrase starts within one 46 ms frame of the original's | 581 of 581 |
+| Canvas draw while dragging (152 draws, 2 runs) | p95 0.3–0.4 ms, max 0.6 ms; 0 of 168 frames over 25 ms |
+| Space to sounding (the one player, hook clips cut on request) | 94–259 ms over 8 auditions |
+
+Read it with: real stems are stereo and longer to cut and decode than silent
+mono FLAC; the first audition of a session also starts the AudioContext.
+
 ## 9. Open work
 
 1. **Measure a fresh library end to end** — `scripts/bench_one_pass.py` over
