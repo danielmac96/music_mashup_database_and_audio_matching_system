@@ -1877,6 +1877,50 @@ full-length silent 44.1 kHz FLAC stems written at the stem paths):
 Read it with: real stems are stereo and longer to cut and decode than silent
 mono FLAC; the first audition of a session also starts the AudioContext.
 
+**Import to pairs, threads and storage** (Phase 5; synthetic, no Docker
+needed):
+
+```bash
+python scripts/sim_import.py --library /tmp/synth5k --imports 50 --orders 20 --out /tmp/sim_import
+python scripts/timing_gate_share.py --pairs 3000            # read-only, any library
+python scripts/storage_report.py --calibrate --project 10000
+```
+
+`sim_import.py` takes a scored synthetic library (`synth_library.py`, then
+Score library — about 30 min at 5,000 tracks), sets aside 50 tracks' stems
+and allin1 rows, and runs the real scorer on each at its three states (after
+its quick tier, after its first cut, after allin1; ~25 min at 5,000). The
+priorities come from the production `stem_priority`; the queues are replayed
+on the library's `analysis_runs` medians (Demucs 620 ms per audio second,
+allin1 300, analysis 54, structure 14, download 25; the quick tier, which the
+synthetic library does not log, at the readme's 40) and the measured scoring
+times, for 20 arrival orders, once in arrival order (Phase 0) and once
+partner-aware.
+
+Phase 5 (2026-11-20, the same VM; 5,000 synthetic tracks, Score library
+1,822 s):
+
+| | Measured |
+|---|---|
+| First Drop-in pair of a 50-track import, median of 20 orders | 124.3 s arrival order · 124.3 s partner-aware |
+| The same, mean | 136.0 s · 121.9 s (−10 %); faster in 2 orders of 20, 2 s slower in one |
+| Imports with any Drop-in · promoted · instrumentals held back | 39 of 50 · 40 (39 of them have one) · 10 (none has one) |
+| Scoring one import at 5,000 tracks: quick tier / first cut / after allin1, median | 17.0 / 13.1 / 12.4 s |
+| Core budget: most threads held at once, 105 concurrent holds of 1–4 on 4 cores | 4 (a test); a hold costs 3 µs |
+| allin1 runs skipped with no usable stem; tracks with a usable stem skipped | counted on the Queue; 0 of the 32 with a usable stem in the 36-case test grid (the 4 with both under the minimum are skipped) |
+| Storage at 10,000 tracks of 203 s, synthetic signal (an upper bound: noise compresses worse than music) | 1.4 TB, 136 MB a track: instrumental 44.6 MB, vocals 24.5, drums 17.7, bass 18.9, other 26.2, sidecars 1.2, the mix 3.2; `keep_analysis_stems` off frees 628 GB (46 %) |
+| Timing gate on the 300-track synthetic library (its grids are clean by construction) | 71.4 / 71.9 / 72.1 % of pairings, 85.1 / 85.4 / 85.9 % of vocal sections at 25 / 40 / 60 ms |
+
+Read it with: the partner-aware order cannot beat one track's own path
+through download, quick, Demucs and analysis (~124 s here), and in this
+library 78 % of imports — every song, none of the instrumentals — have a
+Drop-in, so the first separated song nearly always yields one already; the
+order helps when the batch opens with tracks that cannot (here, the
+instrumentals). It is the 30 % bar of criterion 5.1 that is missed. A real
+import with fewer fits for the library, or a library where Drop-ins are
+rarer, is where it should show; `sim_import.py` on a real library's
+`analysis_runs` says.
+
 ## 9. Open work
 
 1. **Measure a fresh library end to end** — `scripts/bench_one_pass.py` over
@@ -1994,6 +2038,17 @@ mono FLAC; the first audition of a session also starts the AudioContext.
     pair word ("Free", "Strong") is read as a filter by the dock's search until
     the search supports quoting. Scrolling
     10,000 rows drops one frame in 181 (33 ms).
+17. **Phase 5, what is left.** Criterion 5.1 (the first Drop-in of an import
+    ≥ 30 % sooner) is not met on the synthetic library (§8: mean −10 %,
+    median 0): the first separated song nearly always has a Drop-in there.
+    Measure on a real library (`sim_import.py --library` a copy, after
+    `bench_one_pass.py` has filled `analysis_runs`) before tuning the bands
+    (`stem_promise_many` / `stem_promise_some`) — at 5,000 tracks nearly every
+    song lands in the top band, so within a batch the bands rarely
+    discriminate. The storage numbers are a synthetic signal: run
+    `storage_report.py` on real stems. Score library itself holds one core of
+    the budget; the learning retrain (sklearn's OpenMP pool) is not in the
+    budget — it only runs while the pipeline is idle (§5.8).
 
 Not worth doing: raising the `rhythm` or `structure` section weights (`rhythm`
 saturates on 4/4 dance music; `structure` duplicates `label`); persistent
