@@ -71,7 +71,9 @@ def test_contract_shapes(env):
     waiting = queue_runner.enqueue_song(_song(models, 1))
 
     body = client.get("/api/jobs/queue").json()
-    assert set(body) == {"stages", "positions", "running", "next_playable_secs"}
+    # Phase 5 added the core budget and allin1's skip counts (criteria 5.2, 5.3).
+    assert set(body) == {"stages", "positions", "running", "next_playable_secs",
+                         "threads", "allin1"}
     for pool in ("download", "quick", "stems", "analysis"):
         assert set(body["stages"][pool]) == {"workers", "running", "waiting",
                                             "clears_in_secs"}
