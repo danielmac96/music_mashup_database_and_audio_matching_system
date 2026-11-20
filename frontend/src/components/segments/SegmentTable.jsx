@@ -11,7 +11,8 @@ import { fmtSpan, midiName, segKey } from "./segmentModel";
 // The two tables share the screen's width, so columns are dropped by priority
 // when a pane is too narrow for all of them instead of scrolling sideways.
 
-export const ROW_H = 32;
+// The Library table's row (.tt-row): two lines, title over artist (3C).
+export const ROW_H = 44;
 const OVERSCAN = 6;
 
 // prio: lower stays longer. `roles` limits a column to one side; `match` shows

@@ -17,7 +17,19 @@ import { fmtDur, fmtPlays, fmtYear, keyLooksOff, playsColor } from "../theme";
 // It renders what it is handed and fetches nothing: filtering and sorting are
 // hooks/useLibraryFilters.js, over rows already in memory.
 
-export const ROW_H = 32;
+// Two lines a row — title over artist (3C: text is never cut off where it
+// fits; where a narrow column cannot fit it, the full name shows on hover and
+// on keyboard focus, .tt-fullname). Changes with its contract test.
+export const ROW_H = 44;
+
+// Whether the title or artist is cut off at the column's width right now:
+// only then does the hover / focus card show the full name.
+function markClipped(e) {
+  const cell = e.currentTarget;
+  const clipped = [...cell.querySelectorAll(".tt-title, .tt-artist")]
+    .some((x) => x.scrollWidth > x.clientWidth + 1);
+  cell.querySelector(".tt-fullname")?.classList.toggle("clipped", clipped);
+}
 const OVERSCAN = 6;
 const ACT_W = 30;   // the ⋯ row-menu column, always last, never hidden
 // Default columns that make way for a narrow frame, first to go first, and
@@ -38,7 +50,7 @@ export const COLUMNS = [
   { id: "len", label: "Length", w: 62, min: 48, align: "r", sort: "len", defaultVisible: false },
   { id: "vox", label: "VOX%", w: 60, min: 44, align: "r", sort: "vox", tip: "Share of the track that is sung" },
   { id: "best", label: "Best pair", w: 76, min: 56, align: "r", sort: "best", tip: "This track's best pairing in either role, as a percentile of every scored pair — selecting the track opens the pair dock on that side" },
-  { id: "pairs", label: "Pairs V/B", w: 80, min: 60, align: "r", sort: "pairs", tip: "Partners as vocal / as bed" },
+  { id: "pairs", label: "Pairs V/B", w: 96, min: 80, align: "r", sort: "pairs", tip: "Partners as vocal / as bed" },
   { id: "plays", label: "Plays", w: 64, min: 48, align: "r", sort: "plays", defaultVisible: false },
   { id: "rating", label: "Rating", w: 84, min: 70, sort: "rating", tip: "The best rating any of its pairs has earned" },
   { id: "status", label: "Status", w: 112, min: 80, sort: "status" },
@@ -96,7 +108,7 @@ function Cell({ col, t, ctx }) {
       // or your own pick) is marked — the stems are cut from that file.
       const sub = audioSubstitution(t);
       return (
-        <div className="tt-namecell">
+        <div className="tt-namecell" onMouseEnter={markClipped} onFocus={markClipped}>
           {/* A real button, so the way into a track is reachable from the
               keyboard; stopPropagation keeps one click from also re-scoping
               the dock through the row. */}
@@ -108,6 +120,9 @@ function Cell({ col, t, ctx }) {
             </span>
           )}
           <span className="tt-artist">{t.artist || ""}</span>
+          <span className="tt-fullname" aria-hidden="true">
+            <b>{t.title || "—"}</b>{t.artist ? <span>{t.artist}</span> : null}
+          </span>
         </div>
       );
     }

@@ -51,6 +51,11 @@ async def lifespan(app: FastAPI):
     # The learning loop's debounced retrain check (matcher/learning.tick).
     from api.workers.learning_worker import start_ticker
     ticker = start_ticker()
+    # The Library payload, built once off the request path (3.2: first rows
+    # under a second at 10,000 tracks; api/routes/tracks.library_payload).
+    import threading as _threading
+    from api.routes.tracks import warm_library_cache
+    _threading.Thread(target=warm_library_cache, name="warm-library", daemon=True).start()
     yield
     ticker.stop.set()
 

@@ -6,7 +6,7 @@ import { useEffect } from "react";
 // Opened from the rail's ? button or the ? key; Esc closes.
 
 // What shows when Help opens: one screen — the loop in five lines, and the
-// Segments way in as a sixth. Everything
+// Parts way in as a sixth. Everything
 // else folds below — 975 words up front read as a manual (2026-10-15).
 const QUICK = [
   ["Import", "＋ Import in the Library: paste a SoundCloud or YouTube track or set."],
@@ -14,7 +14,7 @@ const QUICK = [
   ["Score", "↻ Re-score in the pair dock pairs every vocal section with every instrumental section."],
   ["Listen", "Click a track, then space on a pair in the dock. Rate 1–5; q w e r tag why."],
   ["Build", "Double-click a pair to open it in Studio, conformed and lined up. Render ▾ a WAV or an FL session."],
-  ["Or mix parts", "Segments: pick a vocal section and the beds that fit it are listed. Pick one and it loops in the mini studio below."],
+  ["Or mix parts", "Library → Vocal parts (or Bed parts): pick a section and the dock ranks the beds that fit it. ⏎ on one opens the mini studio inside its card."],
 ];
 
 const STEPS = [
@@ -22,7 +22,7 @@ const STEPS = [
   ["Score the library", "The dock's ↻ Re-score (or ⚙ → Score library). Every vocal section is tried over every instrumental section; the best pairings land in the pair dock on the right of the Library."],
   ["Audition pairs", "In the dock, ↑↓ moves, space loops the pair (the vocal's section over the bed's), 1–5 rates it and moves on, and q w e r… tag why on the pair you just rated. Select a library row to see the pairs for that track — it opens on the side holding its best pair."],
   ["Keep the good ones", "★ Keepers lists what you rated 4–5 — the pairs worth building. Export ▾ writes them (or the dock's top N) as a cue sheet, CSV, rekordbox, Serato, Traktor or FL sessions."],
-  ["Mix and match parts", "Segments: every section of every song, vocals beside beds. Pick a chorus acapella and the beds narrow to the sections that fit it — scored live, so pairs Score library left out still show. Pick one and it loops in the mini studio at the bottom: transpose, tempo, nudge, levels, high-pass, then Open in Studio."],
+  ["Mix and match parts", "Library → Vocal parts / Bed parts: every section of every song in one table, searched with the same words as the Library. Pick a chorus acapella and the dock ranks the bed sections that fit it — scored live, so pairs Score library left out still show. ⏎ on a match opens the mini studio in its card: transpose, tempo, nudge, levels, high-pass, then Open in Studio."],
   ["Build it", "⏎ expands a card; Open in Studio lays the pair out conformed and lined up. Nudge, transpose, trim or extend, fade, high-pass the bed, add a second vocal from ＋ Add, then Render ▾ a WAV, stems or an FL Studio session."],
 ];
 
@@ -45,13 +45,13 @@ const GLOSSARY = [
 
 const KEYS = [
   ["Library table", "↑↓ move · PgUp/PgDn · Home/End · space preview the hook · ⏎ open the track · esc clear the selection · tab → the pair dock"],
-  ["Library search", "type 8A 124-128 house 2015+ vox stems — read as filters · ⏎ pin them · ↓ into the table · esc clear"],
-  ["Segments", "click a vocal (or a bed): the other table narrows to what fits it · click a match: the pair loops in the mini studio · ↑↓ move · space loop the row (nothing focused: play the mini studio) · ⏎ open the track · ←/→ or [ ] next / previous match · 1–5 rate · esc drop the match, then the selection · ⇄ match the other side instead"],
+  ["Library search", "type 8A 124-128 house 2015+ vox stems rated — read as filters; the dock and Parts read the same words (dropin strong free loved q60+) · ⏎ pin them · ↓ into the table · esc clear"],
+  ["Parts (Library → Vocal / Bed parts)", "↑↓ move in the table · click a part: the dock ranks its partners · in the dock ↑↓ move · ⏎ open the audition panel · space play it · 1–5 rate · [ ] next / previous match · esc clear the part"],
   ["Track detail", "space play the hook · esc back to the Library (same selection and scroll) · click a section block to loop it · click or drag the structure to scrub · the dock's keys still work beside it"],
   ["Queue", "↑↓ move (opens the inspector) · ⏎ open the track · r retry a failed track · esc close the inspector"],
   ["Discover", "⏎ search (or paste a link) · ↓ into the results · ↑↓ move · x shortlist · ⏎ preview a track, open a set or artist · / back to the search"],
   ["Mixes › Match", "click a vocal, then the bed it went over · esc cancel the pick · ctrl/⌘+Z undo the last move"],
-  ["Pair dock", "↑↓ move · ←→ step through the two songs' other section pairings (the ‹ ● ○ › dots) · space loop · 1–5 rate and move on (again to clear) · q–u tag why (8 s after a rating) · ⏎ expand the card · double-click open in Studio · V/B solo vocal/bed · h hide · c compare the two tracks in Analysis"],
+  ["Pair dock", "↑↓ move · ←→ step through the two songs' other section pairings (the ‹ ● ○ › dots) · space loop · 1–5 rate and move on (again to clear) · q–u tag why (8 s after a rating) · ⏎ expand the card · double-click open in Studio · V/B solo vocal/bed · h hide · c compare the two tracks (Track detail → Compare with…) · Tune ▾ re-ranks the loaded pairs by your weights"],
   ["Studio", "space play · ←/→ nudge the selected lane a beat (shift: a bar) · m mute · s solo · ⏎ next pair · del remove the lane · L loop · [ ] timing options · 1–6 jump · ctrl/⌘+Z undo · shift+ctrl/⌘+Z redo · drag a clip (alt: off the grid) · drag an edge to trim or extend · alt+click a beat line sets bar 1"],
   ["Everywhere", "⌘K / ctrl+K command palette (↑↓ move · ⏎ open · esc close) · / focus search · space play/pause the player bar · esc back one layer · ? this help"],
   ["Player bar", "click or drag the strip to seek · ←/→ nudge 5 s (shift 15 s) · Home to the start"],

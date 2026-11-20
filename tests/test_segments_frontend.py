@@ -51,7 +51,7 @@ def test_parts_are_a_library_mode_and_the_old_route_redirects():
 
 def test_the_tables_are_virtualised_on_fixed_rows():
     table = FILES["SegmentTable.jsx"]
-    assert "export const ROW_H = 32;" in table
+    assert "export const ROW_H = 44;" in table      # the Library row, .tt-row
     assert "rows.slice(first, first + count)" in table
     assert "height: rows.length * ROW_H" in table
     # Rows are memoised and call handlers through a ref.
@@ -158,7 +158,7 @@ def test_no_hex_and_every_class_is_styled():
 
 def test_help_names_the_screen_and_its_keys():
     help_ = _read("components/HelpPanel.jsx")
-    assert '["Segments", ' in help_
+    assert '["Parts (Library → Vocal / Bed parts)", ' in help_
 
 
 # ── behaviour: the model, run under Node ─────────────────────────────────────
