@@ -515,6 +515,10 @@ export function placementFor(opt, vRate, bRate) {
   const placed = opt.vocal_play_start != null && opt.bed_play_start != null;
   const vClip = placed ? opt.vocal_play_start : opt.vocal_section_start;
   const bClip = placed ? opt.bed_play_start : opt.inst_section_start;
+  // With its phrase window the pair stops at the window's end.
+  const windowed = placed && opt.vocal_play_end != null && opt.bed_play_end != null;
+  const vEnd = windowed ? opt.vocal_play_end : opt.vocal_section_end;
+  const bEnd = windowed ? opt.bed_play_end : opt.inst_section_end;
   // Neither lane may hang off the front of the timeline — the viewport cannot
   // scroll left of zero, so a negative offset is audio you cannot reach.
   const base = Math.max(vAt, bAt - off);
@@ -524,9 +528,9 @@ export function placementFor(opt, vRate, bRate) {
   // clip is not); this just keeps a pass from spending the offset on one
   // side alone.
   const vFrom = vOff + (vClip || 0) / vr;
-  const vTo = vOff + (opt.vocal_section_end || 0) / vr;
+  const vTo = vOff + (vEnd || 0) / vr;
   const bFrom = bOff + (bClip || 0) / br;
-  const bTo = bOff + (opt.inst_section_end || 0) / br;
+  const bTo = bOff + (bEnd || 0) / br;
   let loopStart = Math.max(vFrom, bFrom);
   let loopEnd = Math.min(vTo, bTo);
   if (!(loopEnd - loopStart >= 1)) {
@@ -535,8 +539,8 @@ export function placementFor(opt, vRate, bRate) {
   }
   return {
     base,
-    vocal: { offsetSec: vOff, clipStart: vClip, clipEnd: opt.vocal_section_end },
-    bed: { offsetSec: bOff, clipStart: bClip, clipEnd: opt.inst_section_end },
+    vocal: { offsetSec: vOff, clipStart: vClip, clipEnd: vEnd },
+    bed: { offsetSec: bOff, clipStart: bClip, clipEnd: bEnd },
     loop: { start: loopStart, end: loopEnd },
   };
 }

@@ -115,18 +115,23 @@ export function auditionCandidate(payload, row, fromBed = null, ghost = false) {
   const stretch = payload.stretch || 1;
   let vStart = row.vocal_play_start ?? row.spans?.vocal_play_start ?? row.vocal_section_start;
   let bStart = row.bed_play_start ?? row.spans?.bed_play_start ?? row.inst_section_start;
+  let vEnd = row.vocal_play_end ?? row.spans?.vocal_play_end ?? null;
+  let bEnd = row.bed_play_end ?? row.spans?.bed_play_end ?? null;
   if (fromBed != null && row.alignment_downbeat != null && row.bed_landing_sec != null
       && fromBed > bStart + 1e-3) {
     const tv = onVocal(fromBed, row, stretch);
     if (tv > vStart && tv < (row.vocal_section_end ?? Infinity)) {
       vStart = tv;
       bStart = fromBed;
+      vEnd = bEnd = null;            // from a chosen bar: to the sections' ends
     }
   }
   return {
     ...row,
     vocal_play_start: round4(vStart),
     bed_play_start: round4(bStart),
+    vocal_play_end: vEnd == null ? null : round4(vEnd),
+    bed_play_end: bEnd == null ? null : round4(bEnd),
     ghost: ghost ? { songId: row.inst_song_id, stem: "vocals" } : null,
   };
 }
@@ -158,6 +163,8 @@ export function studioOption(row) {
     alignment_offset: row.alignment_offset ?? null,
     vocal_play_start: row.vocal_play_start ?? null,
     bed_play_start: row.bed_play_start ?? null,
+    vocal_play_end: row.vocal_play_end ?? null,
+    bed_play_end: row.bed_play_end ?? null,
     reason: row.reason,
     semitone_shift: row.semitone_shift ?? null,
     harmonic_shift: row.harmonic_shift ?? null,

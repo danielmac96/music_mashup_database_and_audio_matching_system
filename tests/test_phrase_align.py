@@ -127,3 +127,33 @@ def test_overlay_clicks_line_up_after_the_offset():
     left = np.flatnonzero(np.abs(clicks[:, 0]) > 0.5)
     right = np.flatnonzero(np.abs(clicks[:, 1]) > 0.5)
     assert abs(int(left[0]) - int(right[0])) <= 2
+
+
+def test_a_bed_cut_short_is_closed_by_its_own_end():
+    """A section's downbeats stop a bar short of its end (the next section owns
+    that line). A vocal landed later, so the overlap ends at the bed's end, has
+    its last bar line judged against the bed's closing line — not the line a
+    bar earlier — and a few ms of drift there is not a one-bar error."""
+    from matcher.phrase_align import closing_grid, place_cached
+    vocal = _section(10.0, 16, 124)
+    bed = _section(50.0, 16, 124, label="chorus")
+    bar = 4 * 60.0 / 124
+    # The vocal runs a hair slow, so its line at the bed's end falls 5 ms
+    # before the end instead of on it (inside grid_errors' window).
+    vocal["downbeats"] = [10.0 + i * (bar - 0.0004) for i in range(16)]
+    vocal["end_sec"] = 10.0 + 16 * bar
+    assert closing_grid(bed["downbeats"], bed["end_sec"])[-1] == pytest.approx(bed["end_sec"])
+    for k in (4, 8):
+        out = place(vocal, bed, 1.0, tol_ms=25, landings=[k])
+        assert out["timing_ok"] == 1, (k, out)
+        assert out["timing_err_max_ms"] < 25
+        assert place_cached(vocal, bed, 1.0, tol_ms=25, cache={}) == place(vocal, bed, 1.0, tol_ms=25)
+
+
+def test_a_section_cut_mid_bar_gets_no_closing_line():
+    from matcher.phrase_align import closing_grid
+    dbs = [0.0, 2.0, 4.0, 6.0]
+    assert closing_grid(dbs, 8.0) == dbs + [8.0]
+    assert closing_grid(dbs, 7.0) == dbs            # half a bar: not a bar line
+    assert closing_grid(dbs, 6.0) == dbs            # ends on its last downbeat
+    assert closing_grid([3.0], 5.0) == [3.0]        # no bar length to judge by

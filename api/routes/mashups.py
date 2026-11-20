@@ -44,6 +44,7 @@ _EFFORT_REASONS = {
     "tempo_fold_cost": "half/double-time — re-cut the bed's phrases",
     "grid_cost": "weak beat grid — expect manual beatgridding",
     "key_certainty_cost": "key is uncertain — the suggested shift is a guess",
+    "downbeat_cost": "unsure bar 1 — check the downbeat by ear",
 }
 
 
@@ -161,6 +162,10 @@ def _with_playback_terms(rows: list) -> list:
         r["vocal_play_start"] = spans["vocal_play_start"] if spans else None
         r["bed_play_start"] = spans["bed_play_start"] if spans else None
         r["play_lead"] = spans["play_lead"] if spans else None
+        # With its phrase window, the pair plays the window and stops at its
+        # end (None: the sections' ends, as before the window was stored).
+        r["vocal_play_end"] = spans["vocal_play_end"] if spans else None
+        r["bed_play_end"] = spans["bed_play_end"] if spans else None
         # Phase C: the effort bucket and the cost that dominates it, derived
         # here so the chip and its tooltip use one definition of "Heavy".
         effort = r.get("score_effort")
@@ -178,6 +183,7 @@ def _with_playback_terms(rows: list) -> list:
             "tempo_fold_cost": r.get("effort_tempo_fold") or 0.0,
             "grid_cost": r.get("effort_grid") or 0.0,
             "key_certainty_cost": r.get("effort_key_certainty") or 0.0,
+            "downbeat_cost": r.get("effort_downbeat") or 0.0,
         }
         r["effort_reason"] = _EFFORT_REASONS.get(dominant_component(parts))
     _with_recipes(rows)
@@ -817,6 +823,7 @@ _REASON_LABELS = {
     "stretch_cost": "needs a time-stretch", "pitch_cost": "needs a transpose",
     "tempo_fold_cost": "half/double-time", "grid_cost": "weak beat grid",
     "key_certainty_cost": "key is uncertain",
+    "downbeat_cost": "unsure bar 1",
     "abs_semitone_shift": "transpose distance",
     "camelot_distance": "key distance", "bpm_min_diff": "tempo distance",
     "surprise_genre": "cross-genre", "surprise_era": "cross-era",

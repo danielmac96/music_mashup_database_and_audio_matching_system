@@ -144,3 +144,44 @@ def test_the_sort_buttons_are_built_from_the_bars(tmp_path):
     hook = (ROOT / "frontend" / "src" / "hooks" / "usePairDock.js"
             ).read_text(encoding="utf-8")
     assert "SCORE_TERMS.map" in hook, "ORDERS should be derived, not retyped"
+
+
+def test_a_scoped_list_puts_vocal_pairs_before_instrumental_ones(db_path):
+    """§9 item 6: a dock scoped to one track lists every vocal-over-bed pair
+    before the instrumental-over-instrumental rows of the same songs, however
+    high those scored — and still lists them, after."""
+    from database.models import (
+        bulk_upsert_candidates, candidate_row, get_candidates_enriched, init_db,
+        upsert_song,
+    )
+    init_db(db_path)
+    s = [upsert_song(f"T{n}", f"A{n}", f"https://sc/t{n}", 200, "Pop",
+                     status="analysed", db_path=db_path) for n in range(4)]
+
+    def side(i):
+        return {"song_id": i, "title": f"T{i}", "artist": "A", "bpm": 128.0,
+                "camelot": "8A", "loudness_rms": 0.1, "energy": 0.5}
+
+    rows = []
+    for n, (i, total, combo) in enumerate([(s[1], 0.95, "instrumental_over_instrumental"),
+                                           (s[2], 0.70, "vocal_over_instrumental"),
+                                           (s[3], 0.60, "vocal_over_instrumental")]):
+        row = candidate_row(side(s[0]), side(i),
+                            {"total": total, "bpm_score": 1.0, "key_score": 1.0,
+                             "energy_score": 0.5, "timbre_score": 0.5},
+                            combo_type=combo)
+        rows.append(row)
+    bulk_upsert_candidates(rows, db_path=db_path)
+    for order in ("score", "easy", "tier", "dropin"):
+        got = get_candidates_enriched(limit=10, max_per_song=0, order=order,
+                                      vocal_song_id=s[0], db_path=db_path)
+        combos = [r["combo_type"] for r in got]
+        assert combos == ["vocal_over_instrumental"] * 2 + ["instrumental_over_instrumental"], (order, combos)
+    # Library-wide, the score still decides.
+    top = get_candidates_enriched(limit=10, max_per_song=0, order="score", db_path=db_path)
+    assert top[0]["combo_type"] == "instrumental_over_instrumental"
+    # Asked for one combo, nothing changes.
+    only = get_candidates_enriched(limit=10, max_per_song=0, vocal_song_id=s[0],
+                                   combo_type="instrumental_over_instrumental",
+                                   db_path=db_path)
+    assert [r["combo_type"] for r in only] == ["instrumental_over_instrumental"]

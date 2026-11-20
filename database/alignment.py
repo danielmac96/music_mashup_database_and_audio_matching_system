@@ -209,6 +209,31 @@ def allin1_bpm_by_song(song_ids: Optional[Iterable[int]] = None,
         conn.close()
 
 
+def allin1_downbeat_conf_by_song(song_ids: Optional[Iterable[int]] = None,
+                                 db_path: Optional[Path] = None) -> Dict[int, float]:
+    """{song_id: allin1's mean downbeat activation (conf_mean)} at each song's
+    LIVE pipeline, in one query — the effort's downbeat term, ranked across
+    the library (matcher.effort). Never mixed with Essentia's grid confidence:
+    they are different measurements on different scales."""
+    conn = _conn(db_path)
+    try:
+        sql = ("SELECT a.song_id AS song_id, a.conf_mean AS c "
+               "FROM allin1_analysis a JOIN songs s ON s.id = a.song_id "
+               "WHERE a.conf_mean IS NOT NULL "
+               "AND a.pipeline = COALESCE(s.separation_pipeline, ?)")
+        args: list = [PIPELINE]
+        ids = None if song_ids is None else sorted({int(x) for x in song_ids})
+        if ids is not None:
+            if not ids:
+                return {}
+            sql += f" AND a.song_id IN ({','.join('?' * len(ids))})"
+            args += ids
+        return {int(r["song_id"]): float(r["c"])
+                for r in conn.execute(sql, args).fetchall()}
+    finally:
+        conn.close()
+
+
 def get_allin1_embedding(song_id: int, pipeline: Optional[str] = None,
                          db_path: Optional[Path] = None) -> Optional[np.ndarray]:
     conn = _conn(db_path)

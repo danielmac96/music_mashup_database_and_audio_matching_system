@@ -165,3 +165,41 @@ def test_filters_over_16kb_are_refused(app):
 def test_a_bad_preset_is_400(app, body):
     client, _ = app
     assert client.post("/api/prefs/filter-presets", json=body).status_code == 400
+
+
+# ── per-mode views (§9 item 16) ──────────────────────────────────────────────
+
+def test_mode_views_are_saved_one_mode_at_a_time(app):
+    """The Parts tables' filters and sorts and the dock's Tune weights are kept
+    like the Tracks view, each mode in its own entry: writing one never
+    touches the other, nor the Tracks view; null clears one."""
+    client, models = app
+    assert client.get("/api/prefs/mode-views").json() == {"parts": None, "tune": None}
+    parts = {"filters": {"vocal": {"q": '"Free" chorus'}, "bed": {}},
+             "sorts": {"vocal": {"id": "bpm", "dir": "asc"}}}
+    tune = {"weights": {"section": 0.4, "slot": 0.3, "effort": 0.1}}
+    client.put("/api/prefs/library-view", json={"columns": [], "order": ["title"],
+                                                 "sort": {"id": None, "dir": None}})
+    assert client.put("/api/prefs/mode-views/parts", json=parts).status_code == 200
+    assert client.put("/api/prefs/mode-views/tune", json=tune).json() == {"parts": parts, "tune": tune}
+    assert client.get("/api/prefs/mode-views").json() == {"parts": parts, "tune": tune}
+    assert client.get("/api/prefs/library-view").json()["order"] == ["title"]
+    assert client.put("/api/prefs/mode-views/tune", content="null",
+                      headers={"Content-Type": "application/json"}).json() == {
+        "parts": parts, "tune": None}
+    assert client.put("/api/prefs/mode-views/sets", json={}).status_code == 404
+    assert client.put("/api/prefs/mode-views/parts", json=[1]).status_code == 400
+    big = {"x": "y" * 20000}
+    assert client.put("/api/prefs/mode-views/parts", json=big).status_code == 413
+    assert client.get("/api/prefs/mode-views").json()["parts"] == parts
+
+
+def test_the_parts_tables_and_the_tune_drawer_keep_their_views():
+    src = ROOT / "frontend" / "src"
+    read = lambda rel: (src / rel).read_text(encoding="utf-8")  # noqa: E731
+    assert 'useModeView("parts", saved,' in read("components/parts/PartsView.jsx")
+    assert 'useModeView("tune", tuneW ? { weights: tuneW } : null,' in read("hooks/usePairDock.js")
+    hook = read("hooks/useModeView.js")
+    # Restored before anything is saved, so a fresh mount cannot overwrite the
+    # saved view with its defaults.
+    assert "if (!ready.current) return undefined;" in hook

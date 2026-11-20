@@ -54,7 +54,7 @@ def test_pair_words_parse_once(tmp_path):
 
 
 def test_each_surface_reads_the_one_parser():
-    assert 'import { parseQuery } from "../../hooks/useLibraryFilters"' in _read(
+    assert 'parseQuery, queryTokens, searchText } from "../../hooks/useLibraryFilters"' in _read(
         "components/segments/segmentModel.js")
     dock = _read("hooks/usePairDock.js")
     assert 'import { parseQuery } from "./useLibraryFilters";' in dock
@@ -67,3 +67,25 @@ def test_each_surface_reads_the_one_parser():
     assert "a pair filter: type it in the dock" in lib
     model = _read("components/segments/segmentModel.js")
     assert "qualityMin: parsed.qualityMin ?? f.qualityMin" in model
+
+
+def test_a_quoted_word_is_a_title_not_a_filter(tmp_path):
+    """§9 item 16: a song called "Free" or "Strong" can be searched. A quoted
+    run is one literal word, kept quoted in the left-over text (so pinning and
+    re-reading keep it literal), and never read as a filter."""
+    got = _parse(tmp_path, ['"Free" strong', '"Strong Love" 8A dropin',
+                            '"house" house', 'free', '"unclosed quote'])
+    assert got[0]["parsed"] == {"tiers": ["strong"]} and got[0]["rest"] == '"Free"'
+    assert got[1]["parsed"]["dropin"] is True and got[1]["parsed"]["keys"] == ["8A"]
+    assert "tiers" not in got[1]["parsed"] and got[1]["rest"] == '"Strong Love"'
+    assert got[2]["parsed"]["genres"] == ["House"] and got[2]["rest"] == '"house"'
+    assert got[3]["parsed"] == {"effort": "free"} and got[3]["rest"] == ""
+    assert got[4]["rest"] == '"unclosed quote"'
+    # Matching drops the quotes: the Library needle, the parts table and the
+    # dock's server search all read searchText.
+    lib = _read("hooks/useLibraryFilters.js")
+    assert 'const needle = searchText(filters.text ?? filters.q ?? "").toLowerCase();' in lib
+    assert "norm(searchText(e.text))" in _read("components/segments/segmentModel.js")
+    dock = _read("components/PairDock.jsx")
+    assert "const text = searchText(parsedSearch.rest);" in dock
+    assert "search: searchText(q.rest)" in dock

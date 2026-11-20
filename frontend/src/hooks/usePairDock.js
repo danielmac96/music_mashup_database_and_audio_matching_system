@@ -4,7 +4,8 @@ import { toast } from "../toast";
 import { keyOf, pairKey, REASON_KEYS, reasonsFor, SCORE_TERMS } from "../components/pairs/pairModel";
 import { TIERS } from "../theme";
 import { track, trackEach, trackShown } from "../events";
-import { tuneOrder } from "../tune";
+import { tuneOrder, vocalPairsFirst } from "../tune";
+import { useModeView } from "./useModeView";
 import { parseQuery } from "./useLibraryFilters";
 
 // The pair dock: what it shows, where the cursor is, and what the keyboard does.
@@ -313,6 +314,10 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   // null = off, the server's order. Tuned, the tier grouping steps aside.
   const [tuneBase, setTuneBase] = useState(null);
   const [tuneW, setTuneW] = useState(null);
+  // The tuned weights are kept between visits (useModeView) — still only an
+  // order over the loaded rows until "Apply to library".
+  useModeView("tune", tuneW ? { weights: tuneW } : null,
+    (v) => { if (v.weights && typeof v.weights === "object") setTuneW(v.weights); });
   const grouped = order === "score" && !tuneW;
   const visible = useMemo(() => {
     let out = tierOn.length ? filtered.filter((c) => tierOn.includes(c.confidence_tier)) : filtered;
@@ -322,8 +327,10 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
         .map(([c]) => c);
     }
     if (tuneW && tuneBase) out = tuneOrder(out, tuneW, tuneBase, tuneBase.alpha);
+    // Scoped, vocal pairs lead whatever the tier grouping or Tune did (§9 item 6).
+    if (selectedTrackId != null) out = vocalPairsFirst(out);
     return out;
-  }, [filtered, tierOn, grouped, tuneW, tuneBase]);
+  }, [filtered, tierOn, grouped, tuneW, tuneBase, selectedTrackId]);
 
   // What the cards SHOW: each listed row swapped for the section pairing its
   // stepper is on. Filters, tier chips and grouping above run on the listed

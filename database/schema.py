@@ -166,6 +166,26 @@ def _slot_and_dropin(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE mashup_candidates ADD COLUMN {name} {kind}")
 
 
+_WINDOW_SPAN_COLUMNS = (
+    ("window_vocal_start", "REAL"), ("window_vocal_onset", "REAL"),
+    ("window_vocal_end", "REAL"), ("effort_downbeat", "REAL"),
+)
+
+
+def _window_spans(conn: sqlite3.Connection) -> None:
+    """Where each pairing's phrase window plays (readme §5.7, "Playing the
+    placement"): its first vocal downbeat, its onset (the phrase pickup) and
+    its end, in the vocal's seconds; and the effort's downbeat term (allin1's
+    downbeat confidence, ranked in the library). Nullable, on
+    mashup_candidates only (no user input): a row scored before this plays
+    its whole pairing and reads as no downbeat cost, as before, until the
+    next Score library."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(mashup_candidates)")}
+    for name, kind in _WINDOW_SPAN_COLUMNS:
+        if name not in have:
+            conn.execute(f"ALTER TABLE mashup_candidates ADD COLUMN {name} {kind}")
+
+
 SETS_BACKUP_PREF = "sets_backup"
 
 
@@ -289,6 +309,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(9, "slot_and_dropin", _slot_and_dropin),
     Migration(10, "learning_loop", _learning_loop),
     Migration(11, "remove_sets", _remove_sets),
+    Migration(12, "window_spans_and_downbeat", _window_spans),
 )
 
 SCHEMA_VERSION = MIGRATIONS[-1].version

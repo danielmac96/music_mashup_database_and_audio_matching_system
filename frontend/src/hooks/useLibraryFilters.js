@@ -137,14 +137,41 @@ export const PAIR_TOKENS = {
   qualityMin: { label: "Stem quality", where: "parts" },
 };
 
+// The search box's words. A quoted run ("Free", "Strong Love") is one literal
+// word: a title, never a filter — so a song named like a pair word can still
+// be found. Literals keep their quotes in the left-over text (so pinning and
+// re-reading keeps them literal); searchText() drops them before matching.
+export function queryTokens(q) {
+  const out = [];
+  const re = /"([^"]*)"?|(\S+)/g;
+  const str = String(q || "");
+  let m;
+  while ((m = re.exec(str))) {
+    if (m[1] !== undefined) {
+      const t = m[1].trim();
+      if (t) out.push({ t, literal: true });
+    } else out.push({ t: m[2], literal: false });
+  }
+  return out;
+}
+const quoted = (w) => (w.literal ? `"${w.t}"` : w.t);
+export const joinTokens = (words) => words.map(quoted).join(" ");
+
+// Free text as it is matched: the quotes gone, the words kept.
+export function searchText(s) {
+  return String(s || "").replace(/"/g, " ").replace(/\s+/g, " ").trim();
+}
+
 export function parseQuery(q, genreNames = []) {
   const byNorm = new Map(genreNames.map((g) => [norm(g), g]));
   const p = {};
   const rest = [];
-  const tokens = String(q || "").trim().split(/\s+/).filter(Boolean);
+  const words = queryTokens(q);
+  const tokens = words.map((w) => w.t);
   for (let i = 0; i < tokens.length; i += 1) {
     const tk = tokens[i];
     const lo = tk.toLowerCase();
+    if (words[i].literal) { rest.push(quoted(words[i])); continue; }
     let m;
     if ((m = /^(\d{1,2})([ab])(~?)$/i.exec(tk)) && +m[1] >= 1 && +m[1] <= 12) {
       const code = `${+m[1]}${m[2].toUpperCase()}`;
@@ -173,7 +200,8 @@ export function parseQuery(q, genreNames = []) {
     if ((m = /^q(\d{1,3})\+$/.exec(lo)) && +m[1] <= 100) { p.qualityMin = +m[1] / 100; continue; }
     if (lo === "stems") { p.hasStems = true; continue; }
     // Two-word genres first ("tech house"), then one word, then an alias.
-    const two = i + 1 < tokens.length ? byNorm.get(norm(`${tk} ${tokens[i + 1]}`)) : null;
+    const two = i + 1 < tokens.length && !words[i + 1].literal
+      ? byNorm.get(norm(`${tk} ${tokens[i + 1]}`)) : null;
     if (two) { (p.genres = p.genres || []).push(two); i += 1; continue; }
     const one = byNorm.get(norm(tk)) || byNorm.get(norm(GENRE_ALIASES[norm(tk)]));
     if (one) { (p.genres = p.genres || []).push(one); continue; }
@@ -315,7 +343,7 @@ export function isActive(f) {
 export function applyLibraryFilters(rows, f, ctx = {}) {
   const filters = { ...EMPTY_FILTERS, text: "", ...(f || {}) };
   const { selectedKey = null, groups = NO_GROUPS, running = () => false } = ctx;
-  const needle = (filters.text ?? filters.q ?? "").trim().toLowerCase();
+  const needle = searchText(filters.text ?? filters.q ?? "").toLowerCase();
   const genres = new Set(filters.genres.map((g) => g.toLowerCase()));
   const styles = new Set(filters.styles);
   const keys = new Set(filters.keys);

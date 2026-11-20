@@ -604,6 +604,11 @@ export const api = {
   putLibraryView: (view) => jsonFetch("/api/prefs/library-view", {
     method: "PUT", body: JSON.stringify(view),
   }),
+  // The other modes' saved views: Parts filters and sorts, the Tune weights.
+  getModeViews: () => jsonFetch("/api/prefs/mode-views"),
+  putModeView: (mode, view) => jsonFetch(`/api/prefs/mode-views/${mode}`, {
+    method: "PUT", body: JSON.stringify(view ?? null),
+  }),
   // Once after the upgrade that removed Sets: where their backup was written.
   getSetsBackup: () => jsonFetch("/api/prefs/sets-backup"),
   ackSetsBackup: () => jsonFetch("/api/prefs/sets-backup/seen", { method: "POST" }),

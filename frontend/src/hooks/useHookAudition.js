@@ -39,10 +39,20 @@ export function hookUrlsFor(c) {
   // under it — so the loop opens on the singing, aligned, rather than on the
   // section's first bar. Without a placement, the two sections' starts.
   const [vStart, bStart] = playStartsOf(c);
+  const [vEnd, bEnd] = playEndsOf(c);
   return [
-    hookUrl(c.vocal_song_id, "vocals", vStart, c.vocal_section_end),
-    hookUrl(c.inst_song_id, "instrumental", bStart, c.inst_section_end),
+    hookUrl(c.vocal_song_id, "vocals", vStart, vEnd),
+    hookUrl(c.inst_song_id, "instrumental", bStart, bEnd),
   ];
+}
+
+/** Where a row's two clips stop: its phrase window's end when it has one
+ *  (matcher/phrase_align.play_spans), else the sections' ends. */
+export function playEndsOf(c) {
+  if (!c) return [null, null];
+  const windowed = c.vocal_play_end != null && c.bed_play_end != null;
+  return windowed ? [c.vocal_play_end, c.bed_play_end]
+    : [c.vocal_section_end, c.inst_section_end];
 }
 
 /** Where a row's two clips start: its play spans when it was placed, else

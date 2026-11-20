@@ -496,3 +496,53 @@ def test_the_card_labels_exploration_and_paging_skips_it():
     assert "offset: rowsRef.current.filter((r) => !r.explore).length" in dock
     # Rating stays one keypress: the dock's 1-5 keys are unchanged.
     assert "Rating stays one keypress" in _src("components", "LearningPanel.jsx")
+
+
+class _Coin:
+    """An 'active model' that knows nothing: every pair is a coin toss."""
+    def predict_proba(self, X):
+        import numpy as np
+        return np.full((len(X), 2), 0.5)
+
+
+def test_the_gate_re_measures_the_active_model_on_verdicts_it_never_saw(scored):
+    """A model whose recorded AUC was lucky must not lock every later model
+    out: once there are fresh verdicts (3+ each side), the active model and the
+    candidate are compared on exactly those — verdicts the active one never
+    saw and the candidate holds out — not on the record."""
+    import joblib
+    import json
+    m, _match, learning, _r = scored
+    _judge(m, learning, n=40)
+    first = learning.train(m.DB_PATH)
+    if not first["activated"]:
+        pytest.skip(f"the shadow gate kept the rule: {first['decision']}")
+    assert first["metrics"]["strong_max_id"] > 0
+    # Its record is unbeatable — the old gate would keep it for ever.
+    conn = m.get_conn()
+    conn.execute("UPDATE models SET auc_strong = 1.0 WHERE id=?", (first["model_id"],))
+    path = conn.execute("SELECT file_path FROM models WHERE id=?",
+                        (first["model_id"],)).fetchone()[0]
+    conn.commit()
+    conn.close()
+    # Without new verdicts the record still decides (nothing to compare on).
+    again = learning.train(m.DB_PATH)
+    assert again["metrics"]["gate"]["mode"] == "recorded" and not again["activated"]
+    # In truth it knows nothing.
+    bundle = joblib.load(path)
+    bundle["estimator"] = _Coin()
+    joblib.dump(bundle, path)
+    _judge(m, learning, n=80, seed=11)
+    second = learning.train(m.DB_PATH)
+    gate = second["metrics"]["gate"]
+    assert gate["mode"] == "fresh" and gate["n_fresh"] >= 6
+    assert gate["active_auc"] == pytest.approx(0.5)
+    assert "never saw" in second["decision"]
+    expect = (gate["candidate_auc"] >= gate["active_auc"]
+              and second["metrics"]["auc_strong"] >= (second["metrics"]["rule_auc"] or 0))
+    assert second["activated"] == expect
+    conn = m.get_conn()
+    stored = json.loads(conn.execute("SELECT metrics_json FROM models WHERE id=?",
+                                     (second["model_id"],)).fetchone()[0])
+    conn.close()
+    assert stored["gate"] == gate

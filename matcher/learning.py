@@ -531,6 +531,65 @@ def _counts(conn) -> Dict[str, int]:
     }
 
 
+def _verdict_ids(conn) -> Dict[Key, int]:
+    """Each verdict's four-id key (strong_labels' own) → its pair_feedback id."""
+    rows = conn.execute(
+        """SELECT vocal_song_id, inst_song_id,
+                  CASE WHEN COALESCE(sections_stale, 0) = 1 THEN NULL
+                       ELSE vocal_section END,
+                  CASE WHEN COALESCE(sections_stale, 0) = 1 THEN NULL
+                       ELSE inst_section END,
+                  id, created_at
+           FROM pair_feedback""").fetchall()
+    return {(r[0], r[1], r[2], r[3]): (r[4], r[5]) for r in rows}
+
+
+def _fresh_comparison(conn, active: dict, data: Dict, oof: Dict[Key, float],
+                      strong: Dict[Key, float]) -> Optional[Dict]:
+    """The shadow gate, like for like: the active model's AUC and the
+    candidate's out-of-fold AUC on the same verdicts — the ones given since the
+    active model was trained, which it never saw. None (the gate falls back to
+    the active model's recorded AUC) when there are fewer than MIN_PER_CLASS
+    fresh verdicts on either side, or the active model cannot be read."""
+    try:
+        metrics = json.loads(active.get("metrics_json") or "{}")
+    except (TypeError, ValueError):
+        metrics = {}
+    mark = metrics.get("strong_max_id")
+    ids = _verdict_ids(conn)
+    if mark is not None:
+        fresh = {k for k, (i, _at) in ids.items() if i > int(mark)}
+    else:                               # a model trained before the watermark
+        born = active.get("created_at")
+        if not born:
+            return None
+        fresh = {k for k, (_i, at) in ids.items() if at and at > born}
+    fresh = [k for k in fresh if k in strong and k in oof]
+    good = [strong[k] >= 0.6 for k in fresh]
+    if sum(good) < MIN_PER_CLASS or len(good) - sum(good) < MIN_PER_CLASS:
+        return None
+    try:
+        import joblib
+        bundle = joblib.load(active["file_path"])
+        if list(bundle.get("feature_names") or []) != list(data["feature_names"]):
+            return None
+        row_of: Dict[Key, int] = {}
+        for j, k in enumerate(data["keys"]):
+            if data["src"][j] == "strong":
+                row_of.setdefault(k, j)
+        X = data["X"][[row_of[k] for k in fresh]]
+        probs = bundle["estimator"].predict_proba(X)[:, 1]
+    except Exception:  # noqa: BLE001 — unreadable: fall back to its record
+        log.exception("could not re-measure the active model")
+        return None
+    active_auc = _auc([float(p) for p in probs], good)
+    cand_auc = _auc([oof[k] for k in fresh], good)
+    if active_auc is None or cand_auc is None:
+        return None
+    return {"mode": "fresh", "n_fresh": len(fresh), "active_auc": round(active_auc, 4),
+            "candidate_auc": round(cand_auc, 4)}
+
+
 def train(db_path=None, reason: str = "manual", activate: bool = True,
           progress: Optional[Callable[[int, str], None]] = None) -> Dict:
     """Train a ranker on every label, shadow-evaluate it, activate it if it
@@ -587,21 +646,40 @@ def train(db_path=None, reason: str = "manual", activate: bool = True,
                 (MODEL_NAME,)).fetchone()[0]
             alpha = alpha_for(n_strong, cfg["k"], cfg["alpha_max"])
             bar = None
-            if active is not None and active.get("auc_strong") is not None:
+            gate = {"mode": "first"}
+            fresh = _fresh_comparison(conn, active, data, oof, strong) if active else None
+            if fresh is not None:
+                # Like for like: both models on the verdicts the active one
+                # never saw — its own recorded AUC was measured on fewer, older
+                # verdicts and can lock a lucky model in.
+                gate = fresh
+                mine, bar = fresh["candidate_auc"], fresh["active_auc"]
+                bar_from = (f"{MODEL_NAME} v{active['version']} on the "
+                            f"{fresh['n_fresh']} verdicts it never saw")
+            elif active is not None and active.get("auc_strong") is not None:
+                gate = {"mode": "recorded"}
+                mine = auc_strong
                 bar, bar_from = float(active["auc_strong"]), f"{MODEL_NAME} v{active['version']}"
             elif rule_auc is not None:
+                gate = {"mode": "rule"}
+                mine = auc_strong
                 bar, bar_from = float(rule_auc), "the rule"
-            ok = (auc_strong is not None and (bar is None or auc_strong >= bar)
+            else:
+                mine = auc_strong
+            ok = (auc_strong is not None and (bar is None or mine >= bar)
                   and (rule_auc is None or auc_strong >= rule_auc))
             if auc_strong is None:
                 decision = "kept the active scorer: no held-out AUC (one class per fold)"
             elif ok:
-                decision = (f"activated: held-out AUC {auc_strong:.3f} ≥ {bar_from} "
+                decision = (f"activated: held-out AUC {mine:.3f} ≥ {bar_from} "
                             f"{bar:.3f}" if bar is not None else
                             f"activated: held-out AUC {auc_strong:.3f}")
+            elif bar is not None and mine < bar:
+                decision = (f"kept the active scorer: held-out AUC {mine:.3f} "
+                            f"< {bar_from} {bar:.3f}")
             else:
                 decision = (f"kept the active scorer: held-out AUC {auc_strong:.3f} "
-                            f"< {bar_from} {bar:.3f}")
+                            f"< the rule {rule_auc:.3f}")
             label = f"{MODEL_NAME} v{version}"
             metrics = {"auc_strong": auc_strong, "rule_auc": rule_auc,
                        "logreg_auc": auc_logreg, "roc_auc": auc_strong,
@@ -610,7 +688,8 @@ def train(db_path=None, reason: str = "manual", activate: bool = True,
                        "cv": {"scheme": f"GroupKFold({CV_SPLITS}) by vocal song",
                               "n_groups": int(len(set(data["groups"].tolist())))},
                        "secs_features": round(t_feat, 2),
-                       "secs_train": round(t_train, 2), "reason": reason}
+                       "secs_train": round(t_train, 2), "reason": reason,
+                       "strong_max_id": counts_now["strong_max_id"], "gate": gate}
             MODELS_DIR.mkdir(parents=True, exist_ok=True)
             path = MODELS_DIR / f"{MODEL_NAME}_v{version}.joblib"
             import joblib

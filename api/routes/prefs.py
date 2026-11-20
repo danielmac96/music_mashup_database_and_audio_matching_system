@@ -185,6 +185,45 @@ def delete_filter_preset(preset_id: str) -> dict:
     return {"ok": True, "id": preset_id}
 
 
+# ── Per-mode views: Parts filters and sorts, the dock's Tune weights ─────────
+#
+# The Tracks view (columns, order, widths, sort) is library_view above. The
+# other modes keep theirs here, one entry per mode, each written on its own so
+# the Parts tables and the dock's Tune drawer never overwrite each other (or
+# the Tracks view, which its own PUT replaces whole). Opaque to the server,
+# like a preset's filters; null clears one.
+
+MODE_VIEWS_KEY = "mode_views"
+MODE_VIEWS = ("parts", "tune")
+
+
+@router.get("/mode-views")
+def get_mode_views() -> dict:
+    from database.models import get_pref
+    stored = get_pref(MODE_VIEWS_KEY) or {}
+    return {m: (stored.get(m) if isinstance(stored.get(m), dict) else None)
+            for m in MODE_VIEWS}
+
+
+@router.put("/mode-views/{mode}")
+def put_mode_view(mode: str, body: Any = Body(None)) -> dict:
+    from database.models import get_pref, set_pref
+    if mode not in MODE_VIEWS:
+        raise HTTPException(status_code=404, detail=f"mode must be one of {list(MODE_VIEWS)}")
+    if body is not None and not isinstance(body, dict):
+        raise _bad("body must be an object or null")
+    if len(json.dumps(body, ensure_ascii=False).encode("utf-8")) > MAX_FILTERS_BYTES:
+        raise HTTPException(status_code=413, detail="a view must be at most 16 KB")
+    stored = get_pref(MODE_VIEWS_KEY) or {}
+    stored = {m: stored.get(m) for m in MODE_VIEWS if isinstance(stored.get(m), dict)}
+    if body is None:
+        stored.pop(mode, None)
+    else:
+        stored[mode] = body
+    set_pref(MODE_VIEWS_KEY, stored)
+    return {m: stored.get(m) for m in MODE_VIEWS}
+
+
 # ── The Sets backup notice (migration 11) ─────────────────────────────────────
 
 @router.get("/sets-backup")

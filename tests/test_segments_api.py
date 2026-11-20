@@ -210,6 +210,15 @@ def test_matches_rank_the_other_side_through_the_gate(app):
     # The partner's segment id names a bed row.
     bed_ids = {b["segment_id"] for b in _rows(client, "bed")[1]}
     assert all(row["segment_id"] in bed_ids for row in out["rows"])
+    # §9 item 16: the weights the live rows were scored with ride along, so
+    # the parts dock's cards can draw "Why this pair" as the dock's do.
+    from api.routes.mashups import tune_base
+    assert out["tune"] == tune_base()
+    from pathlib import Path
+    src = Path(__file__).parent.parent / "frontend" / "src"
+    assert "tuneBase={matches.meta?.tune || null}" in (
+        src / "components" / "parts" / "PartsDock.jsx").read_text(encoding="utf-8")
+    assert "tune: out.tune || null" in (src / "hooks" / "useSegments.js").read_text(encoding="utf-8")
 
 
 def test_a_bed_anchor_ranks_vocals(app):

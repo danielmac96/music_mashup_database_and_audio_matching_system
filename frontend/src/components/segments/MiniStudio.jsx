@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
-import { track } from "../../events";
+import { noteListening, track } from "../../events";
 import { toast } from "../../toast";
 import { DEFAULT_HP_HZ, clipsOf, useMiniStudio } from "../../hooks/useMiniStudio";
 import { KeyChip, TierBadge } from "../ui/primitives";
 import { StarRating } from "../StarRating";
 import { RecipeStrip } from "../pairs/RecipeStrip";
-import { nudgeText } from "../pairs/pairModel";
+import { keyOf, nudgeText } from "../pairs/pairModel";
 import { fmtSpan } from "./segmentModel";
 
 // The bottom band: the armed pair, looped, with the moves a quick
@@ -26,6 +26,17 @@ export function MiniStudio({ pair, lead, sel, player, ratings, notes, onOpenStud
   const pollRef = useRef(null);
 
   useEffect(() => { setNote(pair ? notes.noteOf(pair) : ""); }, [pair, notes]);
+
+  // How long this pair's loop sounded, for the implicit `loop_play` / `skip`
+  // events (events.js) — on the mini studio's own channel, since it plays on
+  // its own engine rather than the app's player. Moving to another match, or
+  // leaving, closes the loop.
+  const listenKey = pair ? keyOf(pair) : null;
+  useEffect(() => {
+    noteListening(pair ? { key: listenKey, candidate: pair, context: "parts" } : null,
+                  !!(ms.playing && !ms.loading), "mini");
+  }, [listenKey, ms.playing, ms.loading]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => noteListening(null, false, "mini"), []);
 
   // One thing sounds at a time: playing here stops the player bar, and the
   // bar starting stops this.

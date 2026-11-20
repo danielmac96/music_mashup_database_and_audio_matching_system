@@ -142,7 +142,8 @@ export function PartsDock({ part, role, ratings, notes, player, onOpenStudio, on
                 onPlay={() => { setCursor(i); setOpen(true); }}
                 onStudio={() => { track("open_studio", c, { context: "parts" }); onOpenStudio(c); }}
                 note={notes ? notes.noteOf(c) : ""}
-                onNote={notes ? (n) => notes.save(c, n) : null} />
+                onNote={notes ? (n) => notes.save(c, n) : null}
+                tuneBase={matches.meta?.tune || null} />
               {armed && i === cursor && keyOf(armed) === keyOf(c) && (
                 <div className="parts-audition">
                   <MiniStudio pair={armed} lead={role}

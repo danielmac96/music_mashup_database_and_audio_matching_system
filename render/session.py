@@ -545,6 +545,20 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
             v_start = spans["vocal_play_start"]
         if "bed_play_start" in from_span:
             i_start = spans["bed_play_start"]
+        # With its phrase window the pair is exported as the window: it ends
+        # where the window ends (a clip end set in Studio still wins) and bar
+        # 1 is the window's first downbeat.
+        if spans.get("vocal_play_end") is not None:
+            if "clip_end" not in v_lane:
+                v_end = spans["vocal_play_end"]
+            if "clip_end" not in b_lane:
+                i_end = spans["bed_play_end"]
+            if "clip_start" not in v_lane and "clip_start" not in b_lane:
+                w0 = float(placement["window_vocal_start"])
+                placement = {**placement, "_anchor_vocal": w0,
+                             "_anchor_bed": float(placement["bed_landing_sec"])
+                             + (w0 - float(placement["alignment_downbeat"])) * rate_inst,
+                             "_anchor_lead": spans["play_lead"]}
     v_anchor = b_anchor = None
     lead = 0.0
     if placement and placement.get("bed_landing_sec") is not None \
@@ -554,6 +568,9 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
             v_anchor = placement.get("alignment_downbeat")
         if "clip_start" not in b_lane:
             b_anchor = placement.get("bed_landing_sec")
+        if placement.get("_anchor_vocal") is not None:
+            v_anchor, b_anchor = placement["_anchor_vocal"], placement["_anchor_bed"]
+            lead = placement["_anchor_lead"]
         if v_anchor is None or b_anchor is None:
             v_anchor = b_anchor = None
             lead = 0.0
@@ -710,6 +727,8 @@ def _chosen_placement(db, vocal_song_id: int, inst_song_id: int,
         "timing_err_max_ms", "score_timing")}
     out.update({"phrase": int(chosen.get("phrase") or 0),
                 "offset_bars": int(chosen.get("offset_bars") or 0)})
+    out.update({k: v for k, v in (row.get("window") or {}).items()
+                if k.startswith("window_vocal_")})
     return out
 
 
@@ -735,7 +754,17 @@ def _phrase_placement(db, vocal_song_id: int, inst_song_id: int,
         i = _sec(inst_song_id, pairing.get("inst_section_idx"), pairing.get("inst_start"))
         if not v or not i:
             return None
-        return place_pair(v, i, rate, timing_for(base, vocal_song_id, db))
+        timing = timing_for(base, vocal_song_id, db)
+        placed = place_pair(v, i, rate, timing)
+        if placed and timing is not None and placed.get("bed_landing_sec") is not None:
+            # The phrase window it plays (phrase_align.best_window), as the
+            # library row stores it.
+            from matcher.phrase_align import best_window
+            from matcher.sections import bed_phrases
+            win = best_window(placed, v, i, rate, timing.get("vocal_phrases"),
+                              bed_phrases(timing, i), timing.get("tol_ms", 25.0)) or {}
+            placed = {**placed, **{k: x for k, x in win.items() if k.startswith("window_vocal_")}}
+        return placed
     except Exception:  # noqa: BLE001 — the export falls back to the first downbeat
         log.warning("phrase placement for the export failed", exc_info=True)
         return None

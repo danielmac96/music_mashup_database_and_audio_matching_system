@@ -16,16 +16,17 @@ The clustering rule, in order of how much it is trusted:
      original, so laying one over the other is not an idea; it is the remix.
   2. Same normalised title AND same normalised artist → variants.
   3. Same normalised title, DIFFERENT artist → variants only when the audio
-     agrees (MFCC cosine). This is the re-upload case, where the uploader name
+     agrees (the EffNet embeddings' cosine). This is the re-upload case, where the uploader name
      is not the recording artist; requiring audio agreement is what keeps two
      unrelated songs that happen to share a title — or a cover version — apart.
 
 Audio is deliberately NOT required in case 2. A Skrillex remix has a completely
-different timbre from the original it is built on, so an MFCC gate would reject
+different timbre from the original it is built on, so an audio gate would reject
 exactly the pairs this module exists to suppress.
 
-Pure python + numpy, no audio decode: it reads the stored mean-MFCC vector, so
-clustering the whole library costs one query.
+Pure python + numpy, no audio decode: it reads the stored EffNet mean embedding
+(`embeddings`, kind ``effnet``), so clustering the whole library costs two
+queries.
 """
 from __future__ import annotations
 
@@ -37,15 +38,17 @@ import numpy as np
 
 log = logging.getLogger(__name__)
 
-# Cosine over the mean MFCC c1-12 (L2-normalised, not z-scored) above which two
-# same-titled uploads by different-looking artists are accepted as the same
-# recording. Deliberately permissive: the title already agreed. Measured on the
-# 204-track library (2026-09-30), it barely discriminates: 93% of *random*
-# pairs clear 0.80, under librosa (92.7%) and Essentia (93.7%) alike, because a
-# track-mean MFCC has nearly the same shape for all music; z-scoring rejects
-# random pairs but also the known variants. The fix is a real fingerprint — the
-# EffNet embedding (readme §9, phase 5 slice 2) — not a new threshold.
-AUDIO_CONFIRM_MIN = 0.80
+# Cosine over the EffNet (Discogs) mean embedding above which two same-titled
+# uploads by different-looking artists are accepted as the same recording.
+# It replaced a cosine over the mean MFCC c1-12, which 93% of RANDOM pairs
+# cleared on the 204-track library (2026-09-30): a track-mean MFCC has nearly
+# the same shape for all music, so it was no gate. The embedding is the
+# network's description of the whole record — style, instrumentation, voice —
+# and two uploads of one master sit almost on top of each other. The value is
+# conservative and has NOT been measured on real records yet:
+# `scripts/dedup_report.py` prints how it splits a library (same-title pairs
+# against random ones) — check it there before moving it.
+AUDIO_CONFIRM_MIN = 0.95
 
 # Titles too generic to key on by themselves — "Intro" by two different artists
 # is two different tracks. These require audio confirmation even when the
@@ -152,16 +155,12 @@ def variant_key(artist: Optional[str], title: Optional[str]) -> str:
     return f"{a}|{t}" if a else f"|{t}"
 
 
-def _mfcc_vec(song: dict) -> Optional[np.ndarray]:
-    """Coefficients 1-12 of the stored mean MFCC, L2-normalised.
-
-    c0 is dropped for the same reason timbre_score drops it: it is a loudness
-    term an order of magnitude larger than the rest, and leaving it in makes
-    every pair of music look alike."""
-    m = song.get("mfcc") or []
-    if len(m) < 13:
+def _embedding_vec(song: dict) -> Optional[np.ndarray]:
+    """The stored EffNet mean embedding, L2-normalised (None when absent)."""
+    m = song.get("embedding")
+    if m is None or len(m) < 2:
         return None
-    v = np.asarray(m[1:13], dtype=np.float64)
+    v = np.asarray(m, dtype=np.float64)
     if not np.all(np.isfinite(v)):
         return None
     n = float(np.linalg.norm(v))
@@ -170,16 +169,42 @@ def _mfcc_vec(song: dict) -> Optional[np.ndarray]:
     return v / n
 
 
+def embedding_cosine(a: dict, b: dict) -> Optional[float]:
+    """Cosine of two songs' embeddings, or None when either has none."""
+    va, vb = _embedding_vec(a), _embedding_vec(b)
+    if va is None or vb is None or va.shape != vb.shape:
+        return None
+    return float(np.dot(va, vb))
+
+
 def _audio_agrees(a: dict, b: dict) -> bool:
-    """Whether two songs' stored timbre says they are the same recording.
+    """Whether two songs' stored embeddings say they are the same recording.
 
     Unknown on either side is not evidence of difference — but it is not
     evidence of sameness either, and this gate only runs where the title alone
-    was judged insufficient, so absent audio returns False."""
-    va, vb = _mfcc_vec(a), _mfcc_vec(b)
-    if va is None or vb is None:
-        return False
-    return float(np.dot(va, vb)) >= AUDIO_CONFIRM_MIN
+    was judged insufficient, so absent audio returns False (a track is
+    clustered again after its analysis writes its embedding)."""
+    c = embedding_cosine(a, b)
+    return c is not None and c >= AUDIO_CONFIRM_MIN
+
+
+def attach_embeddings(conn, songs: List[dict]) -> List[dict]:
+    """Each song dict with its stored EffNet embedding under ``embedding``
+    (only the songs that have one; one query)."""
+    from database.models import EMBEDDING_KIND, unpack_vector
+    ids = sorted({int(s["song_id"]) for s in songs if s.get("song_id") is not None})
+    if not ids:
+        return songs
+    found: Dict[int, List[float]] = {}
+    for k in range(0, len(ids), 900):
+        chunk = ids[k:k + 900]
+        for r in conn.execute(
+                f"SELECT song_id, vector FROM embeddings WHERE kind = ? "
+                f"AND song_id IN ({','.join('?' * len(chunk))})",
+                [EMBEDDING_KIND, *chunk]).fetchall():
+            found[int(r[0])] = unpack_vector(r[1])
+    return [{**s, "embedding": found[s["song_id"]]} if s.get("song_id") in found else s
+            for s in songs]
 
 
 class _Union:
@@ -208,7 +233,8 @@ def cluster_variants(songs: Sequence[dict]) -> Dict[int, int]:
     """Group near-duplicate uploads.
 
     ``songs``: dicts with ``song_id`` (or ``id``), ``title``, ``artist``, and
-    optionally ``mfcc`` (the stored 13-coefficient mean vector).
+    optionally ``embedding`` (the stored EffNet mean embedding,
+    ``attach_embeddings``).
 
     Returns ``{song_id: cluster_id}`` **containing only songs that have at least
     one variant** — a song with no duplicate is absent, so callers can write
@@ -294,7 +320,7 @@ def rebuild_variant_clusters(db_path=None,
 
     if on_progress:
         on_progress(40, f"Clustering {len(songs) + len(extra)} tracks…")
-    mapping = cluster_variants(list(songs) + extra)
+    mapping = cluster_variants(attach_embeddings(conn, list(songs) + extra))
 
     if on_progress:
         on_progress(80, "Writing clusters…")
@@ -379,7 +405,7 @@ def _cluster_ids(conn, db, ids: Sequence[int]) -> Dict[int, int]:
                  f"SELECT id, title, artist FROM songs WHERE id IN ({placeholders})",
                  list(ids)).fetchall()
              if r["id"] not in known]
-    return cluster_variants(list(songs) + extra)
+    return cluster_variants(attach_embeddings(conn, list(songs) + extra))
 
 
 def _write_clusters(conn, ids: Sequence[int], mapping: Dict[int, int]) -> int:

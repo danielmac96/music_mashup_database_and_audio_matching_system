@@ -6,6 +6,7 @@ import {
   DOCK_FILTERS, ORDERS, activeFilterCount, loadedFilterCount, pairQuery, sideCount,
 } from "../hooks/usePairDock";
 import { keyOf, pairKey } from "./pairs/pairModel";
+import { searchText } from "../hooks/useLibraryFilters";
 import { TIERS, camelotColor } from "../theme";
 import { api } from "../api";
 import { trackEach } from "../events";
@@ -145,7 +146,8 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
   // Pair words in it are previewed, and pinned on ⏎; only the rest searches.
   const parsedSearch = useMemo(() => pairQuery(search), [search]);
   useEffect(() => {
-    const text = parsedSearch.rest;
+    // Quotes mark a literal title ("Free"); the server searches the words.
+    const text = searchText(parsedSearch.rest);
     if (text === filters.search) return undefined;
     const t = setTimeout(() => setFilters({ search: text }), 250);
     return () => clearTimeout(t);
@@ -153,7 +155,7 @@ export function PairDock({ dock, ratings, scopeTrack = null, role, onRole,
   const pinSearch = () => {
     const q = parsedSearch;
     if (!q.read.length) return;
-    setFilters({ ...q.patch, search: q.rest });
+    setFilters({ ...q.patch, search: searchText(q.rest) });
     q.tiers.forEach((t) => { if (!tierOn.includes(t)) toggleTier(t); });
     if (q.bpm) setSide("v", { bpm: q.bpm });
     setSearch(q.rest);

@@ -294,7 +294,10 @@ source link, adds to a crate or deletes the track.
   `heavy` and `q60+` (stem quality) are read everywhere and applied where they
   mean something; where they do not, the preview says where they do. Chips add
   BPM, key, genre/style, year, plays, vocal-forward, stems, status and any
-  analysed attribute. **Saved ▾** keeps filter presets.
+  analysed attribute. **Saved ▾** keeps filter presets. **Quotes make a
+  title**: `"Free"` or `"Strong Love"` is searched as text, never read as a
+  filter (`queryTokens`; the quotes stay in the box and `searchText` drops
+  them before matching).
 - **Columns & attributes ▾** opens every analysed attribute
   (`analysis/attributes.py`) with its coverage and a histogram inline, and
   three switches each: **Library** (a column), **Detail** (Track detail),
@@ -317,7 +320,11 @@ what the numbers cannot promise), measured harmony, bass clash, effort, the
 
 - **Easy first** is the default order: by tier, Drop-ins first inside each
   tier, then the score (which is already fit minus effort — and, once a
-  model of your taste is active, its blend, §5.8).
+  model of your taste is active, its blend, §5.8). **Scoped to a track**,
+  every vocal-over-bed pair comes before the instrumental-over-instrumental
+  rows of the same songs, whatever the order — the server's leading key for
+  a scoped list, kept by the dock through the tier grouping and Tune
+  (`tune.vocalPairsFirst`).
 - **? Exploring**: with a model active, one slot in eight (`explore_every`)
   is a pair the rules rate at least as highly as the page's lowest row and
   your model is least sure about — marked, and inserted beside the ranked
@@ -342,7 +349,9 @@ what the numbers cannot promise), measured harmony, bass clash, effort, the
   carries (`frontend/src/tune.js`, §5.12): at the weights the server ranked
   with, the order is the server's exactly. **Apply to library** saves the
   weights and runs Score library — another weight can change which rows a run
-  keeps. "Re-ranked by your tuned weights — not saved" says when it is on.
+  keeps. "Re-ranked by your tuned weights — not saved" says when it is on
+  (not saved to the library; the drawer's weights themselves come back on
+  your next visit, `mode-views`).
 - **Why this pair**: a thin bar on every card — the match terms, the section
   fit, the vacated slot, the learned model's adjustment (`score_total −
   score_rule`) and the effort discount; the numbers are its tooltip.
@@ -361,7 +370,10 @@ stay out; the header counts scored, gated and hidden), with a stretch limit,
 a transpose switch and tier chips. **⏎** on a card opens the **mini studio**
 inside it: it loops the pair exactly as the card would (bed conformed,
 transposed, nudged), lets you move pitch, tempo, nudge, levels and the
-high-pass, and then rate, note, **Render WAV** or **Open in Studio**. Keys in
+high-pass, and then rate, note, **Render WAV** or **Open in Studio**. Each
+card carries the **Why this pair** bar, read against the weights the live
+rows were scored with. Each side's filters and sort are kept between visits,
+like the Tracks view. Keys in
 the parts dock: `↑↓`, `⏎`, space, `1–5`, `[ ]`, esc. Reached also from Track
 detail's per-section **Find beds ▸ / Find vocals ▸** and ⌘K. The mode and the
 selected part survive a trip to Studio.
@@ -765,7 +777,13 @@ cuts from the row's play spans on request (§5.7).
 `matcher/dedup.py` clusters Original / Extended / Radio Edit / remix /
 re-upload variants so they do not pair with each other: the title is
 normalised to the work; same title **and** artist = variant; same title,
-different artist = variant only if the MFCC timbre agrees. A cluster lives
+different artist = variant only if the **EffNet embeddings** agree (cosine ≥
+`AUDIO_CONFIRM_MIN`, 0.95; `attach_embeddings` reads them from `embeddings`).
+It replaced a mean-MFCC cosine that 93 % of random pairs cleared. A track
+without an embedding yet confirms nothing, and is re-clustered after its
+analysis writes one. The threshold has not met real records:
+`scripts/dedup_report.py` (read-only) prints how it splits a library —
+same-title pairs against random ones, and the pairs nearest the line. A cluster lives
 inside one normalised-title group, so `assign_variant_cluster` re-clusters
 just that group after each analysis and gives exactly the answer a full
 `rebuild_variant_clusters` would (pinned by a test; the rebuild is the manual
@@ -795,7 +813,16 @@ than ±2 st.
 
 **Effort** (`matcher/effort.py`, each 0 = free … 1 = maximal): stretch (0.30),
 pitch (0.30), tempo fold (0.15), grid confidence ranked in the library (0.15),
-key certainty ranked in the library (0.10). `score_total` = weighted fit −
+key certainty ranked in the library (0.10), and — on top of those five, so a
+pair without it costs what it always did (the total is clipped at 1) —
+**allin1's downbeat confidence** ranked in the library (0.05,
+`effort_downbeat`): its mean
+downbeat activation (`allin1_analysis.conf_mean`, carried by `_full_by_song`
+as `downbeat_confidence`, never into `bpm_confidence`) — a bar 1 the model
+was unsure of is one you check by ear. A track allin1 did not cut is certain
+(cost 0), as a missing grid or key confidence is. It is not a learned
+feature of its own (`FEATURE_NAMES` would refuse every trained model); the
+model sees it through `score_rule` and `score_effort`. `score_total` = weighted fit −
 `EFFORT_WEIGHT` (0.25) × effort. Labels Free / Light / Heavy; **Heavy whatever
 the total** at ≥ 4 st or ≥ 8 % stretch.
 
@@ -836,7 +863,13 @@ kept rather than re-folded, and `bpm_confidence` stays Essentia's (allin1's
 **Phrase placement and the timing gate** (`matcher/phrase_align.py`). A pair
 hangs off the vocal section's first sung phrase and a bed downbeat; every
 vocal bar line in the overlap is matched to the nearest conformed bed bar line.
-A worst error over `timing_tol_ms` (25) or a phrase ratio outside
+A bed section's downbeats stop one bar short of its end (the next section owns
+that line), so the bed's grid is **closed by its own end** when that end is a
+bar line — within ⅛ bar of the next expected downbeat (`closing_grid`; a
+section cut mid-bar keeps its downbeats alone). Without it an overlap cut by
+the bed's end matched the vocal's last bar line to the bed's line a bar
+earlier and failed the pair for a bar it never plays wrong; `place`,
+`place_cached` and the overlay's band all read the closed grid. A worst error over `timing_tol_ms` (25) or a phrase ratio outside
 `TIMING_PHRASE_RATIOS` drops the pairing (the next-best bed section is tried);
 passing pairings blend `score_timing` in at `timing_weight` (0.30). Rows store
 the timing terms, `engine` (`allin1`, or `essentia_fallback` for a side allin1
@@ -868,25 +901,35 @@ two songs: the measured shift is not known until a pairing has won, and
 whether it is trusted depends on a threshold the run itself rewrites.
 
 **Phrase windows** (`phrase_align.best_window`). For each **kept** pairing,
-the 8- or 16-bar window to build: a vocal phrase start over a bed bar where the
-two grids hold bar for bar within the timing tolerance, scored on that
-tightness (0.4), the share of the vocal's bars that are sung (0.3) and the
-share of the bed's bars its own vocal sang (0.3). Stored as `window_bars`,
+the 8- or 16-bar window to build and to play: a vocal phrase start (the
+pairing's own phrase first, then the vocal's other phrase starts) over **the
+bed bar the placement puts under it** — a window is a stretch of its
+placement, never a placement of its own — where every bar line of the window
+holds within the timing tolerance where the placement puts it. Scored on
+that tightness (0.4), the share of the vocal's bars that are sung (0.3) and
+the share of the bed's bars its own vocal sang (0.3). Stored as `window_bars`,
 `vocal_window_bar`, `bed_window_bar` (bar indexes from each section's first
-downbeat) and `score_window`. It describes a pairing that has already won and
-never moves a rank; the overlay shows it ("build 16 bars: vocal bar 1 over bed
-bar 1") for whichever landing is chosen.
+downbeat), `score_window`, and where it plays in the vocal's seconds:
+`window_vocal_start` (its first downbeat), `window_vocal_onset` (that
+phrase's pickup) and `window_vocal_end`. It never moves a rank; the overlay
+shows it ("build 16 bars: vocal bar 1 over bed bar 1") for whichever landing
+is chosen, and every consumer plays it (below).
 
 **Playing the placement** (`phrase_align.play_spans`). Where a placed pairing
 starts sounding, one definition for every consumer: the vocal at its phrase
 **pickup** (`vocal_phrase_start`, never after the phrase's downbeat) and the
 bed at the point under it once conformed — the landing less the pickup at the
 bed's rate — so the two clips start together and the phrase's downbeat meets
-the landing `play_lead` seconds in. Every listing row carries
-`vocal_play_start`, `bed_play_start` and `play_lead`; the dock's loop and the
-mini studio cut their clips from them, Studio trims its two lanes to them
-(the lane offsets — and so the nudge — are unchanged: a trim moves no audio),
-and the FL session starts both files there.
+the landing `play_lead` seconds in. **With its phrase window the pair plays
+the window**: from the window's first phrase at its pickup to the window's
+end, the bed under it by the same alignment (`vocal_play_end`,
+`bed_play_end`; None = the sections' ends, for a row without a window). Every
+listing row carries `vocal_play_start`, `bed_play_start`, `play_lead` and the
+two ends; the dock's loop and the mini studio cut their clips from them,
+Studio trims its two lanes to them (the lane offsets — and so the nudge — are
+unchanged: a trim moves no audio), and the FL session starts and ends both
+files there, with bar 1 on the window's first downbeat. Clicking a bar in the
+overlay plays from that bar to the sections' ends.
 
 **The ghost-slot overlay** (`matcher/overlay.py`; Track detail, §3). For one
 section pair it prices **every landing** — each bed downbeat of the bed
@@ -1041,10 +1084,18 @@ what you do with it, retrains on its own, and never ranks worse than the rules.
   (`segment_match.POOL_FACTOR`), so a live row and its stored twin agree to
   the digit. A model with no verdicts behind it (one trained by **Train from
   imported mixes** alone) has α = 0 and changes nothing.
-- **Shadow evaluation.** A trained model is activated only when its held-out
-  AUC on your verdicts is at least the active model's (as measured when that
-  one was trained) — or, with none active, the rule's — and at least the
-  rule's on the same verdicts. Every model records its feature names (a
+- **Shadow evaluation.** A trained model is activated only when it is at
+  least as good as the active model — or, with none active, the rule — and
+  its held-out AUC on all your verdicts is at least the rule's on the same
+  verdicts. Against an active model the two are compared **like for like on
+  the verdicts given since the active one was trained** (`_fresh_comparison`):
+  the active model's AUC on verdicts it never saw against the candidate's
+  out-of-fold AUC on the same ones. Its own AUC as recorded when it was
+  trained — on fewer, older verdicts, and lucky at times — is the bar only
+  until there are 3 fresh verdicts each side (`MIN_PER_CLASS`), so a lucky
+  model cannot lock every later one out. The comparison used is stored in the
+  model's metrics (`gate`), with the verdict watermark it was trained to
+  (`strong_max_id`). Every model records its feature names (a
   mismatch is refused), counts, metrics, α and the decision in words;
   **rollback** re-activates the model active before it (or the rules).
 - **Auto-retrain** (`learning.tick`, once a minute from the server): when
@@ -1117,7 +1168,8 @@ partner. Never a tempo or key nobody printed.
   clip's `offset_sec` is where its **first rendered sample** lands (§7). The
   duck keys on every vocals clip exactly as Studio's graph does (test-pinned).
 - **FL session** (`render/session.py`): one folder per pair, each stem trimmed
-  and conformed so **bar 1 is at 0:00** (hung off the phrase placement), a click
+  and conformed so **bar 1 is at 0:00** (hung off the phrase placement — the
+  window's first downbeat when the pair has one, and the files end with it), a click
   track, ID3 BPM/key tags, a README with the recipe and a grid check, and a
   `session.json` that round-trips into Studio. Studio's lane state (rate,
   transpose, nudge, trim) is baked in; level, fades, filters, EQ and duck are
@@ -1137,7 +1189,11 @@ partner. Never a tempo or key nobody printed.
 Each shape below is pinned by a contract test.
 
 - **View preferences** (`api/routes/prefs.py`): `GET/PUT
-  /api/prefs/library-view` (columns keyed by id), filter presets, and
+  /api/prefs/library-view` (columns keyed by id), `GET /api/prefs/mode-views`
+  and `PUT …/mode-views/{parts|tune}` (the Parts tables' filters and sorts,
+  the Tune drawer's weights — one entry per mode, so no surface overwrites
+  another's; `hooks/useModeView.js` restores before it ever saves), filter
+  presets, and
   `GET /api/prefs/sets-backup` + `POST …/seen` (where migration 11 wrote the
   removed Sets, until the UI has said so once).
 - **The Library payload** (`GET /api/tracks`, `api/routes/tracks.py`): every
@@ -1168,7 +1224,8 @@ Each shape below is pinned by a contract test.
 - **Segments** (`api/routes/segments.py`, `matcher/segment_match.py`):
   `GET /api/segments?role=vocal|bed` (packed rows, cached per library state,
   gzipped) and `GET /api/segments/{id}/matches` — the scorer's own arithmetic,
-  live, exact top-k. A pair hidden in the dock is left out here too (`hidden`
+  live, exact top-k, with `tune` — the weights the rows were just scored with
+  (the cards' Why bar). A pair hidden in the dock is left out here too (`hidden`
   counts them beside `gated`). With a learned model active it is the rule's
   exact top 4 × limit, blended exactly as the stored rows are (§5.8), and the
   best `limit` of those.
@@ -1183,7 +1240,8 @@ Each shape below is pinned by a contract test.
   phrase until `overlay_fingerprint` moves — either song's scoring inputs, the
   library's, their stems, sections, phrases, feature rows and sidecars, the
   harmony threshold and slot floor, the active model, and the live scoring
-  settings. `POST /api/studio/session` takes `placement: {phrase, offset_bars}`.
+  settings. Served gzipped when the browser asks. `POST /api/studio/session`
+  takes `placement: {phrase, offset_bars}`.
 - **Mix summary**, **Discover gaps** (`GET /api/discovery/gaps`) and the
   attribute catalogue (`GET /api/analysis/attributes`).
 - **Pair events** (`POST /api/events`, §5.13): always answers 200 with
@@ -1235,9 +1293,10 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
   five, `value_sum`, first and last time) and deleted, in one transaction that
   refuses to delete if the summary did not grow by exactly that many rows.
   `scorer_version` and the exact rank do not survive the fold.
-- The mini studio's own loop is not timed (it has its own engine), and the
-  dock's FL batch logs the loaded top N — the server picks the same N from the
-  same query.
+- The mini studio plays on its own engine, so it times its loop on its own
+  channel (`noteListening(…, "mini")`, context `parts`): one surface moving
+  on never closes the other's loop. The dock's FL batch logs the loaded top
+  N — the server picks the same N from the same query.
 
 ---
 
@@ -1263,7 +1322,7 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
 | `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `learning.py` (labels, ranker, blend, shadow gate, tick), `weight_fit.py`, `term_report.py`, `segment_match.py`, `overlay.py` (the ghost-slot overlay: every landing of a placement, priced) |
 | `render/` | `dsp.py`, `master.py`, `mixdown.py`, `session.py`, `exports.py` |
 | `frontend/src/` | `App.jsx`; `shell/` (`Sidebar` — the rail and `RETIRED_ROUTES`); `components/` (screens; `parts/` — the Library's Parts mode and its dock; `segments/` — the parts table, filters, mini studio; `AnalysisPanels.jsx` — the attribute picker, Compare, the analyser status; `pairs/pairModel.js`, `pairs/TuneDrawer.jsx`; `ui/primitives.jsx`); `hooks/`; `engine/` (`MashupEngine`, decode, grid); `api.js`, `events.js` (the pair-event buffer), `tune.js` (the Tune drawer's re-rank and the Why bar), `theme.js`, `attributes.js`; `public/soundtouch-processor.js` |
-| `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks), `sim_learning.py` (a synthetic listener judging through the dock while the learning loop retrains: NDCG@10 against the rules), `bench_overlay.py` (the overlay's payload cached and uncached, and planted phrase starts against the originals), `sim_import.py` (a batch import replayed on measured stage times: time to the first Drop-in pair, arrival order against partner-aware), `timing_gate_share.py` (the share of section pairings passing the timing gate at 25 / 40 / 60 ms, and stored phrase starts against hand marks; read-only), `storage_report.py` (disk per kind and per track, measured, and projected to another size) |
+| `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks), `sim_learning.py` (a synthetic listener judging through the dock while the learning loop retrains: NDCG@10 against the rules), `bench_overlay.py` (the overlay's payload cached and uncached, and planted phrase starts against the originals), `sim_import.py` (a batch import replayed on measured stage times: time to the first Drop-in pair, arrival order against partner-aware), `timing_gate_share.py` (the share of section pairings passing the timing gate at 25 / 40 / 60 ms, and stored phrase starts against hand marks; read-only), `storage_report.py` (disk per kind and per track, measured, and projected to another size), `dedup_report.py` (how the EffNet duplicate check splits a library; read-only) |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS; `essentia_fake.py`; `ui/` — Playwright scripts run under Node: `ui_check.cjs` (no truncated text, and the screenshots), `library_perf.cjs` (first rows, filter, sort, scroll), `overlay_perf.cjs` (the overlay's draw time while dragging, and space-to-sound) |
 
 **Tables** (`database/schema.sql`):
@@ -1286,7 +1345,8 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
   `vocal_phrases`; `allin1_analysis`; `allin1_embeddings`.
 - `mashup_candidates` — one row per section pair: sub-scores, effort, section
   terms, harmony, alignment, timing, the slot (`score_slot` and its three
-  parts), the phrase window, `dropin_mask` / `camelot_shift`, engine, scorer +
+  parts), the phrase window and where it plays (`window_vocal_*`, migration
+  12, with `effort_downbeat`), `dropin_mask` / `camelot_shift`, engine, scorer +
   model version, `score_rule` (the rule's total) and `model_prob` (the active
   model's probability; `score_total` is their blend, §5.8). Indexed for
   the dock scoped to a side, the library-wide list and one pairing.
@@ -1376,6 +1436,9 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
 - **One path takes a judgement away** — `delete_pair_feedback`, which deletes
   the whole row (and its reasons). Its `WHERE` mirrors the unique index,
   `COALESCE` included. Sending `rating: null` does **not** clear.
+- **One timed loop per channel** (`events.noteListening`): the app player
+  and the mini studio each time their own loop; a new surface that plays a
+  pair on its own engine takes its own channel, or it closes the other's.
 - **A pair event is never felt, and never a judgement** (§5.13). The request
   path of `POST /api/events` opens no connection; nothing in
   `frontend/src/events.js` throws, awaits, toasts or imports, and no caller
@@ -1478,8 +1541,9 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
   should reach rows the rule dropped needs its own ceiling in
   `_score_pruned` first.
 - **A model reaches the ranking only through the shadow gate or a click.**
-  `train` activates only on held-out AUC ≥ the active model's (or the rule's)
-  and ≥ the rule's; `activate`, `rollback` and `deactivate` are the user's.
+  `train` activates only when the candidate is at least the active model on
+  the verdicts that model never saw (its recorded AUC until there are enough
+  of them), or the rule's with none active, and ≥ the rule's on all verdicts; `activate`, `rollback` and `deactivate` are the user's.
   Every activation re-blends the stored table; the Segments fingerprint
   includes the active model.
 - **Training reads `verdict`** (`STRONG_LABELS`), never `rating`.
@@ -1526,7 +1590,9 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
   Its caches are keyed by `_fingerprint` — a new input must be in it.
 - **One placement, played one way: `phrase_align.play_spans`.** The dock's
   loop, the mini studio, Studio's lanes, the overlay and the FL session start
-  a placed pairing's clips there; a new consumer reads the row's
+  — and, with its phrase window, stop — a placed pairing's clips there. A
+  window is a stretch of the placement (`best_window` takes the bed bar the
+  placement puts under each vocal bar), never a second alignment; a new consumer reads the row's
   `vocal_play_start` / `bed_play_start`, never its own sum. A session treats a
   trim at the span as the placement (so it is not snapped to a downbeat).
 - **The overlay is the scorer, not a copy of it** (`matcher/overlay.py`). It
@@ -1554,6 +1620,10 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
   the frontend never computes a tier (`theme.js` `TIERS` only names and colours
   them, pinned equal). A new consumer of pair rows goes through
   `mashups._with_playback_terms`.
+- **The duplicate check's audio is the EffNet embedding** (`dedup._audio_agrees`,
+  §5.6), never the mean MFCC; `rebuild_variant_clusters` and
+  `assign_variant_cluster` both read it through `attach_embeddings`, or the
+  two would disagree.
 - **A variant cluster lives inside one normalised-title group** — that is what
   makes `assign_variant_cluster` equal a full rebuild. A new writer of
   `variant_cluster` goes through one of the two.
@@ -1606,7 +1676,9 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
 - **One filter language** (`useLibraryFilters.parseQuery`): the Library, the
   parts tables and the dock read the same parser. A new word goes there, with
   where it applies (`PAIR_TOKENS`); a surface that cannot answer a word says
-  so in its preview, never ignores it.
+  so in its preview, never ignores it. A quoted word is literal: it keeps its
+  quotes in the left-over text (so pinning re-reads it as text) and every
+  matcher reads that text through `searchText`, never raw.
 - **No text is cut off.** A label, pill, card line or menu item wraps or
   grows. A new clip goes in `tests/ui/ui_check.cjs`'s `EXEMPT` with the hover /
   focus fallback that shows the whole text.
@@ -1909,7 +1981,7 @@ Phase 5 (2026-11-20, the same VM; 5,000 synthetic tracks, Score library
 | Core budget: most threads held at once, 105 concurrent holds of 1–4 on 4 cores | 4 (a test); a hold costs 3 µs |
 | allin1 runs skipped with no usable stem; tracks with a usable stem skipped | counted on the Queue; 0 of the 32 with a usable stem in the 36-case test grid (the 4 with both under the minimum are skipped) |
 | Storage at 10,000 tracks of 203 s, synthetic signal (an upper bound: noise compresses worse than music) | 1.4 TB, 136 MB a track: instrumental 44.6 MB, vocals 24.5, drums 17.7, bass 18.9, other 26.2, sidecars 1.2, the mix 3.2; `keep_analysis_stems` off frees 628 GB (46 %) |
-| Timing gate on the 300-track synthetic library (its grids are clean by construction) | 71.4 / 71.9 / 72.1 % of pairings, 85.1 / 85.4 / 85.9 % of vocal sections at 25 / 40 / 60 ms |
+| Timing gate on the 300-track synthetic library (its grids are clean by construction; before the closing bar line, below) | 71.4 / 71.9 / 72.1 % of pairings, 85.1 / 85.4 / 85.9 % of vocal sections at 25 / 40 / 60 ms |
 
 Read it with: the partner-aware order cannot beat one track's own path
 through download, quick, Demucs and analysis (~124 s here), and in this
@@ -1920,6 +1992,23 @@ instrumentals). It is the 30 % bar of criterion 5.1 that is missed. A real
 import with fewer fits for the library, or a library where Drop-ins are
 rarer, is where it should show; `sim_import.py` on a real library's
 `analysis_runs` says.
+
+**The closing bar line** (§5.7; 2026-11-20, the same VM; a fresh 300-track
+synthetic library, seed 7, unscored — `timing_gate_share.py --pairs 3000`
+and the overlay over 150 section pairs, each run with and without
+`closing_grid`):
+
+| | Before | After |
+|---|---|---|
+| Section pairings passing the gate at 25 / 40 / 60 ms (76,941) | 71.6 / 72.2 / 72.3 % | 81.3 / 81.9 / 82.0 % |
+| Vocal sections with a passing bed at 25 ms (13,350) | 84.2 % | 84.4 % |
+| Worst bar-line error, median / p90 | 9.1 / 1,730 ms | 8.0 / 205 ms |
+| Overlay landings dragged off the library's, shown **gated** (1,436) | 43.5 % | 20.0 % |
+
+It changes stored scores: a pairing that was failed for its closing line now
+passes and is placed, so the next Score library can store a different bed
+section for a vocal section, and rows that were not stored at all. Re-run
+Score library after upgrading.
 
 ## 9. Open work
 
@@ -1963,29 +2052,19 @@ rarer, is where it should show; `sim_import.py` on a real library's
    *Suggested from your ratings* need 10 loved and 10 rejected. Nothing about
    the loop has met a real listener yet: the numbers in §8 are a synthetic one.
 5. **Import the documented Big Bootie mixes** (~17) to build training positives.
-6. **allin1 features that do not reach the ear yet**: a scoped dock lists
-   instrumental-over-instrumental rows above vocal pairs. allin1's downbeat
-   confidence is stored but unused (a bar 1 a beat late pairs as freely as
-   any).
+6. **allin1 features that do not reach the ear yet**: the per-bar
+   `allin1_embeddings` (no reader yet). The downbeat confidence is an effort
+   term (§5.7) at 0.05 — re-weigh it once there are verdicts on allin1-cut
+   tracks.
 7. **Engine:** the best 8/16-bar **phrase window** of each kept pairing is
-   stored (§5.7) and the overlay names it, but the dock loop, Studio and the
-   FL export still build from the phrase over the whole section pairing, not
-   the window — and it is scored at weight 0, after the pairing has won.
-   **`place` gates most dragged landings on the closing bar line**: a bed
-   section's downbeats stop one bar short of its end (the next section owns
-   that line), so when the overlap is cut by the bed's end, the vocal's bar
-   line at that end has no bed bar line near it and counts as a ~1 bar error.
-   At the library's own landing the two sections usually end together, so the
-   run rarely meets it; at a landing a few bars later the overlay shows
-   nearly every one as **gated** for that one bar (the band shows the rest
-   holding). Fixing it in `place` (count the closing line as the overlap's
-   end) changes stored scores, so it waits for the owner. Still open: windows that compete for the
-   rank, 32 bars, the per-bar `allin1_embeddings` (no reader yet), per-bar
+   played everywhere (§5.7), but scored at weight 0, after the pairing has
+   won. Still open: windows that compete for the
+   rank, 32 bars, per-bar
    chroma for progressions, stem quality as a section term. The slot's
    register reads the Camelot transpose, not the measured one (§5.7).
-8. **Dedup on the EffNet embedding** — the MFCC audio check in
-   `matcher/dedup.py` lets 93 % of random pairs through, so it is not a real
-   gate.
+8. **Check the EffNet dedup threshold on real records** (§5.6): run
+   `docker compose exec app python scripts/dedup_report.py` and listen to the
+   same-title pairs nearest 0.95 before moving `AUDIO_CONFIRM_MIN`.
 9. **Check suspect attributes before they feed the matcher**: `dissonance` is
    near-constant, `tonal` says nearly every track is atonal, tuning medians at
    434 Hz.
@@ -2013,12 +2092,9 @@ rarer, is where it should show; `sim_import.py` on a real library's
     gzipped now, but a rebuild after any write still costs ~3.7 s at 10,000
     tracks (pair events commit too, so a busy session rebuilds often), and
     **a part's first match** still builds a snapshot of every section.
-14. **Learning, what is left** (§5.8): the mini studio's loop is not timed,
-    so its listens are no weak label; the model only re-orders the rows the
-    rule kept (a pair the rule's cap dropped cannot be lifted); the shadow
-    gate compares a new model's AUC with the active one's as measured when it
-    was trained, on a smaller set of verdicts; exploration has no measure yet
-    of how much it teaches.
+14. **Learning, what is left** (§5.8): the model only re-orders the rows the
+    rule kept (a pair the rule's cap dropped cannot be lifted); exploration
+    has no measure yet of how much it teaches.
 15. **Planted drop-ins, after the generator gave them their edge.** A planted
     bed's instrumental now sits at its vocal's loudness for its kind, with its
     bands clear of the vocal's (`synth_library._plant_match`), so it is the
@@ -2027,17 +2103,13 @@ rarer, is where it should show; `sim_import.py` on a real library's
     scoped list of vocal pairs: 35 of 40 in the top five (median rank 1;
     before: 8 of 40), 36 of 40 tagged Drop-in, 3 not listed at all. Phase 1's
     bar (90 % / 95 %) is still just missed; the three unlisted pairs are the
-    place to look. A scoped dock also lists instrumental-over-instrumental
-    rows of the same two songs (item 6), which carry no sections and are
-    never Drop-ins.
+    place to look. (A scoped dock now lists every vocal pair before the
+    instrumental-over-instrumental rows of the same songs, §3.) Re-measure
+    after the closing-bar-line change (§5.7), which let more pairings through
+    the timing gate.
 
-16. **Phase 3 leftovers.** Saved views store the Tracks mode's filters,
-    columns and sort; the Parts tables' filters and the dock's Tune weights
-    are not saved per mode yet. The parts dock's cards carry no Why bar (the
-    live matches are not sent with the run's weights). A song titled with a
-    pair word ("Free", "Strong") is read as a filter by the dock's search until
-    the search supports quoting. Scrolling
-    10,000 rows drops one frame in 181 (33 ms).
+16. **Phase 3 leftovers.** Scrolling 10,000 rows drops one frame in 181
+    (33 ms).
 17. **Phase 5, what is left.** Criterion 5.1 (the first Drop-in of an import
     ≥ 30 % sooner) is not met on the synthetic library (§8: mean −10 %,
     median 0): the first separated song nearly always has a Drop-in there.

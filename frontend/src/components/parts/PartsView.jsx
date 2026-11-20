@@ -5,6 +5,7 @@ import {
   buildSideRows, cycleSegSort, EMPTY_SEG_FILTERS, LABELS, SEG_SORTS, segKey, STEM_OF,
 } from "../segments/segmentModel";
 import { toast } from "../../toast";
+import { useModeView } from "../../hooks/useModeView";
 
 // The Library in Parts mode (master plan 3A — what the Segments tab was):
 // every vocal section, or every bed section, of the library as one
@@ -21,6 +22,20 @@ export function PartsView({ role, segs, selected, onSelect, onOpenTrack, player,
   const [filters, setFilters] = useState({ vocal: { ...EMPTY_SEG_FILTERS },
                                            bed: { ...EMPTY_SEG_FILTERS } });
   const [sorts, setSorts] = useState({ vocal: { id: null, dir: null }, bed: { id: null, dir: null } });
+  // Saved per mode (useModeView): each side's filters and sort come back on
+  // the next visit, as the Tracks view's do.
+  const saved = useMemo(() => ({ filters, sorts }), [filters, sorts]);
+  useModeView("parts", saved, (v) => {
+    const side = (x, empty) => (x && typeof x === "object" ? { ...empty, ...x } : empty);
+    if (v.filters) {
+      setFilters({ vocal: side(v.filters.vocal, { ...EMPTY_SEG_FILTERS }),
+                   bed: side(v.filters.bed, { ...EMPTY_SEG_FILTERS }) });
+    }
+    if (v.sorts) {
+      setSorts({ vocal: side(v.sorts.vocal, { id: null, dir: null }),
+                 bed: side(v.sorts.bed, { id: null, dir: null }) });
+    }
+  });
 
   const genres = useMemo(() => {
     const g = new Set();

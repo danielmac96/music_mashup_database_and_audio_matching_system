@@ -44,7 +44,7 @@ def test_upgrade_writes_a_verified_backup_then_drops_the_tables(tmp_path):
 
     conn = _at_version_10(tmp_path / "lib.db")
     try:
-        assert schema.apply(conn) == [11]
+        assert schema.apply(conn) == [11, 12]
         assert not ({"sets", "set_items"} & _tables(conn))
         files = list((tmp_path / "exports").glob("sets_backup_*.json"))
         assert len(files) == 1

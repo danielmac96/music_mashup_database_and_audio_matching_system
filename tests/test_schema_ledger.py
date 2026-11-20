@@ -131,3 +131,28 @@ def test_the_baseline_has_the_tables_the_pipeline_writes(tmp_path):
         assert "scored_at" in {r[1] for r in conn.execute("PRAGMA table_info(songs)")}
     finally:
         conn.close()
+
+
+def test_migration_twelve_adds_only_nullable_candidate_columns(tmp_path):
+    """The phrase window's play spans and the downbeat effort term: nullable
+    columns on mashup_candidates (no user input), idempotent, and
+    pair_feedback untouched."""
+    import sqlite3
+    from pathlib import Path
+    from database import schema
+    src = (Path(__file__).parent.parent / "database" / "schema.py").read_text(encoding="utf-8")
+    body = src.split("def _window_spans")[1].split("\nSETS_BACKUP_PREF")[0]
+    assert "executescript" not in body and "pair_feedback" not in body
+    assert body.count("ALTER TABLE") == 1 and "mashup_candidates ADD COLUMN" in body
+    conn = sqlite3.connect(tmp_path / "m.db")
+    schema._baseline(conn)
+    schema._slot_and_dropin(conn)
+    before = conn.execute("SELECT sql FROM sqlite_master WHERE name='pair_feedback'").fetchone()
+    schema._window_spans(conn)
+    schema._window_spans(conn)                               # idempotent
+    cols = {r[1]: r for r in conn.execute("PRAGMA table_info(mashup_candidates)")}
+    for name, _kind in schema._WINDOW_SPAN_COLUMNS:
+        assert name in cols and cols[name][3] == 0           # nullable
+    assert conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name='pair_feedback'").fetchone() == before
+    conn.close()

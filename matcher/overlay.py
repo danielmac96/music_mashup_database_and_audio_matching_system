@@ -150,7 +150,7 @@ def fit_band(v_sec: Dict, b_sec: Dict, placement: Dict, stretch: float,
       level         good / ok / bad (the band's colour), None when unmeasured
     """
     from matcher.harmony import _vec, bass_clash
-    from matcher.phrase_align import _downbeats, _phrased
+    from matcher.phrase_align import _downbeats, _phrased, closing_grid
 
     d_v, land = placement.get("alignment_downbeat"), placement.get("bed_landing_sec")
     if d_v is None or land is None:
@@ -163,7 +163,7 @@ def fit_band(v_sec: Dict, b_sec: Dict, placement: Dict, stretch: float,
     v_end = float(v_sec.get("end_sec") or 0.0)
     b_end = float(b_sec.get("end_sec") or 0.0)
     span = min(v_end - d_v, (b_end - land) / rate)
-    b_rel = (np.asarray(b_dbs, dtype=float) - land) / rate
+    b_rel = (np.asarray(closing_grid(b_dbs, b_end), dtype=float) - land) / rate
     v_all = _downbeats(v_sec)
     vp = _phrased(v_sec, vocal_phrases, None)
     bp = _phrased(b_sec, bed_phrases, None)
@@ -331,7 +331,7 @@ def build(bed_id: int, vocal_id: int, vs: int, bs: int, phrase: int = 0,
                 for t, p in zip(vph.starts, vph.pickups) if t >= d_v - 1e-3]
             row["window"] = best_window(pl, v_sec, b_sec, stretch, v_phrases,
                                         b_phrases, tol)
-            row["spans"] = play_spans(pl, stretch)
+            row["spans"] = play_spans({**pl, **(row["window"] or {})}, stretch)
             placements.append(row)
     _blend(placements, ctx, db, int(vocal_id), int(bed_id))
 

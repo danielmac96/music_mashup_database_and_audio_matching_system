@@ -34,6 +34,13 @@ EFFORT_WEIGHTS: Dict[str, float] = {
     "tempo_fold_cost":   0.15,
     "grid_cost":         0.15,
     "key_certainty_cost": 0.10,
+    # allin1's downbeat confidence (its mean downbeat activation), ranked in
+    # the library: a bar 1 the model was unsure of is a bar 1 you check by ear
+    # before anything lines up. Added ON TOP of the five (the weights sum to
+    # 1.05; the total is clipped at 1), so a pair allin1 did not cut — or a
+    # library whose downbeats are all equally sure — costs exactly what it
+    # did before the term existed.
+    "downbeat_cost":     0.05,
 }
 
 # Stretch that costs nothing, and the stretch that counts as maximal. Below 2%
@@ -95,6 +102,7 @@ EFFORT_COLUMNS = {
     "tempo_fold_cost": "effort_tempo_fold",
     "grid_cost": "effort_grid",
     "key_certainty_cost": "effort_key_certainty",
+    "downbeat_cost": "effort_downbeat",
 }
 
 
@@ -156,6 +164,9 @@ def effort_components(top: dict, bed: dict, stretch: Optional[float],
                      _num(norm("bpm", _num(bed.get("bpm_confidence"), 1.0)), 1.0))
     key_cost = 1.0 - min(_num(norm("key", _num(top.get("key_confidence"), 1.0)), 1.0),
                          _num(norm("key", _num(bed.get("key_confidence"), 1.0)), 1.0))
+    # A track allin1 did not cut has no downbeat confidence: certain, as above.
+    db_cost = 1.0 - min(_num(norm("downbeat", _num(top.get("downbeat_confidence"), 1.0)), 1.0),
+                        _num(norm("downbeat", _num(bed.get("downbeat_confidence"), 1.0)), 1.0))
 
     return {
         "stretch_cost": float(np.clip(stretch_cost, 0.0, 1.0)),
@@ -163,6 +174,7 @@ def effort_components(top: dict, bed: dict, stretch: Optional[float],
         "tempo_fold_cost": float(np.clip(fold, 0.0, 1.0)),
         "grid_cost": float(np.clip(grid, 0.0, 1.0)),
         "key_certainty_cost": float(np.clip(key_cost, 0.0, 1.0)),
+        "downbeat_cost": float(np.clip(db_cost, 0.0, 1.0)),
     }
 
 
@@ -226,7 +238,8 @@ def effort_block(top_bpm: np.ndarray, bed_bpm: np.ndarray,
                  shift_known: np.ndarray,
                  top_bpm_conf: np.ndarray, bed_bpm_conf: np.ndarray,
                  top_key_conf: np.ndarray, bed_key_conf: np.ndarray,
-                 folded: np.ndarray) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+                 folded: np.ndarray, top_db_conf=1.0, bed_db_conf=1.0
+                 ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
     """effort_penalty over a block of pairs. Shapes broadcast to (n_top, n_bed).
 
     `shift_known` is False where the transpose could not be derived; those pairs
@@ -240,6 +253,8 @@ def effort_block(top_bpm: np.ndarray, bed_bpm: np.ndarray,
     fold_cost = np.where(folded, TEMPO_FOLD_COST, 0.0)
     grid_cost = 1.0 - np.minimum(top_bpm_conf, bed_bpm_conf)
     key_cost = 1.0 - np.minimum(top_key_conf, bed_key_conf)
+    db_cost = np.broadcast_to(1.0 - np.minimum(top_db_conf, bed_db_conf),
+                              np.shape(key_cost))
 
     parts = {
         "stretch_cost": np.clip(stretch_cost, 0.0, 1.0),
@@ -247,6 +262,7 @@ def effort_block(top_bpm: np.ndarray, bed_bpm: np.ndarray,
         "tempo_fold_cost": np.clip(fold_cost, 0.0, 1.0),
         "grid_cost": np.clip(grid_cost, 0.0, 1.0),
         "key_certainty_cost": np.clip(key_cost, 0.0, 1.0),
+        "downbeat_cost": np.clip(db_cost, 0.0, 1.0),
     }
     total = sum(parts[k] * w for k, w in EFFORT_WEIGHTS.items())
     return np.clip(total, 0.0, 1.0), parts
