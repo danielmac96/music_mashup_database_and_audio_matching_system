@@ -777,7 +777,13 @@ cuts from the row's play spans on request (§5.7).
 `matcher/dedup.py` clusters Original / Extended / Radio Edit / remix /
 re-upload variants so they do not pair with each other: the title is
 normalised to the work; same title **and** artist = variant; same title,
-different artist = variant only if the MFCC timbre agrees. A cluster lives
+different artist = variant only if the **EffNet embeddings** agree (cosine ≥
+`AUDIO_CONFIRM_MIN`, 0.95; `attach_embeddings` reads them from `embeddings`).
+It replaced a mean-MFCC cosine that 93 % of random pairs cleared. A track
+without an embedding yet confirms nothing, and is re-clustered after its
+analysis writes one. The threshold has not met real records:
+`scripts/dedup_report.py` (read-only) prints how it splits a library —
+same-title pairs against random ones, and the pairs nearest the line. A cluster lives
 inside one normalised-title group, so `assign_variant_cluster` re-clusters
 just that group after each analysis and gives exactly the answer a full
 `rebuild_variant_clusters` would (pinned by a test; the rebuild is the manual
@@ -807,7 +813,16 @@ than ±2 st.
 
 **Effort** (`matcher/effort.py`, each 0 = free … 1 = maximal): stretch (0.30),
 pitch (0.30), tempo fold (0.15), grid confidence ranked in the library (0.15),
-key certainty ranked in the library (0.10). `score_total` = weighted fit −
+key certainty ranked in the library (0.10), and — on top of those five, so a
+pair without it costs what it always did (the total is clipped at 1) —
+**allin1's downbeat confidence** ranked in the library (0.05,
+`effort_downbeat`): its mean
+downbeat activation (`allin1_analysis.conf_mean`, carried by `_full_by_song`
+as `downbeat_confidence`, never into `bpm_confidence`) — a bar 1 the model
+was unsure of is one you check by ear. A track allin1 did not cut is certain
+(cost 0), as a missing grid or key confidence is. It is not a learned
+feature of its own (`FEATURE_NAMES` would refuse every trained model); the
+model sees it through `score_rule` and `score_effort`. `score_total` = weighted fit −
 `EFFORT_WEIGHT` (0.25) × effort. Labels Free / Light / Heavy; **Heavy whatever
 the total** at ≥ 4 st or ≥ 8 % stretch.
 
@@ -886,25 +901,35 @@ two songs: the measured shift is not known until a pairing has won, and
 whether it is trusted depends on a threshold the run itself rewrites.
 
 **Phrase windows** (`phrase_align.best_window`). For each **kept** pairing,
-the 8- or 16-bar window to build: a vocal phrase start over a bed bar where the
-two grids hold bar for bar within the timing tolerance, scored on that
-tightness (0.4), the share of the vocal's bars that are sung (0.3) and the
-share of the bed's bars its own vocal sang (0.3). Stored as `window_bars`,
+the 8- or 16-bar window to build and to play: a vocal phrase start (the
+pairing's own phrase first, then the vocal's other phrase starts) over **the
+bed bar the placement puts under it** — a window is a stretch of its
+placement, never a placement of its own — where every bar line of the window
+holds within the timing tolerance where the placement puts it. Scored on
+that tightness (0.4), the share of the vocal's bars that are sung (0.3) and
+the share of the bed's bars its own vocal sang (0.3). Stored as `window_bars`,
 `vocal_window_bar`, `bed_window_bar` (bar indexes from each section's first
-downbeat) and `score_window`. It describes a pairing that has already won and
-never moves a rank; the overlay shows it ("build 16 bars: vocal bar 1 over bed
-bar 1") for whichever landing is chosen.
+downbeat), `score_window`, and where it plays in the vocal's seconds:
+`window_vocal_start` (its first downbeat), `window_vocal_onset` (that
+phrase's pickup) and `window_vocal_end`. It never moves a rank; the overlay
+shows it ("build 16 bars: vocal bar 1 over bed bar 1") for whichever landing
+is chosen, and every consumer plays it (below).
 
 **Playing the placement** (`phrase_align.play_spans`). Where a placed pairing
 starts sounding, one definition for every consumer: the vocal at its phrase
 **pickup** (`vocal_phrase_start`, never after the phrase's downbeat) and the
 bed at the point under it once conformed — the landing less the pickup at the
 bed's rate — so the two clips start together and the phrase's downbeat meets
-the landing `play_lead` seconds in. Every listing row carries
-`vocal_play_start`, `bed_play_start` and `play_lead`; the dock's loop and the
-mini studio cut their clips from them, Studio trims its two lanes to them
-(the lane offsets — and so the nudge — are unchanged: a trim moves no audio),
-and the FL session starts both files there.
+the landing `play_lead` seconds in. **With its phrase window the pair plays
+the window**: from the window's first phrase at its pickup to the window's
+end, the bed under it by the same alignment (`vocal_play_end`,
+`bed_play_end`; None = the sections' ends, for a row without a window). Every
+listing row carries `vocal_play_start`, `bed_play_start`, `play_lead` and the
+two ends; the dock's loop and the mini studio cut their clips from them,
+Studio trims its two lanes to them (the lane offsets — and so the nudge — are
+unchanged: a trim moves no audio), and the FL session starts and ends both
+files there, with bar 1 on the window's first downbeat. Clicking a bar in the
+overlay plays from that bar to the sections' ends.
 
 **The ghost-slot overlay** (`matcher/overlay.py`; Track detail, §3). For one
 section pair it prices **every landing** — each bed downbeat of the bed
@@ -1143,7 +1168,8 @@ partner. Never a tempo or key nobody printed.
   clip's `offset_sec` is where its **first rendered sample** lands (§7). The
   duck keys on every vocals clip exactly as Studio's graph does (test-pinned).
 - **FL session** (`render/session.py`): one folder per pair, each stem trimmed
-  and conformed so **bar 1 is at 0:00** (hung off the phrase placement), a click
+  and conformed so **bar 1 is at 0:00** (hung off the phrase placement — the
+  window's first downbeat when the pair has one, and the files end with it), a click
   track, ID3 BPM/key tags, a README with the recipe and a grid check, and a
   `session.json` that round-trips into Studio. Studio's lane state (rate,
   transpose, nudge, trim) is baked in; level, fades, filters, EQ and duck are
@@ -1296,7 +1322,7 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
 | `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `learning.py` (labels, ranker, blend, shadow gate, tick), `weight_fit.py`, `term_report.py`, `segment_match.py`, `overlay.py` (the ghost-slot overlay: every landing of a placement, priced) |
 | `render/` | `dsp.py`, `master.py`, `mixdown.py`, `session.py`, `exports.py` |
 | `frontend/src/` | `App.jsx`; `shell/` (`Sidebar` — the rail and `RETIRED_ROUTES`); `components/` (screens; `parts/` — the Library's Parts mode and its dock; `segments/` — the parts table, filters, mini studio; `AnalysisPanels.jsx` — the attribute picker, Compare, the analyser status; `pairs/pairModel.js`, `pairs/TuneDrawer.jsx`; `ui/primitives.jsx`); `hooks/`; `engine/` (`MashupEngine`, decode, grid); `api.js`, `events.js` (the pair-event buffer), `tune.js` (the Tune drawer's re-rank and the Why bar), `theme.js`, `attributes.js`; `public/soundtouch-processor.js` |
-| `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks), `sim_learning.py` (a synthetic listener judging through the dock while the learning loop retrains: NDCG@10 against the rules), `bench_overlay.py` (the overlay's payload cached and uncached, and planted phrase starts against the originals), `sim_import.py` (a batch import replayed on measured stage times: time to the first Drop-in pair, arrival order against partner-aware), `timing_gate_share.py` (the share of section pairings passing the timing gate at 25 / 40 / 60 ms, and stored phrase starts against hand marks; read-only), `storage_report.py` (disk per kind and per track, measured, and projected to another size) |
+| `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks), `sim_learning.py` (a synthetic listener judging through the dock while the learning loop retrains: NDCG@10 against the rules), `bench_overlay.py` (the overlay's payload cached and uncached, and planted phrase starts against the originals), `sim_import.py` (a batch import replayed on measured stage times: time to the first Drop-in pair, arrival order against partner-aware), `timing_gate_share.py` (the share of section pairings passing the timing gate at 25 / 40 / 60 ms, and stored phrase starts against hand marks; read-only), `storage_report.py` (disk per kind and per track, measured, and projected to another size), `dedup_report.py` (how the EffNet duplicate check splits a library; read-only) |
 | `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS; `essentia_fake.py`; `ui/` — Playwright scripts run under Node: `ui_check.cjs` (no truncated text, and the screenshots), `library_perf.cjs` (first rows, filter, sort, scroll), `overlay_perf.cjs` (the overlay's draw time while dragging, and space-to-sound) |
 
 **Tables** (`database/schema.sql`):
@@ -1319,7 +1345,8 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
   `vocal_phrases`; `allin1_analysis`; `allin1_embeddings`.
 - `mashup_candidates` — one row per section pair: sub-scores, effort, section
   terms, harmony, alignment, timing, the slot (`score_slot` and its three
-  parts), the phrase window, `dropin_mask` / `camelot_shift`, engine, scorer +
+  parts), the phrase window and where it plays (`window_vocal_*`, migration
+  12, with `effort_downbeat`), `dropin_mask` / `camelot_shift`, engine, scorer +
   model version, `score_rule` (the rule's total) and `model_prob` (the active
   model's probability; `score_total` is their blend, §5.8). Indexed for
   the dock scoped to a side, the library-wide list and one pairing.
@@ -1563,7 +1590,9 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
   Its caches are keyed by `_fingerprint` — a new input must be in it.
 - **One placement, played one way: `phrase_align.play_spans`.** The dock's
   loop, the mini studio, Studio's lanes, the overlay and the FL session start
-  a placed pairing's clips there; a new consumer reads the row's
+  — and, with its phrase window, stop — a placed pairing's clips there. A
+  window is a stretch of the placement (`best_window` takes the bed bar the
+  placement puts under each vocal bar), never a second alignment; a new consumer reads the row's
   `vocal_play_start` / `bed_play_start`, never its own sum. A session treats a
   trim at the span as the placement (so it is not snapped to a downbeat).
 - **The overlay is the scorer, not a copy of it** (`matcher/overlay.py`). It
@@ -1591,6 +1620,10 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
   the frontend never computes a tier (`theme.js` `TIERS` only names and colours
   them, pinned equal). A new consumer of pair rows goes through
   `mashups._with_playback_terms`.
+- **The duplicate check's audio is the EffNet embedding** (`dedup._audio_agrees`,
+  §5.6), never the mean MFCC; `rebuild_variant_clusters` and
+  `assign_variant_cluster` both read it through `attach_embeddings`, or the
+  two would disagree.
 - **A variant cluster lives inside one normalised-title group** — that is what
   makes `assign_variant_cluster` equal a full rebuild. A new writer of
   `variant_cluster` goes through one of the two.
@@ -2019,20 +2052,19 @@ Score library after upgrading.
    *Suggested from your ratings* need 10 loved and 10 rejected. Nothing about
    the loop has met a real listener yet: the numbers in §8 are a synthetic one.
 5. **Import the documented Big Bootie mixes** (~17) to build training positives.
-6. **allin1 features that do not reach the ear yet**: allin1's downbeat
-   confidence is stored but unused (a bar 1 a beat late pairs as freely as
-   any).
+6. **allin1 features that do not reach the ear yet**: the per-bar
+   `allin1_embeddings` (no reader yet). The downbeat confidence is an effort
+   term (§5.7) at 0.05 — re-weigh it once there are verdicts on allin1-cut
+   tracks.
 7. **Engine:** the best 8/16-bar **phrase window** of each kept pairing is
-   stored (§5.7) and the overlay names it, but the dock loop, Studio and the
-   FL export still build from the phrase over the whole section pairing, not
-   the window — and it is scored at weight 0, after the pairing has won.
-   Still open: windows that compete for the
-   rank, 32 bars, the per-bar `allin1_embeddings` (no reader yet), per-bar
+   played everywhere (§5.7), but scored at weight 0, after the pairing has
+   won. Still open: windows that compete for the
+   rank, 32 bars, per-bar
    chroma for progressions, stem quality as a section term. The slot's
    register reads the Camelot transpose, not the measured one (§5.7).
-8. **Dedup on the EffNet embedding** — the MFCC audio check in
-   `matcher/dedup.py` lets 93 % of random pairs through, so it is not a real
-   gate.
+8. **Check the EffNet dedup threshold on real records** (§5.6): run
+   `docker compose exec app python scripts/dedup_report.py` and listen to the
+   same-title pairs nearest 0.95 before moving `AUDIO_CONFIRM_MIN`.
 9. **Check suspect attributes before they feed the matcher**: `dissonance` is
    near-constant, `tonal` says nearly every track is atonal, tuning medians at
    434 Hz.
