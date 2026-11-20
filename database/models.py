@@ -2485,6 +2485,15 @@ def get_candidates_enriched(combo_type: str = "", min_score: float = 0.0,
         order_sql = (f"{ranked_sql} DESC, mc.score_total DESC"
                      + (", mc.id" if bonus > 0 else ""))
 
+    # A list scoped to one track (and not to one combo type) lists its vocal
+    # pairs before any instrumental-over-instrumental row of the same songs:
+    # those carry no sections, are never Drop-ins and answer a question the
+    # dock is rarely asked. They stay listed, after. A scoped list is never
+    # bounded (_bounded_listing), so a leading key cannot drop rows.
+    if not combo_type and (vocal_song_id is not None or inst_song_id is not None):
+        order_sql = ("(mc.combo_type <> 'vocal_over_instrumental') ASC, "
+                     + order_sql)
+
     # The cap is a greedy pass over the ranked rows, so it needs more rows than
     # it will return. Fetching everything would mean 90k rows through the join
     # on a big library; this pool is enough to fill `limit` unless one song

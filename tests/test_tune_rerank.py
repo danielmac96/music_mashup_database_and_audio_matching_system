@@ -144,3 +144,20 @@ def test_re_ranking_500_loaded_pairs_takes_under_50_ms(scored, tmp_path):
     """, {"rows": rows, "tune": scored["tune"]})
     print("tune re-rank 500 pairs:", out)
     assert out["p95"] < 50, out
+
+
+def test_a_scoped_dock_keeps_vocal_pairs_first(tmp_path):
+    """§9 item 6, the client half: whatever the tier grouping or Tune did, a
+    dock scoped to one track lists its vocal pairs before any
+    instrumental-over-instrumental row — the server's own leading key for a
+    scoped list — and keeps each half's order."""
+    rows = [{"id": 1, "combo_type": "instrumental_over_instrumental"},
+            {"id": 2, "combo_type": "vocal_over_instrumental"},
+            {"id": 3, "combo_type": "instrumental_over_instrumental"},
+            {"id": 4, "combo_type": "vocal_over_instrumental"},
+            {"id": 5}]
+    out = _run(tmp_path, "console.log(JSON.stringify(T.vocalPairsFirst(D.rows).map((r) => r.id)));",
+               {"rows": rows})
+    assert out == [2, 4, 5, 1, 3]
+    src = (ROOT / "frontend" / "src" / "hooks" / "usePairDock.js").read_text(encoding="utf-8")
+    assert "if (selectedTrackId != null) out = vocalPairsFirst(out);" in src

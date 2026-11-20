@@ -85,6 +85,16 @@ export function tuneOrder(rows, w, base, alpha = 0) {
   return keyed.map((x) => x.r);
 }
 
+// A dock scoped to one track lists its vocal pairs before any
+// instrumental-over-instrumental row, whatever the order (the server's own
+// leading key for a scoped list, database/models.get_candidates_enriched).
+// Stable: inside each half the order it was given is kept.
+export function vocalPairsFirst(rows) {
+  const inst = (r) => (r.combo_type && r.combo_type !== "vocal_over_instrumental" ? 1 : 0);
+  return rows.map((r, i) => [r, i]).sort((a, b) => inst(a[0]) - inst(b[0]) || a[1] - b[1])
+    .map(([r]) => r);
+}
+
 // What drove a rank, for the "Why this pair" bar: the share of the rule's
 // total that came from the match terms, the section fit (slot included) and
 // the effort discount, plus the learned adjustment (score_total − score_rule).
