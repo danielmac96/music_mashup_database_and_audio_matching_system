@@ -370,13 +370,32 @@ a stat strip (BPM, key with confidence, energy, LUFS, vocal share, genre and
 Discogs styles, moods, best pair, partners), the **structure canvas** (bar
 ruler, section blocks, vocal and bed waveforms, energy, a key band — click a
 section to loop it), the **section table** (with each section's own BPM, key,
-sung range and your typed lyric **line**), and five folding groups:
+sung range and your typed lyric **line**), the **overlay** (below), and five
+folding groups:
 attributes, stems & quality, **source & provenance** (where the audio came
 from; **Wrong audio?** lists verified YouTube alternatives; **✓ Sounds right**
 confirms a substitute), partners, and actions. **⇄ Compare with…** (or `c` on
 a dock pair) opens a sheet: this track against any other — the pair both ways
 round as pair cards (or why it was never scored), then every attribute side
 by side with where each sits in the library.
+
+**Try a vocal over this** (a bed) / **Try over a bed** (a vocal) — the
+ghost-slot overlay: one song's vocal sitting in another's bed, aligned to bars,
+before Studio. The picker lists this track's ranked partners on the other side
+(the dock's listing, Drop-ins first, with a search); the canvas, on the BED's
+timeline, shows the bed's structure and instrumental, the bed's **original
+vocal** dimmed as a ghost with its phrase starts dashed, the incoming vocal in
+the vocal colour with its phrase starts (and pickups) solid, and a per-bar fit
+band (green / amber / red: the bar lines' error, the two bars' harmony, a bass
+clash; grey unmeasured). **Drag the vocal** (or `⇧←` `⇧→`) to land it on another
+bed bar — it snaps to the bed's downbeats, and the score, tier, Drop-in and band
+follow, because every landing was priced by the scorer (§5.7); a landing the
+library run would not store says **gated** and why. `[` `]` or the Phrase menu
+hang it off another of its phrases. Click a bar to audition from there. With
+the panel focused: space plays the bed and the conformed vocal on the one
+player, `V`/`B` solo, `O` swaps in the bed's original vocal (A/B against the
+original song), `←→` step partners, `1–5` rate (a normal judgement of the four
+ids), `⏎` **Open in Studio** — and **⤓ FL export** — at exactly this placement.
 
 ### Discover
 
@@ -809,7 +828,38 @@ tightness (0.4), the share of the vocal's bars that are sung (0.3) and the
 share of the bed's bars its own vocal sang (0.3). Stored as `window_bars`,
 `vocal_window_bar`, `bed_window_bar` (bar indexes from each section's first
 downbeat) and `score_window`. It describes a pairing that has already won and
-never moves a rank; nothing places it yet (§9).
+never moves a rank; the overlay shows it ("build 16 bars: vocal bar 1 over bed
+bar 1") for whichever landing is chosen.
+
+**Playing the placement** (`phrase_align.play_spans`). Where a placed pairing
+starts sounding, one definition for every consumer: the vocal at its phrase
+**pickup** (`vocal_phrase_start`, never after the phrase's downbeat) and the
+bed at the point under it once conformed — the landing less the pickup at the
+bed's rate — so the two clips start together and the phrase's downbeat meets
+the landing `play_lead` seconds in. Every listing row carries
+`vocal_play_start`, `bed_play_start` and `play_lead`; the dock's loop and the
+mini studio cut their clips from them, Studio trims its two lanes to them
+(the lane offsets — and so the nudge — are unchanged: a trim moves no audio),
+and the FL session starts both files there.
+
+**The ghost-slot overlay** (`matcher/overlay.py`; Track detail, §3). For one
+section pair it prices **every landing** — each bed downbeat of the bed
+section with room for four bars after it — of the vocal's chosen phrase
+(`phrase_align.vocal_phrase_options`; the first is the library run's):
+`phrase_align.place` with that landing (and phrase) forced, then exactly the
+section search's blend (`score_section_pair` → `timed_fit` → `slot_terms` /
+`slot_fit`), the measured harmony and section fit on `match.pair_context`'s
+song terms (the context `score_pair` itself is built from), `sections._pair_row`
+→ `candidate_dict`, and the active model's blend as Segments applies it. So the
+library's landing is `score_pair`'s stored row column for column, and every
+other landing is the row the scorer would store had it landed there (`gated`
+when it would fail the timing gate). Each landing also carries its fit band —
+per vocal bar on the bed's timeline: the bar line's error against the nearest
+conformed bed bar line (`place`'s own per-bar error), the two bars' mean chroma
+from the frame sidecars at the pair's transpose, a bass clash, and whether the
+incoming vocal and the bed's own vocal sang there — the incoming phrase starts
+on the bed's timeline (`overlay.on_bed`), its best window and its play spans.
+Stored values only; nothing is decoded.
 
 **Drop-in** (`matcher/compat.py`: `dropin`, `dropin_sql`). A pair is a Drop-in
 when all hold:
@@ -1014,7 +1064,12 @@ repeated failures.
   track, ID3 BPM/key tags, a README with the recipe and a grid check, and a
   `session.json` that round-trips into Studio. Studio's lane state (rate,
   transpose, nudge, trim) is baked in; level, fades, filters, EQ and duck are
-  left to the mixer.
+  left to the mixer. A Studio trim at the pair's play span (§5.7) is the
+  placement, not a trim — so the pickup before bar 1 survives an export from
+  Studio — while a trim moved by hand still wins. A placement chosen in the
+  overlay arrives as `placement: {phrase, offset_bars}` and is re-priced
+  server-side (`overlay.placement_for`), used even when it fails the timing
+  gate, because it was chosen by ear.
 - **Pair lists** (`render/exports.py`): CSV, a timed cue sheet, rekordbox XML
   (beat grid + hot cue at the paired section), a Serato crate and a Traktor NML,
   from the dock's top N or ★ Keepers. The cue sheet times each pair as if the
@@ -1060,6 +1115,18 @@ Each shape below is pinned by a contract test.
   counts them beside `gated`). With a learned model active it is the rule's
   exact top 4 × limit, blended exactly as the stored rows are (§5.8), and the
   best `limit` of those.
+- **The overlay** (`GET /api/tracks/{bed}/overlay?vocal=&vs=&bs=&phrase=&offset_bars=`,
+  `api/routes/tracks.py`, `matcher/overlay.py`): `placements` (one stored-shape
+  row per landing, keyed by `offset_bars` from the library's landing, each
+  with `band`, `incoming_phrases`, `window`, `spans` and the listing's playback
+  terms), `current`, the bed's sections, downbeats and original phrases, the
+  vocal and bed sections, `phrases` (the vocal's phrase options), `view`,
+  `stretch`, `tol_ms`, `frame_secs` and `waves` (the waveform route's envelopes
+  of the bed, its own vocal and the incoming vocal). Kept per pair key and
+  phrase until `overlay_fingerprint` moves — either song's scoring inputs, the
+  library's, their stems, sections, phrases, feature rows and sidecars, the
+  harmony threshold and slot floor, the active model, and the live scoring
+  settings. `POST /api/studio/session` takes `placement: {phrase, offset_bars}`.
 - **Mix summary**, **Discover gaps** (`GET /api/discovery/gaps`) and the
   attribute catalogue (`GET /api/analysis/attributes`).
 - **Pair events** (`POST /api/events`, §5.13): always answers 200 with
@@ -1135,11 +1202,11 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
 | `downloader/download.py` | SoundCloud-first download, verified YouTube fallback, re-verify |
 | `stems/separate.py` | htdemucs, four sources + summed instrumental |
 | `analysis/` | `essentia_groups.py` (the analyser), `ml_models.py` (EffNet heads), `project.py` (payloads → `features`), `allin1_runner.py`, `structure.py` (the cut and per-section measurements), `phrases.py`, `hooks.py`, `quality.py`, `vocals.py`, `analyze.py` (shared tempo/key helpers), `decode.py`, `frames.py`, `registry.py` + `cache.py` (feature groups), `timeseries.py` (sidecars), `attributes.py`, `compare.py`, `threads.py` |
-| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `learning.py` (labels, ranker, blend, shadow gate, tick), `weight_fit.py`, `term_report.py`, `segment_match.py` |
+| `matcher/` | `match.py`, `sections.py`, `section_score.py`, `patterns.py`, `harmony.py`, `alignment.py`, `phrase_align.py`, `effort.py`, `recipe.py`, `plan.py`, `compat.py`, `dedup.py`, `features.py`, `model_scorer.py`, `learning.py` (labels, ranker, blend, shadow gate, tick), `weight_fit.py`, `term_report.py`, `segment_match.py`, `overlay.py` (the ghost-slot overlay: every landing of a placement, priced) |
 | `render/` | `dsp.py`, `master.py`, `mixdown.py`, `session.py`, `exports.py` |
 | `frontend/src/` | `App.jsx`; `shell/` (`Sidebar` — the rail and `RETIRED_ROUTES`); `components/` (screens; `parts/` — the Library's Parts mode and its dock; `segments/` — the parts table, filters, mini studio; `AnalysisPanels.jsx` — the attribute picker, Compare, the analyser status; `pairs/pairModel.js`, `pairs/TuneDrawer.jsx`; `ui/primitives.jsx`); `hooks/`; `engine/` (`MashupEngine`, decode, grid); `api.js`, `events.js` (the pair-event buffer), `tune.js` (the Tune drawer's re-rank and the Why bar), `theme.js`, `attributes.js`; `public/soundtouch-processor.js` |
-| `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks), `sim_learning.py` (a synthetic listener judging through the dock while the learning loop retrains: NDCG@10 against the rules) |
-| `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS; `essentia_fake.py`; `ui/` — Playwright scripts run under Node: `ui_check.cjs` (no truncated text, and the screenshots), `library_perf.cjs` (first rows, filter, sort, scroll) |
+| `scripts/` | `bench_one_pass.py` (one pass over a folder, per stage, and the once-per-track check), `bench_allin1_models.py` (ensemble vs a fold), `db_report.py` (what the database holds, read-only), `ingest_urls.py` (a library from a list of links), `fetch_essentia_models.py`, `synth_library.py` (a seeded synthetic library with planted drop-in pairs, no audio), `bench_scale.py` (scoring, listing and API cost at 2k / 5k / 10k tracks), `sim_learning.py` (a synthetic listener judging through the dock while the learning loop retrains: NDCG@10 against the rules), `bench_overlay.py` (the overlay's payload cached and uncached, and planted phrase starts against the originals) |
+| `tests/` | pytest suite, including frontend contract tests that read the JSX/CSS; `essentia_fake.py`; `ui/` — Playwright scripts run under Node: `ui_check.cjs` (no truncated text, and the screenshots), `library_perf.cjs` (first rows, filter, sort, scroll), `overlay_perf.cjs` (the overlay's draw time while dragging, and space-to-sound) |
 
 **Tables** (`database/schema.sql`):
 
@@ -1395,6 +1462,20 @@ Contexts: `dock`, `track_detail`, `studio`, `parts` (Library → Parts), `mixes`
   (`matcher/segment_match.py`): a new term in `score_all_pairs` must be added
   there too; a test checks every stored pairing's total comes back identical.
   Its caches are keyed by `_fingerprint` — a new input must be in it.
+- **One placement, played one way: `phrase_align.play_spans`.** The dock's
+  loop, the mini studio, Studio's lanes, the overlay and the FL session start
+  a placed pairing's clips there; a new consumer reads the row's
+  `vocal_play_start` / `bed_play_start`, never its own sum. A session treats a
+  trim at the span as the placement (so it is not snapped to a downbeat).
+- **The overlay is the scorer, not a copy of it** (`matcher/overlay.py`). It
+  forces a landing through `phrase_align.place` and prices it with the section
+  search's own functions on `match.pair_context` — the context `score_pair`
+  is built from; a new section term, or a change to the timing or slot blend,
+  reaches it through those, and `tests/test_overlay.py` checks the library's
+  landing against `score_pair`'s stored row column for column. Its cache is
+  keyed by `tracks.overlay_fingerprint`: a new input must be in it. A
+  placement handed back from the browser is re-priced from `{phrase,
+  offset_bars}`, never taken as seconds.
 - **One transpose per pair: `matcher/recipe.bed_shift`.** Anything that sets a
   bed's semitones reads `semitone_shift` from the listing, a timing option's own
   `semitone_shift`, or `bed_shift` — never a fresh Camelot sum.
@@ -1726,16 +1807,23 @@ table padded to 481,000 rows, as `bench_scale.py` does):
    *Suggested from your ratings* need 10 loved and 10 rejected. Nothing about
    the loop has met a real listener yet: the numbers in §8 are a synthetic one.
 5. **Import the documented Big Bootie mixes** (~17) to build training positives.
-6. **allin1 features that do not reach the ear yet**: the dock loop, Studio and
-   the mini studio start the vocal at its section, not its phrase pickup;
-   Studio's FL export sends section trims, so the session skips the phrase
-   placement. A scoped dock lists instrumental-over-instrumental rows above
-   vocal pairs. allin1's downbeat confidence is stored but unused (a bar 1 a
-   beat late pairs as freely as any).
+6. **allin1 features that do not reach the ear yet**: a scoped dock lists
+   instrumental-over-instrumental rows above vocal pairs. allin1's downbeat
+   confidence is stored but unused (a bar 1 a beat late pairs as freely as
+   any).
 7. **Engine:** the best 8/16-bar **phrase window** of each kept pairing is
-   stored (§5.7) but nothing places it yet — the dock loop, Studio and the FL
-   export still build the whole section pairing — and it is scored at weight
-   0, after the pairing has won. Still open: windows that compete for the
+   stored (§5.7) and the overlay names it, but the dock loop, Studio and the
+   FL export still build from the phrase over the whole section pairing, not
+   the window — and it is scored at weight 0, after the pairing has won.
+   **`place` gates most dragged landings on the closing bar line**: a bed
+   section's downbeats stop one bar short of its end (the next section owns
+   that line), so when the overlap is cut by the bed's end, the vocal's bar
+   line at that end has no bed bar line near it and counts as a ~1 bar error.
+   At the library's own landing the two sections usually end together, so the
+   run rarely meets it; at a landing a few bars later the overlay shows
+   nearly every one as **gated** for that one bar (the band shows the rest
+   holding). Fixing it in `place` (count the closing line as the overlap's
+   end) changes stored scores, so it waits for the owner. Still open: windows that compete for the
    rank, 32 bars, the per-bar `allin1_embeddings` (no reader yet), per-bar
    chroma for progressions, stem quality as a section term. The slot's
    register reads the Camelot transpose, not the measured one (§5.7).

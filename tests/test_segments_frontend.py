@@ -126,10 +126,16 @@ def test_open_in_studio_carries_the_tweaks():
 
 
 def test_the_wav_render_places_the_trim_start_as_the_offset():
-    """§7: build_mixdown puts a clip's first rendered sample at offset_sec."""
+    """§7: build_mixdown puts a clip's first rendered sample at offset_sec.
+    Phase 4: the clips start at the pair's play spans (the vocal's pickup,
+    useMiniStudio.clipsOf), the bed offset converted by bedOffsetFor."""
     band = FILES["MiniStudio.jsx"]
-    assert "clip_start: pair.vocal_section_start" in band
-    assert "clip_start: pair.inst_section_start" in band
+    assert "const cl = clipsOf(pair, s);" in band
+    assert "clip_start: cl.vStart, clip_end: cl.vEnd" in band
+    assert "clip_start: cl.bStart, clip_end: cl.bEnd" in band
+    assert "const off = cl.bedOffset;" in band
+    hook = (ROOT / "frontend" / "src" / "hooks" / "useMiniStudio.js").read_text(encoding="utf-8")
+    assert "bedOffsetFor(pair, s.nudgeMs / 1000, vStart, bStart, s.vocalRate, bedRate)" in hook
     assert 'j.status === "completed"' in band
 
 

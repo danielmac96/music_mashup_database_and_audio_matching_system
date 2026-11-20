@@ -3489,3 +3489,59 @@ input, select { font-family: inherit; }
 .pc-whybar .w-learned { background: var(--run-soft); }
 .pc-whybar .w-effort, .pc-whybar .neg { background: var(--fail); opacity: 0.85; }
 .pd-reads { padding: 4px 14px 6px; font-size: 12px; color: var(--fg-2); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * Track detail — the ghost-slot overlay ("this vocal over that bed", Phase 4)
+ * ══════════════════════════════════════════════════════════════════════════ */
+.ov-panel {
+  padding: 10px 16px 12px; border-bottom: 1px solid var(--line-soft);
+  display: flex; flex-direction: column; gap: 8px; outline: none;
+}
+.ov-panel:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); border-radius: var(--r-card); }
+.ov-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ov-head b { font-size: 12.5px; font-weight: 600; }
+.ov-body { display: grid; grid-template-columns: minmax(200px, 260px) minmax(0, 1fr); gap: 12px; }
+.ov-picker { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ov-input, .ov-select {
+  height: 28px; border-radius: var(--r-ctl); border: 1px solid var(--line-2); background: var(--well);
+  color: var(--fg); padding: 0 8px; font: 400 12px var(--font-ui); min-width: 0;
+}
+.ov-list { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow: auto; }
+.ov-card {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  padding: 6px 8px; border-radius: var(--r-card); border: 1px solid var(--line-soft);
+  background: var(--card); color: var(--fg); cursor: pointer; font: 400 12px var(--font-ui);
+}
+.ov-card:hover { border-color: var(--accent); }
+.ov-card.on { border-color: var(--accent); background: var(--accent-bg); }
+.ov-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ov-cardtitle { font-weight: 600; overflow-wrap: anywhere; }
+.ov-cardartist { font-size: 11px; overflow-wrap: anywhere; }
+.ov-cardmeta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ov-stage { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ov-score { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ov-pair { font-size: 12.5px; overflow-wrap: anywhere; }
+.ov-vox { color: var(--vocal-label); font-weight: 600; }
+.ov-bed { color: var(--bed-label); font-weight: 600; }
+.ov-total { font-size: 15px; font-weight: 600; }
+.ov-gated {
+  font-size: 10px; color: var(--fail-soft); background: var(--fail-bg); border: 1px solid var(--fail);
+  border-radius: var(--r-pill); padding: 0 6px; white-space: nowrap;
+}
+.ov-canvas {
+  width: 100%; display: block; border-radius: var(--r-ctl); background: var(--bg-sunk);
+  border: 1px solid var(--line-soft); cursor: grab; touch-action: none;
+}
+.ov-canvas:active { cursor: grabbing; }
+.ov-readout { display: flex; gap: 6px 14px; flex-wrap: wrap; color: var(--fg-2); }
+.ov-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ov-seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--r-ctl); overflow: hidden; }
+.ov-seg button {
+  height: 26px; padding: 0 9px; border: 0; background: var(--panel); color: var(--fg-2);
+  font: 400 11.5px var(--font-ui); cursor: pointer; white-space: nowrap;
+}
+.ov-seg button + button { border-left: 1px solid var(--line-2); }
+.ov-seg button.on { background: var(--accent-bg); color: var(--fg); }
+.ov-seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.ov-phrase { display: inline-flex; align-items: center; gap: 6px; color: var(--fg-2); }
+@media (max-width: 1100px) { .ov-body { grid-template-columns: minmax(0, 1fr); } }

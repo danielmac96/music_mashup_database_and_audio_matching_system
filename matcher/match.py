@@ -1995,25 +1995,16 @@ def dropin_facts(top: dict, bed: dict) -> dict:
             "camelot_shift": compute_semitone_shift(v_cam, b_cam)}
 
 
-def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict]:
-    """Score one vocal-over-bed pair the library run left out — outside the
-    tempo or key gate, two cuts of one record — on demand ("Score this pair
-    anyway"). The same functions as score_all_pairs: composite_score, the
-    section search, measured harmony, the section fit. Rows are stored with
-    scorer='forced' so the card can say the gates would have dropped it, and
-    the next Score library run clears them like any other row.
-
-    Returns the stored rows best-first; [] when either side has no analysed
-    stem (nothing to score)."""
-    from config import current_scoring_settings, current_section_weights
-    from matcher.patterns import current_patterns
-    from database.models import bulk_upsert_candidates, candidate_row, get_sections
-    from matcher.sections import top_section_pairs, usable_sections
-
-    # Resolved per call, never the DB_PATH bound when this module was imported
-    # (readme §7: workers call without a path).
-    import database.models as _models
-    db = db_path if db_path is not None else _models.DB_PATH
+def pair_context(vocal_song_id: int, inst_song_id: int, db) -> Optional[dict]:
+    """Everything score_pair reads about one vocal-over-bed song pair, built
+    once: the live settings, both songs' scoring features on the run's tempo
+    map (``_full_by_song``), the song-level terms (``composite_score``), the
+    segmentation engine and its timing context, the stretch, and a memoised
+    section reader. The overlay (matcher/overlay.py) scores a placement from
+    the same context, so its totals are score_pair's (readme §7). None when
+    either side has no analysed stem."""
+    from config import current_scoring_settings
+    from database.models import get_sections
     cfg = current_scoring_settings()
     weights = cfg["match_weights_vocal"]
     effort_weight = cfg["effort_weight"]
@@ -2028,14 +2019,13 @@ def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict
         stem_type="instrumental", columns=FEATURES_SCORING_COLUMNS,
         song_ids=[inst_song_id], db_path=db)), None)
     if top is None or bed is None:
-        return []
+        return None
     top, bed = _with_full_bpm(top, full_by_song), _with_full_bpm(bed, full_by_song)
     stats = get_library_stats(db_path=db)
     base = composite_score(top, bed, weights=weights, stats=stats,
                            effort_weight=effort_weight,
                            combo_type="vocal_over_instrumental")
     cache: Dict[int, list] = {}
-
     engine, timing = run_engine(db, cfg)
 
     def sections_of(song_id):
@@ -2043,17 +2033,56 @@ def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict
             cache[song_id] = get_sections(song_id, db_path=db, engine=engine)
         return cache[song_id]
 
+    shift = compute_semitone_shift(str(top.get("camelot") or ""),
+                                   str(bed.get("camelot") or ""))
+    from database.models import get_conn
+    conn = get_conn(db)
+    try:
+        pipelines = {r[0]: r[1] or "unified_4stem" for r in conn.execute(
+            "SELECT id, separation_pipeline FROM songs WHERE id IN (?, ?)", pair_ids)}
+    finally:
+        conn.close()
+    return {"cfg": cfg, "pipeline": pair_pipeline(pipelines, vocal_song_id, inst_song_id), "weights": weights, "effort_weight": effort_weight,
+            "top": top, "bed": bed, "base": base, "stats": stats,
+            "engine": engine, "timing": timing, "sections_of": sections_of,
+            "stretch": compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0,
+            "timing_ctx": timing_for(timing, vocal_song_id, db, shift),
+            "camelot_shift": shift}
+
+
+def score_pair(vocal_song_id: int, inst_song_id: int, db_path=None) -> List[dict]:
+    """Score one vocal-over-bed pair the library run left out — outside the
+    tempo or key gate, two cuts of one record — on demand ("Score this pair
+    anyway"). The same functions as score_all_pairs: composite_score, the
+    section search, measured harmony, the section fit. Rows are stored with
+    scorer='forced' so the card can say the gates would have dropped it, and
+    the next Score library run clears them like any other row.
+
+    Returns the stored rows best-first; [] when either side has no analysed
+    stem (nothing to score)."""
+    from config import current_section_weights
+    from matcher.patterns import current_patterns
+    from database.models import bulk_upsert_candidates, candidate_row
+    from matcher.sections import top_section_pairs, usable_sections
+
+    # Resolved per call, never the DB_PATH bound when this module was imported
+    # (readme §7: workers call without a path).
+    import database.models as _models
+    db = db_path if db_path is not None else _models.DB_PATH
+    ctx = pair_context(vocal_song_id, inst_song_id, db)
+    if ctx is None:
+        return []
+    cfg, weights, effort_weight = ctx["cfg"], ctx["weights"], ctx["effort_weight"]
+    top, bed, base = ctx["top"], ctx["bed"], ctx["base"]
+    engine, timing, sections_of = ctx["engine"], ctx["timing"], ctx["sections_of"]
+
     v_use = usable_sections(sections_of(vocal_song_id), True)
     i_use = usable_sections(sections_of(inst_song_id), False)
-    stretch = compute_stretch_factor(top.get("bpm"), bed.get("bpm")) or 1.0
+    stretch = ctx["stretch"]
     pairs = (top_section_pairs(v_use, i_use, stretch, prefiltered=True, bpm=top.get("bpm"),
                                limit=cfg["max_section_pairs"],
                                weights=current_section_weights(), patterns=current_patterns(),
-                               timing=timing_for(
-                                   timing, vocal_song_id, db,
-                                   compute_semitone_shift(
-                                       str(top.get("camelot") or ""),
-                                       str(bed.get("camelot") or ""))))
+                               timing=ctx["timing_ctx"])
              if v_use and i_use else [])
     rows, built = [], []
     pipelines = song_pipelines(db)

@@ -48,6 +48,7 @@ const KEYS = [
   ["Library search", "type 8A 124-128 house 2015+ vox stems rated — read as filters; the dock and Parts read the same words (dropin strong free loved q60+) · ⏎ pin them · ↓ into the table · esc clear"],
   ["Parts (Library → Vocal / Bed parts)", "↑↓ move in the table · click a part: the dock ranks its partners · in the dock ↑↓ move · ⏎ open the audition panel · space play it · 1–5 rate · [ ] next / previous match · esc clear the part"],
   ["Track detail", "space play the hook · esc back to the Library (same selection and scroll) · click a section block to loop it · click or drag the structure to scrub · the dock's keys still work beside it"],
+  ["Track detail · overlay", "with the Try-a-vocal panel focused: ←→ step partners · ⇧←/⇧→ or drag the vocal to move it by bars · [ ] another of its phrases · click a bar to play from there · space play · V/B solo · O hear the bed's original vocal instead (A/B) · 1–5 rate · ⏎ open in Studio at this placement · esc leave the panel"],
   ["Queue", "↑↓ move (opens the inspector) · ⏎ open the track · r retry a failed track · esc close the inspector"],
   ["Discover", "⏎ search (or paste a link) · ↓ into the results · ↑↓ move · x shortlist · ⏎ preview a track, open a set or artist · / back to the search"],
   ["Mixes › Match", "click a vocal, then the bed it went over · esc cancel the pick · ctrl/⌘+Z undo the last move"],

@@ -431,7 +431,8 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
                   db_path=None,
                   vocal_section_idx: Optional[int] = None,
                   inst_section_idx: Optional[int] = None,
-                  lanes: Optional[list] = None) -> Optional[Path]:
+                  lanes: Optional[list] = None,
+                  placement: Optional[dict] = None) -> Optional[Path]:
     """Write one mashup's FL session folder. Returns the folder, or None on a
     caller-fixable problem (reported through on_progress).
 
@@ -445,7 +446,14 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     The section indexes name the pairing the user chose — a dock card, a set
     item, Studio's armed timing. Without them the export used the plan's own
     label-priority pick, so the folder could hold a verse over a breakdown while
-    the card that was exported said chorus over drop."""
+    the card that was exported said chorus over drop.
+
+    `placement` ({phrase, offset_bars}, Track detail's overlay → Studio) names
+    a landing other than the library run's: the vocal's ``phrase``-th phrase
+    on the bed downbeat ``offset_bars`` from the run's own. It is re-priced
+    here (matcher/overlay.placement_for) from the section pair — never taken
+    as seconds from the browser — and used even when it fails the timing gate,
+    because the user chose it by ear."""
     def _tick(pct, msg):
         if on_progress:
             on_progress(pct, msg)
@@ -511,11 +519,36 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
     # The allin1 engine: hang both stems off the pair's phrase placement (the
     # vocal's phrase downbeat on the bed's landing), keeping the pickup. A
     # trim set in Studio is the user's and wins.
-    placement = _phrase_placement(fdb, vocal_song_id, inst_song_id, pairing, rate_inst)
+    chosen = None
+    if placement and pairing and pairing.get("vocal_section_idx") is not None \
+            and pairing.get("inst_section_idx") is not None:
+        chosen = _chosen_placement(fdb, vocal_song_id, inst_song_id, pairing, placement)
+    if chosen is not None:
+        placement = chosen
+    else:
+        placement = _phrase_placement(fdb, vocal_song_id, inst_song_id, pairing, rate_inst)
+    # A trim Studio laid FROM the placement (its play span — the vocal at its
+    # pickup, the bed under it) is the placement, not a trim of the user's:
+    # left as a trim it would snap to the next downbeat and lose the pickup.
+    if placement and placement.get("bed_landing_sec") is not None:
+        from matcher.phrase_align import play_spans
+        spans = play_spans(placement, rate_inst) or {}
+        from_span = set()
+        for lane_, key in ((v_lane, "vocal_play_start"), (b_lane, "bed_play_start")):
+            at = spans.get(key)
+            if at is not None and "clip_start" in lane_ \
+                    and abs(float(lane_["clip_start"]) - at) < 2e-3:
+                lane_.pop("clip_start")
+                from_span.add(key)
+        # session.json's clips then say where each file really starts.
+        if "vocal_play_start" in from_span:
+            v_start = spans["vocal_play_start"]
+        if "bed_play_start" in from_span:
+            i_start = spans["bed_play_start"]
     v_anchor = b_anchor = None
     lead = 0.0
     if placement and placement.get("bed_landing_sec") is not None \
-            and placement.get("timing_ok") != 0:
+            and (placement.get("timing_ok") != 0 or chosen is not None):
         lead = max(0.0, -(placement.get("vocal_pickup_ms") or 0.0) / 1000.0)
         if "clip_start" not in v_lane:
             v_anchor = placement.get("alignment_downbeat")
@@ -651,6 +684,32 @@ def build_session(token: str, vocal_song_id: int, inst_song_id: int, *,
 
     _tick(100, f"Session ready: {out.name}")
     log.info("FL session exported: %s", out)
+    return out
+
+
+def _chosen_placement(db, vocal_song_id: int, inst_song_id: int,
+                      pairing: dict, chosen: dict) -> Optional[dict]:
+    """The overlay's placement of the exported section pair, re-priced from
+    its ``{phrase, offset_bars}`` (matcher/overlay.placement_for); None when
+    that landing does not exist, so the export falls back to the run's."""
+    try:
+        from matcher.overlay import placement_for
+        row = placement_for(vocal_song_id, inst_song_id,
+                            int(pairing["vocal_section_idx"]),
+                            int(pairing["inst_section_idx"]),
+                            int(chosen.get("phrase") or 0),
+                            int(chosen.get("offset_bars") or 0), db_path=db)
+    except Exception:  # noqa: BLE001 — the export falls back to the run's placement
+        log.warning("the overlay's placement for the export failed", exc_info=True)
+        return None
+    if row is None:
+        return None
+    out = {k: row.get(k) for k in (
+        "alignment_downbeat", "alignment_offset", "vocal_phrase_start",
+        "vocal_pickup_ms", "bed_landing_sec", "timing_ok", "timing_err_mean_ms",
+        "timing_err_max_ms", "score_timing")}
+    out.update({"phrase": int(chosen.get("phrase") or 0),
+                "offset_bars": int(chosen.get("offset_bars") or 0)})
     return out
 
 

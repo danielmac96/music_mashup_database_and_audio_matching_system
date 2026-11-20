@@ -120,10 +120,57 @@ def pick_vocal_phrase(vocal: Dict, phrases: Optional[Sequence[Dict]]) -> Dict:
             "source": "section"}
 
 
+def vocal_phrase_options(vocal: Dict, phrases: Optional[Sequence[Dict]],
+                         limit: int = 4) -> List[Dict]:
+    """The phrases a vocal section can be hung off, earliest first, each in
+    ``pick_vocal_phrase``'s shape — the first is always the one ``place``
+    uses by default, so option 0 is the library run's placement. A section
+    with no sung phrase offers only its first downbeat."""
+    start = float(vocal.get("start_sec") or 0.0)
+    end = float(vocal.get("end_sec") or 0.0)
+    inside = sorted(phrases_in(phrases or [], start, end),
+                    key=lambda x: float(x["downbeat_sec"]))
+    if not inside:
+        return [pick_vocal_phrase(vocal, phrases)]
+    return [{"downbeat": float(p["downbeat_sec"]), "pickup": float(p["pickup_sec"]),
+             "onset": float(p["onset_sec"]), "bars": p.get("bars"), "source": "phrase"}
+            for p in inside[:max(1, int(limit))]]
+
+
+def play_spans(placement: Dict, stretch: float) -> Optional[Dict]:
+    """Where a placed pairing starts sounding — the one definition the dock's
+    loop, the mini studio, Studio, the overlay and the FL session read
+    (readme §5.7, "Playing the placement").
+
+    The vocal starts at its phrase PICKUP (``vocal_phrase_start``, never
+    after the phrase's downbeat), and the bed at the point that sits under
+    it once conformed: the landing, less the pickup played at the bed's rate.
+    So the two clips start together and the vocal's phrase downbeat meets the
+    bed's landing ``play_lead`` seconds in. None when the pairing has no
+    placement (no grid). A stored row has always passed the timing gate; a
+    landing that fails it is one the user chose in the overlay, and is played
+    where they put it."""
+    d_v = placement.get("alignment_downbeat")
+    land = placement.get("bed_landing_sec")
+    if d_v is None or land is None:
+        return None
+    d_v, land = float(d_v), float(land)
+    rate = max(float(stretch or 1.0), 1e-6)
+    onset = placement.get("vocal_phrase_start")
+    onset = d_v if onset is None else min(float(onset), d_v)
+    lead = max(0.0, d_v - onset)
+    if land - lead * rate < 0.0:        # the bed cannot start before its file
+        lead = land / rate
+    return {"vocal_play_start": round(d_v - lead, 4),
+            "bed_play_start": round(land - lead * rate, 4),
+            "play_lead": round(lead, 4)}
+
+
 def place(vocal: Dict, bed: Dict, stretch: float = 1.0,
           phrases: Optional[Sequence[Dict]] = None, tol_ms: float = 25.0,
           ratios: Sequence[float] = (0.25, 0.5, 1.0, 2.0, 4.0),
-          conform: str = "bed") -> Dict:
+          conform: str = "bed", phrase: Optional[Dict] = None,
+          landings: Optional[Sequence[int]] = None) -> Dict:
     """Place one section pair (module docstring). Returns the stored fields:
 
       alignment_downbeat   the vocal bar line the pair hangs off (abs. secs)
@@ -136,13 +183,20 @@ def place(vocal: Dict, bed: Dict, stretch: float = 1.0,
       timing_ok            1 / 0, or None when there is no grid to judge
       timing_err_mean_ms / timing_err_max_ms
       score_timing         0-1 (timing_score), None when unjudged
+
+    ``phrase`` and ``landings`` are the overlay's (matcher/overlay.py): a
+    vocal phrase other than the first (a ``pick_vocal_phrase``-shaped dict)
+    and the bed downbeat indexes to try in place of LANDING_BARS — one index
+    asks "what if it landed exactly there". Omitted, the placement is the
+    library run's, bit for bit.
     """
     rate = max(float(stretch or 1.0), 1e-6)
     v_start = float(vocal.get("start_sec") or 0.0)
     v_end = float(vocal.get("end_sec") or 0.0)
     b_start = float(bed.get("start_sec") or 0.0)
     b_end = float(bed.get("end_sec") or 0.0)
-    phrase = pick_vocal_phrase(vocal, phrases)
+    if phrase is None:
+        phrase = pick_vocal_phrase(vocal, phrases)
     v_dbs = _downbeats(vocal)
     b_dbs = _downbeats(bed)
     empty = {"alignment_downbeat": phrase["downbeat"], "alignment_offset": None,
@@ -170,8 +224,8 @@ def place(vocal: Dict, bed: Dict, stretch: float = 1.0,
     pf = phrase_ratio_fit(vocal_bars, bed_bars, ratios)
 
     best = None
-    for k in LANDING_BARS:
-        if k >= len(b_dbs):
+    for k in (LANDING_BARS if landings is None else landings):
+        if k >= len(b_dbs) or k < 0:
             break
         land = b_dbs[k]
         b_rel = scale_grid([t for t in b_dbs if t >= land - 1e-3],
@@ -179,7 +233,7 @@ def place(vocal: Dict, bed: Dict, stretch: float = 1.0,
         b_span = (b_end - land) / (1.0 if conform == "vocal" else rate)
         span = min(v_span, b_span)
         bar = (v_bar or b_bar or 2.0)
-        if span < MIN_OVERLAP_BARS * bar * 0.95 and k:
+        if span < MIN_OVERLAP_BARS * bar * 0.95 and (k or landings is not None):
             break                       # landing later leaves too little overlap
         errs = grid_errors(v_rel, b_rel, span)
         if errs is None:
@@ -193,6 +247,8 @@ def place(vocal: Dict, bed: Dict, stretch: float = 1.0,
         if cand["ok"]:
             break
 
+    if best is None:
+        return empty                    # a forced landing with no room to land
     land = best["land"]
     # Bed shift: the vocal's phrase downbeat (from its section start) against
     # the landing (from the bed's section start, at the bed's played speed).

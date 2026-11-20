@@ -841,7 +841,11 @@ def get_waveform(song_id: int, stem: str = "vocals") -> dict:
     conn.close()
     if not row:
         raise HTTPException(status_code=404, detail="song not found")
+    return waveform_payload(song_id, stem)
 
+
+def waveform_payload(song_id: int, stem: str) -> dict:
+    """The waveform route's body: GET /waveform and the overlay both serve it."""
     feat_stem = get_features_for_song(song_id, stem_type=stem)
     waveform = feat_stem.get("waveform_rms", []) if feat_stem else []
 
@@ -871,6 +875,136 @@ def get_waveform(song_id: int, stem: str = "vocals") -> dict:
         "beat_times": beat_times, "beat_source": beat_source,
         "beat_phase": (beat_feat or {}).get("beat_phase") or 0,
     }
+
+
+# ── The ghost-slot overlay (readme §3 Track detail, §5.7) ─────────────────────
+#
+# One vocal section over one bed section, every landing priced
+# (matcher/overlay.py). Kept per pair key and phrase until anything it reads
+# moves (overlay_fingerprint), so stepping partners and back, or re-opening
+# the panel, costs a dictionary lookup.
+
+_OVERLAY_CACHE: "dict" = {}
+_OVERLAY_MAX = 64
+_OVERLAY_LOCK = threading.Lock()
+
+
+def overlay_fingerprint(bed_id: int, vocal_id: int) -> tuple:
+    """Changes whenever anything the overlay reads changes: either song's
+    scoring inputs (every writer bumps pairs_input_at, readme §7) and the
+    library's (the song terms are z-scored against it), their stems'
+    quality, sections, phrases, feature rows and frame sidecars, the
+    library's harmony threshold and slot floor, the active learned model —
+    and the live scoring settings, which are not in the database."""
+    import json as _json
+    from config import (current_float, current_scoring_settings,
+                        current_section_weights)
+    from matcher.patterns import current_patterns
+    ids = (int(bed_id), int(vocal_id))
+    conn = get_conn()
+    try:
+        db_part = tuple(conn.execute(
+            """SELECT (SELECT MAX(pairs_input_at) FROM songs),
+                      (SELECT GROUP_CONCAT(id || ':' || COALESCE(pairs_input_at, '')
+                                           || ':' || COALESCE(duration_secs, ''))
+                         FROM songs WHERE id IN (?, ?)),
+                      (SELECT COUNT(*) || ':' || COALESCE(SUM(quality), 0)
+                         FROM stems WHERE song_id IN (?, ?)),
+                      (SELECT COUNT(*) || ':' || COALESCE(MAX(id), 0)
+                         FROM features WHERE song_id IN (?, ?)),
+                      (SELECT COUNT(*) || ':' || COALESCE(MAX(id), 0)
+                         FROM sections WHERE song_id IN (?, ?)),
+                      (SELECT COUNT(*) || ':' || COALESCE(MAX(id), 0)
+                         FROM sections_allin1 WHERE song_id IN (?, ?)),
+                      (SELECT COUNT(*) || ':' || COALESCE(MAX(id), 0)
+                         FROM vocal_phrases WHERE song_id IN (?, ?)),
+                      (SELECT COUNT(*) || ':' || COALESCE(GROUP_CONCAT(
+                              stem_type || COALESCE(content_hash, '')), '')
+                         FROM analysis_frames WHERE song_id IN (?, ?)),
+                      (SELECT GROUP_CONCAT(key || '=' || COALESCE(value, ''))
+                         FROM app_prefs WHERE key IN ('harmony_unsure_below',
+                                                      'slot_dropin_floor')),
+                      (SELECT COUNT(*) || ':' || COALESCE(GROUP_CONCAT(
+                              id || '@' || COALESCE(activated_at, '')), '')
+                         FROM models WHERE active = 1)""",
+            ids * 7).fetchone())
+    finally:
+        conn.close()
+    settings = _json.dumps([current_scoring_settings(), current_section_weights(),
+                            current_patterns(),
+                            [current_float(k) for k in ("timing_tol_ms", "timing_weight",
+                                                        "slot_weight", "dropin_bonus")]],
+                           sort_keys=True, default=str)
+    return db_part + (settings,)
+
+
+def overlay_payload(bed_id: int, vocal: int, vs: int, bs: int, phrase: int = 0) -> dict:
+    """The overlay as the route serves it, cached by pair key + fingerprint."""
+    from database import models as _models
+    from matcher import overlay as _overlay
+    key = (str(_models.DB_PATH), int(bed_id), int(vocal), int(vs), int(bs), int(phrase))
+    fp = overlay_fingerprint(bed_id, vocal)
+    with _OVERLAY_LOCK:
+        hit = _OVERLAY_CACHE.get(key)
+    if hit is not None and hit[0] == fp:
+        return hit[1]
+    core = _overlay.build(bed_id, vocal, vs, bs, phrase)
+    if core is None:
+        raise HTTPException(status_code=409,
+                            detail="both songs need separated, analysed stems")
+    if core.get("error"):
+        raise HTTPException(status_code=404, detail=core["error"])
+    from api.routes.mashups import _with_playback_terms
+    rows = core["placements"]
+    ranks = _models.candidate_ranks(_models.DB_PATH)
+    for r in rows:
+        r["score_percentile"] = ranks.rank("vocal_over_instrumental", "score_total",
+                                           r.get("score_total"))
+    _with_playback_terms(rows)
+    conn = get_conn()
+    try:
+        meta = {r["id"]: dict(r) for r in conn.execute(
+            "SELECT id, title, artist, duration_secs FROM songs WHERE id IN (?, ?)",
+            (int(bed_id), int(vocal))).fetchall()}
+    finally:
+        conn.close()
+    core["bed"] = {**meta.get(int(bed_id), {}),
+                   "bpm": rows[0]["inst_bpm"] if rows else None,
+                   "camelot": rows[0]["inst_camelot"] if rows else None}
+    core["vocal"] = {**meta.get(int(vocal), {}),
+                     "bpm": rows[0]["vocal_bpm"] if rows else None,
+                     "camelot": rows[0]["vocal_camelot"] if rows else None}
+    dur = core["bed"].get("duration_secs")
+    if dur:
+        core["view"][1] = round(min(core["view"][1], float(dur)), 3)
+    # The waveform route's own envelopes: the bed's instrumental, the vocal it
+    # used to carry (the ghost) and the incoming vocal, each over its whole
+    # track (the canvas maps the incoming one onto the bed's timeline).
+    core["waves"] = {
+        "bed": waveform_payload(int(bed_id), "instrumental")["waveform"],
+        "ghost": waveform_payload(int(bed_id), "vocals")["waveform"],
+        "vocal": waveform_payload(int(vocal), "vocals")["waveform"],
+    }
+    with _OVERLAY_LOCK:
+        if len(_OVERLAY_CACHE) >= _OVERLAY_MAX:
+            _OVERLAY_CACHE.pop(next(iter(_OVERLAY_CACHE)))
+        _OVERLAY_CACHE[key] = (fp, core)
+    return core
+
+
+@router.get("/{bed_id}/overlay")
+def get_overlay(bed_id: int, vocal: int, vs: int, bs: int, phrase: int = 0,
+                offset_bars: int = 0) -> dict:
+    """The ghost-slot overlay: ``vocal``'s section ``vs`` over this track's
+    section ``bs``, on this track's timeline, every landing priced
+    (matcher/overlay.build). ``current`` names the placement asked for by
+    ``offset_bars`` (bars from the library run's landing), falling back to the
+    library's own when that landing does not exist."""
+    core = overlay_payload(bed_id, vocal, vs, bs, phrase)
+    offsets = [p["offset_bars"] for p in core["placements"]]
+    current = int(offset_bars) if int(offset_bars) in offsets else (0 if 0 in offsets else
+                                                                     (offsets[0] if offsets else None))
+    return {**core, "current": current}
 
 
 @router.get("/{song_id}/audio/{stem_type}")

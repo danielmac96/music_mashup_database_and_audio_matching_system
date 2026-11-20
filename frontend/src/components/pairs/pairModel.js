@@ -143,6 +143,13 @@ export function scoredOptionOf(c) {
     score_section: c.score_section,
     section_bars_vocal: c.section_bars_vocal,
     alignment_offset: c.alignment_offset ?? null,
+    // Where the placed pairing starts sounding (matcher/phrase_align.play_spans):
+    // Studio trims both lanes to these, so it opens on the vocal's pickup.
+    vocal_play_start: c.vocal_play_start ?? null,
+    bed_play_start: c.bed_play_start ?? null,
+    // A landing chosen in Track detail's overlay — the FL export re-prices it.
+    placement: c.offset_bars != null
+      ? { phrase: c.phrase ?? 0, offset_bars: c.offset_bars } : null,
     reason: c.reason,
     // The transpose this section pair plays (matcher/recipe.bed_shift, sent as
     // semitone_shift) and the measured harmony behind it — the same fields the

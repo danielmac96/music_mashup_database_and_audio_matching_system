@@ -164,6 +164,14 @@ def lanes_payload(lanes: Optional[list]) -> Optional[list]:
     return [lane.model_dump(exclude_none=True) for lane in lanes]
 
 
+class PlacementRef(BaseModel):
+    """A placement the overlay priced (matcher/overlay.py): the vocal's
+    ``phrase``-th phrase on the bed downbeat ``offset_bars`` from the library
+    run's own landing."""
+    phrase: int = Field(default=0, ge=0, le=16)
+    offset_bars: int = Field(default=0, ge=-256, le=256)
+
+
 class SessionRequest(BaseModel):
     vocal_song_id: int
     inst_song_id: int
@@ -173,6 +181,9 @@ class SessionRequest(BaseModel):
     inst_section_idx: Optional[int] = None
     # Studio's lane state. Omitted: the plan's values, as before.
     lanes: Optional[list[LaneState]] = None
+    # Track detail's overlay placement (phrase, offset_bars), carried through
+    # Studio: re-priced server-side from the section pair above.
+    placement: Optional[PlacementRef] = None
 
 
 @router.post("/session")
@@ -182,7 +193,9 @@ def queue_session(req: SessionRequest, background: BackgroundTasks) -> dict:
     job_id = jobs.new_job(kind="session", message="Queued for FL session export")
     background.add_task(session_worker.run, job_id,
                         req.vocal_song_id, req.inst_song_id,
-                        req.vocal_section_idx, req.inst_section_idx, lanes)
+                        req.vocal_section_idx, req.inst_section_idx, lanes,
+                        # Only when given, so the worker's call is as before.
+                        *((req.placement.model_dump(),) if req.placement else ()))
     return {"job_id": job_id,
             "archive_url": f"/api/studio/session/{job_id}/archive"}
 

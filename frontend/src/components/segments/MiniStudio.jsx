@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
 import { track } from "../../events";
 import { toast } from "../../toast";
-import { DEFAULT_HP_HZ, useMiniStudio } from "../../hooks/useMiniStudio";
+import { DEFAULT_HP_HZ, clipsOf, useMiniStudio } from "../../hooks/useMiniStudio";
 import { KeyChip, TierBadge } from "../ui/primitives";
 import { StarRating } from "../StarRating";
 import { RecipeStrip } from "../pairs/RecipeStrip";
@@ -92,14 +92,17 @@ export function MiniStudio({ pair, lead, sel, player, ratings, notes, onOpenStud
 
   const renderWav = async () => {
     if (!s) return;
-    const bedRate = s.bedRate * (1 + s.tempoPct / 100);
-    const vLen = (pair.vocal_section_end - pair.vocal_section_start) / s.vocalRate;
-    const bLen = (pair.inst_section_end - pair.inst_section_start) / bedRate;
-    const off = s.nudgeMs / 1000;
+    // The clips the band plays (useMiniStudio.clipsOf): from the vocal's
+    // phrase pickup when the pair was placed, the bed under it.
+    const cl = clipsOf(pair, s);
+    const bedRate = cl.bedRate;
+    const vLen = (cl.vEnd - cl.vStart) / s.vocalRate;
+    const bLen = (cl.bEnd - cl.bStart) / bedRate;
+    const off = cl.bedOffset;
     // The loop as heard: the vocal section once, the bed repeated under it.
     const clips = [{ song_id: pair.vocal_song_id, stem: "vocals", offset_sec: 0,
                      rate: s.vocalRate, semitones: 0, gain: s.muteVocal ? 0 : s.vocalGain,
-                     clip_start: pair.vocal_section_start, clip_end: pair.vocal_section_end }];
+                     clip_start: cl.vStart, clip_end: cl.vEnd }];
     const reps = bLen > 0 ? Math.max(1, Math.min(8, Math.ceil((vLen - Math.max(0, off)) / bLen))) : 1;
     for (let k = 0; k < reps; k += 1) {
       const at = off + k * bLen;
@@ -107,7 +110,7 @@ export function MiniStudio({ pair, lead, sel, player, ratings, notes, onOpenStud
       clips.push({ song_id: pair.inst_song_id, stem: "instrumental",
                    offset_sec: Math.max(0, at), rate: bedRate, semitones: s.semitones,
                    gain: s.muteBed ? 0 : s.bedGain, hp_hz: s.hpHz || 0,
-                   clip_start: pair.inst_section_start, clip_end: pair.inst_section_end });
+                   clip_start: cl.bStart, clip_end: cl.bEnd });
     }
     setRendering(true);
     try {

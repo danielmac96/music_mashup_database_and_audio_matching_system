@@ -277,6 +277,11 @@ export const api = {
 
   getWaveform: (id, stem) => jsonFetch(`/api/tracks/${id}/waveform?stem=${stem}`),
 
+  // The ghost-slot overlay: vocal section `vs` of `vocalId` over this bed's
+  // section `bs`, every landing priced (matcher/overlay.py).
+  getOverlay: (bedId, { vocalId, vs, bs, phrase = 0 }) =>
+    jsonFetch(`/api/tracks/${bedId}/overlay?vocal=${vocalId}&vs=${vs}&bs=${bs}&phrase=${phrase}`),
+
   getFreshness: () => jsonFetch("/api/mashups/freshness"),
 
   startScoring: ({ bpmMaxDiff = null, keyMinScore = null } = {}) => {
@@ -418,7 +423,8 @@ export const api = {
   // Studio's armed timing; without it the server falls back to its own pick.
   // `lanes` (optional): Studio's lane state per role — rate, transpose, nudge,
   // trim, level, fades, filters (render/session.lane_overrides).
-  startSessionExport: (vocalSongId, instSongId, sections = null, lanes = null) =>
+  startSessionExport: (vocalSongId, instSongId, sections = null, lanes = null,
+                       placement = null) =>
     jsonFetch("/api/studio/session", {
       method: "POST",
       body: JSON.stringify({
@@ -426,6 +432,8 @@ export const api = {
         vocal_section_idx: sections?.vocal ?? null,
         inst_section_idx: sections?.inst ?? null,
         ...(lanes?.length ? { lanes } : {}),
+        // Track detail's overlay placement ({phrase, offset_bars}).
+        ...(placement ? { placement } : {}),
       }),
     }),
 
