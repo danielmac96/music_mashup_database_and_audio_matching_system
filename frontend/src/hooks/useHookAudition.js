@@ -34,10 +34,44 @@ export const hookUrl = (songId, stem, start, end) => {
  * columns and fall back to each track's 16-bar hook. */
 export function hookUrlsFor(c) {
   if (!c) return [];
+  // A placed pairing starts at its play spans (matcher/phrase_align.play_spans,
+  // sent on every row): the vocal at its phrase PICKUP, the bed at the point
+  // under it — so the loop opens on the singing, aligned, rather than on the
+  // section's first bar. Without a placement, the two sections' starts.
+  const [vStart, bStart] = playStartsOf(c);
   return [
-    hookUrl(c.vocal_song_id, "vocals", c.vocal_section_start, c.vocal_section_end),
-    hookUrl(c.inst_song_id, "instrumental", c.inst_section_start, c.inst_section_end),
+    hookUrl(c.vocal_song_id, "vocals", vStart, c.vocal_section_end),
+    hookUrl(c.inst_song_id, "instrumental", bStart, c.inst_section_end),
   ];
+}
+
+/** Where a row's two clips start: its play spans when it was placed, else
+ *  the sections' starts (readme §5.7, "Playing the placement"). */
+export function playStartsOf(c) {
+  if (!c) return [null, null];
+  const placed = c.vocal_play_start != null && c.bed_play_start != null;
+  return placed ? [c.vocal_play_start, c.bed_play_start]
+    : [c.vocal_section_start, c.inst_section_start];
+}
+
+/** The bed clip's offset (display seconds) for clips starting at
+ *  (vStart, bStart), given `nudgeSec` — the bed's offset as measured with
+ *  both clips at their SECTION starts (alignment_offset's meaning). The same
+ *  content lines up either way; at the suggestion (nudge = alignment_offset)
+ *  and the play spans it is 0. */
+export function bedOffsetFor(c, nudgeSec, vStart, bStart, vRate = 1, bRate = 1) {
+  const vss = c.vocal_section_start ?? vStart ?? 0;
+  const bss = c.inst_section_start ?? bStart ?? 0;
+  return (nudgeSec || 0) + ((bStart ?? bss) - bss) / (bRate || 1)
+    - ((vStart ?? vss) - vss) / (vRate || 1);
+}
+
+/** The bed's original vocal, over the same span as the bed (Track detail's
+ *  overlay, `O`): its URL, or null. */
+export function ghostUrlFor(c) {
+  if (!c?.ghost) return null;
+  const [, bStart] = playStartsOf(c);
+  return hookUrl(c.ghost.songId, c.ghost.stem || "vocals", bStart, c.inst_section_end);
 }
 
 // Both stems, or one soloed. Gains rather than mute so switching is a fader
@@ -60,6 +94,11 @@ export function useHookAudition() {
   const [loopCount, setLoopCount] = useState(0);
   const [loopLength, setLoopLength] = useState(0);
   const [stemMode, setStemModeState] = useState("both");
+  // The overlay's A/B (`O`): the bed's original vocal heard in place of the
+  // incoming one. Only meaningful for a candidate that carries a ghost.
+  const [ghostOn, setGhostOnState] = useState(false);
+  const ghostRef = useRef(false);
+  const hasGhost = useRef(false);
   const lastPos = useRef(0);
   const stemModeRef = useRef("both");
   // The armed pair's levels (its recipe's), so un-soloing restores them.
@@ -88,9 +127,17 @@ export function useHookAudition() {
   const applyStems = useCallback((mode) => {
     const e = engineRef.current;
     if (!e) return;
-    e.setVoiceGain("vocal", mode === "bed" ? 0 : levels.current.vocal);
+    const ghost = hasGhost.current && ghostRef.current;
+    e.setVoiceGain("vocal", mode === "bed" || ghost ? 0 : levels.current.vocal);
     e.setVoiceGain("inst", mode === "vox" ? 0 : levels.current.bed);
+    if (hasGhost.current) e.setVoiceGain("ghost", mode === "bed" || !ghost ? 0 : levels.current.vocal);
   }, []);
+
+  const setGhost = useCallback((on) => {
+    ghostRef.current = Boolean(on);
+    setGhostOnState(Boolean(on));
+    applyStems(stemModeRef.current);
+  }, [applyStems]);
 
   const setStemMode = useCallback((mode) => {
     stemModeRef.current = mode;
@@ -105,7 +152,9 @@ export function useHookAudition() {
       e.stop();
       e.removeVoice("vocal");
       e.removeVoice("inst");
+      e.removeVoice("ghost");
     }
+    hasGhost.current = false;
     setPlayingId(null);
     setPlaying(false);
   }, []);
@@ -142,13 +191,18 @@ export function useHookAudition() {
       if (armToken.current !== token) return;
 
       const [vocalUrl, bedUrl] = hookUrlsFor(candidate);
-      const [vocalBuf, bedBuf] = await Promise.all([
+      const ghostUrl = ghostUrlFor(candidate);
+      const [vocalBuf, bedBuf, ghostBuf] = await Promise.all([
         decodeStem(e.ctx, vocalUrl),
         decodeStem(e.ctx, bedUrl),
+        // The ghost is a nicety: a bed with no vocal stem still auditions.
+        ghostUrl ? decodeStem(e.ctx, ghostUrl).catch(() => null) : Promise.resolve(null),
       ]);
       if (armToken.current !== token) return;   // user moved on mid-decode
 
       e.stop();
+      e.removeVoice("ghost");
+      hasGhost.current = false;
       // Levels and the bass-clash high-pass come from the pair's recipe
       // (matcher/recipe.py), as in Studio and the FL export.
       const recipe = candidate.recipe || {};
@@ -170,6 +224,13 @@ export function useHookAudition() {
         gain: levels.current.bed,
         hpHz: recipe.bed_highpass_hz ?? 0,
       });
+      if (ghostBuf) {
+        // Conformed exactly as the bed is — the original song as it would
+        // sound at the pair's tempo and key — so the A/B is fair.
+        e.setVoice("ghost", { buffer: ghostBuf, offsetSec: 0, rate: bedRate,
+                              semitones: candidate.semitone_shift || 0, gain: 0 });
+        hasGhost.current = true;
+      }
 
       // Loop the shorter of the two so the cycle never runs into silence.
       const bedDisplay = bedBuf.duration / bedRate;
@@ -230,5 +291,6 @@ export function useHookAudition() {
 
   return { audition, toggle, stop, prefetch, playingId, error,
            seek, pause, resume,
-           position, playing, loopCount, loopLength, stemMode, setStemMode };
+           position, playing, loopCount, loopLength, stemMode, setStemMode,
+           ghostOn, setGhost };
 }

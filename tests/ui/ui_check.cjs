@@ -53,6 +53,21 @@ const SCREENS = [
     const t = p.locator(".tt-title").first();
     if (await t.count()) { await t.click(); await p.waitForTimeout(900); }
   }],
+  ["track-overlay", async (p) => {
+    // Phase 4: Track detail's "Try a vocal over this" / "Try over a bed".
+    await rail(p, "Library");
+    await p.getByRole("button", { name: "Tracks" }).click().catch(() => {});
+    const t = p.locator(".tt-title").first();
+    if (await t.count()) { await t.click(); await p.waitForTimeout(900); }
+    const panel = p.locator(".ov-panel");
+    if (await panel.count()) {
+      await panel.first().scrollIntoViewIfNeeded();
+      await p.locator(".ov-canvas").first().waitFor({ timeout: 5000 }).catch(() => {});
+      const card = p.locator(".ov-card").nth(1);
+      if (await card.count()) { await card.click(); await p.waitForTimeout(900); }
+      await panel.first().scrollIntoViewIfNeeded();
+    }
+  }],
   ["compare", async (p) => {
     const b = p.getByRole("button", { name: /Compare with/ });
     if (await b.count()) { await b.first().click(); await p.waitForTimeout(500); }

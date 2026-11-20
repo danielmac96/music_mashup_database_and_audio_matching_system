@@ -148,6 +148,33 @@ function clipRangeOf(lane) {
   return { cs, ce, rawDur, trimmed: cs > 1e-6 || ce < rawDur - 1e-6 };
 }
 
+// A lane's EQ and duck as the mixdown clip carries them.
+export const clipMix = (l) => ({ eq_low: l.eqLow || 0, eq_mid: l.eqMid || 0, eq_high: l.eqHigh || 0,
+                                 duck_db: l.stem === "vocals" ? 0 : (l.duckDb || 0) });
+
+/** One lane as render/mixdown.build_mixdown takes it. Pure and exported: the
+ *  overlay → Studio → WAV round trip is pinned by running it under Node
+ *  (tests/test_overlay_roundtrip.py). */
+export function mixdownClip(l) {
+  const { cs, ce, trimmed } = clipRangeOf(l);
+  return {
+    song_id: l.songId, stem: l.stem,
+    // build_mixdown places the FIRST RENDERED SAMPLE at offset_sec. With
+    // a trim that is the trim start, which Studio plays at
+    // offsetSec + clipStart / rate — sending offsetSec alone rendered
+    // every trimmed lane (every pair opened from the dock) early.
+    offset_sec: trimmed ? l.offsetSec + cs / (l.rate || 1) : l.offsetSec,
+    rate: l.rate, semitones: l.semitones, gain: l.gain,
+    fade_in: l.fadeIn || 0, fade_out: l.fadeOut || 0,
+    hp_hz: l.hpHz || 0, lp_hz: l.lpHz || 0, ...clipMix(l),
+    // Send a trim only when there is one. An untrimmed clip must reach
+    // build_mixdown with start/end absent, which is how it reads "play
+    // the whole stem" — a clip that starts at 0.0 is a different
+    // instruction from one that was never given a start.
+    ...(trimmed ? { clip_start: cs, clip_end: ce } : {}),
+  };
+}
+
 function fmtBarsBeats(pos, bpm) {
   if (!bpm) return "—";
   const beat = 60 / bpm;
@@ -480,29 +507,36 @@ export function placementFor(opt, vRate, bRate) {
   const vAt = (opt.vocal_section_start || 0) / vr;
   const bAt = (opt.inst_section_start || 0) / br;
   const off = opt.alignment_offset ?? 0;
+  // Where each lane's clip starts: a placed pairing's play spans (the vocal at
+  // its phrase PICKUP, the bed under it — matcher/phrase_align.play_spans),
+  // else the sections' starts. A trim moves no audio: a raw second sits at
+  // offsetSec + t / rate whatever the clip start, so the offsets below — and
+  // the nudge Studio measures against them — are the sections' either way.
+  const placed = opt.vocal_play_start != null && opt.bed_play_start != null;
+  const vClip = placed ? opt.vocal_play_start : opt.vocal_section_start;
+  const bClip = placed ? opt.bed_play_start : opt.inst_section_start;
   // Neither lane may hang off the front of the timeline — the viewport cannot
   // scroll left of zero, so a negative offset is audio you cannot reach.
   const base = Math.max(vAt, bAt - off);
-  const vLen = ((opt.vocal_section_end || 0) - (opt.vocal_section_start || 0)) / vr;
-  const bLen = ((opt.inst_section_end || 0) - (opt.inst_section_start || 0)) / br;
-  // Loop the OVERLAP of the two placed clips: the vocal sounds over
-  // [base, base + vLen], the bed over [base + off, base + off + bLen]. The
-  // engine loops any window correctly (each voice is silent where its clip is
-  // not); this just keeps a pass from spending |off| seconds on one side alone.
-  let loopStart = Math.max(base, base + off);
-  let loopEnd = Math.min(base + vLen, base + off + bLen);
+  const vOff = base - vAt;
+  const bOff = base - bAt + off;
+  // Loop the OVERLAP of the two placed clips (each voice is silent where its
+  // clip is not); this just keeps a pass from spending the offset on one
+  // side alone.
+  const vFrom = vOff + (vClip || 0) / vr;
+  const vTo = vOff + (opt.vocal_section_end || 0) / vr;
+  const bFrom = bOff + (bClip || 0) / br;
+  const bTo = bOff + (opt.inst_section_end || 0) / br;
+  let loopStart = Math.max(vFrom, bFrom);
+  let loopEnd = Math.min(vTo, bTo);
   if (!(loopEnd - loopStart >= 1)) {
-    loopStart = base;
-    loopEnd = base + Math.max(1, Math.min(vLen, bLen));
+    loopStart = vFrom;
+    loopEnd = vFrom + Math.max(1, Math.min(vTo - vFrom, bTo - bFrom));
   }
   return {
     base,
-    vocal: { offsetSec: base - vAt,
-             clipStart: opt.vocal_section_start,
-             clipEnd: opt.vocal_section_end },
-    bed: { offsetSec: base - bAt + off,
-           clipStart: opt.inst_section_start,
-           clipEnd: opt.inst_section_end },
+    vocal: { offsetSec: vOff, clipStart: vClip, clipEnd: opt.vocal_section_end },
+    bed: { offsetSec: bOff, clipStart: bClip, clipEnd: opt.inst_section_end },
     loop: { start: loopStart, end: loopEnd },
   };
 }
@@ -1666,27 +1700,7 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
   }, [laneCountText, lanes.length, locked, projectBpm, onStatus]);
 
   // ── export ──────────────────────────────────────────────────────────────
-  const clipMix = (l) => ({ eq_low: l.eqLow || 0, eq_mid: l.eqMid || 0, eq_high: l.eqHigh || 0,
-                            duck_db: l.stem === "vocals" ? 0 : (l.duckDb || 0) });
-  const clipFor = (l) => {
-        const { cs, ce, trimmed } = clipRangeOf(l);
-        return {
-          song_id: l.songId, stem: l.stem,
-          // build_mixdown places the FIRST RENDERED SAMPLE at offset_sec. With
-          // a trim that is the trim start, which Studio plays at
-          // offsetSec + clipStart / rate — sending offsetSec alone rendered
-          // every trimmed lane (every pair opened from the dock) early.
-          offset_sec: trimmed ? l.offsetSec + cs / (l.rate || 1) : l.offsetSec,
-          rate: l.rate, semitones: l.semitones, gain: l.gain,
-          fade_in: l.fadeIn || 0, fade_out: l.fadeOut || 0,
-          hp_hz: l.hpHz || 0, lp_hz: l.lpHz || 0, ...clipMix(l),
-          // Send a trim only when there is one. An untrimmed clip must reach
-          // build_mixdown with start/end absent, which is how it reads "play
-          // the whole stem" — a clip that starts at 0.0 is a different
-          // instruction from one that was never given a start.
-          ...(trimmed ? { clip_start: cs, clip_end: ce } : {}),
-        };
-  };
+  const clipFor = mixdownClip;
   const handleExport = async () => {
     const clips = lanes.filter((l) => !l.muted && l.gain > 0).map(clipFor);
     if (clips.length === 0) { toast("Nothing audible to export"); return; }
@@ -1736,8 +1750,11 @@ export function MixStudio({ onStatus, seed, onSeedConsumed, onNextPair = null,
         vocal_song_id: sessionPair.vocalId, inst_song_id: sessionPair.instId,
         vocal_section_idx: armed?.vocal ?? null, inst_section_idx: armed?.inst ?? null,
       }, { context: "studio" });
+      // A landing chosen in Track detail's overlay rides along as
+      // {phrase, offset_bars}; the server re-prices it (matcher/overlay.py).
       const { job_id } = await api.startSessionExport(
-        sessionPair.vocalId, sessionPair.instId, armed, sessionLanes());
+        sessionPair.vocalId, sessionPair.instId, armed, sessionLanes(),
+        armed ? activeOption?.placement ?? null : null);
       setSessionToken(null);
       setSessionJobId(job_id);
       toast("Rendering FL session (conformed stems + click)…");

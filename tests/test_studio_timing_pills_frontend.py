@@ -74,12 +74,15 @@ def test_a_pill_moves_trims_and_loops():
 def test_the_loop_is_the_overlap_of_the_two_placed_clips():
     """The bed sits at base + alignment_offset, not at base. Looping from base
     spends |off| seconds of every pass on the vocal alone; the loop is where
-    both clips actually sound, with a fallback when they do not overlap."""
+    both clips actually sound, with a fallback when they do not overlap.
+    Phase 4: the clips start at the play spans (the vocal's pickup), so the
+    overlap is taken over where each clip really starts and ends."""
     src = _read(STUDIO)
     body = src[src.index("export function placementFor"):]
     body = body[:body.index("\n}")]
-    assert "Math.max(base, base + off)" in body
-    assert "Math.min(base + vLen, base + off + bLen)" in body
+    assert "const bOff = base - bAt + off;" in body
+    assert "Math.max(vFrom, bFrom)" in body
+    assert "Math.min(vTo, bTo)" in body
     assert "loop: { start: loopStart, end: loopEnd }" in body
 
 

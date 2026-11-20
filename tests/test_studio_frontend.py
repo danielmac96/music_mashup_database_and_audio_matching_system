@@ -20,13 +20,16 @@ def test_a_trimmed_or_extended_clip_renders_as_it_plays():
     the FL session are sent the same trim, fades and filters."""
     for k in ("clipStartSec", "clipEndSec", "fadeInSec", "hpHz"):
         assert k in ENGINE, k
-    clip = STUDIO[STUDIO.index("const clipFor = (l) =>"):][:1600]
+    # Phase 4: the clip builder is a pure module-level export (mixdownClip),
+    # run under Node by the overlay round-trip test; clipFor is that function.
+    assert "const clipFor = mixdownClip;" in STUDIO
+    clip = STUDIO[STUDIO.index("export function mixdownClip(l)"):][:1600]
     assert "...(trimmed ? { clip_start: cs, clip_end: ce } : {})" in clip
     assert "offset_sec: trimmed ? l.offsetSec + cs / (l.rate || 1) : l.offsetSec" in clip
     lanes = STUDIO[STUDIO.index("const sessionLanes = () =>"):][:1400]
     for k in ("clip_start: cs, clip_end: ce", "fade_in:", "hp_hz:", "offset_ms:"):
         assert k in lanes, k
-    assert "armed, sessionLanes())" in STUDIO
+    assert "armed, sessionLanes()," in STUDIO
     assert "...(lanes?.length ? { lanes } : {})" in _read("api.js")
 
 

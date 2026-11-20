@@ -8,6 +8,7 @@ import { SectionTable } from "./SectionTable";
 import { TrackEditor } from "./TrackEditor";
 import { fmtAttr } from "../attributes";
 import { libraryStats, TrackCompare } from "./AnalysisPanels";
+import { OverlayPanel } from "./overlay/OverlayPanel";
 import { AudioSource, AudioSourcePicker } from "./AudioSourcePicker";
 import { Disclosure, KeyChip, StatusPill } from "./ui/primitives";
 import { keyOf, pctOf, tierOf } from "./pairs/pairModel";
@@ -188,6 +189,9 @@ export function TrackDetail({ track, tracks, attributes = null, ratings, groups,
       const el = e.target;
       if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT"
         || el.isContentEditable)) return;
+      // The overlay owns its keys while it has focus (space auditions the
+      // pair there, esc only leaves the panel).
+      if (e.defaultPrevented || el?.closest?.(".ov-panel")) return;
       if (e.key === "Escape") { e.preventDefault(); onBack(); }
       else if (e.code === "Space" && !e.metaKey && !e.ctrlKey) { e.preventDefault(); playHook(); }
     };
@@ -277,7 +281,7 @@ export function TrackDetail({ track, tracks, attributes = null, ratings, groups,
         <span className="faint">/</span>
         <span className="dt-crumbtitle">{track.title}</span>
         <span className="grow" />
-        <span className="mono faint small">space play · esc back</span>
+        <span className="mono faint small">space play · esc back · overlay keys when it has focus</span>
       </div>
 
       <div className="dt-hero">
@@ -368,6 +372,11 @@ export function TrackDetail({ track, tracks, attributes = null, ratings, groups,
           duration={track.duration_secs} loop={loop} position={position}
           stem={stem} onSeek={seekTo} onPickSection={playSection} keyCamelot={f.camelot} />
       </div>
+
+      {/* "This vocal over that bed": a partner's vocal (or this one) placed
+          by bars over the bed, scored live, auditioned on the one player. */}
+      <OverlayPanel track={track} role={role} player={player} ratings={ratings}
+        onStudio={onStudio} />
 
       <SectionTable sections={sections} pairsBySection={pairsBySection}
         playingIndex={sectionPlaying} onPlay={playSection}

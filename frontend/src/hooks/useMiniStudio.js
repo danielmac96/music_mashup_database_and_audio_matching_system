@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MashupEngine } from "../engine/MashupEngine";
 import { decodeStem } from "../engine/decode";
-import { hookUrl } from "./useHookAudition";
+import { bedOffsetFor, hookUrl, playStartsOf } from "./useHookAudition";
 
 const VOCAL_GAIN = 0.85;
 const BED_GAIN = 0.8;
@@ -41,6 +41,20 @@ export function suggestionOf(pair) {
 }
 
 // Which suggestion fields the user has moved (for "edited" and ↺).
+/** The two clips the band plays and renders, and where the bed sits under
+ *  the vocal for a nudge: the row's play spans (the vocal from its phrase
+ *  pickup — matcher/phrase_align.play_spans), else the two sections. `nudgeMs`
+ *  keeps alignment_offset's meaning, so the chip and ↺ read as before. */
+export function clipsOf(pair, s) {
+  const [vStart, bStart] = playStartsOf(pair);
+  const bedRate = s.bedRate * (1 + s.tempoPct / 100);
+  return {
+    vStart, bStart, bedRate,
+    vEnd: pair.vocal_section_end, bEnd: pair.inst_section_end,
+    bedOffset: bedOffsetFor(pair, s.nudgeMs / 1000, vStart, bStart, s.vocalRate, bedRate),
+  };
+}
+
 export function editedFields(s, base) {
   if (!s || !base) return [];
   return ["semitones", "tempoPct", "nudgeMs", "vocalGain", "bedGain", "hpHz"]
@@ -75,12 +89,13 @@ export function useMiniStudio(pair) {
   // level, a pitch or a filter in place and re-arms only for a rate or an
   // offset — so riding a fader does not restart the bar.
   const bedLoopRef = useRef(null);
+  const pairRef = useRef(pair);
+  pairRef.current = pair;
   const apply = useCallback((s, fresh = false) => {
     const e = engineRef.current;
     const { vocal, bed } = buffers.current;
     if (!e || !e.ctx || !vocal || !bed || !s) return;
-    const bedRate = s.bedRate * (1 + s.tempoPct / 100);
-    const off = s.nudgeMs / 1000;
+    const { bedRate, bedOffset: off } = clipsOf(pairRef.current, s);
     const vocalCfg = { rate: s.vocalRate, semitones: 0, gain: s.muteVocal ? 0 : s.vocalGain };
     const bedCfg = { offsetSec: off, rate: bedRate, semitones: s.semitones,
                      gain: s.muteBed ? 0 : s.bedGain, hpHz: s.hpHz || 0 };
@@ -132,11 +147,10 @@ export function useMiniStudio(pair) {
       try {
         const eng = engine();
         await eng.init();
+        const cl = clipsOf(pair, s);
         const [vocal, bed] = await Promise.all([
-          decodeStem(eng.ctx, hookUrl(pair.vocal_song_id, "vocals",
-                                      pair.vocal_section_start, pair.vocal_section_end)),
-          decodeStem(eng.ctx, hookUrl(pair.inst_song_id, "instrumental",
-                                      pair.inst_section_start, pair.inst_section_end)),
+          decodeStem(eng.ctx, hookUrl(pair.vocal_song_id, "vocals", cl.vStart, cl.vEnd)),
+          decodeStem(eng.ctx, hookUrl(pair.inst_song_id, "instrumental", cl.bStart, cl.bEnd)),
         ]);
         if (token.current !== t) return;
         eng.stop();

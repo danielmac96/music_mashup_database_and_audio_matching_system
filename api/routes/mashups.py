@@ -23,6 +23,7 @@ from database.models import (
 from api import jobs
 from api.workers import match_worker
 from matcher.effort import dominant_component, effort_label
+from matcher.phrase_align import play_spans
 from matcher.match import compute_stretch_factor
 from matcher.recipe import alignment_reason, bed_shift, pair_recipe
 from matcher.plan import build_mashup_plan
@@ -153,6 +154,13 @@ def _with_playback_terms(rows: list) -> list:
         r["semitone_shift"] = bed_shift(r, unsure_below)
         r["stretch_factor"] = compute_stretch_factor(
             r.get("vocal_bpm") or 0.0, r.get("inst_bpm") or 0.0)
+        # Where the pair starts sounding: the vocal at its phrase pickup, the
+        # bed at the point under it (phrase_align.play_spans — the dock loop,
+        # the mini studio, Studio and the FL session all read these).
+        spans = play_spans(r, r["stretch_factor"] or 1.0)
+        r["vocal_play_start"] = spans["vocal_play_start"] if spans else None
+        r["bed_play_start"] = spans["bed_play_start"] if spans else None
+        r["play_lead"] = spans["play_lead"] if spans else None
         # Phase C: the effort bucket and the cost that dominates it, derived
         # here so the chip and its tooltip use one definition of "Heavy".
         effort = r.get("score_effort")
