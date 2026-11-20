@@ -309,6 +309,23 @@ def _with_exploration(rows: list, offset: int, limit: int,
     return out
 
 
+def tune_base() -> dict:
+    """The weights the stored totals were ranked with, and the learned
+    model's share α — what the dock's Tune drawer re-ranks from
+    (frontend/src/tune.js; readme §3). Match weights are the generic,
+    normalised set; the client applies the vocal path's timbre → collision
+    move itself, as config._for_combo does."""
+    from config import current_float, current_match_weights
+    from matcher.learning import active_blender
+    blender = active_blender()
+    return {"match": current_match_weights(),
+            "section": current_float("section_weight"),
+            "slot": current_float("slot_weight"),
+            "effort": current_float("effort_weight"),
+            "dropinBonus": current_float("dropin_bonus"),
+            "alpha": blender.alpha if blender else 0.0}
+
+
 @router.get("")
 def list_candidates(combo_type: str = "", min_score: float = 0.0,
                     limit: int = 50, vocal_song_id: Optional[int] = None,
@@ -390,7 +407,7 @@ def list_candidates(combo_type: str = "", min_score: float = 0.0,
     _with_scope_rank(rows, vocal_song_id, inst_song_id)
     return {"count": len(rows), "candidates": rows,
             "max_per_song": max_per_song, "order": order,
-            "adventure": adventure, "offset": offset}
+            "adventure": adventure, "offset": offset, "tune": tune_base()}
 
 
 @router.get("/filters")

@@ -29,6 +29,7 @@ export const EMPTY_FILTERS = {
   // Analysed attributes (analysis/attributes.py), keyed by attribute id:
   // { min } for a number ("≥"), { value } for a category or a top-N list.
   attrs: {},
+  rated: "",           // rated | unrated | loved (your pair stars, per track)
   view: "",            // a built-in shelf: ready | recent | attention
   group: "",           // a crate id — the library, narrowed to one shelf
 };
@@ -122,6 +123,20 @@ const GENRE_ALIASES = { rnb: "r&b", ukg: "uk garage", dnb: "drum & bass", hiphop
 // "126bpm"), a genre this library contains, a year or year range, "vox" for
 // vocal-forward and "stems" for has-stems. What is left is free text. The
 // preview shows what was read; ⏎ pins it (pinQuery).
+const TIER_WORDS = { strong: "strong", good: "good", maybe: "maybe",
+  longshot: "long_shot", "long-shot": "long_shot" };
+const RATED_WORDS = { rated: "rated", unrated: "unrated", loved: "loved", keepers: "loved" };
+
+// Where each pair word means something. The search preview says it, so a
+// word typed where it cannot apply is never silently ignored.
+export const PAIR_TOKENS = {
+  dropin: { label: "Drop-ins only", where: "dock" },
+  tiers: { label: "Tier", where: "dock" },
+  effort: { label: "Effort", where: "dock" },
+  rated: { label: "Rated", where: "tracks, dock" },
+  qualityMin: { label: "Stem quality", where: "parts" },
+};
+
 export function parseQuery(q, genreNames = []) {
   const byNorm = new Map(genreNames.map((g) => [norm(g), g]));
   const p = {};
@@ -149,6 +164,13 @@ export function parseQuery(q, genreNames = []) {
       p.year = [Math.min(+m[1], +m[2]), Math.max(+m[1], +m[2])]; continue;
     }
     if (["vox", "vocal", "vocals", "vocal-forward"].includes(lo)) { p.vocalForward = true; continue; }
+    // Pair words (3B): one language for Tracks, Parts and the dock. Each
+    // surface applies what it can answer (PAIR_TOKENS says where).
+    if (lo === "dropin" || lo === "drop-in" || lo === "dropins") { p.dropin = true; continue; }
+    if (TIER_WORDS[lo]) { (p.tiers = p.tiers || []).push(TIER_WORDS[lo]); continue; }
+    if (["free", "light", "heavy"].includes(lo)) { p.effort = lo; continue; }
+    if (RATED_WORDS[lo]) { p.rated = RATED_WORDS[lo]; continue; }
+    if ((m = /^q(\d{1,3})\+$/.exec(lo)) && +m[1] <= 100) { p.qualityMin = +m[1] / 100; continue; }
     if (lo === "stems") { p.hasStems = true; continue; }
     // Two-word genres first ("tech house"), then one word, then an alias.
     const two = i + 1 < tokens.length ? byNorm.get(norm(`${tk} ${tokens[i + 1]}`)) : null;
@@ -174,6 +196,7 @@ export function effectiveFilters(f, genreNames = []) {
     year: parsed.year || f.year,
     vocalForward: f.vocalForward || !!parsed.vocalForward,
     hasStems: f.hasStems || !!parsed.hasStems,
+    rated: parsed.rated || f.rated || "",
   };
 }
 
@@ -196,6 +219,12 @@ export function describeParsed(q, genreNames = []) {
   if (parsed.year) out.push(yearLabel(parsed.year));
   if (parsed.vocalForward) out.push("Vocal-forward");
   if (parsed.hasStems) out.push("Has stems");
+  if (parsed.rated) out.push({ rated: "Rated by you", unrated: "Not rated yet", loved: "Loved (4–5★)" }[parsed.rated]);
+  // Pair words a track cannot answer: say where they apply.
+  if (parsed.dropin) out.push("Drop-ins — a pair filter: type it in the dock");
+  if (parsed.tiers) out.push(`${parsed.tiers.join(", ")} — a pair filter: type it in the dock`);
+  if (parsed.effort) out.push(`${parsed.effort} builds — a pair filter: type it in the dock`);
+  if (parsed.qualityMin != null) out.push(`Stem quality ≥ ${Math.round(parsed.qualityMin * 100)} — applies to parts`);
   return out;
 }
 
@@ -277,7 +306,7 @@ export function energyRanks(rows) {
 export function isActive(f) {
   return !!(f.q || f.bpm || f.keys?.length || f.keyCompat || f.genres?.length
     || f.styles?.length || f.year || f.plays || f.vocalForward || f.hasStems
-    || f.status?.length || Object.keys(f.attrs || {}).length || f.view || f.group);
+    || f.status?.length || Object.keys(f.attrs || {}).length || f.view || f.group || f.rated);
 }
 
 /* ── apply ───────────────────────────────────────────────────────────────── */
@@ -300,6 +329,10 @@ export function applyLibraryFilters(rows, f, ctx = {}) {
     // A group is a set of song ids the app already has, so this is a lookup and
     // never a request — the same rule every other control on this bar follows.
     if (filters.group && !groups.has(filters.group, t.id)) return false;
+    // Your judgements: the row's star is the best any of its pairings earned.
+    if (filters.rated === "rated" && t.rating == null) return false;
+    if (filters.rated === "unrated" && t.rating != null) return false;
+    if (filters.rated === "loved" && !(t.rating >= 4)) return false;
     if (needle) {
       const hay = `${t.title || ""} ${t.artist || ""} ${t.genre || ""}`.toLowerCase();
       if (!hay.includes(needle)) return false;

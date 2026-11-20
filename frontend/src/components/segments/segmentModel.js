@@ -65,6 +65,7 @@ export function effectiveSegFilters(f, genreNames = []) {
     genres: uniq([...(f.genres || []), ...(parsed.genres || [])]),
     bpm: parsed.bpm || f.bpm,
     bars: bars || f.bars,
+    qualityMin: parsed.qualityMin ?? f.qualityMin,
   };
 }
 
@@ -77,6 +78,13 @@ export function describeSegQuery(q, genreNames = []) {
   if (e.bpm) out.push(`${e.bpm[0]}–${e.bpm[1]} BPM`);
   if (e.bars) out.push(`${e.bars[0]} bars`);
   e.genres.forEach((g) => out.push(g));
+  if (e.qualityMin != null && e.qualityMin !== EMPTY_SEG_FILTERS.qualityMin) {
+    out.push(`Stem quality ≥ ${Math.round(e.qualityMin * 100)}`);
+  }
+  const { parsed } = parseQuery(String(q || ""), genreNames);
+  if (parsed.dropin || parsed.tiers || parsed.effort || parsed.rated) {
+    out.push("Drop-in, tier, effort and rated are pair filters: the matches in the dock answer them");
+  }
   return out;
 }
 

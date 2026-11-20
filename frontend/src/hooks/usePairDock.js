@@ -4,6 +4,8 @@ import { toast } from "../toast";
 import { keyOf, pairKey, REASON_KEYS, reasonsFor, SCORE_TERMS } from "../components/pairs/pairModel";
 import { TIERS } from "../theme";
 import { track, trackEach, trackShown } from "../events";
+import { tuneOrder } from "../tune";
+import { parseQuery } from "./useLibraryFilters";
 
 // The pair dock: what it shows, where the cursor is, and what the keyboard does.
 //
@@ -59,6 +61,34 @@ export const DOCK_FILTERS = {
   // Only Drop-in pairs — the server's rule (matcher/compat.dropin), in SQL.
   dropin: false,
 };
+
+// The dock's search box in the Library's language (3B, useLibraryFilters.
+// parseQuery): pair words become real filters on ⏎ — Drop-ins, tiers, effort,
+// rated, the key the pair lands in (8A, or 8A~ for ±1) and the vocal's BPM
+// range — and only the leftover text is searched by title and artist.
+const EFFORT_MAX = { free: 0.25, light: 0.5 };
+export function pairQuery(q) {
+  const { parsed, rest } = parseQuery(q, []);
+  const patch = {};
+  const read = [];
+  if (parsed.dropin) { patch.dropin = true; read.push("Drop-ins only"); }
+  if (parsed.rated) { patch.rated = parsed.rated; read.push(parsed.rated); }
+  if (parsed.effort) {
+    if (EFFORT_MAX[parsed.effort]) {
+      patch.maxEffort = EFFORT_MAX[parsed.effort];
+      read.push(parsed.effort === "free" ? "free builds" : "free or light builds");
+    } else read.push("heavy: no filter for it — Sort: Effort lists cheapest first");
+  }
+  if (parsed.keys?.length) {
+    patch.key = parsed.keyNeighbours?.[0] || parsed.keys[0];
+    patch.keyTol = parsed.keyNeighbours ? 1 : 0;
+    read.push(`lands in ${patch.key}${patch.keyTol ? " ±1" : ""}`);
+  }
+  if (parsed.tiers) read.push(parsed.tiers.join(", "));
+  if (parsed.bpm) read.push(`vocal ${parsed.bpm[0]}–${parsed.bpm[1]} BPM`);
+  if (parsed.qualityMin != null) read.push("stem quality applies to parts");
+  return { patch, tiers: parsed.tiers || [], bpm: parsed.bpm || null, rest, read };
+}
 
 // The loaded-pairs filters (client side, never a request).
 const EMPTY_SIDE = { genres: [], bpm: null, keys: [] };
@@ -192,6 +222,8 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
         if (cancelled) return;
         const got = d.candidates || [];
         setRows(got);
+        // The weights these totals were ranked with: the Tune drawer's base.
+        if (d.tune) setTuneBase(d.tune);
         // Implicit signal: the top of this fetch was put in front of the user.
         trackShown(got, "dock");
         setHasMore(!perVocal && got.filter((r) => !r.explore).length >= LIMIT);
@@ -276,7 +308,12 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
   // Under the Score order the cards are grouped under tier headers: the tier
   // is the API's confidence_tier, so a measured close-call can sit a tier below
   // its percentile — grouping keeps the order inside each tier.
-  const grouped = order === "score";
+  // The Tune drawer (readme §3): weights that re-rank the LOADED rows
+  // client-side with the server's own arithmetic (frontend/src/tune.js);
+  // null = off, the server's order. Tuned, the tier grouping steps aside.
+  const [tuneBase, setTuneBase] = useState(null);
+  const [tuneW, setTuneW] = useState(null);
+  const grouped = order === "score" && !tuneW;
   const visible = useMemo(() => {
     let out = tierOn.length ? filtered.filter((c) => tierOn.includes(c.confidence_tier)) : filtered;
     if (grouped) {
@@ -284,8 +321,9 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
         (TIER_INDEX[a[0].confidence_tier] ?? 9) - (TIER_INDEX[b[0].confidence_tier] ?? 9) || a[1] - b[1])
         .map(([c]) => c);
     }
+    if (tuneW && tuneBase) out = tuneOrder(out, tuneW, tuneBase, tuneBase.alpha);
     return out;
-  }, [filtered, tierOn, grouped]);
+  }, [filtered, tierOn, grouped, tuneW, tuneBase]);
 
   // What the cards SHOW: each listed row swapped for the section pairing its
   // stepper is on. Filters, tier chips and grouping above run on the listed
@@ -558,5 +596,6 @@ export function usePairDock({ selectedTrackId, role = "vocal", ratings,
     play, move, openStudio, hide, unhide, rateAndAdvance, bindKeys, audio,
     reload, autoAdvance, setAutoAdvance,
     optionOf, stepOption,
+    tuneBase, tuneW, setTuneW,
   };
 }
