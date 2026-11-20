@@ -5,7 +5,7 @@
 // it): narrowing a list must never spend a request. The search box reads the
 // Library's tokens (parseQuery: 8A, 124-128, 126bpm, a genre, 2015+) plus a
 // section label ("chorus", "drop") and a bar count ("16bars").
-import { parseQuery } from "../../hooks/useLibraryFilters";
+import { joinTokens, parseQuery, queryTokens, searchText } from "../../hooks/useLibraryFilters";
 
 export const ROLES = ["vocal", "bed"];
 export const STEM_OF = { vocal: "vocals", bed: "instrumental" };
@@ -44,18 +44,17 @@ const BPM_FOLD = 0.06;
 
 // The search box's tokens on top of the pinned filters.
 export function effectiveSegFilters(f, genreNames = []) {
-  const tokens = String(f.q || "").trim().split(/\s+/).filter(Boolean);
   const labels = [];
   let bars = null;
   const rest = [];
-  for (const tk of tokens) {
-    const lo = tk.toLowerCase();
+  for (const w of queryTokens(f.q)) {
+    const lo = w.t.toLowerCase();
     let m;
-    if (LABELS.includes(lo)) { labels.push(lo); continue; }
-    if ((m = /^(\d{1,3})bars?$/.exec(lo))) { bars = [+m[1], +m[1]]; continue; }
-    rest.push(tk);
+    if (!w.literal && LABELS.includes(lo)) { labels.push(lo); continue; }
+    if (!w.literal && (m = /^(\d{1,3})bars?$/.exec(lo))) { bars = [+m[1], +m[1]]; continue; }
+    rest.push(w);
   }
-  const { parsed, rest: text } = parseQuery(rest.join(" "), genreNames);
+  const { parsed, rest: text } = parseQuery(joinTokens(rest), genreNames);
   const uniq = (a) => [...new Set(a)];
   return {
     ...f,
@@ -100,7 +99,7 @@ const norm = (s) => String(s || "").toLowerCase();
  *  asks about it — the Library's rule. */
 export function applySegFilters(rows, f, genreNames = []) {
   const e = effectiveSegFilters(f, genreNames);
-  const text = norm(e.text);
+  const text = norm(searchText(e.text));
   return rows.filter((r) => {
     if (e.labels.length && !e.labels.includes(r.label || "verse")) return false;
     if (e.keys.length && !e.keys.includes(r.camelot)) return false;

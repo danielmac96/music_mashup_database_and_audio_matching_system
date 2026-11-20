@@ -73,7 +73,7 @@ def test_filtering_never_fetches():
 
 def test_the_search_box_reuses_the_library_parser():
     model = FILES["segmentModel.js"]
-    assert 'import { parseQuery } from "../../hooks/useLibraryFilters"' in model
+    assert 'parseQuery, queryTokens, searchText } from "../../hooks/useLibraryFilters"' in model
 
 
 def test_matches_are_debounced_and_stale_answers_dropped():
