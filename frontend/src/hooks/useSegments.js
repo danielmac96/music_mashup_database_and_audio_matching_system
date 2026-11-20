@@ -68,7 +68,8 @@ export function useSegmentMatches(anchor, opts) {
         if (c.signal.aborted) return;
         setState({ rows: out.rows || [], loading: false, error: null,
                    meta: { scored: out.scored, gated: out.gated,
-                           hidden: out.hidden || 0, anchor: out.anchor } });
+                           hidden: out.hidden || 0, anchor: out.anchor,
+                           tune: out.tune || null } });
       } catch (e) {
         if (c.signal.aborted || e?.name === "AbortError") return;
         setState({ rows: [], loading: false, error: e?.message || "Could not rank the matches",

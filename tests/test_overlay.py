@@ -212,6 +212,16 @@ def test_the_route_serves_the_overlay_with_waveforms_and_playback_terms(lib):
     assert lib["client"].get(url + f"&offset_bars={other}").json()["current"] == other
     assert lib["client"].get(url + "&offset_bars=999").json()["current"] == 0
     assert lib["client"].get(url.replace(f"vs={p['vocal_section']}", "vs=4242")).status_code == 404
+    # Gzipped when the browser asks (it always does), the same JSON either way.
+    import gzip
+    import json
+    raw = lib["client"].get(url, headers={"Accept-Encoding": "gzip"})
+    assert raw.headers.get("content-encoding") == "gzip"
+    plain = lib["client"].get(url, headers={"Accept-Encoding": "identity"})
+    assert "content-encoding" not in plain.headers
+    assert plain.json() == d and raw.json() == d
+    assert len(gzip.compress(plain.content)) < len(plain.content) / 3
+    assert json.loads(plain.content) == d
 
 
 def test_the_route_is_cached_by_pair_key_and_fingerprint(lib, monkeypatch):

@@ -993,8 +993,8 @@ def overlay_payload(bed_id: int, vocal: int, vs: int, bs: int, phrase: int = 0) 
 
 
 @router.get("/{bed_id}/overlay")
-def get_overlay(bed_id: int, vocal: int, vs: int, bs: int, phrase: int = 0,
-                offset_bars: int = 0) -> dict:
+def get_overlay(bed_id: int, vocal: int, vs: int, bs: int, request: Request,
+                phrase: int = 0, offset_bars: int = 0):
     """The ghost-slot overlay: ``vocal``'s section ``vs`` over this track's
     section ``bs``, on this track's timeline, every landing priced
     (matcher/overlay.build). ``current`` names the placement asked for by
@@ -1004,7 +1004,16 @@ def get_overlay(bed_id: int, vocal: int, vs: int, bs: int, phrase: int = 0,
     offsets = [p["offset_bars"] for p in core["placements"]]
     current = int(offset_bars) if int(offset_bars) in offsets else (0 if 0 in offsets else
                                                                      (offsets[0] if offsets else None))
-    return {**core, "current": current}
+    # The JSON FastAPI would have sent, gzipped when the browser asks: the
+    # payload is ~83 KB, ~11 KB gzipped (readme §8), and a drag re-asks it.
+    import gzip
+    from fastapi.encoders import jsonable_encoder
+    from fastapi.responses import JSONResponse
+    body = JSONResponse(jsonable_encoder({**core, "current": current})).body
+    if "gzip" in (request.headers.get("accept-encoding") or ""):
+        return Response(gzip.compress(body, compresslevel=5), media_type="application/json",
+                        headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+    return Response(body, media_type="application/json")
 
 
 @router.get("/{song_id}/audio/{stem_type}")

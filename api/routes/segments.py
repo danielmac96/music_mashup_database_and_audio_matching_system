@@ -98,7 +98,7 @@ def segment_matches(segment_id: int, role: str = "vocal", limit: int = 200,
     read the same numbers the card prints."""
     from matcher.compat import TIERS, parse_tiers
     from matcher.segment_match import rank_partners
-    from api.routes.mashups import _with_playback_terms, _with_reasons
+    from api.routes.mashups import _with_playback_terms, _with_reasons, tune_base
     if role not in SEGMENT_ROLES:
         raise HTTPException(status_code=400,
                             detail=f"role must be one of {list(SEGMENT_ROLES)}")
@@ -124,4 +124,6 @@ def segment_matches(segment_id: int, role: str = "vocal", limit: int = 200,
                 or abs(int(r["semitone_shift"])) <= max_shift]
     if tiers:
         rows = [r for r in rows if r.get("confidence_tier") in tiers]
-    return {**out, "rows": rows, "count": len(rows)}
+    # The weights these live rows were just scored with (the current settings,
+    # as Segments reads them) — the cards' "Why this pair" bar reads them.
+    return {**out, "rows": rows, "count": len(rows), "tune": tune_base()}
