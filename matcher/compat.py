@@ -257,20 +257,30 @@ def bed_shift_sql(mc: str = "mc") -> str:
             f"ELSE {mc}.harmonic_shift END)")
 
 
-def dropin_sql(floor: Optional[float], mc: str = "mc") -> str:
-    """`dropin` as a 0/1 SQL expression — the same rule, on the stored mask.
-    ``floor`` is slot_floor's. Takes ONE bound parameter, bed_shift_sql's."""
-    from config import DROPIN_MAX_SHIFT_ST
-    slot_at_least = "0" if floor is None else f"{mc}.score_slot >= {float(floor)!r}"
+def dropin_songs_sql(mc: str = "mc") -> str:
+    """The two SONGS' half of the Drop-in rule as a SQL boolean: the stored
+    mask says the tempi are within DROPIN_TEMPO_PCT and the keys mix at the
+    pair's transpose (bed_shift_sql, at most DROPIN_MAX_SHIFT_ST). What a
+    provisional (mix-only) row can already say — the slot and the timing gate
+    wait for stems. ``dropin_sql`` is this plus those two, so the stem
+    priority (api/workers/stem_priority) and the card can never disagree on
+    the songs' part. Takes ONE bound parameter, bed_shift_sql's."""
     s = bed_shift_sql(mc)
     key = (f"(CASE {s} WHEN 0 THEN {DROPIN_KEY_AS_IS} "
            f"WHEN -1 THEN {DROPIN_KEY_DOWN | DROPIN_KEY_AS_IS} "
            f"WHEN 1 THEN {DROPIN_KEY_UP | DROPIN_KEY_AS_IS} ELSE 0 END)")
     # One CASE so the shift is bound once: it is both the limit and the bit.
-    return (f"(CASE WHEN {mc}.dropin_mask IS NOT NULL "
+    return (f"({mc}.dropin_mask IS NOT NULL "
             f"AND ({mc}.dropin_mask & {DROPIN_TEMPO}) != 0 "
-            f"AND {mc}.timing_ok = 1 AND ({slot_at_least}) "
-            f"AND ({mc}.dropin_mask & {key}) != 0 THEN 1 ELSE 0 END)")
+            f"AND ({mc}.dropin_mask & {key}) != 0)")
+
+
+def dropin_sql(floor: Optional[float], mc: str = "mc") -> str:
+    """`dropin` as a 0/1 SQL expression — the same rule, on the stored mask.
+    ``floor`` is slot_floor's. Takes ONE bound parameter, bed_shift_sql's."""
+    slot_at_least = "0" if floor is None else f"{mc}.score_slot >= {float(floor)!r}"
+    return (f"(CASE WHEN {mc}.timing_ok = 1 AND ({slot_at_least}) "
+            f"AND {dropin_songs_sql(mc)} THEN 1 ELSE 0 END)")
 
 
 def top_style(tags_json) -> Optional[str]:

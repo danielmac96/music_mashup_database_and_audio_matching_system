@@ -111,6 +111,10 @@ def available() -> bool:
     global _AVAILABLE
     if _AVAILABLE is None:
         os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+        # EffNet's TensorFlow pools, sized before its first session
+        # (analysis/threads.tf_thread_env): left alone they take every core.
+        from analysis.threads import apply_tf_thread_env
+        apply_tf_thread_env()
         try:
             import essentia  # noqa: F401
             import essentia.standard  # noqa: F401

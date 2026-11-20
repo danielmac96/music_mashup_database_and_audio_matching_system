@@ -16,6 +16,7 @@ import { HelpPanel } from "./components/HelpPanel";
 import { DatabaseBrowser } from "./components/DatabaseBrowser";
 import { TuningPanel } from "./components/TuningPanel";
 import { LearningPanel } from "./components/LearningPanel";
+import { StoragePanel } from "./components/StoragePanel";
 import { MlPanel } from "./components/MlPanel";
 import { BulkReprocess } from "./components/BulkReprocess";
 import { SetupWizard } from "./components/SetupWizard";
@@ -675,6 +676,17 @@ export default function App() {
             </div>
             <div className="drawer-body">
               <LearningPanel />
+            </div>
+
+            <div className="drawer-section">
+              <h3>Storage</h3>
+              <span className="hint">
+                What the library keeps on disk, per kind and per track, and
+                what pruning allin1's analysis stems would free.
+              </span>
+            </div>
+            <div className="drawer-body">
+              <StoragePanel />
             </div>
 
             <div className="drawer-section">

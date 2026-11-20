@@ -168,6 +168,9 @@ export function useQueue() {
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0);
 
+  // The core budget (analysis/threads.py) and allin1's skips (criteria 5.2, 5.3).
+  const [threads, setThreads] = useState(null);
+  const [allin1, setAllin1] = useState(null);
   const refresh = useCallback(() => setTick((n) => n + 1), []);
 
   useEffect(() => {
@@ -181,6 +184,8 @@ export function useQueue() {
         setPools(q.stages);
         setPositions(q.positions);
         setNextPlayable(q.next_playable_secs ?? null);
+        setThreads(q.threads || null);
+        setAllin1(q.allin1 || null);
         setError(null);
         timer = setTimeout(poll, j.jobs.some(isActiveJob) ? 1000 : 4000);
       } catch (e) {
@@ -193,5 +198,5 @@ export function useQueue() {
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [tick]);
 
-  return { jobs, pools, positions, nextPlayable, error, refresh };
+  return { jobs, pools, positions, nextPlayable, threads, allin1, error, refresh };
 }

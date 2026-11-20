@@ -1218,7 +1218,10 @@ def score_all_pairs(db_path=None, bpm_max_diff: Optional[float] = None,
                     key_min_score: Optional[float] = None,
                     scorer: str = "auto", progress=None,
                     song_ids: Optional[Iterable[int]] = None) -> dict:
-    with _SCORE_LOCK:
+    from analysis.threads import hold
+    # One core of the budget (analysis/threads.py), taken after the lock so a
+    # run waiting for another holds nothing.
+    with _SCORE_LOCK, hold(1, "scoring"):
         return _score_all_pairs(db_path, bpm_max_diff, key_min_score, scorer,
                                 progress, song_ids)
 

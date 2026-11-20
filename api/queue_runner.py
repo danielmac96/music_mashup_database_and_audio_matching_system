@@ -73,7 +73,10 @@ def enqueue_song(song_id: int, priority: int = PRIORITY_INGEST) -> str:
     next, at ``priority`` (config.PRIORITY_*). Returns the job id."""
     job_id = jobs.new_job(kind="pipeline", message="Queued for processing",
                           song_id=song_id, stage="queued")
-    jobs.update(job_id, priority=int(priority))
+    # An import that calls itself an instrumental goes last in its batch
+    # (api/workers/stem_priority.import_priority): it cannot give a Drop-in.
+    from api.workers.stem_priority import import_priority
+    jobs.update(job_id, priority=import_priority(song_id, priority))
     _dispatch(job_id, song_id)
     return job_id
 
@@ -154,6 +157,12 @@ def _dispatch(job_id: str, song_id: int) -> None:
         # scores the track first if an input changed since its last run).
         _put("analysis", job_id, song_id)
         return
+    if stage == "stems":
+        # An import whose provisional pairs already hold likely Drop-ins with
+        # separated tracks goes ahead of the rest of its batch (the first
+        # useful pair, not just the first pair). Never lowers a priority.
+        from api.workers.stem_priority import promote_for_stems
+        promote_for_stems(job_id, song_id)
     # Recorded before the put: a free worker can take the item at once, and its
     # 'running' must not be overwritten by a late 'waiting'.
     jobs.stage_wait(job_id, stage)

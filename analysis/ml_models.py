@@ -166,6 +166,10 @@ def _predictor(model_id: str):
     pred = _PREDICTORS.get(model_id)
     if pred is not None:
         return pred
+    # TensorFlow sizes its pools at the first session: capped like the other
+    # analysers (analysis/threads.tf_thread_env) before any graph loads.
+    from analysis.threads import apply_tf_thread_env
+    apply_tf_thread_env()
     import essentia.standard as es
     meta = metadata(model_id)
     graph = str(models_dir() / f"{model_id}.pb")

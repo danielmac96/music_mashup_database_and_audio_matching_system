@@ -36,6 +36,8 @@ export function ShortlistDock({ shortlist, onImport, importing, crateRefresh, on
   }, [crateRefresh, activeCrateId]);
 
   const previews = rows.filter((r) => lengthWarning(r) === "preview").length;
+  // Discover's value preview, summed over what would be imported.
+  const gapTotal = importable.reduce((n, r) => n + (r.gap_fill?.n || 0), 0);
   const sets = rows.filter((r) => lengthWarning(r) === "set").length;
 
   const addToCrate = async () => {
@@ -140,7 +142,9 @@ export function ShortlistDock({ shortlist, onImport, importing, crateRefresh, on
               {previews || sets
                 ? `⚠ ${[previews ? `${previews} look${previews === 1 ? "s" : ""} like a preview clip` : null,
                   sets ? `${sets} look${sets === 1 ? "s" : ""} like a DJ set` : null].filter(Boolean).join(" · ")} — check before importing.`
-                : "On import: download → quick analysis → stems → analyse."}
+                : gapTotal > 0
+                  ? `Fills ${gapTotal} gap${gapTotal === 1 ? "" : "s"} in your library. On import: download → quick analysis → stems → analyse.`
+                  : "On import: download → quick analysis → stems → analyse."}
             </span>
           </div>
         </>

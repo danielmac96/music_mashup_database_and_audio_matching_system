@@ -63,7 +63,28 @@ def queue_snapshot() -> dict:
                              "clears_in_secs": (pools.get(stage) or {}).get("clears_in_secs")}
     # The soonest a track in the queue gets its first (provisional) pairs.
     return {"stages": stages_out, "positions": positions, "running": running,
-            "next_playable_secs": queue_eta.next_playable_secs(active)}
+            "next_playable_secs": queue_eta.next_playable_secs(active),
+            "threads": _threads_readout(), "allin1": _allin1_readout()}
+
+
+def _threads_readout() -> dict:
+    """The core budget (analysis/threads.py): every stage's threads, what
+    is held now, and any warning. Never fails the poll."""
+    try:
+        from analysis.threads import budget_report
+        return budget_report()
+    except Exception:  # noqa: BLE001
+        return {"warnings": []}
+
+
+def _allin1_readout() -> dict:
+    """allin1 refinements by state, skips split by reason (criterion 5.3).
+    Never fails the poll."""
+    try:
+        from database.alignment import allin1_state_counts
+        return allin1_state_counts()
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 # Declared before /{job_id}, like /queue.

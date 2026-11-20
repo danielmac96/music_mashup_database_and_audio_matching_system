@@ -85,17 +85,21 @@ def _with_fit_hints(tracks: list[dict]) -> None:
     and how many library tracks it would sit with. Added here, beside
     in_library, so the browse layer's canonical rows stay untouched."""
     from database.models import get_all_features
-    from ingest.fit_hints import fits, parse
+    from ingest.fit_hints import fits, gap_fills, parse
     try:
         # fit_hints.fits reads tempo and Camelot code, nothing else.
         library = get_all_features(stem_type="full",
                                    columns=("song_id", "bpm", "camelot"))
     except Exception:  # noqa: BLE001 — a hint is never worth a failed search
         library = []
+    groups = _cached_gap_groups()
     for row in tracks:
         hint = parse(row)
         hint["fits"] = fits(hint, library)
         row["fit_hint"] = hint
+        # The value preview (Phase 5): which of the library's gaps this upload
+        # could fill, from its printed role / tempo / key and its genre only.
+        row["gap_fill"] = gap_fills(hint, row.get("genre"), groups)
 
 
 def _annotate(items: list[dict]) -> list[dict]:
@@ -426,6 +430,25 @@ def recommend_from(req: RecommendRequest, background: BackgroundTasks) -> dict:
 
 # ── where the library is thin ────────────────────────────────────────────────
 
+_GAP_CACHE: dict = {"at": 0.0, "groups": []}
+_GAP_TTL_SECS = 60.0
+
+
+def _cached_gap_groups() -> list:
+    """library_gaps' groups, kept a minute: every Discover page and every
+    suggestion run reads them, and they move only as pairs are scored.
+    Never raises (a preview is never worth a failed search)."""
+    import time
+    now = time.monotonic()
+    if now - _GAP_CACHE["at"] > _GAP_TTL_SECS:
+        try:
+            _GAP_CACHE["groups"] = library_gaps(max_partners=2)["groups"]
+        except Exception:  # noqa: BLE001
+            _GAP_CACHE["groups"] = []
+        _GAP_CACHE["at"] = now
+    return _GAP_CACHE["groups"]
+
+
 @router.get("/gaps")
 def library_gaps(max_partners: int = Query(2, ge=0, le=10)) -> dict:
     """Where digging pays: vocals the matcher found few beds for, and beds it
@@ -463,7 +486,7 @@ def library_gaps(max_partners: int = Query(2, ge=0, le=10)) -> dict:
             mid = round(sum(r["bpm"] for r in rs) / len(rs))
             word = "instrumental" if need == "bed" else "acapella"
             groups.append({
-                "need": need, "bpm_lo": lo, "bpm_hi": lo + 5,
+                "need": need, "bpm_lo": lo, "bpm_hi": lo + 5, "genre": genre,
                 "keys": sorted({r["camelot"] for r in rs if r.get("camelot")}),
                 "tracks": rs, "count": len(rs),
                 "query": " ".join(x for x in (genre, word, f"{mid} bpm") if x),

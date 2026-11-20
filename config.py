@@ -512,8 +512,19 @@ PREFETCH_PARTNERS = _resolve_int("MASHUP_PREFETCH_PARTNERS", "prefetch_partners"
 # Queue priorities (api/queue_runner.py): lower runs first, FIFO within one.
 PRIORITY_USER     = 0     # a button pressed on one track
 PRIORITY_PREFETCH = 5     # the track you are looking at and its best partners
+# Partner-aware stem priority (api/workers/stem_priority.py): an import whose
+# provisional pairs already include likely Drop-ins with separated library
+# tracks is separated ahead of the rest of its batch, never ahead of a
+# selection. Bands sit strictly between PRIORITY_PREFETCH and PRIORITY_INGEST.
+PRIORITY_PROMISE_HIGH = 7   # >= STEM_PROMISE_MANY likely Drop-in partners
+PRIORITY_PROMISE_MID  = 8   # >= STEM_PROMISE_SOME
+PRIORITY_PROMISE_LOW  = 9   # at least one
 PRIORITY_INGEST   = 10    # tracks arriving from an import
+PRIORITY_INGEST_INSTRUMENTAL = 11  # an import that calls itself an instrumental:
+                                   # it cannot give a Drop-in, so it goes last in its batch
 PRIORITY_BACKFILL = 30    # bulk re-processing of the library
+STEM_PROMISE_MANY = _resolve_int("MASHUP_STEM_PROMISE_MANY", "stem_promise_many", 8)
+STEM_PROMISE_SOME = _resolve_int("MASHUP_STEM_PROMISE_SOME", "stem_promise_some", 3)
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -705,6 +716,11 @@ _TUNABLE_FLOATS = {
 # the cap keeps the library's best rows overall, and at a few thousand tracks
 # most tracks' own best beds are not among them: their scoped dock is empty.
 RESERVE_PARTNERS = 8
+# A track's own 16-bar hook clips are pre-cut after its final sections only
+# when it is a side of one of the library's best this-many pairs; any other
+# track's are cut on the first request (~33 ms, api/workers/hook_worker).
+# 0 pre-cuts every track, as before.
+HOOK_WARM_TOP_N = 2000
 
 _TUNABLE_INTS = {
     "reserve_partners": ("MASHUP_RESERVE_PARTNERS", "RESERVE_PARTNERS", 0, 50),
@@ -717,6 +733,7 @@ _TUNABLE_INTS = {
     "retrain_min_strong": ("MASHUP_RETRAIN_MIN_STRONG", "RETRAIN_MIN_STRONG", 1, 10_000),
     "retrain_min_weak":  ("MASHUP_RETRAIN_MIN_WEAK", "RETRAIN_MIN_WEAK", 1, 1_000_000),
     "explore_every":     ("MASHUP_EXPLORE_EVERY", "EXPLORE_EVERY", 0, 100),
+    "hook_warm_top_n":   ("MASHUP_HOOK_WARM_TOP_N", "HOOK_WARM_TOP_N", 0, 10_000_000),
 }
 
 

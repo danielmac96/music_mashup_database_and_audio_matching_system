@@ -287,6 +287,7 @@ export function QueueScreen({ library, onOpen, onRailSlot, analyzer = null }) {
         </button>
       </header>
       {analyzer}
+      <ComputeReadout threads={q.threads} allin1={q.allin1} />
 
       {q.error && <div className="error-text q-pad">Couldn't read the queue: {q.error}</div>}
 
@@ -496,5 +497,37 @@ function Inspector({ r, now, retrying, onClose, onOpen, onRetry }) {
         <button className="ui-btn" onClick={onOpen}>Open track</button>
       </div>
     </aside>
+  );
+}
+
+// Threads and skipped work (readme §2, Phase 5): every CPU stage takes its
+// threads from one budget of the machine's cores, so they never oversubscribe;
+// a warning says a setting asked for more than the machine has. allin1 skips
+// are counted by reason — a skip is a whole allin1 run saved.
+export function ComputeReadout({ threads, allin1 }) {
+  if (!threads && !allin1) return null;
+  const req = threads?.requests || {};
+  const warnings = threads?.warnings || [];
+  const skipped = allin1 || {};
+  return (
+    <div className="q-compute q-pad">
+      {threads?.cores != null && (
+        <span className="mono small muted" title={
+          `What each stage takes from the budget while it computes. Without the budget they would add up to ${threads.summed} threads.`}>
+          {`⚙ ${threads.cores} cores, one budget · Demucs ${req.demucs} · allin1 ${req.allin1}`
+            + ` · analysis ${req.analysis} a worker · scoring ${req.scoring}`
+            + (threads.live ? ` · in use ${threads.live.in_use}/${threads.cores}` : "")}
+        </span>
+      )}
+      {(skipped.skipped || 0) > 0 && (
+        <span className="mono small muted" title="allin1 runs that were not needed: no usable vocal or bed stem, or a set over allin1_max_secs">
+          {`allin1 skipped ${skipped.skipped}: ${skipped.skipped_unusable || 0} no usable stem`
+            + ` · ${skipped.skipped_too_long || 0} too long`}
+        </span>
+      )}
+      {warnings.map((w) => (
+        <span key={w} className="q-warn small" role="status">⚠ {w}</span>
+      ))}
+    </div>
   );
 }

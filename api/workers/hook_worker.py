@@ -183,6 +183,45 @@ def _render(sf, song_id: int, stem: str, out: Path, windowed: bool,
     return str(out)
 
 
+def in_top_pairs(song_id: int, n: int, db_path=None) -> bool:
+    """Whether this track is a side of one of the library's best ``n``
+    vocal-over-instrumental rows (by score_total; provisional rows count — at
+    a track's first cut they are what it has). Two index reads."""
+    from database.models import get_conn
+    conn = get_conn(db_path) if db_path is not None else get_conn()
+    try:
+        cut = conn.execute(
+            "SELECT score_total FROM mashup_candidates "
+            "WHERE combo_type='vocal_over_instrumental' "
+            "ORDER BY score_total DESC LIMIT 1 OFFSET ?", (max(0, int(n) - 1),)
+        ).fetchone()
+        if cut is None:          # fewer than n rows: every track is in them
+            return True
+        return bool(conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM mashup_candidates "
+            "WHERE combo_type='vocal_over_instrumental' AND score_total >= ? "
+            "AND (vocal_song_id=? OR inst_song_id=?))",
+            (cut[0], song_id, song_id)).fetchone()[0])
+    finally:
+        conn.close()
+
+
+def warm_or_defer_hooks(song_id: int) -> dict:
+    """After a track's hook window moved: pre-cut its clips when it is in the
+    library's top `hook_warm_top_n` pairs, else only remove the stale clips so
+    the first request cuts the new window (lazy). Never raises."""
+    from config import current_int
+    try:
+        n = current_int("hook_warm_top_n")
+        if n > 0 and not in_top_pairs(song_id, n):
+            for stem in ("vocals", "instrumental"):
+                hook_clip_path(song_id, stem).unlink(missing_ok=True)
+            return {"rendered": [], "skipped": {}, "deferred": True}
+    except Exception:  # noqa: BLE001
+        log.exception("hook warm decision failed for %s; cutting now", song_id)
+    return {**warm_hooks(song_id, force=True), "deferred": False}
+
+
 def warm_hooks(song_id: int, force: bool = False) -> dict:
     """Best-effort pre-render of both preview stems after analysis.
 

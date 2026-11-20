@@ -44,6 +44,10 @@ from api import queue_runner  # noqa: E402
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # One core budget for every CPU stage (criterion 5.2): asserted here, its
+    # warnings logged and shown in the Queue readout (GET /api/jobs/queue).
+    from analysis import threads as _threads
+    _threads.check()
     # Start the bounded pipeline worker pool, then re-enqueue any track that was
     # mid-pipeline when the server last stopped (status-derived resume).
     queue_runner.start()
