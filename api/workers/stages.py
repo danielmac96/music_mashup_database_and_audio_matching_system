@@ -979,7 +979,8 @@ def allin1_cannot_help(song_id: int, db_path=None) -> Optional[str]:
     qmin = current_float("stem_quality_min")
     if not qmin or qmin <= 0:
         return None
-    conn = get_conn(db_path) if db_path is not None else get_conn()
+    from database import models as _models     # resolved per call
+    conn = _models.get_conn(db_path) if db_path is not None else _models.get_conn()
     try:
         q = {r["stem_type"]: r["quality"] for r in conn.execute(
             "SELECT stem_type, quality FROM stems WHERE song_id=? "
