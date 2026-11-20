@@ -21,7 +21,10 @@ export const MAX_BUFFER = 400;
 
 let buffer = [];
 let timer = null;
-let listening = null;      // the pair loop being timed, or null
+// The pair loop being timed on each channel: "player" (the app-wide player,
+// usePlayer) and "mini" (the parts dock's mini studio, its own engine). One
+// slot each, so one surface moving on never closes the other's loop.
+const listening = new Map();
 let wired = false;
 
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
@@ -53,7 +56,7 @@ function wire() {
   if (wired || typeof window === "undefined") return;
   wired = true;
   timer = setInterval(() => flush(), FLUSH_MS);
-  const leave = () => { closeListening(); flush({ unload: true }); };
+  const leave = () => { closeAllListening(); flush({ unload: true }); };
   window.addEventListener("pagehide", leave);
   if (typeof document !== "undefined") {
     document.addEventListener("visibilitychange", () => {
@@ -106,9 +109,9 @@ export function flush({ unload = false } = {}) {
   } catch { /* an event is never worth an error */ }
 }
 
-function closeListening() {
-  const l = listening;
-  listening = null;
+function closeListening(channel) {
+  const l = listening.get(channel);
+  listening.delete(channel);
   if (!l) return;
   if (l.since != null) l.secs += (now() - l.since) / 1000;
   if (l.secs <= 0) return;                 // it never sounded
@@ -121,21 +124,27 @@ function closeListening() {
  *  and, when the player moves off it, records `loop_play` with the seconds —
  *  or `skip` when that was under SKIP_SECS. `source` is the player's pair
  *  source ({ key, candidate, context, rank }) or null. */
-export function noteListening(source, playing) {
+export function noteListening(source, playing, channel = "player") {
   try {
     const key = source ? source.key : null;
-    if (listening && listening.key !== key) closeListening();
+    let l = listening.get(channel);
+    if (l && l.key !== key) { closeListening(channel); l = null; }
     if (!source) return;
-    if (!listening) {
-      listening = { key, candidate: source.candidate, context: source.context || "dock",
-                    rank: source.rank ?? null, secs: 0, since: null };
+    if (!l) {
+      l = { key, candidate: source.candidate, context: source.context || "dock",
+            rank: source.rank ?? null, secs: 0, since: null };
+      listening.set(channel, l);
     }
-    if (playing && listening.since == null) listening.since = now();
-    else if (!playing && listening.since != null) {
-      listening.secs += (now() - listening.since) / 1000;
-      listening.since = null;
+    if (playing && l.since == null) l.since = now();
+    else if (!playing && l.since != null) {
+      l.secs += (now() - l.since) / 1000;
+      l.since = null;
     }
   } catch { /* never felt */ }
+}
+
+function closeAllListening() {
+  try { [...listening.keys()].forEach(closeListening); } catch { /* never felt */ }
 }
 
 /** For tests: what is waiting to be posted. */

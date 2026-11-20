@@ -480,3 +480,37 @@ console.log(JSON.stringify({ out, buffered, first, afterFlush, silent, skipped, 
     assert got["skipped"] == ["skip"]
     assert got["capped"] == got["max"]
     assert got["unhandled"] == 0
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed here")
+def test_the_mini_studio_times_its_own_loop_on_its_own_channel(tmp_path):
+    """§9 item 14: the parts dock's mini studio plays on its own engine, so it
+    times its loop on its own channel. Its listen is a `loop_play` (context
+    parts), and the app player moving on never closes it — nor the reverse."""
+    mod = tmp_path / "events.mjs"
+    mod.write_text(_read("events.js"), encoding="utf-8")
+    script = tmp_path / "run.mjs"
+    script.write_text("""
+globalThis.fetch = () => Promise.reject(new Error("offline"));
+const ev = await import("./events.mjs");
+const a = { vocal_song_id: 1, inst_song_id: 2, vocal_section_idx: 0, inst_section_idx: 0 };
+const b = { vocal_song_id: 5, inst_song_id: 6, vocal_section_idx: 1, inst_section_idx: 1 };
+ev.noteListening({ key: "m", candidate: a, context: "parts" }, true, "mini");
+await new Promise((r) => setTimeout(r, 40));
+// The player starts something else and stops: the mini loop is untouched.
+ev.noteListening({ key: "p", candidate: b, context: "dock" }, true);
+ev.noteListening(null, false);
+const afterPlayer = ev.pending().map((e) => [e.event, e.context]);
+// The mini studio moves on: its loop closes, as a skip (well under 3 s).
+ev.noteListening(null, false, "mini");
+console.log(JSON.stringify({ afterPlayer, all: ev.pending().map((e) => [e.event, e.context, e.vocal_song_id]) }));
+""", encoding="utf-8")
+    done = subprocess.run([NODE, str(script)], capture_output=True, text=True,
+                          timeout=60, cwd=str(tmp_path))
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout.strip().splitlines()[-1])
+    assert got["afterPlayer"] == [["skip", "dock"]]
+    assert got["all"] == [["skip", "dock", 5], ["skip", "parts", 1]]
+    mini = _read("components/segments/MiniStudio.jsx")
+    assert '{ key: listenKey, candidate: pair, context: "parts" }' in mini
+    assert 'noteListening(null, false, "mini")' in mini
