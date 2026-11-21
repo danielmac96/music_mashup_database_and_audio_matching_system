@@ -22,6 +22,8 @@ audio/
 
 # Docker volume mount (downloaded songs, stems, DB, Demucs weights)
 data/
+/data_*/
+/data-*/
 
 # Frontend (Vite + React)
 frontend/node_modules/

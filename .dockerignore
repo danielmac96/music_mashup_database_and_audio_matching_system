@@ -1,5 +1,9 @@
-# Runtime data (mounted as a volume at /data instead)
+# Runtime data (mounted as a volume at /data instead), and an old library
+# moved aside next to it (data_old_20261120/, data-backup/): its Hugging Face
+# cache holds symlinks the build context refuses. Not data*/ — that is database/.
 data/
+data_*/
+data-*/
 audio/
 mashup.db
 mashup.db-wal
